@@ -11,8 +11,8 @@ A music downloader mod for the Windows Spotify client, inspired by [Soggfy](http
 
 ## Installation and usage
 
-Live tested with **Windows x64 Spotify 1.3.1.234**. Audio hook locations were
-statically validated in signed Spotify DLLs from 1.3.0.277, 1.2.94.583 and
+Live tested with **Windows x64 Spotify 1.3.1.234**. Dynamic audio-hook discovery
+was statically validated in signed Spotify DLLs from 1.3.0.277, 1.2.94.583 and
 1.2.92.148; those older clients were not run end to end. Microsoft Store installs
 are unvalidated.
 
@@ -37,7 +37,9 @@ Restart after editing.
 
 - Audio quality comes from Spotify's playback settings. FLAC requires a lossless source; no conversion or FFmpeg is used.
 - Extra metadata uses existing client caches only. No endpoint requests are made, and missing fields are omitted.
-- Unknown Spotify DLL hashes are rejected before any audio hook address is used.
+- Audio hook locations are discovered from invariant decoder instructions and
+  Windows x64 function metadata. Missing, ambiguous or inconsistent matches disable
+  capture before any hook is installed.
 
 ## Credits
 

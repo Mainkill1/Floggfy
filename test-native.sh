@@ -14,8 +14,8 @@ g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/module_pending_test.cpp -o build/
 build/module-pending-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/pe_imports_test.cpp native/pe_imports.cpp -o build/pe-imports-test
 build/pe-imports-test
-g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/spotify_build_profile_test.cpp native/spotify_build_profile.cpp -o build/spotify-build-profile-test
-build/spotify-build-profile-test
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/spotify_hook_discovery_test.cpp native/spotify_hook_discovery.cpp -o build/spotify-hook-discovery-test
+build/spotify-hook-discovery-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/history_core_test.cpp native/ogg_history_core.cpp -o build/history-core-test
 build/history-core-test
 gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/ogg-framing-test.o

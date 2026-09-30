@@ -14,9 +14,8 @@
 #include "existing_quality.h"
 #include "file_publication.h"
 #include "media_session.h"
-#include "spotify_build_profile.h"
+#include "spotify_hook_discovery.h"
 #include "vendor/minhook/include/MinHook.h"
-#include <bcrypt.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -63,52 +62,32 @@ static void Log(const char* message) {
 static bool Directories(const std::wstring& path) {
     return EnsureDirectory(path);
 }
-enum class ProfileResult { Supported, Unsupported, RetryableFailure };
-
-static bool HashModuleFile(HMODULE module,char (&hex)[65]) {
-    wchar_t path[2048]; if(!GetModuleFileNameW(module,path,2048)) return false;
-    HANDLE file=CreateFileW(path,GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
-        nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
-    if(file==INVALID_HANDLE_VALUE) return false;
-    BCRYPT_ALG_HANDLE algorithm=nullptr; BCRYPT_HASH_HANDLE hash=nullptr;
-    bool ok=BCryptOpenAlgorithmProvider(&algorithm,BCRYPT_SHA256_ALGORITHM,nullptr,0)>=0;
-    if(ok) ok=BCryptCreateHash(algorithm,&hash,nullptr,0,nullptr,0,0)>=0;
-    unsigned char buffer[65536],digest[32]; DWORD read=0;
-    while(ok) {
-        if(!ReadFile(file,buffer,sizeof(buffer),&read,nullptr)) { ok=false; break; }
-        if(!read) break;
-        if(BCryptHashData(hash,buffer,read,0)<0) ok=false;
-    }
-    if(ok) ok=BCryptFinishHash(hash,digest,sizeof(digest),0)>=0;
-    if(hash) BCryptDestroyHash(hash);
-    if(algorithm) BCryptCloseAlgorithmProvider(algorithm,0);
-    CloseHandle(file);
-    if(!ok) return false;
-    for(unsigned i=0;i<32;i++) snprintf(hex+2*i,3,"%02x",digest[i]);
-    hex[64]='\0';
-    return true;
-}
-
-static ProfileResult SelectProfile(HMODULE module,const spotify::BuildProfile*& profile) {
-    char hash[65];
-    if(!HashModuleFile(module,hash)) return ProfileResult::RetryableFailure;
-    profile=spotify::FindBuildProfile(hash);
-    if(!profile) return ProfileResult::Unsupported;
+static spotify::DiscoveryResult DiscoverTargets(HMODULE module,spotify::HookTargets& targets) {
     auto* base=reinterpret_cast<unsigned char*>(module);
     auto* dos=reinterpret_cast<IMAGE_DOS_HEADER*>(base);
     if(dos->e_magic!=IMAGE_DOS_SIGNATURE || dos->e_lfanew<=0 || dos->e_lfanew>4096)
-        return ProfileResult::Unsupported;
+        return spotify::DiscoveryResult::InvalidImage;
     auto* nt=reinterpret_cast<IMAGE_NT_HEADERS64*>(base+dos->e_lfanew);
-    if(nt->Signature!=IMAGE_NT_SIGNATURE || nt->FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64 ||
-       !spotify::ValidateMappedProfile(base,nt->OptionalHeader.SizeOfImage,*profile))
-        return ProfileResult::Unsupported;
-    return ProfileResult::Supported;
+    if(nt->Signature!=IMAGE_NT_SIGNATURE || nt->FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64)
+        return spotify::DiscoveryResult::InvalidImage;
+    return spotify::DiscoverHookTargets(base,nt->OptionalHeader.SizeOfImage,targets);
 }
 
-static void* ProfileTarget(HMODULE module,const spotify::BuildProfile& profile,spotify::TargetKind kind) {
-    for(const auto& entry:profile.targets)
-        if(entry.kind==kind) return reinterpret_cast<unsigned char*>(module)+entry.rva;
-    return nullptr;
+static const char* DiscoveryFailure(spotify::DiscoveryResult result) {
+    switch(result) {
+        case spotify::DiscoveryResult::InvalidImage:return "invalid PE image";
+        case spotify::DiscoveryResult::MissingTarget:return "required instruction anchor missing";
+        case spotify::DiscoveryResult::AmbiguousTarget:return "instruction anchor is ambiguous";
+        case spotify::DiscoveryResult::InconsistentLayout:return "target layout failed structural checks";
+        case spotify::DiscoveryResult::Found:return "none";
+    }
+    return "unknown discovery failure";
+}
+
+static void* DiscoveredTarget(HMODULE module,const spotify::HookTargets& targets,
+                              spotify::TargetKind kind) {
+    const auto rva=spotify::TargetRva(targets,kind);
+    return rva?reinterpret_cast<unsigned char*>(module)+rva:nullptr;
 }
 static int32_t Hook(void* sync,OggPage* page) {
     auto callback=audio_callbacks.Enter();
@@ -478,22 +457,20 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
     (void)proxy;
     auto preferences=GetSettings(); output=preferences.root;
     if(output.empty()) { Log("save location unavailable; history initialization will retry"); audio_init.Retry(now); return; }
-    const spotify::BuildProfile* profile=nullptr;
-    switch(SelectProfile(spotify_module,profile)) {
-        case ProfileResult::RetryableFailure:
-            Log("Spotify.dll hash could not be read; audio initialization will retry");
-            audio_init.Retry(now); return;
-        case ProfileResult::Unsupported:
-            Log("unsupported Spotify.dll build profile or target signatures; capture disabled");
-            audio_init.MarkUnsupported(); return;
-        case ProfileResult::Supported: break;
+    spotify::HookTargets discovered{};
+    const auto discovery=DiscoverTargets(spotify_module,discovered);
+    if(discovery!=spotify::DiscoveryResult::Found) {
+        char message[220];snprintf(message,sizeof(message),
+            "Spotify audio target discovery failed: %s; capture disabled",
+            DiscoveryFailure(discovery));Log(message);
+        audio_init.MarkUnsupported();return;
     }
-    target=ProfileTarget(spotify_module,*profile,spotify::TargetKind::OggPageSeek);
-    sniff_target=ProfileTarget(spotify_module,*profile,spotify::TargetKind::FormatSniff);
-    flac_targets[0]=ProfileTarget(spotify_module,*profile,spotify::TargetKind::FlacInit);
-    flac_targets[1]=ProfileTarget(spotify_module,*profile,spotify::TargetKind::FlacRead);
-    flac_targets[2]=ProfileTarget(spotify_module,*profile,spotify::TargetKind::FlacFrame);
-    flac_targets[3]=ProfileTarget(spotify_module,*profile,spotify::TargetKind::FlacError);
+    target=DiscoveredTarget(spotify_module,discovered,spotify::TargetKind::OggPageSeek);
+    sniff_target=DiscoveredTarget(spotify_module,discovered,spotify::TargetKind::FormatSniff);
+    flac_targets[0]=DiscoveredTarget(spotify_module,discovered,spotify::TargetKind::FlacInit);
+    flac_targets[1]=DiscoveredTarget(spotify_module,discovered,spotify::TargetKind::FlacRead);
+    flac_targets[2]=DiscoveredTarget(spotify_module,discovered,spotify::TargetKind::FlacFrame);
+    flac_targets[3]=DiscoveredTarget(spotify_module,discovered,spotify::TargetKind::FlacError);
     auto release_resources=[] {
         if(event) { CloseHandle(event); event=nullptr; }
         if(save_event) { CloseHandle(save_event); save_event=nullptr; }
@@ -568,5 +545,5 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
     }
     close_threads();
     audio_init.Activate();
-    Log("native history active; exact Spotify profile; memory capture; embedded metadata/art; complete listens only");
+    Log("native history active; dynamic Spotify targets; memory capture; embedded metadata/art; complete listens only");
 }
