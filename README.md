@@ -14,9 +14,12 @@ A music downloader mod for the Windows Spotify client, inspired by [Soggfy](http
 Tested with **Windows x64 Spotify 1.3.1.234**. Other versions and Microsoft Store installs are unvalidated.
 
 1. Quit Spotify and download the ZIP from [Releases](https://github.com/Mainkill1/Floggfy/releases).
-2. Open your Spotify installation folder (usually `%APPDATA%\Spotify`) and back up any existing `version.dll`.
+2. Open your Spotify installation folder (usually `%APPDATA%\Spotify`)
 3. Copy `version.dll` there, then copy `SpotifyHistory.ini.example` as `SpotifyHistory.ini`.
 4. Start Spotify, open the top-left menu → **To Disk**, and enable **Downloads**. Play a track from start to finish without seeking or skipping.
+
+<img width="670" height="172" alt="image" src="https://github.com/user-attachments/assets/e0f5f092-03db-4a37-9d63-02ef7d7051f0" />
+
 
 Tracks save to your Windows Music folder under `Spotify/Artists/Artist/Album`.
 To uninstall, quit Spotify, remove Floggfy's `version.dll` and restore your backup.
