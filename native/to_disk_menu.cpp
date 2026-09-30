@@ -1,5 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include "to_disk_menu.h"
+#include "cef_identity.h"
+#include "hook_init_state.h"
 #include "history_settings.h"
 #include "vendor/minhook/include/MinHook.h"
 #include <atomic>
@@ -33,6 +35,8 @@ using AddSubmenu=Menu*(*)(Menu*,int,const String*);
 AddSubmenu original_add_submenu;
 using FreeString=void(*)(String*);
 FreeString free_string;
+hooks::InitController menu_init;
+hooks::InitController submenu_init;
 constexpr int root_id=28480,downloads_id=28481,location_id=28482,flac_id=28483,ogg_id=28484;
 template<class R,class...A> R Call(Menu* m,unsigned slot,A...a) {
     if(!m || m->base.size!=sizeof(Menu) || slot>=56 || !m->methods[slot]) return R{};
@@ -57,7 +61,12 @@ static bool Main(Menu* m) {
     return file && edit && view;
 }
 static void Populate(Menu* menu) {
-    if(!Main(menu)) return;
+    if(!Main(menu)) {
+        static volatile LONG logged=0;
+        if(InterlockedIncrement(&logged)<=3)
+            history::HistoryLog("To Disk menu capability: main menu not recognized by English File/Edit/View labels");
+        return;
+    }
     auto state=history::GetSettings();
     Menu* child=Call<Menu*>(menu,28,root_id);
     bool inserted=false;
@@ -150,12 +159,17 @@ static Menu* Hook(Delegate* delegate) {
     // callback object. Hold the original transferred reference until teardown.
     w->original=delegate;
     Menu* result=original_create(&w->api);
-    static volatile LONG add_hook_attempted=0;
-    if(result && result->base.size==sizeof(Menu) && InterlockedCompareExchange(&add_hook_attempted,1,0)==0) {
+    if(result && result->base.size==sizeof(Menu) && submenu_init.TryBegin(GetTickCount64())) {
         void* address=result->methods[7];
-        auto status=MH_CreateHook(address,reinterpret_cast<void*>(AddSubmenuHook),reinterpret_cast<void**>(&original_add_submenu));
+        MH_STATUS status=address ? MH_CreateHook(address,reinterpret_cast<void*>(AddSubmenuHook),reinterpret_cast<void**>(&original_add_submenu)) : MH_ERROR_NOT_EXECUTABLE;
+        bool created=status==MH_OK;
         if(status==MH_OK) status=MH_EnableHook(address);
-        char line[160]; snprintf(line,sizeof(line),"CEF main-menu construction hook: %s",MH_StatusToString(status)); history::HistoryLog(line);
+        if(status==MH_OK) submenu_init.Activate();
+        else {
+            if(created) MH_RemoveHook(address);
+            submenu_init.Retry(GetTickCount64());
+        }
+        char line[180]; snprintf(line,sizeof(line),"CEF main-menu construction hook: %s%s",MH_StatusToString(status),status==MH_OK?"":"; retry scheduled"); history::HistoryLog(line);
     }
     static volatile LONG logged=0;
     if(InterlockedIncrement(&logged)<=8) {
@@ -166,17 +180,23 @@ static Menu* Hook(Delegate* delegate) {
 }
 }
 void StartToDiskMenu(HMODULE cef) {
-    static bool attempted=false; if(attempted) return; attempted=true;
-    if(!history::GetSettings().menu) { history::HistoryLog("To Disk menu disabled by INI Menu=0"); return; }
+    const auto now=static_cast<std::uint64_t>(GetTickCount64());
+    if(!menu_init.TryBegin(now)) return;
+    if(!history::GetSettings().menu) { history::HistoryLog("To Disk menu disabled by INI Menu=0"); menu_init.MarkUnsupported(); return; }
     using Version=int(*)(int);
     Version version=nullptr; FARPROC symbol=GetProcAddress(cef,"cef_version_info");
     memcpy(&version,&symbol,sizeof(version));
     auto create=GetProcAddress(cef,"cef_menu_model_create");
     symbol=GetProcAddress(cef,"cef_string_userfree_utf16_free");
     memcpy(&free_string,&symbol,sizeof(free_string));
-    if(!version || version(0)!=146 || version(1)!=0 || version(2)!=10 || !create || !free_string) { history::HistoryLog("To Disk menu disabled: unsupported CEF version or ABI"); return; }
+    if(!version || !cef_compat::IsSupported({version(0),version(1),version(2),version(3)}) || !create || !free_string) {
+        history::HistoryLog("To Disk menu disabled: expected CEF 146.0.10 commit 3504 and required exports"); menu_init.MarkUnsupported(); return;
+    }
     MH_STATUS status=MH_Initialize(); if(status==MH_ERROR_ALREADY_INITIALIZED) status=MH_OK;
     if(status==MH_OK) status=MH_CreateHook(reinterpret_cast<void*>(create),reinterpret_cast<void*>(Hook),reinterpret_cast<void**>(&original_create));
+    bool created=status==MH_OK;
     if(status==MH_OK) status=MH_EnableHook(reinterpret_cast<void*>(create));
-    char line[180]; snprintf(line,sizeof(line),"CEF146 main-menu integration: %s",MH_StatusToString(status)); history::HistoryLog(line);
+    if(status==MH_OK) menu_init.Activate();
+    else {if(created)MH_RemoveHook(reinterpret_cast<void*>(create));menu_init.Retry(now);}
+    char line[200]; snprintf(line,sizeof(line),"CEF146 commit 3504 main-menu integration: %s%s",MH_StatusToString(status),status==MH_OK?"":"; retry scheduled"); history::HistoryLog(line);
 }

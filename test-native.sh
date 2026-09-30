@@ -2,6 +2,20 @@
 set -euo pipefail
 cd -- "$(dirname -- "$0")"
 mkdir -p build
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/hook_init_state_test.cpp -o build/hook-init-state-test
+build/hook-init-state-test
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/hook_installation_test.cpp -o build/hook-installation-test
+build/hook-installation-test
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/hook_rollback_test.cpp -o build/hook-rollback-test
+build/hook-rollback-test
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/cef_identity_test.cpp -o build/cef-identity-test
+build/cef-identity-test
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/module_pending_test.cpp -o build/module-pending-test
+build/module-pending-test
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/pe_imports_test.cpp native/pe_imports.cpp -o build/pe-imports-test
+build/pe-imports-test
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/spotify_build_profile_test.cpp native/spotify_build_profile.cpp -o build/spotify-build-profile-test
+build/spotify-build-profile-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/history_core_test.cpp native/ogg_history_core.cpp -o build/history-core-test
 build/history-core-test
 gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/ogg-framing-test.o

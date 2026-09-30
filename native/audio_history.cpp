@@ -4,6 +4,8 @@
 #include "ogg_tags.h"
 #include "flac_history_core.h"
 #include "history_settings.h"
+#include "hook_init_state.h"
+#include "hook_rollback.h"
 #include "metadata_bridge.h"
 #include "async_log.h"
 #include "bounded_queue.h"
@@ -12,6 +14,7 @@
 #include "existing_quality.h"
 #include "file_publication.h"
 #include "media_session.h"
+#include "spotify_build_profile.h"
 #include "vendor/minhook/include/MinHook.h"
 #include <bcrypt.h>
 #include <algorithm>
@@ -41,6 +44,7 @@ FlacRead original_flac_read;
 FlacFrame original_flac_frame;
 FlacError original_flac_error;
 void* flac_targets[4]={};
+hooks::CallbackCounter audio_callbacks;
 struct Slot { uintptr_t context; unsigned length; double time; unsigned kind,epoch; uint64_t input_length;
     uint32_t format; bool matched; unsigned char bytes[65307]; };
 constexpr unsigned capacity=128;
@@ -59,16 +63,9 @@ static void Log(const char* message) {
 static bool Directories(const std::wstring& path) {
     return EnsureDirectory(path);
 }
-static bool Supported(HMODULE module) {
-    // Never scan for a loose pattern or reuse this RVA on an unknown build.
-    static const unsigned char entry[]={0x48,0x89,0x5c,0x24,0x10,0x48,0x89,0x6c,0x24,0x18,
-      0x48,0x89,0x74,0x24,0x20,0x57,0x41,0x54,0x41,0x55,0x41,0x56,0x41,0x57,0x48,0x83,0xec,0x40,0x48,0x63,0x79,0x10};
-    auto base=reinterpret_cast<unsigned char*>(module);
-    auto dos=reinterpret_cast<IMAGE_DOS_HEADER*>(base);
-    if(dos->e_magic!=IMAGE_DOS_SIGNATURE || dos->e_lfanew<=0 || dos->e_lfanew>4096) return false;
-    auto nt=reinterpret_cast<IMAGE_NT_HEADERS64*>(base+dos->e_lfanew);
-    if(nt->Signature!=IMAGE_NT_SIGNATURE || nt->FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64 ||
-       nt->OptionalHeader.SizeOfImage<=0xebf0cc || std::memcmp(base+0xebef18,entry,sizeof(entry))) return false;
+enum class ProfileResult { Supported, Unsupported, RetryableFailure };
+
+static bool HashModuleFile(HMODULE module,char (&hex)[65]) {
     wchar_t path[2048]; if(!GetModuleFileNameW(module,path,2048)) return false;
     HANDLE file=CreateFileW(path,GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
         nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
@@ -87,12 +84,34 @@ static bool Supported(HMODULE module) {
     if(algorithm) BCryptCloseAlgorithmProvider(algorithm,0);
     CloseHandle(file);
     if(!ok) return false;
-    const char* expected="0731eca3ec438395815907c04653c63a917b55bf0ebdd83c96f041424a92b54b";
-    char hex[65]; for(unsigned i=0;i<32;i++) snprintf(hex+2*i,3,"%02x",digest[i]);
-    if(std::strcmp(hex,expected)) return false;
-    target=base+0xebef18; return true;
+    for(unsigned i=0;i<32;i++) snprintf(hex+2*i,3,"%02x",digest[i]);
+    hex[64]='\0';
+    return true;
+}
+
+static ProfileResult SelectProfile(HMODULE module,const spotify::BuildProfile*& profile) {
+    char hash[65];
+    if(!HashModuleFile(module,hash)) return ProfileResult::RetryableFailure;
+    profile=spotify::FindBuildProfile(hash);
+    if(!profile) return ProfileResult::Unsupported;
+    auto* base=reinterpret_cast<unsigned char*>(module);
+    auto* dos=reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+    if(dos->e_magic!=IMAGE_DOS_SIGNATURE || dos->e_lfanew<=0 || dos->e_lfanew>4096)
+        return ProfileResult::Unsupported;
+    auto* nt=reinterpret_cast<IMAGE_NT_HEADERS64*>(base+dos->e_lfanew);
+    if(nt->Signature!=IMAGE_NT_SIGNATURE || nt->FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64 ||
+       !spotify::ValidateMappedProfile(base,nt->OptionalHeader.SizeOfImage,*profile))
+        return ProfileResult::Unsupported;
+    return ProfileResult::Supported;
+}
+
+static void* ProfileTarget(HMODULE module,const spotify::BuildProfile& profile,spotify::TargetKind kind) {
+    for(const auto& entry:profile.targets)
+        if(entry.kind==kind) return reinterpret_cast<unsigned char*>(module)+entry.rva;
+    return nullptr;
 }
 static int32_t Hook(void* sync,OggPage* page) {
+    auto callback=audio_callbacks.Enter();
     int32_t result=original(sync,page);
     InterlockedIncrement(&calls);
     if(!OggEnabled()) return result;
@@ -112,6 +131,7 @@ static int32_t Hook(void* sync,OggPage* page) {
     ReleaseSRWLockExclusive(&queue_lock); SetEvent(event); return result;
 }
 static void* FormatHook(void* out,const void* input) {
+    auto callback=audio_callbacks.Enter();
     // Verified ABI: input is {const byte*, size_t}; result is {uint32_t kind, bool valid}.
     // Read only a short diagnostic prefix. The original detector chooses the format.
     void* result=original_sniff(out,input);
@@ -149,10 +169,12 @@ static void FlacEvent(void* context,unsigned kind,const void* bytes=nullptr,size
     ReleaseSRWLockExclusive(&queue_lock); SetEvent(event);
 }
 static void* FlacInitHook(void* context,void* result) {
+    auto callback=audio_callbacks.Enter();
     FlacEvent(context,2);
     return original_flac_init(context,result);
 }
 static int FlacReadHook(void* context,unsigned char* buffer,size_t* length) {
+    auto callback=audio_callbacks.Enter();
     size_t requested=*length;
     int status=original_flac_read(context,buffer,length);
     if(status==0 && *length && *length<=requested) FlacEvent(context,3,buffer,*length);
@@ -161,12 +183,14 @@ static int FlacReadHook(void* context,unsigned char* buffer,size_t* length) {
     return status;
 }
 static int FlacFrameHook(void* context,const void* frame,const void* pcm) {
+    auto callback=audio_callbacks.Enter();
     int status=original_flac_frame(context,frame,pcm);
     if(status==0) FlacEvent(context,4,frame,32);
     else FlacEvent(context,5,nullptr,0,unsigned(status));
     return status;
 }
 static void FlacErrorHook(void* context,unsigned error) {
+    auto callback=audio_callbacks.Enter();
     original_flac_error(context,error);
     FlacEvent(context,5,nullptr,0,error);
 }
@@ -241,8 +265,10 @@ static BoundedQueue<SaveJob,2> saves;
 static HANDLE save_event=nullptr;
 static std::atomic<size_t> publishing_reserved{0};
 static std::atomic<unsigned> saved_count{0};
+static std::atomic<bool> workers_running{false};
+static hooks::InitController audio_init;
 static DWORD WINAPI SaveWorker(LPVOID) {
-    for(;;) {
+    while(workers_running.load(std::memory_order_acquire)) {
         SaveJob job;
         if(!saves.Pop(job)){WaitForSingleObject(save_event,200);continue;}
         std::string identity=Utf8(job.heard.media.artist)+" - "+Utf8(job.heard.media.title);
@@ -256,6 +282,7 @@ static DWORD WINAPI SaveWorker(LPVOID) {
         } catch(...) {LogActivity("failed",identity+" (publication exception)");}
         job.capture.reset();publishing_reserved.fetch_sub(job.reserved);
     }
+    return 0;
 }
 static DWORD WINAPI Worker(LPVOID) {
     LONG overflow=0;
@@ -266,7 +293,7 @@ static DWORD WINAPI Worker(LPVOID) {
     double next_media=0,next_log=0;
     unsigned generation=~0u,epoch=~0u; bool enabled=false;
     try {
-        for(;;) {
+        while(workers_running.load(std::memory_order_acquire)) {
             double now=Now();
             auto preferences=GetSettings();
             if(preferences.generation!=generation) {
@@ -436,6 +463,8 @@ static DWORD WINAPI Worker(LPVOID) {
             WaitForSingleObject(event,50);
         }
     } catch(...) { Log("history worker stopped after an exception; playback remains with original parser"); }
+    workers_running.store(false,std::memory_order_release);
+    if(save_event) SetEvent(save_event);
     MH_DisableHook(target);
     MH_DisableHook(sniff_target);
     for(auto address:flac_targets) if(address) MH_DisableHook(address);
@@ -443,38 +472,101 @@ static DWORD WINAPI Worker(LPVOID) {
 }
 }
 
-void StartAudioHistory(HMODULE spotify,HMODULE proxy) {
-    static bool attempted=false; if(attempted) return; attempted=true;
+void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
+    const auto now=static_cast<std::uint64_t>(GetTickCount64());
+    if(!audio_init.TryBegin(now)) return;
     (void)proxy;
     auto preferences=GetSettings(); output=preferences.root;
-    if(output.empty()) { Log("save location unavailable; history disabled"); return; }
-    Log("native history enabled; memory capture; embedded metadata/art; no scratch files; no FFmpeg; complete listens only");
-    if(!Supported(spotify)) { Log("unsupported Spotify.dll hash or parser prologue; capture disabled"); return; }
+    if(output.empty()) { Log("save location unavailable; history initialization will retry"); audio_init.Retry(now); return; }
+    const spotify::BuildProfile* profile=nullptr;
+    switch(SelectProfile(spotify_module,profile)) {
+        case ProfileResult::RetryableFailure:
+            Log("Spotify.dll hash could not be read; audio initialization will retry");
+            audio_init.Retry(now); return;
+        case ProfileResult::Unsupported:
+            Log("unsupported Spotify.dll build profile or target signatures; capture disabled");
+            audio_init.MarkUnsupported(); return;
+        case ProfileResult::Supported: break;
+    }
+    target=ProfileTarget(spotify_module,*profile,spotify::TargetKind::OggPageSeek);
+    sniff_target=ProfileTarget(spotify_module,*profile,spotify::TargetKind::FormatSniff);
+    flac_targets[0]=ProfileTarget(spotify_module,*profile,spotify::TargetKind::FlacInit);
+    flac_targets[1]=ProfileTarget(spotify_module,*profile,spotify::TargetKind::FlacRead);
+    flac_targets[2]=ProfileTarget(spotify_module,*profile,spotify::TargetKind::FlacFrame);
+    flac_targets[3]=ProfileTarget(spotify_module,*profile,spotify::TargetKind::FlacError);
+    auto release_resources=[] {
+        if(event) { CloseHandle(event); event=nullptr; }
+        if(save_event) { CloseHandle(save_event); save_event=nullptr; }
+        if(queue) { HeapFree(GetProcessHeap(),0,queue); queue=nullptr; }
+        head=tail=count=0;
+        original=nullptr; original_sniff=nullptr; original_flac_init=nullptr;
+        original_flac_read=nullptr; original_flac_frame=nullptr; original_flac_error=nullptr;
+        target=nullptr; sniff_target=nullptr;
+        for(auto& address:flac_targets) address=nullptr;
+    };
     save_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);
-    if(!save_event){Log("publication worker event failed");return;}
-    auto publisher=CreateThread(nullptr,0,SaveWorker,nullptr,0,nullptr);
-    if(!publisher){Log("publication worker startup failed");return;}SetThreadPriority(publisher,THREAD_PRIORITY_BELOW_NORMAL);CloseHandle(publisher);
     queue=static_cast<Slot*>(HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof(Slot)*capacity));
     event=CreateEventW(nullptr,FALSE,FALSE,nullptr);
-    if(!queue || !event) { Log("queue allocation failed; capture disabled"); return; }
+    if(!save_event || !queue || !event) {
+        Log("audio queue resources unavailable; initialization will retry"); release_resources(); audio_init.Retry(now); return;
+    }
+    workers_running.store(true,std::memory_order_release);
+    HANDLE publisher=CreateThread(nullptr,0,SaveWorker,nullptr,0,nullptr);
+    if(!publisher) {
+        workers_running.store(false,std::memory_order_release);
+        Log("publication worker startup failed; initialization will retry"); release_resources(); audio_init.Retry(now); return;
+    }
+    SetThreadPriority(publisher,THREAD_PRIORITY_BELOW_NORMAL);
+    HANDLE worker=CreateThread(nullptr,0,Worker,nullptr,0,nullptr);
+    if(!worker) {
+        workers_running.store(false,std::memory_order_release); SetEvent(save_event);
+        const bool stopped=WaitForSingleObject(publisher,5000)==WAIT_OBJECT_0;CloseHandle(publisher);
+        if(stopped) {Log("audio worker startup failed; initialization will retry");release_resources();audio_init.Retry(now);}
+        else {Log("audio worker startup failed and publisher did not quiesce; state preserved");audio_init.MarkUnsupported();}
+        return;
+    }
+    auto close_threads=[&] {CloseHandle(publisher);CloseHandle(worker);publisher=nullptr;worker=nullptr;};
+    void* created_targets[6]={};unsigned created_count=0;
+    auto rollback=[&] {
+        hooks::RollbackStatus result;
+        auto disabled=[](MH_STATUS value){return value==MH_OK||value==MH_ERROR_DISABLED||value==MH_ERROR_NOT_CREATED;};
+        auto removed=[](MH_STATUS value){return value==MH_OK||value==MH_ERROR_NOT_CREATED;};
+        for(unsigned i=0;i<created_count;i++)result.ObserveDisable(disabled(MH_DisableHook(created_targets[i])));
+        for(unsigned waited=0;audio_callbacks.Active()&&waited<5000;++waited)Sleep(1);
+        result.ObserveQuiescence(audio_callbacks.Active()==0);
+        if(result.quiescent)for(unsigned i=0;i<created_count;i++)result.ObserveRemove(removed(MH_RemoveHook(created_targets[i])));
+        if(!result.CanRelease()){close_threads();return false;}
+        workers_running.store(false,std::memory_order_release);SetEvent(event);SetEvent(save_event);
+        const bool worker_stopped=WaitForSingleObject(worker,5000)==WAIT_OBJECT_0;
+        const bool publisher_stopped=WaitForSingleObject(publisher,5000)==WAIT_OBJECT_0;
+        close_threads();
+        if(!worker_stopped||!publisher_stopped)return false;
+        release_resources();return true;
+    };
+    auto create_hook=[&](void* address,void* callback,void** trampoline) {
+        MH_STATUS result=MH_CreateHook(address,callback,trampoline);
+        if(result==MH_OK)created_targets[created_count++]=address;
+        return result;
+    };
     MH_STATUS status=MH_Initialize(); if(status==MH_ERROR_ALREADY_INITIALIZED) status=MH_OK;
-    if(status==MH_OK) status=MH_CreateHook(target,reinterpret_cast<void*>(Hook),reinterpret_cast<void**>(&original));
-    sniff_target=reinterpret_cast<unsigned char*>(spotify)+0xe9c550;
-    if(status==MH_OK) status=MH_CreateHook(sniff_target,reinterpret_cast<void*>(FormatHook),reinterpret_cast<void**>(&original_sniff));
-    const uintptr_t flac_rvas[]={0xe95f2c,0xe9663c,0xe969f4,0xe959d0};
+    if(status==MH_OK) status=create_hook(target,reinterpret_cast<void*>(Hook),reinterpret_cast<void**>(&original));
+    if(status==MH_OK) status=create_hook(sniff_target,reinterpret_cast<void*>(FormatHook),reinterpret_cast<void**>(&original_sniff));
     void* flac_callbacks[]={reinterpret_cast<void*>(FlacInitHook),reinterpret_cast<void*>(FlacReadHook),reinterpret_cast<void*>(FlacFrameHook),reinterpret_cast<void*>(FlacErrorHook)};
     void** flac_originals[]={reinterpret_cast<void**>(&original_flac_init),reinterpret_cast<void**>(&original_flac_read),reinterpret_cast<void**>(&original_flac_frame),reinterpret_cast<void**>(&original_flac_error)};
     for(unsigned i=0;status==MH_OK && i<4;i++) {
-        flac_targets[i]=reinterpret_cast<unsigned char*>(spotify)+flac_rvas[i];
-        status=MH_CreateHook(flac_targets[i],flac_callbacks[i],flac_originals[i]);
+        status=create_hook(flac_targets[i],flac_callbacks[i],flac_originals[i]);
         if(status==MH_OK) status=MH_QueueEnableHook(flac_targets[i]);
     }
     if(status==MH_OK) status=MH_QueueEnableHook(target);
     if(status==MH_OK) status=MH_QueueEnableHook(sniff_target);
     if(status==MH_OK) status=MH_ApplyQueued();
-    char message[180]; snprintf(message,sizeof(message),"parser hook RVA=0xEBEF18 status=%s",MH_StatusToString(status)); Log(message);
-    if(status!=MH_OK) { MH_DisableHook(target); MH_DisableHook(sniff_target); for(auto address:flac_targets) if(address) MH_DisableHook(address); return; }
-    HANDLE worker=CreateThread(nullptr,0,Worker,nullptr,0,nullptr);
-    if(worker) CloseHandle(worker);
-    else { MH_DisableHook(target); MH_DisableHook(sniff_target); for(auto address:flac_targets) if(address) MH_DisableHook(address); Log("worker thread creation failed; capture disabled"); }
+    if(status!=MH_OK) {
+        char message[200];snprintf(message,sizeof(message),"audio hook installation failed: %s",MH_StatusToString(status));Log(message);
+        if(rollback()){Log("audio hook rollback complete; retry scheduled");audio_init.Retry(now);}
+        else {Log("audio hook rollback incomplete; callback state preserved and retries disabled");audio_init.MarkUnsupported();}
+        return;
+    }
+    close_threads();
+    audio_init.Activate();
+    Log("native history active; exact Spotify profile; memory capture; embedded metadata/art; complete listens only");
 }

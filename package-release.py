@@ -14,8 +14,7 @@ digest = hashlib.sha256((out / 'version.dll').read_bytes()).hexdigest()
 with zipfile.ZipFile(out / 'Floggfy-v1.0-Windows-x64.zip', 'w', compression=zipfile.ZIP_DEFLATED) as archive:
     for name in ['version.dll', 'SHA256SUMS.txt']:
         archive.write(out / name, arcname=name)
-    for name in ['README.md', 'VALIDATION.md', 'LICENSE', 'AUDIO-HISTORY.md',
-                 'FLAC-SUPPORT.md', 'SpotifyHistory.ini.example']:
+    for name in ['README.md', 'LICENSE', 'SpotifyHistory.ini.example']:
         archive.write(root / name, arcname=name)
     for vendor in ['minhook', 'libogg', 'cef', 'soggfy']:
         archive.write(root / 'native' / 'vendor' / vendor / 'LICENSE.txt',
