@@ -25,6 +25,7 @@ To uninstall, quit Spotify, remove Floggfy's `version.dll` and restore your back
 
 **To Disk** provides Downloads, Save Location, FLAC and Ogg controls.
 See the [example INI](SpotifyHistory.ini.example) and [configuration guide](AUDIO-HISTORY.md) for other settings.
+
 <img width="357" height="303" alt="image" src="https://github.com/user-attachments/assets/5e0be853-c888-40b4-a8af-27f140a28243" />
 
 
