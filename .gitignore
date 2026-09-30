@@ -1,0 +1,9 @@
+/build/
+/dist/
+*.log
+
+# Personal recordings and validation output
+/validation/
+/investigation/
+*.ogg
+*.flac

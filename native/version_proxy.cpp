@@ -1,0 +1,330 @@
+#define WIN32_LEAN_AND_MEAN
+#define _WIN32_WINNT 0x0601
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#include <iphlpapi.h>
+#include <netlistmgr.h>
+#include <delayimp.h>
+#include <cstdio>
+#include <cstring>
+#include "audio_history.h"
+#include "history_settings.h"
+#include "to_disk_menu.h"
+#include "metadata_bridge.h"
+
+// Spotify-local proxy. All version APIs go to the original System32 DLL.
+// The connectivity repair and optional native history stay inside Spotify.
+static SRWLOCK hook_lock = SRWLOCK_INIT;
+static INIT_ONCE version_once = INIT_ONCE_STATIC_INIT;
+static HMODULE real_version;
+static bool spotify_main;
+static HMODULE proxy_module;
+static volatile LONG logged_results;
+
+static void Log(const char* message) {
+    history::HistoryLog(message);
+}
+
+static BOOL CALLBACK InitVersion(PINIT_ONCE, PVOID, PVOID*) {
+    wchar_t path[MAX_PATH];
+    UINT n = GetSystemDirectoryW(path, MAX_PATH);
+    if (!n || n > MAX_PATH - 20) return FALSE;
+    wcscat_s(path, L"\\version.dll");
+    real_version = LoadLibraryExW(path, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    return real_version != nullptr;
+}
+
+extern "C" FARPROC ResolveVersionExport(unsigned index) {
+    static const char* names[] = {
+        "GetFileVersionInfoA", "GetFileVersionInfoByHandle", "GetFileVersionInfoExA",
+        "GetFileVersionInfoExW", "GetFileVersionInfoSizeA", "GetFileVersionInfoSizeExA",
+        "GetFileVersionInfoSizeExW", "GetFileVersionInfoSizeW", "GetFileVersionInfoW",
+        "VerFindFileA", "VerFindFileW", "VerInstallFileA", "VerInstallFileW",
+        "VerLanguageNameA", "VerLanguageNameW", "VerQueryValueA", "VerQueryValueW"
+    };
+    if (index >= sizeof(names) / sizeof(names[0]) ||
+        !InitOnceExecuteOnce(&version_once, InitVersion, nullptr, nullptr))
+        ExitProcess(ERROR_MOD_NOT_FOUND);
+    FARPROC result = GetProcAddress(real_version, names[index]);
+    if (!result) ExitProcess(ERROR_PROC_NOT_FOUND);
+    return result;
+}
+
+extern "C" __declspec(dllexport) const char* SpotifyConnectivityFixVersion() {
+    return "SpotifyConnectivityFix/1.0";
+}
+
+// Fixed COM ABI slots, not offsets in Spotify's binary. Tables are modified
+// only in this process. COM identity, object lifetime, and reference counting
+// remain with the original implementation.
+enum class Kind { Manager, Enumerator, Connection };
+struct TableHook { void** table; Kind kind; void* original[14]; };
+static TableHook tables[128];
+static unsigned table_count;
+
+template<typename T> static T Original(void* object, unsigned slot) {
+    void** table = *reinterpret_cast<void***>(object);
+    T method = nullptr;
+    AcquireSRWLockShared(&hook_lock);
+    for (unsigned i = 0; i < table_count; i++) {
+        if (tables[i].table == table) {
+            method = reinterpret_cast<T>(tables[i].original[slot]); break;
+        }
+    }
+    ReleaseSRWLockShared(&hook_lock);
+    return method;
+}
+
+static HRESULT STDMETHODCALLTYPE ManagerConnections(INetworkListManager*, IEnumNetworkConnections**);
+static HRESULT STDMETHODCALLTYPE ManagerConnection(INetworkListManager*, GUID, INetworkConnection**);
+static HRESULT STDMETHODCALLTYPE EnumNext(IEnumNetworkConnections*, ULONG, INetworkConnection**, ULONG*);
+static HRESULT STDMETHODCALLTYPE EnumClone(IEnumNetworkConnections*, IEnumNetworkConnections**);
+static HRESULT STDMETHODCALLTYPE ConnectionConnectivity(INetworkConnection*, NLM_CONNECTIVITY*);
+
+static bool HookTable(void* object, Kind kind) {
+    if (!object) return false;
+    void** table = *reinterpret_cast<void***>(object);
+    AcquireSRWLockExclusive(&hook_lock);
+    for (unsigned i = 0; i < table_count; i++) {
+        if (tables[i].table == table) {
+            bool same = tables[i].kind == kind;
+            ReleaseSRWLockExclusive(&hook_lock); return same;
+        }
+    }
+    if (table_count == sizeof(tables) / sizeof(tables[0])) {
+        ReleaseSRWLockExclusive(&hook_lock); return false;
+    }
+    unsigned slots = kind == Kind::Enumerator ? 12 : 14;
+    DWORD protection;
+    if (!VirtualProtect(table, slots * sizeof(void*), PAGE_READWRITE, &protection)) {
+        ReleaseSRWLockExclusive(&hook_lock); return false;
+    }
+    TableHook& record = tables[table_count++];
+    record.table = table; record.kind = kind;
+    memcpy(record.original, table, slots * sizeof(void*));
+    auto put = [table](unsigned slot, void* method) {
+        InterlockedExchangePointer(reinterpret_cast<void* volatile*>(&table[slot]), method);
+    };
+    switch (kind) {
+        case Kind::Manager:
+            put(9, reinterpret_cast<void*>(ManagerConnections));
+            put(10, reinterpret_cast<void*>(ManagerConnection));
+            break;
+        case Kind::Enumerator:
+            put(8, reinterpret_cast<void*>(EnumNext));
+            put(11, reinterpret_cast<void*>(EnumClone));
+            break;
+        case Kind::Connection:
+            put(10, reinterpret_cast<void*>(ConnectionConnectivity));
+            break;
+    }
+    DWORD ignored; VirtualProtect(table, slots * sizeof(void*), protection, &ignored);
+    ReleaseSRWLockExclusive(&hook_lock);
+    return true;
+}
+
+static HRESULT STDMETHODCALLTYPE ManagerConnections(INetworkListManager* self, IEnumNetworkConnections** out) {
+    using Method = HRESULT (STDMETHODCALLTYPE*)(INetworkListManager*, IEnumNetworkConnections**);
+    Method original = Original<Method>(self, 9);
+    if (!original) return E_UNEXPECTED;
+    HRESULT result = original(self, out);
+    if (SUCCEEDED(result) && out && *out) HookTable(*out, Kind::Enumerator);
+    return result;
+}
+static HRESULT STDMETHODCALLTYPE ManagerConnection(INetworkListManager* self, GUID id, INetworkConnection** out) {
+    using Method = HRESULT (STDMETHODCALLTYPE*)(INetworkListManager*, GUID, INetworkConnection**);
+    Method original = Original<Method>(self, 10);
+    if (!original) return E_UNEXPECTED;
+    HRESULT result = original(self, id, out);
+    if (SUCCEEDED(result) && out && *out) HookTable(*out, Kind::Connection);
+    return result;
+}
+static HRESULT STDMETHODCALLTYPE EnumNext(IEnumNetworkConnections* self, ULONG count, INetworkConnection** out, ULONG* fetched) {
+    using Method = HRESULT (STDMETHODCALLTYPE*)(IEnumNetworkConnections*, ULONG, INetworkConnection**, ULONG*);
+    Method original = Original<Method>(self, 8);
+    if (!original) return E_UNEXPECTED;
+    ULONG local_count = 0;
+    HRESULT result = original(self, count, out, &local_count);
+    if (fetched) *fetched = local_count;
+    if (SUCCEEDED(result) && out) {
+        for (ULONG i = 0; i < local_count; i++) if (out[i]) HookTable(out[i], Kind::Connection);
+    }
+    return result;
+}
+static HRESULT STDMETHODCALLTYPE EnumClone(IEnumNetworkConnections* self, IEnumNetworkConnections** out) {
+    using Method = HRESULT (STDMETHODCALLTYPE*)(IEnumNetworkConnections*, IEnumNetworkConnections**);
+    Method original = Original<Method>(self, 11);
+    if (!original) return E_UNEXPECTED;
+    HRESULT result = original(self, out);
+    if (SUCCEEDED(result) && out && *out) HookTable(*out, Kind::Enumerator);
+    return result;
+}
+
+static DWORD AdapterConnectivity(const GUID& id) {
+    ULONG size = 16384;
+    auto memory = static_cast<IP_ADAPTER_ADDRESSES*>(HeapAlloc(GetProcessHeap(), 0, size));
+    if (!memory) return 0;
+    ULONG options = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+    ULONG result = GetAdaptersAddresses(AF_UNSPEC, options, nullptr, memory, &size);
+    if (result == ERROR_BUFFER_OVERFLOW) {
+        HeapFree(GetProcessHeap(), 0, memory);
+        memory = static_cast<IP_ADAPTER_ADDRESSES*>(HeapAlloc(GetProcessHeap(), 0, size));
+        if (!memory) return 0;
+        result = GetAdaptersAddresses(AF_UNSPEC, options, nullptr, memory, &size);
+    }
+    DWORD flags = 0;
+    if (result == NO_ERROR) {
+        for (auto a = memory; a; a = a->Next) {
+            if (a->OperStatus != IfOperStatusUp || a->IfType == IF_TYPE_SOFTWARE_LOOPBACK || !a->AdapterName) continue;
+            wchar_t name[80]; GUID adapter;
+            if (!MultiByteToWideChar(CP_ACP, 0, a->AdapterName, -1, name, 80) ||
+                FAILED(CLSIDFromString(name, &adapter)) || !IsEqualGUID(adapter, id)) continue;
+            for (auto u = a->FirstUnicastAddress; u; u = u->Next) {
+                if (!u->Address.lpSockaddr) continue;
+                if (u->Address.lpSockaddr->sa_family == AF_INET) {
+                    auto ip = reinterpret_cast<sockaddr_in*>(u->Address.lpSockaddr);
+                    if (ip->sin_addr.s_addr != INADDR_ANY) flags |= NLM_CONNECTIVITY_IPV4_INTERNET;
+                } else if (u->Address.lpSockaddr->sa_family == AF_INET6) {
+                    auto ip = reinterpret_cast<sockaddr_in6*>(u->Address.lpSockaddr);
+                    if (!IN6_IS_ADDR_UNSPECIFIED(&ip->sin6_addr) &&
+                        !IN6_IS_ADDR_LINKLOCAL(&ip->sin6_addr) &&
+                        !IN6_IS_ADDR_LOOPBACK(&ip->sin6_addr)) flags |= NLM_CONNECTIVITY_IPV6_INTERNET;
+                }
+            }
+            break;
+        }
+    }
+    HeapFree(GetProcessHeap(), 0, memory);
+    return flags;
+}
+
+static HRESULT STDMETHODCALLTYPE ConnectionConnectivity(INetworkConnection* self, NLM_CONNECTIVITY* out) {
+    using Method = HRESULT (STDMETHODCALLTYPE*)(INetworkConnection*, NLM_CONNECTIVITY*);
+    Method original = Original<Method>(self, 10);
+    if (!original) return E_UNEXPECTED;
+    HRESULT result = original(self, out);
+    if (SUCCEEDED(result) && out && !(*out & (NLM_CONNECTIVITY_IPV4_INTERNET | NLM_CONNECTIVITY_IPV6_INTERNET))) {
+        GUID adapter;
+        if (SUCCEEDED(self->GetAdapterId(&adapter))) {
+            DWORD flags = AdapterConnectivity(adapter);
+            if (flags) {
+                DWORD previous = static_cast<DWORD>(*out);
+                *out = static_cast<NLM_CONNECTIVITY>(previous | flags);
+                if (InterlockedIncrement(&logged_results) <= 16) {
+                    char message[160];
+                    snprintf(message, sizeof(message), "INetworkConnection::GetConnectivity original=0x%lX repaired=0x%lX; adapter is up",
+                        static_cast<unsigned long>(previous), static_cast<unsigned long>(*out));
+                    Log(message);
+                }
+            }
+        }
+    }
+    return result;
+}
+
+static HRESULT WINAPI RepairCoCreateInstance(REFCLSID clsid, LPUNKNOWN outer, DWORD context, REFIID iid, LPVOID* out) {
+    HRESULT result = CoCreateInstance(clsid, outer, context, iid, out);
+    if (SUCCEEDED(result) && out && *out && IsEqualCLSID(clsid, CLSID_NetworkListManager) &&
+        IsEqualIID(iid, IID_INetworkListManager)) {
+        Log(HookTable(*out, Kind::Manager) ? "NetworkListManager connectivity hook installed" : "NetworkListManager hook failed");
+    }
+    return result;
+}
+
+static bool HookSpotifyImports(HMODULE module) {
+    if (!module) return false;
+    auto base = reinterpret_cast<BYTE*>(module);
+    auto dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew < 0 || dos->e_lfanew > 4096) return false;
+    auto nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64) return false;
+    DWORD image_size = nt->OptionalHeader.SizeOfImage;
+    auto range = [image_size](DWORD offset, SIZE_T length) {
+        return offset != 0 && static_cast<ULONGLONG>(offset) + length <= image_size;
+    };
+    auto directory = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT];
+    if (!range(directory.VirtualAddress, directory.Size)) return false;
+    auto descriptors = reinterpret_cast<ImgDelayDescr*>(base + directory.VirtualAddress);
+    for (DWORD i = 0; (i + 1) * sizeof(ImgDelayDescr) <= directory.Size; i++) {
+        auto& d = descriptors[i];
+        if (!d.rvaDLLName) break;
+        if (!(d.grAttrs & dlattrRva) || !range(d.rvaDLLName, 10) ||
+            !range(d.rvaINT, sizeof(IMAGE_THUNK_DATA64)) || !range(d.rvaIAT, sizeof(void*))) continue;
+        if (_stricmp(reinterpret_cast<const char*>(base + d.rvaDLLName), "ole32.dll")) continue;
+        auto names = reinterpret_cast<IMAGE_THUNK_DATA64*>(base + d.rvaINT);
+        auto slots = reinterpret_cast<void**>(base + d.rvaIAT);
+        for (DWORD j = 0; range(d.rvaINT + j * sizeof(*names), sizeof(*names)) &&
+                           range(d.rvaIAT + j * sizeof(void*), sizeof(void*)); j++) {
+            ULONGLONG name = names[j].u1.AddressOfData;
+            if (!name) break;
+            if (IMAGE_SNAP_BY_ORDINAL64(name) || name > MAXDWORD || !range(static_cast<DWORD>(name), 32)) continue;
+            auto entry = reinterpret_cast<IMAGE_IMPORT_BY_NAME*>(base + static_cast<DWORD>(name));
+            if (strcmp(reinterpret_cast<const char*>(entry->Name), "CoCreateInstance")) continue;
+            void* replacement = reinterpret_cast<void*>(RepairCoCreateInstance);
+            if (slots[j] == replacement) return true;
+            DWORD protection;
+            if (!VirtualProtect(&slots[j], sizeof(void*), PAGE_READWRITE, &protection)) return false;
+            InterlockedExchangePointer(reinterpret_cast<void* volatile*>(&slots[j]), replacement);
+            DWORD ignored; VirtualProtect(&slots[j], sizeof(void*), protection, &ignored);
+            return true;
+        }
+    }
+    return false;
+}
+
+struct NotificationString { USHORT length, maximum; PWSTR buffer; };
+struct NotificationData {
+    ULONG flags;
+    const NotificationString* full_name;
+    const NotificationString* base_name;
+    PVOID base;
+    ULONG size;
+};
+static VOID CALLBACK DllNotification(ULONG reason, const NotificationData* data, PVOID) {
+    if (reason != 1 || !data || !data->base_name || !data->base_name->buffer) return;
+    const auto& name = *data->base_name;
+    if (name.length == 22 && !_wcsnicmp(name.buffer, L"Spotify.dll", 11))
+        HookSpotifyImports(static_cast<HMODULE>(data->base));
+}
+
+static DWORD WINAPI StartupMonitor(LPVOID) {
+    history::InitSettings(proxy_module);
+    Log("version.dll proxy loaded; no Windows settings or signed files changed");
+    // Recheck during startup in case a loader replaces the initial delay slot.
+    for (unsigned i = 0; i < 600; i++) {
+        HMODULE cef;
+        if(GetModuleHandleExW(0,L"libcef.dll",&cef)) { history::StartMetadataCollector(cef); StartToDiskMenu(cef); FreeLibrary(cef); }
+        HMODULE module;
+        if (GetModuleHandleExW(0, L"Spotify.dll", &module)) {
+            HookSpotifyImports(module);
+            if (i >= 80) StartAudioHistory(module, proxy_module);
+            FreeLibrary(module);
+        }
+        Sleep(25);
+    }
+    return 0;
+}
+
+BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
+    if (reason == DLL_PROCESS_ATTACH) {
+        DisableThreadLibraryCalls(instance);
+        proxy_module = instance;
+        wchar_t path[MAX_PATH];
+        DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH);
+        wchar_t* name = length && length < MAX_PATH ? wcsrchr(path, L'\\') : nullptr;
+        spotify_main = name && !_wcsicmp(name + 1, L"Spotify.exe") && !wcsstr(GetCommandLineW(), L"--type=");
+        if (spotify_main) {
+            using Register = LONG (NTAPI*)(ULONG, decltype(&DllNotification), PVOID, PVOID*);
+            FARPROC address = GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "LdrRegisterDllNotification");
+            Register register_notification;
+            static_assert(sizeof(register_notification) == sizeof(address), "Function pointer sizes must match");
+            memcpy(&register_notification, &address, sizeof(address));
+            PVOID cookie;
+            if (register_notification) register_notification(0, DllNotification, nullptr, &cookie);
+            HANDLE thread = CreateThread(nullptr, 0, StartupMonitor, nullptr, 0, nullptr);
+            if (thread) CloseHandle(thread);
+        }
+    }
+    return TRUE;
+}
