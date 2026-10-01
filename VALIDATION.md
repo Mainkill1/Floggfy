@@ -64,4 +64,13 @@ The installed Spotify 1.3.3.264 client exposed a 488-byte model; the release DLL
 validated its required executable methods, installed both menu hooks and inserted
 Downloads, Save Location, FLAC and Ogg without consulting the CEF version.
 
+The archived Spotify 1.2.92.148, 1.2.94.583 and 1.3.0.277 packages were also
+checked with their actual UI binaries. The production PE scanner found the
+`cef_menu_model_create` delay import in every `Spotify.dll`, and every paired
+`libcef.dll` exported that factory and loaded as CEF 146.0.10 commit 3504. The
+installed Spotify 1.3.3.264 client uses CEF 151.3.18 commit 3578. Official headers
+for both revisions have the same required 41-method menu prefix and the same seven
+delegate callbacks. This establishes static discovery and ABI compatibility for
+the archived packages; they were not executed end to end.
+
 Recording names, per-file hashes and personal listening data are not published.
