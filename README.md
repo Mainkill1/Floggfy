@@ -34,6 +34,10 @@ for other settings.
 If Spotify becomes unstable, quit it and try `Metadata=0`, then `Menu=0` in the INI.
 Restart after editing.
 
+If **To Disk** is absent after a Spotify update, quit Spotify and set
+`Downloads=1` directly in `SpotifyHistory.ini`. Audio capture does not depend on
+the optional menu or metadata integrations.
+
 ## Notes
 
 - Audio quality comes from Spotify's playback settings. FLAC requires a lossless source; no conversion or FFmpeg is used.

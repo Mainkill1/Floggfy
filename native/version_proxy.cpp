@@ -341,11 +341,26 @@ static void StartConnectivityHook(HMODULE module) {
 }
 
 static DWORD WINAPI StartupMonitor(LPVOID) {
+    wchar_t path[MAX_PATH];
+    DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH);
+    wchar_t* name = length && length < MAX_PATH ? wcsrchr(path, L'\\') : nullptr;
+    spotify_main = name && !_wcsicmp(name + 1, L"Spotify.exe") && !wcsstr(GetCommandLineW(), L"--type=");
+    if (!spotify_main) return 0;
+
+    using Register = LONG (NTAPI*)(ULONG, decltype(&DllNotification), PVOID, PVOID*);
+    FARPROC address = GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "LdrRegisterDllNotification");
+    Register register_notification = nullptr;
+    static_assert(sizeof(register_notification) == sizeof(address), "Function pointer sizes must match");
+    memcpy(&register_notification, &address, sizeof(address));
+    static PVOID notification_cookie = nullptr;
+    if (register_notification) register_notification(0, DllNotification, nullptr, &notification_cookie);
+
     history::InitSettings(proxy_module);
     Log("version.dll proxy loaded; no Windows settings or signed files changed");
     // Polling also covers clients that loaded Spotify.dll before notification
-    // registration. Consuming the notification keeps the callback state-only.
-    for (unsigned i = 0; i < 600; i++) {
+    // registration. Stay alive at low frequency so late loads and temporary
+    // allocation or hook failures remain recoverable.
+    for (unsigned i = 0;; ++i) {
         const bool spotify_notification = pending_spotify.Consume() != 0;
         (void)spotify_notification;
         HMODULE cef;
@@ -356,7 +371,7 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
             if (i >= 80) StartAudioHistory(module, proxy_module);
             FreeLibrary(module);
         }
-        Sleep(25);
+        Sleep(i < 600 ? 25 : 1000);
     }
     return 0;
 }
@@ -365,21 +380,8 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(instance);
         proxy_module = instance;
-        wchar_t path[MAX_PATH];
-        DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH);
-        wchar_t* name = length && length < MAX_PATH ? wcsrchr(path, L'\\') : nullptr;
-        spotify_main = name && !_wcsicmp(name + 1, L"Spotify.exe") && !wcsstr(GetCommandLineW(), L"--type=");
-        if (spotify_main) {
-            using Register = LONG (NTAPI*)(ULONG, decltype(&DllNotification), PVOID, PVOID*);
-            FARPROC address = GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "LdrRegisterDllNotification");
-            Register register_notification;
-            static_assert(sizeof(register_notification) == sizeof(address), "Function pointer sizes must match");
-            memcpy(&register_notification, &address, sizeof(address));
-            PVOID cookie;
-            if (register_notification) register_notification(0, DllNotification, nullptr, &cookie);
-            HANDLE thread = CreateThread(nullptr, 0, StartupMonitor, nullptr, 0, nullptr);
-            if (thread) CloseHandle(thread);
-        }
+        HANDLE thread = CreateThread(nullptr, 0, StartupMonitor, nullptr, 0, nullptr);
+        if (thread) CloseHandle(thread);
     }
     return TRUE;
 }

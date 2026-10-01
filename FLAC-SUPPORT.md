@@ -22,9 +22,10 @@ depth against STREAMINFO. Any decoder error or coverage gap invalidates the stre
 Publication requires all STREAMINFO samples plus a complete audible listen. The
 existing native FLAC decoder continues handling playback unchanged.
 
-The complete Spotify.dll SHA-256 guard is
-`0731eca3ec438395815907c04653c63a917b55bf0ebdd83c96f041424a92b54b`.
-Unknown builds fail closed. The guard does not change signed Spotify files.
+Hook targets are discovered in the loaded Spotify DLL from decoder instruction
+anchors and Windows x64 function metadata. Missing, ambiguous or inconsistent
+matches fail closed before any audio hook is installed. Signed Spotify files are
+never modified.
 
 ## Single-file native tagging
 

@@ -38,7 +38,18 @@ independent decoding verified zero errors, exact PCM sample count, embedded
 artwork/tags and the original STREAMINFO audio MD5. The activity log recorded
 started and finished entries.
 
-Released version.dll SHA-256:
-`2bad10c40c71394b52a8966a1b93f1305a209d2a7647c3d50dcbe9e18faa4a3b`.
+The production resolver was also run against Windows-mapped Spotify DLLs from
+1.3.1.234, 1.3.0.277, 1.2.94.583 and 1.2.92.148. All six targets were found at
+the independently established function RVAs in every sample.
+
+Current v1.1.0 release-candidate `version.dll` SHA-256:
+`cdc92cf7bb53e5fe8d83cae1479098496e0bfcf4b2eabf9505420a4253407f5b`.
+
+The startup recovery and failed-activation lifetime changes in this candidate
+passed an isolated Windows smoke test that loaded the current proxy, waited 17
+seconds, then mapped the current Spotify DLL. Connectivity and all six dynamic
+audio targets initialized after the old cutoff. Eight one-second rapid restart
+runs exited normally. An installed-client restart remains the final smoke test
+before promotion from release candidate to final.
 
 Recording names, per-file hashes and personal listening data are not published.

@@ -534,10 +534,21 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
     }
     if(status==MH_OK) status=MH_QueueEnableHook(target);
     if(status==MH_OK) status=MH_QueueEnableHook(sniff_target);
-    if(status==MH_OK) status=MH_ApplyQueued();
+    bool apply_attempted=false;
+    if(status==MH_OK) {apply_attempted=true;status=MH_ApplyQueued();}
     if(status!=MH_OK) {
         char message[200];snprintf(message,sizeof(message),"audio hook installation failed: %s",MH_StatusToString(status));Log(message);
-        if(rollback()){Log("audio hook rollback complete; retry scheduled");audio_init.Retry(now);}
+        if(apply_attempted) {
+            // MH_ApplyQueued may have published some detours before reporting a
+            // failure. A thread can be between the detour entry and our C++
+            // callback counter, so keep every trampoline and callback resource
+            // alive for the process lifetime after disabling the hooks.
+            for(unsigned i=0;i<created_count;i++) MH_DisableHook(created_targets[i]);
+            workers_running.store(false,std::memory_order_release);SetEvent(event);SetEvent(save_event);
+            WaitForSingleObject(worker,5000);WaitForSingleObject(publisher,5000);close_threads();
+            Log("audio hook activation failed; disabled hook state preserved for callback safety");
+            audio_init.MarkUnsupported();
+        } else if(rollback()){Log("audio hook rollback complete; retry scheduled");audio_init.Retry(now);}
         else {Log("audio hook rollback incomplete; callback state preserved and retries disabled");audio_init.MarkUnsupported();}
         return;
     }

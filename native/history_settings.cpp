@@ -117,8 +117,15 @@ void InitSettings(HMODULE proxy) {
     settings.music_folder=IsMusic(settings.root);
     downloads_enabled=settings.downloads; ogg_enabled=settings.ogg; flac_enabled=settings.flac;
     log_enabled=settings.log;debug_enabled=settings.debug_log;
-    settings_signal=CreateEventW(nullptr,FALSE,FALSE,nullptr);persist_done=CreateEventW(nullptr,FALSE,FALSE,nullptr);
-    if(settings_signal&&persist_done){auto thread=CreateThread(nullptr,0,PersistSettings,nullptr,0,nullptr);if(thread)CloseHandle(thread);else{CloseHandle(settings_signal);settings_signal=nullptr;}}
+    settings_signal=CreateEventW(nullptr,FALSE,FALSE,nullptr);
+    persist_done=CreateEventW(nullptr,FALSE,FALSE,nullptr);
+    HANDLE thread=settings_signal&&persist_done ? CreateThread(nullptr,0,PersistSettings,nullptr,0,nullptr) : nullptr;
+    if(thread) CloseHandle(thread);
+    else {
+        if(settings_signal) CloseHandle(settings_signal);
+        if(persist_done) CloseHandle(persist_done);
+        settings_signal=nullptr;persist_done=nullptr;
+    }
     persisted_generation=LONG(settings.generation);StartLogger();
 }
 Settings GetSettings() {
