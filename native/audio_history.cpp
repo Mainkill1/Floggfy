@@ -53,8 +53,7 @@ SRWLOCK queue_lock=SRWLOCK_INIT;
 HANDLE event;
 volatile LONG dropped=0,calls=0,pages=0;
 std::wstring output;
-unsigned stop_after=0;
-size_t memory_limit=64*1024*1024;
+size_t memory_limit=500*1024*1024;
 static double Now() { return double(GetTickCount64())/1000.0; }
 static void Log(const char* message) {
     HistoryLog(message);
@@ -255,7 +254,7 @@ static DWORD WINAPI SaveWorker(LPVOID) {
             auto result=Publish(*job.capture,job.heard,job.epoch);
             if(result==Publication::Saved) {
                 auto settings=GetSettings();
-                if(settings.capture_epoch==job.epoch) {unsigned count=++saved_count;if(settings.stop_after && count>=settings.stop_after)SetDownloads(false);}
+                if(settings.capture_epoch==job.epoch) ++saved_count;
                 LogActivity("finished",identity);
             } else LogActivity(result==Publication::Failed?"failed":"finished",identity+(result==Publication::Failed?" (publication failed)":" (skipped existing file or changed settings)"));
         } catch(...) {LogActivity("failed",identity+" (publication exception)");}
@@ -278,7 +277,7 @@ static DWORD WINAPI Worker(LPVOID) {
             if(preferences.generation!=generation) {
                 bool initial=generation==~0u;
                 generation=preferences.generation;
-                output=preferences.root; memory_limit=size_t(preferences.max_buffered_mib)*1024*1024; stop_after=preferences.stop_after;
+                output=preferences.root; memory_limit=size_t(preferences.max_buffered_mib)*1024*1024;
                 bool capture=preferences.downloads && (preferences.ogg || preferences.flac);
                 if(capture!=enabled || initial || preferences.capture_epoch!=epoch) {
                     active.clear(); ready.clear(); heard.clear(); listen={}; current={}; next_media=0;
@@ -438,7 +437,6 @@ static DWORD WINAPI Worker(LPVOID) {
                 char line[350]; snprintf(line,sizeof(line),"status calls=%ld pages=%ld dropped=%ld active=%zu ready=%zu saved=%u pos=%.3f/%.3f eligible=%d buffered=%zu",
                   calls,pages,dropped,active.size(),ready.size(),saved_count.load(),current.position,current.duration,listen.eligible,buffered); Log(line); next_log=now+10;
             }
-            if(stop_after && saved_count.load()>=stop_after) { Log("showcase limit reached; Downloads disabled"); SetDownloads(false); }
             WaitForSingleObject(event,50);
         }
     } catch(...) { Log("history worker stopped after an exception; playback remains with original parser"); }

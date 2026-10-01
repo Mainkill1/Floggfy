@@ -5,7 +5,7 @@ namespace history {
 struct Settings {
     bool downloads=false,ogg=true,flac=true,menu=true,music_folder=false;
     bool metadata=true,log=true,debug_log=false;
-    unsigned max_buffered_mib=64,stop_after=0,generation=0,capture_epoch=0;
+    unsigned max_buffered_mib=500,generation=0,capture_epoch=0;
     std::wstring root,save_location;
 };
 void InitSettings(HMODULE proxy);

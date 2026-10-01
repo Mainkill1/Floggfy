@@ -17,17 +17,18 @@ was statically validated in signed Spotify DLLs from 1.3.0.277, 1.2.94.583 and
 are unvalidated.
 
 1. Quit Spotify and download the ZIP from [Releases](https://github.com/Mainkill1/Floggfy/releases).
-2. Open your Spotify installation folder (usually `%APPDATA%\Spotify`) and back up any existing `version.dll`.
-3. Copy `version.dll` there, then copy `SpotifyHistory.ini.example` as `SpotifyHistory.ini`.
-4. Start Spotify, open the top-left menu → **To Disk**, and enable **Downloads**. Play a track from start to finish without seeking or skipping.
+2. Open your Spotify installation folder, usually `%APPDATA%\Spotify`.
+3. Copy `version.dll` into that folder beside `Spotify.exe`.
+4. Start Spotify. Floggfy creates `SpotifyHistory.ini` beside the DLL when it is missing.
+5. Open Spotify's top-left menu → **To Disk**, enable **Downloads**, and play a track from start to finish without seeking or skipping.
 
 Tracks save to your Windows Music folder under `Spotify/Artists/Artist/Album`.
-To uninstall, quit Spotify, remove Floggfy's `version.dll` and restore your backup.
+To uninstall, quit Spotify and remove Floggfy's `version.dll`.
 
 ## Settings
 
 **To Disk** provides Downloads, Save Location, FLAC and Ogg controls.
-See the inline comments in [SpotifyHistory.ini.example](SpotifyHistory.ini.example)
+See the inline comments in [SpotifyHistory.ini](SpotifyHistory.ini)
 for other settings.
 
 If Spotify becomes unstable, quit it and try `Metadata=0`, then `Menu=0` in the INI.

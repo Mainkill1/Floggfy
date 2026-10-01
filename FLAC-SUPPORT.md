@@ -53,6 +53,7 @@ picture, full decoding, sample count, frame CRCs and source MD5 when supplied.
 FLAC streams without a known total sample count are rejected. General podcast/
 audiobook category enrichment and video extraction remain separate work. The
 memory cap can reject long recordings; it never spills partial tracks to disk.
-Future Spotify builds need fresh ABI and live capture validation before accepting
-a new binary hash. Additional live tests for higher bit depths, same-title repeats,
-long pauses, seeks, mixed-codec transitions and overflow remain useful coverage.
+Future Spotify builds with rewritten decoder boundaries need fresh ABI and live
+capture validation before adding new instruction anchors. Additional live tests
+for higher bit depths, same-title repeats, long pauses, seeks, mixed-codec
+transitions and overflow remain useful coverage.

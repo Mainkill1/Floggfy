@@ -1,13 +1,14 @@
 # To Disk audio history
 
-The native `version.dll` now combines the connectivity repair with complete-listen
-history for the pinned Windows x64 Spotify 1.3.1.234 build. It copies the compressed
+The native `version.dll` combines the connectivity repair with complete-listen
+history for the Windows x64 Spotify client. It copies the compressed
 Vorbis or FLAC bytes that Spotify already reads for playback. It does not request
 tracks, run FFmpeg, transcode audio, or require an external runtime helper.
 
 ## Settings
 
-Copy `SpotifyHistory.ini.example` to `SpotifyHistory.ini` beside `version.dll`.
+`SpotifyHistory.ini` is included with the release and is created beside
+`version.dll` on first launch when missing.
 The top-left menu contains **To Disk** with Downloads, Save Location, FLAC and Ogg.
 Checkbox labels and capture switches change immediately when clicked. INI
 persistence runs in a background worker.
@@ -24,8 +25,7 @@ Log=1
 DebugLog=0
 
 [History]
-MaxBufferedMiB=64
-StopAfter=0
+MaxBufferedMiB=500
 ```
 
 - **Downloads:** master switch. Start the next track from its beginning after
@@ -39,11 +39,9 @@ StopAfter=0
 - **Metadata:** optional existing client state/cache enrichment; no endpoint requests; set 0 and restart to disable its hooks.
 - **Log:** default on; started/failed/finished activity in the save root, capped at 5 MiB.
 - **DebugLog:** default off; opt-in diagnostic detail in the same bounded log.
-- **MaxBufferedMiB:** 8–512 MiB, default 64, limits compressed capture allocations.
+- **MaxBufferedMiB:** 8–512 MiB, default 500, limits compressed capture allocations.
   There is also an approximately 8 MiB event queue, artwork, and a temporary
   completed-file buffer during native tagging. Oversized tracks are discarded.
-- **StopAfter:** zero for ongoing history; a positive number disables Downloads
-  after that many new or upgraded files. Skipped duplicates do not count.
 
 ## Files and duplicates
 
@@ -91,8 +89,9 @@ queue overflow and memory limits prevent publication. Capture begins with source
 headers and a listen observed near position zero. Streams without a known FLAC
 total sample count are currently rejected. Same-title repeat/loop handling needs
 additional live coverage. Metadata fields absent from the public Windows session
-are not invented. Spotify updates disable capture when its DLL hash/prologue does
-not match; menu integration checks its supported CEF version and structure sizes.
+are not invented. Audio targets are discovered from invariant decoder instructions
+and Windows x64 function metadata; missing or ambiguous matches disable capture.
+Menu integration checks its supported CEF version and structure sizes.
 
 Activity and opt-in diagnostics are in `Floggfy.log` in the selected save root.
 The single log resets at 5 MiB. Logging and INI persistence use separate workers.
@@ -112,13 +111,15 @@ pending compressed save buffers count against the configured allocation budget.
    lossy Spotify stream into lossless audio.
 5. Start a fresh track at position zero and let it finish. Seeking, skipping,
    truncated input, decoder errors and ambiguous association prevent saving.
-6. For large lossless tracks, increase MaxBufferedMiB within the 512 MiB limit.
+6. For unusually large lossless tracks, increase MaxBufferedMiB within the
+   512 MiB limit.
    Check the destination is writable and has space; try a local drive.
-7. After a Spotify update, capture intentionally disables itself if the tested
-   binary hash no longer matches. A new version needs new boundary validation.
+7. After a Spotify update, check the log for missing or ambiguous audio targets.
+   The dynamic resolver supports shifted functions but safely rejects rewritten
+   boundaries.
    Include your Spotify version and a short redacted failure excerpt in an issue.
-8. For a full rollback, quit Spotify, remove our version.dll and restore the proxy
-   you backed up. Remove the INI if you no longer need its settings.
+8. To uninstall, quit Spotify and remove `version.dll`. Remove the INI if you no
+   longer need its settings.
 
 
 ## Development checks

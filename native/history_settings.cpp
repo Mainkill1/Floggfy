@@ -19,6 +19,34 @@ static bool IsMusic(std::wstring root) {
 static volatile LONG downloads_enabled=0,ogg_enabled=1,flac_enabled=1,capture_epoch=0,log_enabled=1,debug_enabled=0;
 static HANDLE settings_signal=nullptr,persist_done=nullptr;
 static volatile LONG persisted_generation=-1,persist_failed=0;
+static constexpr char default_ini[]=
+    "[To Disk]\r\n"
+    "; Settings also appear in the To Disk menu.\r\n"
+    "Downloads=0\r\n"
+    "; Set Menu=0 before starting Spotify to disable native menu integration.\r\n"
+    "Menu=1\r\n"
+    "; Empty uses the Windows Music folder plus \\Spotify.\r\n"
+    "Save Location=\r\n"
+    "Ogg=1\r\n"
+    "; Captures native FLAC when Spotify supplies lossless audio.\r\n"
+    "Flac=1\r\n"
+    "; Uses metadata already cached by the client and makes no requests.\r\n"
+    "Metadata=1\r\n"
+    "; Activity log in Save Location, capped at 5 MiB.\r\n"
+    "Log=1\r\n"
+    "DebugLog=0\r\n"
+    "\r\n"
+    "[History]\r\n"
+    "; Maximum compressed audio held in RAM for one track.\r\n"
+    "MaxBufferedMiB=500\r\n";
+static bool CreateDefaultIni(const std::wstring& path) {
+    HANDLE file=CreateFileW(path.c_str(),GENERIC_WRITE,FILE_SHARE_READ,nullptr,
+        CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
+    if(file==INVALID_HANDLE_VALUE) return GetLastError()==ERROR_FILE_EXISTS || GetLastError()==ERROR_ALREADY_EXISTS;
+    DWORD written=0;const DWORD size=DWORD(sizeof(default_ini)-1);
+    bool ok=WriteFile(file,default_ini,size,&written,nullptr) && written==size;
+    CloseHandle(file);if(!ok)DeleteFileW(path.c_str());return ok;
+}
 static DWORD WINAPI PersistSettings(LPVOID) {
     for(;;) {
         WaitForSingleObject(settings_signal,INFINITE);
@@ -64,6 +92,11 @@ void InitSettings(HMODULE proxy) {
     if(!n || n>=2048) return;
     wchar_t* slash=wcsrchr(path,L'\\'); if(!slash) return; *slash=0;
     ini=std::wstring(path)+L"\\SpotifyHistory.ini";
+    DWORD attributes=GetFileAttributesW(ini.c_str());
+    if(attributes==INVALID_FILE_ATTRIBUTES &&
+       (GetLastError()==ERROR_FILE_NOT_FOUND || GetLastError()==ERROR_PATH_NOT_FOUND) &&
+       !CreateDefaultIni(ini))
+        QueueDiagnostic("failed to create default SpotifyHistory.ini; using built-in settings");
     settings.downloads=GetPrivateProfileIntW(L"To Disk",L"Downloads",GetPrivateProfileIntW(L"History",L"Enabled",0,ini.c_str()),ini.c_str())!=0;
     settings.menu=GetPrivateProfileIntW(L"To Disk",L"Menu",1,ini.c_str())!=0;
     settings.ogg=GetPrivateProfileIntW(L"To Disk",L"Ogg",1,ini.c_str())!=0;
@@ -71,8 +104,7 @@ void InitSettings(HMODULE proxy) {
     settings.metadata=GetPrivateProfileIntW(L"To Disk",L"Metadata",1,ini.c_str())!=0;
     settings.log=GetPrivateProfileIntW(L"To Disk",L"Log",1,ini.c_str())!=0;
     settings.debug_log=GetPrivateProfileIntW(L"To Disk",L"DebugLog",0,ini.c_str())!=0;
-    settings.max_buffered_mib=std::max(8u,std::min(512u,GetPrivateProfileIntW(L"History",L"MaxBufferedMiB",64,ini.c_str())));
-    settings.stop_after=GetPrivateProfileIntW(L"History",L"StopAfter",0,ini.c_str());
+    settings.max_buffered_mib=std::max(8u,std::min(512u,GetPrivateProfileIntW(L"History",L"MaxBufferedMiB",500,ini.c_str())));
     wchar_t raw[2048],expanded[4096];
     GetPrivateProfileStringW(L"To Disk",L"Save Location",L"",raw,2048,ini.c_str());
     PWSTR music=nullptr;
