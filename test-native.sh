@@ -10,6 +10,8 @@ g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/hook_rollback_test.cpp -o build/h
 build/hook-rollback-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/cef_identity_test.cpp -o build/cef-identity-test
 build/cef-identity-test
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/cef_menu_capability_test.cpp -o build/cef-menu-capability-test
+build/cef-menu-capability-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/module_pending_test.cpp -o build/module-pending-test
 build/module-pending-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/pe_imports_test.cpp native/pe_imports.cpp -o build/pe-imports-test

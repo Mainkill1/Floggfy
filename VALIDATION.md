@@ -47,13 +47,21 @@ connectivity resolver found `CoCreateInstance` in every sample by import name,
 without a Spotify hash, RVA or provider DLL assumption.
 
 Current v1.1.0 release-candidate `version.dll` SHA-256:
-`579760353d222b597a29c842fee5dd35cd558a5e746f15efda165498ca56b4c2`.
+`854249b471baeea8d7072d4403018fde56e933a6a7ddc5e372a4b6e19fd6cd67`.
 
 An installed-client restart of this exact DLL produced two connectivity patch
 events in the same startup, showing that the monitor restored the delay-IAT slot
 after Windows resolved and replaced it. The Network List Manager hook then
 installed, the compatibility override ran, Spotify kept established connections,
-and the dynamic audio, metadata and audited CEF 151 menu hooks initialized. No
-connectivity-hook failure was logged.
+and the dynamic audio, metadata and menu hooks initialized. No connectivity-hook
+failure was logged.
+
+The menu integration was then changed from an exact CEF identity allowlist to
+runtime capability discovery. Synthetic tests accept the audited structure size
+and larger append-compatible structures, reject truncated structures or missing
+methods, and recognize a localized top-level menu by item types rather than text.
+The installed Spotify 1.3.3.264 client exposed a 488-byte model; the release DLL
+validated its required executable methods, installed both menu hooks and inserted
+Downloads, Save Location, FLAC and Ogg without consulting the CEF version.
 
 Recording names, per-file hashes and personal listening data are not published.

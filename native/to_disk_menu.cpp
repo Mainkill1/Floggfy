@@ -1,23 +1,22 @@
 #define WIN32_LEAN_AND_MEAN
 #include "to_disk_menu.h"
-#include "cef_identity.h"
+#include "cef_menu_capability.h"
 #include "hook_init_state.h"
 #include "history_settings.h"
 #include "vendor/minhook/include/MinHook.h"
 #include <atomic>
 #include <cstdio>
 #include <cstring>
-#include <cwctype>
 #include <string>
 #include <new>
 
 namespace {
-// Public CEF API. Method order matches the audited 8219561 and beff58d C++
-// headers and the CEF translator's C layout. Guard every structure size.
+// Public CEF C API prefix. CEF appends methods and publishes each structure's
+// byte size, so runtime capability checks can accept newer compatible builds.
 struct Base { size_t size; void(*add_ref)(Base*); int(*release)(Base*);
     int(*has_one_ref)(Base*); int(*has_at_least_one_ref)(Base*); };
 struct String { wchar_t* str; size_t length; void(*dtor)(wchar_t*); };
-struct Menu { Base base; void* methods[56]; };
+struct Menu { Base base; void* methods[cef_menu::kHighestRequiredMenuSlot+1]; };
 struct Delegate {
     Base base;
     void(*execute)(Delegate*,Menu*,int,int);
@@ -28,43 +27,54 @@ struct Delegate {
     void(*closed)(Delegate*,Menu*);
     int(*format)(Delegate*,Menu*,String*);
 };
-static_assert(sizeof(Base)==40 && sizeof(Menu)==488 && sizeof(Delegate)==96,"audited CEF x64 ABI");
+static_assert(sizeof(Base)==cef_menu::kBaseBytes &&
+              sizeof(Menu)==cef_menu::kRequiredMenuBytes &&
+              sizeof(Delegate)==cef_menu::kKnownDelegateBytes,
+              "CEF public-prefix ABI");
 using Create=Menu*(*)(Delegate*);
 Create original_create;
 using AddSubmenu=Menu*(*)(Menu*,int,const String*);
 AddSubmenu original_add_submenu;
-using FreeString=void(*)(String*);
-FreeString free_string;
 hooks::InitController menu_init;
 hooks::InitController submenu_init;
 constexpr int root_id=28480,downloads_id=28481,location_id=28482,flac_id=28483,ogg_id=28484;
 template<class R,class...A> R Call(Menu* m,unsigned slot,A...a) {
-    if(!m || m->base.size!=sizeof(Menu) || slot>=56 || !m->methods[slot]) return R{};
+    if(!m || m->base.size<cef_menu::kRequiredMenuBytes ||
+       slot>cef_menu::kHighestRequiredMenuSlot || !m->methods[slot]) return R{};
     return reinterpret_cast<R(*)(Menu*,A...)>(m->methods[slot])(m,a...);
 }
 static String Text(const std::wstring& s) { return {const_cast<wchar_t*>(s.c_str()),s.size(),nullptr}; }
-static std::wstring Label(Menu* m,size_t index) {
-    String* text=Call<String*>(m,19,index);
-    if(!text) return {};
-    std::wstring value(text->str,text->length); free_string(text);
-    return value;
+static bool Executable(const void* address) {
+    if(!address) return false;
+    MEMORY_BASIC_INFORMATION memory{};
+    if(!VirtualQuery(address,&memory,sizeof(memory)) || memory.State!=MEM_COMMIT ||
+       (memory.Protect&(PAGE_GUARD|PAGE_NOACCESS))) return false;
+    const DWORD protection=memory.Protect&0xff;
+    return protection==PAGE_EXECUTE || protection==PAGE_EXECUTE_READ ||
+           protection==PAGE_EXECUTE_READWRITE || protection==PAGE_EXECUTE_WRITECOPY;
 }
-static bool Main(Menu* m) {
-    if(!m || m->base.size!=sizeof(Menu) || Call<int>(m,0)) return false;
-    size_t n=Call<size_t>(m,2); if(n<3 || n>30) return false;
-    bool file=false,edit=false,view=false;
-    for(size_t i=0;i<n;i++) {
-        auto s=Label(m,i); std::wstring normalized;
-        for(auto ch:s) if(ch!=L'&' && ch!=L' ') normalized+=wchar_t(towlower(ch));
-        file |= normalized==L"file"; edit |= normalized==L"edit"; view |= normalized==L"view";
-    }
-    return file && edit && view;
+static bool Capable(Menu* menu) {
+    if(!menu || menu->base.size<cef_menu::kBaseBytes ||
+       !Executable(reinterpret_cast<const void*>(menu->base.add_ref)) ||
+       !Executable(reinterpret_cast<const void*>(menu->base.release))) return false;
+    const size_t method_count=(menu->base.size-cef_menu::kBaseBytes)/sizeof(void*);
+    if(!cef_menu::SupportsMenu(menu->base.size,menu->methods,method_count)) return false;
+    for(const auto slot:cef_menu::kRequiredMenuSlots)
+        if(!Executable(menu->methods[slot])) return false;
+    return true;
+}
+static bool Main(Menu* menu) {
+    if(!Capable(menu) || Call<int>(menu,0)) return false;
+    const size_t count=Call<size_t>(menu,2); if(count<3 || count>30) return false;
+    int types[30]{};
+    for(size_t index=0;index<count;++index) types[index]=Call<int>(menu,23,index);
+    return cef_menu::LooksLikeMainMenu(false,types,count);
 }
 static void Populate(Menu* menu) {
     if(!Main(menu)) {
         static volatile LONG logged=0;
         if(InterlockedIncrement(&logged)<=3)
-            history::HistoryLog("To Disk menu capability: main menu not recognized by English File/Edit/View labels");
+            history::HistoryLog("To Disk menu capability: top-level submenu structure not recognized");
         return;
     }
     auto state=history::GetSettings();
@@ -75,7 +85,7 @@ static void Populate(Menu* menu) {
         std::wstring label=L"To Disk"; auto text=Text(label);
         child=Call<Menu*>(menu,7,root_id,&text); inserted=true;
     }
-    if(!child || child->base.size!=sizeof(Menu)) { if(child) child->base.release(&child->base); return; }
+    if(!Capable(child)) { if(child && child->base.release) child->base.release(&child->base); return; }
     if(inserted) Call<int>(child,1);
     auto item=[child](int id,const std::wstring& label,bool checked,bool enabled) {
         auto text=Text(label);
@@ -148,7 +158,9 @@ static void WillShow(Delegate* self,Menu* menu) {
 static void Closed(Delegate* self,Menu* menu) { auto* o=Self(self)->original; if(o && o->closed) o->closed(o,menu); else ReleaseMenu(menu); }
 static int Format(Delegate* self,Menu* menu,String* label) { auto* o=Self(self)->original; if(o && o->format) return o->format(o,menu,label); ReleaseMenu(menu); return 0; }
 static Menu* Hook(Delegate* delegate) {
-    if(!delegate || delegate->base.size!=sizeof(Delegate) || !delegate->base.add_ref || !delegate->base.release)
+    if(!delegate || !cef_menu::SupportsDelegate(delegate->base.size) ||
+       !Executable(reinterpret_cast<const void*>(delegate->base.add_ref)) ||
+       !Executable(reinterpret_cast<const void*>(delegate->base.release)))
         return original_create(delegate);
     size_t delegate_size=delegate->base.size;
     auto* w=new(std::nothrow) Wrapped;
@@ -159,7 +171,7 @@ static Menu* Hook(Delegate* delegate) {
     // callback object. Hold the original transferred reference until teardown.
     w->original=delegate;
     Menu* result=original_create(&w->api);
-    if(result && result->base.size==sizeof(Menu) && submenu_init.TryBegin(GetTickCount64())) {
+    if(Capable(result) && submenu_init.TryBegin(GetTickCount64())) {
         void* address=result->methods[7];
         MH_STATUS status=address ? MH_CreateHook(address,reinterpret_cast<void*>(AddSubmenuHook),reinterpret_cast<void**>(&original_add_submenu)) : MH_ERROR_NOT_EXECUTABLE;
         bool created=status==MH_OK;
@@ -183,14 +195,9 @@ void StartToDiskMenu(HMODULE cef) {
     const auto now=static_cast<std::uint64_t>(GetTickCount64());
     if(!menu_init.TryBegin(now)) return;
     if(!history::GetSettings().menu) { history::HistoryLog("To Disk menu disabled by INI Menu=0"); menu_init.MarkUnsupported(); return; }
-    using Version=int(*)(int);
-    Version version=nullptr; FARPROC symbol=GetProcAddress(cef,"cef_version_info");
-    memcpy(&version,&symbol,sizeof(version));
     auto create=GetProcAddress(cef,"cef_menu_model_create");
-    symbol=GetProcAddress(cef,"cef_string_userfree_utf16_free");
-    memcpy(&free_string,&symbol,sizeof(free_string));
-    if(!version || !cef_compat::IsSupported({version(0),version(1),version(2),version(3)}) || !create || !free_string) {
-        history::HistoryLog("To Disk menu disabled: CEF identity is not in the audited compatibility table"); menu_init.MarkUnsupported(); return;
+    if(!create || !Executable(reinterpret_cast<const void*>(create))) {
+        history::HistoryLog("To Disk menu unavailable: cef_menu_model_create capability missing"); menu_init.MarkUnsupported(); return;
     }
     MH_STATUS status=MH_Initialize(); if(status==MH_ERROR_ALREADY_INITIALIZED) status=MH_OK;
     if(status==MH_OK) status=MH_CreateHook(reinterpret_cast<void*>(create),reinterpret_cast<void*>(Hook),reinterpret_cast<void**>(&original_create));
@@ -198,5 +205,5 @@ void StartToDiskMenu(HMODULE cef) {
     if(status==MH_OK) status=MH_EnableHook(reinterpret_cast<void*>(create));
     if(status==MH_OK) menu_init.Activate();
     else {if(created)MH_RemoveHook(reinterpret_cast<void*>(create));menu_init.Retry(now);}
-    char line[200]; snprintf(line,sizeof(line),"audited CEF main-menu integration: %s%s",MH_StatusToString(status),status==MH_OK?"":"; retry scheduled"); history::HistoryLog(line);
+    char line[220]; snprintf(line,sizeof(line),"runtime-capability CEF main-menu integration: %s%s",MH_StatusToString(status),status==MH_OK?"":"; retry scheduled"); history::HistoryLog(line);
 }

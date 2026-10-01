@@ -8,10 +8,15 @@ Public menu ABI declarations were audited against these exact CEF revisions:
 The 8219561 and beff58d revisions have the same relevant method counts and order:
 menu model 56, menu delegate 7, client 19, display handler 13, load handler 4,
 browser 21 and frame 26. The CEF translator maps bool to int and reference
-strings to cef_string_utf16_t pointers. Returned structure sizes and the exact
-CEF major, minor, patch and commit number are checked before use. Original
-delegate callbacks and references are forwarded through a proxy, without
-changing the original callback object.
+strings to cef_string_utf16_t pointers.
+
+The menu integration uses CEF's published structure sizes as a runtime capability
+contract. It requires only the prefix through `set_checked`, checks every method
+it calls for executable memory, and accepts larger append-compatible structures.
+It hooks the exported `cef_menu_model_create` factory and does not gate on CEF
+version numbers. Metadata integration has a wider ABI surface and retains its
+separate exact CEF identity table. Original delegate callbacks and references are
+forwarded through a proxy without changing the original callback object.
 
 Transferred callback arguments and factory ownership follow CEF's translator
 rules: the incoming delegate's reference is consumed, the replacement is passed

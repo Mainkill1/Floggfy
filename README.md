@@ -49,6 +49,10 @@ the optional menu or metadata integrations.
   and delay import tables, independent of Spotify hashes, offsets and the provider
   DLL name. It keeps verifying the live delay slot because Windows may replace it
   during delayed resolution.
+- The **To Disk** menu finds CEF through its exported factory, validates the live
+  public menu structures and required executable methods, and recognizes the
+  top-level menu structurally. It has no Spotify offsets, CEF version allowlist or
+  English `File`/`Edit`/`View` dependency.
 
 ## Credits
 
