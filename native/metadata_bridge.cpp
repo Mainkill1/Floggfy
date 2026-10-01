@@ -161,7 +161,7 @@ void StartMetadataCollector(HMODULE cef) {
  if(!GetSettings().metadata){HistoryLog("metadata collector disabled by INI Metadata=0");metadata_init.MarkUnsupported();return;}
  auto address=GetProcAddress(cef,"cef_version_info");int(*version)(int)=nullptr;static_assert(sizeof(version)==sizeof(address));memcpy(&version,&address,sizeof(version));
  if(!version||!cef_compat::IsSupported({version(0),version(1),version(2),version(3)})){
-  HistoryLog("metadata CEF identity unsupported; expected 146.0.10 commit 3504");metadata_init.MarkUnsupported();return;
+  HistoryLog("metadata CEF identity unsupported; revision is not in the audited compatibility table");metadata_init.MarkUnsupported();return;
  }
  auto post_address=GetProcAddress(cef,"cef_post_task");memcpy(&post_task,&post_address,sizeof(post_task));
  if(!post_task){HistoryLog("metadata collector unsupported: cef_post_task missing");metadata_init.MarkUnsupported();return;}

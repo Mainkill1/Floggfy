@@ -27,29 +27,33 @@ absent from the observed real playback cache and were omitted. Simulated cached
 field tests establish transport correctness; they do not establish availability
 of those fields in every live client. No Spotify endpoint requests are made.
 
-The final DLL starts with Menu=0, Metadata=0 and Log=0, and Log=0 leaves the
-existing log size and modification time unchanged. Review approved the bounded
+The release candidate was separately started with Menu=0, Metadata=0 and Log=0;
+Log=0 left the existing log size and modification time unchanged. Review covered the bounded
 publication/log/settings workers, reference forwarding and the descriptor-only
-cache collector correction. An isolated rapid restart exited with 0xC000001D;
-a subsequent debugger launch survived without reproducing the exception.
-The release-checkout artifact also survived debugger startup with all optional
-integrations enabled and saved a complete **24-bit** track. Full
-independent decoding verified zero errors, exact PCM sample count, embedded
-artwork/tags and the original STREAMINFO audio MD5. The activity log recorded
-started and finished entries.
+cache collector correction. Eight one-second rapid restart runs exited normally,
+and a debugger startup/detach check left the process running.
 
-The production resolver was also run against Windows-mapped Spotify DLLs from
-1.3.1.234, 1.3.0.277, 1.2.94.583 and 1.2.92.148. All six targets were found at
-the independently established function RVAs in every sample.
+With all optional integrations enabled, the installed candidate saved a complete
+native FLAC from Spotify 1.3.3.264. The official Xiph `flac` decoder reported zero
+errors, verified the original STREAMINFO MD5, decoded 6,313,591 samples at 44.1 kHz
+stereo, and found embedded front-cover art plus the required tags. The activity
+log recorded one decoder initialization, one complete stream, one complete listen
+and one saved file, with no decoded-frame coverage gap.
+
+The production audio resolver was run against Windows-mapped Spotify DLLs from
+1.3.3.264, 1.3.0.277, 1.2.94.583 and 1.2.92.148. All six targets were found at
+the independently established function RVAs in every sample. The production
+connectivity resolver found `CoCreateInstance` in every sample by import name,
+without a Spotify hash, RVA or provider DLL assumption.
 
 Current v1.1.0 release-candidate `version.dll` SHA-256:
-`cdc92cf7bb53e5fe8d83cae1479098496e0bfcf4b2eabf9505420a4253407f5b`.
+`579760353d222b597a29c842fee5dd35cd558a5e746f15efda165498ca56b4c2`.
 
-The startup recovery and failed-activation lifetime changes in this candidate
-passed an isolated Windows smoke test that loaded the current proxy, waited 17
-seconds, then mapped the current Spotify DLL. Connectivity and all six dynamic
-audio targets initialized after the old cutoff. Eight one-second rapid restart
-runs exited normally. An installed-client restart remains the final smoke test
-before promotion from release candidate to final.
+An installed-client restart of this exact DLL produced two connectivity patch
+events in the same startup, showing that the monitor restored the delay-IAT slot
+after Windows resolved and replaced it. The Network List Manager hook then
+installed, the compatibility override ran, Spotify kept established connections,
+and the dynamic audio, metadata and audited CEF 151 menu hooks initialized. No
+connectivity-hook failure was logged.
 
 Recording names, per-file hashes and personal listening data are not published.

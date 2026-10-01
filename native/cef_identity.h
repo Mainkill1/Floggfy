@@ -9,13 +9,20 @@ struct Identity {
     int commit;
 };
 
-constexpr Identity kSupportedIdentity{146, 0, 10, 3504};
+constexpr Identity kSupportedIdentities[] = {
+    {146, 0, 10, 3504},
+    {151, 3, 18, 3578},
+};
 
 constexpr bool IsSupported(Identity identity) noexcept {
-    return identity.major == kSupportedIdentity.major &&
-           identity.minor == kSupportedIdentity.minor &&
-           identity.patch == kSupportedIdentity.patch &&
-           identity.commit == kSupportedIdentity.commit;
+    for (const auto& supported : kSupportedIdentities) {
+        if (identity.major == supported.major &&
+            identity.minor == supported.minor &&
+            identity.patch == supported.patch &&
+            identity.commit == supported.commit)
+            return true;
+    }
+    return false;
 }
 
 } // namespace cef_compat

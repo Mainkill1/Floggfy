@@ -12,6 +12,7 @@ struct ImportSlots {
 };
 
 ImportSlots FindImportSlots(std::uint8_t* image, std::size_t available,
+                            // A null DLL name searches every import provider.
                             const char* dll_name, const char* function_name) noexcept;
 
 } // namespace hooks

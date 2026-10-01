@@ -71,7 +71,7 @@ void ScanNormal(std::uint8_t* image, std::size_t size, std::uint32_t directory_r
             return;
         }
         if (!names && !name && !iat) return;
-        if (!StringEquals(image, size, name, dll_name, true)) continue;
+        if (dll_name && !StringEquals(image, size, name, dll_name, true)) continue;
         if (!iat) { result.malformed = true; return; }
         if (!names) continue; // valid bound import without a name thunk cannot be resolved by name
         for (std::uint32_t index = 0;; ++index) {
@@ -114,7 +114,8 @@ void ScanDelay(std::uint8_t* image, std::size_t size, std::uint32_t directory_rv
             return;
         }
         if (!attributes && !name && !iat && !names) return;
-        if (!(attributes & 1) || !StringEquals(image, size, name, dll_name, true)) continue;
+        if (!(attributes & 1) ||
+            (dll_name && !StringEquals(image, size, name, dll_name, true))) continue;
         if (!iat || !names) { result.malformed = true; return; }
         for (std::uint32_t index = 0;; ++index) {
             const std::uint64_t delta = std::uint64_t{index} * 8;
@@ -140,7 +141,7 @@ void ScanDelay(std::uint8_t* image, std::size_t size, std::uint32_t directory_rv
 ImportSlots FindImportSlots(std::uint8_t* image, std::size_t available,
                             const char* dll_name, const char* function_name) noexcept {
     ImportSlots result;
-    if (!image || available < 0x40 || !dll_name || !function_name) {
+    if (!image || available < 0x40 || !function_name) {
         result.malformed = true;
         return result;
     }

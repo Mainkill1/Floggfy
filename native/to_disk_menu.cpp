@@ -12,8 +12,8 @@
 #include <new>
 
 namespace {
-// Public CEF 146 API. Method order matches the pinned 8219561 C++ headers
-// and the CEF translator's C layout. Guard every returned structure size.
+// Public CEF API. Method order matches the audited 8219561 and beff58d C++
+// headers and the CEF translator's C layout. Guard every structure size.
 struct Base { size_t size; void(*add_ref)(Base*); int(*release)(Base*);
     int(*has_one_ref)(Base*); int(*has_at_least_one_ref)(Base*); };
 struct String { wchar_t* str; size_t length; void(*dtor)(wchar_t*); };
@@ -28,7 +28,7 @@ struct Delegate {
     void(*closed)(Delegate*,Menu*);
     int(*format)(Delegate*,Menu*,String*);
 };
-static_assert(sizeof(Base)==40 && sizeof(Menu)==488 && sizeof(Delegate)==96,"CEF146 x64 ABI");
+static_assert(sizeof(Base)==40 && sizeof(Menu)==488 && sizeof(Delegate)==96,"audited CEF x64 ABI");
 using Create=Menu*(*)(Delegate*);
 Create original_create;
 using AddSubmenu=Menu*(*)(Menu*,int,const String*);
@@ -190,7 +190,7 @@ void StartToDiskMenu(HMODULE cef) {
     symbol=GetProcAddress(cef,"cef_string_userfree_utf16_free");
     memcpy(&free_string,&symbol,sizeof(free_string));
     if(!version || !cef_compat::IsSupported({version(0),version(1),version(2),version(3)}) || !create || !free_string) {
-        history::HistoryLog("To Disk menu disabled: expected CEF 146.0.10 commit 3504 and required exports"); menu_init.MarkUnsupported(); return;
+        history::HistoryLog("To Disk menu disabled: CEF identity is not in the audited compatibility table"); menu_init.MarkUnsupported(); return;
     }
     MH_STATUS status=MH_Initialize(); if(status==MH_ERROR_ALREADY_INITIALIZED) status=MH_OK;
     if(status==MH_OK) status=MH_CreateHook(reinterpret_cast<void*>(create),reinterpret_cast<void*>(Hook),reinterpret_cast<void**>(&original_create));
@@ -198,5 +198,5 @@ void StartToDiskMenu(HMODULE cef) {
     if(status==MH_OK) status=MH_EnableHook(reinterpret_cast<void*>(create));
     if(status==MH_OK) menu_init.Activate();
     else {if(created)MH_RemoveHook(reinterpret_cast<void*>(create));menu_init.Retry(now);}
-    char line[200]; snprintf(line,sizeof(line),"CEF146 commit 3504 main-menu integration: %s%s",MH_StatusToString(status),status==MH_OK?"":"; retry scheduled"); history::HistoryLog(line);
+    char line[200]; snprintf(line,sizeof(line),"audited CEF main-menu integration: %s%s",MH_StatusToString(status),status==MH_OK?"":"; retry scheduled"); history::HistoryLog(line);
 }

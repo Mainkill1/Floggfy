@@ -11,10 +11,10 @@ A music downloader mod for the Windows Spotify client, inspired by [Soggfy](http
 
 ## Installation and usage
 
-Live tested with **Windows x64 Spotify 1.3.1.234**. Dynamic audio-hook discovery
-was statically validated in signed Spotify DLLs from 1.3.0.277, 1.2.94.583 and
-1.2.92.148; those older clients were not run end to end. Microsoft Store installs
-are unvalidated.
+Live tested with **Windows x64 Spotify 1.3.3.264**. Dynamic audio and connectivity
+discovery was also checked against signed Spotify DLLs from 1.3.0.277,
+1.2.94.583 and 1.2.92.148; those older clients were not run end to end.
+Microsoft Store installs are unvalidated.
 
 1. Quit Spotify and download the ZIP from [Releases](https://github.com/Mainkill1/Floggfy/releases).
 2. Open your Spotify installation folder, usually `%APPDATA%\Spotify`.
@@ -45,6 +45,10 @@ the optional menu or metadata integrations.
 - Audio hook locations are discovered from invariant decoder instructions and
   Windows x64 function metadata. Missing, ambiguous or inconsistent matches disable
   capture before any hook is installed.
+- Connectivity repair finds `CoCreateInstance` by its PE import name across normal
+  and delay import tables, independent of Spotify hashes, offsets and the provider
+  DLL name. It keeps verifying the live delay slot because Windows may replace it
+  during delayed resolution.
 
 ## Credits
 

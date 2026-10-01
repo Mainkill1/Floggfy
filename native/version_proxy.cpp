@@ -279,7 +279,9 @@ static ImportHookResult HookSpotifyImports(HMODULE module) {
     const DWORD image_size = MappedImageSize(module);
     if (!image_size) return ImportHookResult::Unsupported;
     auto* base = reinterpret_cast<std::uint8_t*>(module);
-    const auto imports = hooks::FindImportSlots(base, image_size, "ole32.dll", "CoCreateInstance");
+    // Search by the API name across every import provider. Windows may expose
+    // COM through ole32, combase, or an API-set DLL in different client builds.
+    const auto imports = hooks::FindImportSlots(base, image_size, nullptr, "CoCreateInstance");
     void** slots[] = {imports.normal, imports.delay};
     void* previous[2] = {};
     bool changed[2] = {};
@@ -298,12 +300,14 @@ static ImportHookResult HookSpotifyImports(HMODULE module) {
         changed[i] = !was_replacement;
     }
     if (!found) return ImportHookResult::Unsupported;
-    char message[192];
-    snprintf(message, sizeof(message),
-             "connectivity import hook active: normal-IAT=%s delay-IAT=%s%s",
-             imports.normal ? "patched" : "absent", imports.delay ? "patched" : "absent",
-             imports.malformed ? " malformed-table-observed" : "");
-    Log(message);
+    if (changed[0] || changed[1]) {
+        char message[192];
+        snprintf(message, sizeof(message),
+                 "connectivity import hook active: normal-IAT=%s delay-IAT=%s%s",
+                 imports.normal ? "patched" : "absent", imports.delay ? "patched" : "absent",
+                 imports.malformed ? " malformed-table-observed" : "");
+        Log(message);
+    }
     return ImportHookResult::Active;
 }
 
@@ -323,6 +327,13 @@ static VOID CALLBACK DllNotification(ULONG reason, const NotificationData* data,
 }
 
 static void StartConnectivityHook(HMODULE module) {
+    // Delay-import resolution can replace an IAT slot after our first patch.
+    // Keep verifying the live slots from this normal worker context; an
+    // already-patched slot is a no-op and does not emit another log record.
+    if (connectivity_init.State() == hooks::InitState::Active) {
+        HookSpotifyImports(module);
+        return;
+    }
     const auto now = static_cast<std::uint64_t>(GetTickCount64());
     if (!connectivity_init.TryBegin(now)) return;
     switch (HookSpotifyImports(module)) {

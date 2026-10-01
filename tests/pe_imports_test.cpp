@@ -73,6 +73,18 @@ int main() {
     assert(delay_result.delay == reinterpret_cast<void**>(delay.data() + 0x680));
     assert(!delay_result.malformed);
 
+    auto provider_independent = Image(true, true);
+    Text(provider_independent, 0x280, "combase.dll");
+    Text(provider_independent, 0x580, "api-ms-win-core-com-l1-1-0.dll");
+    auto provider_independent_result = hooks::FindImportSlots(
+        provider_independent.data(), provider_independent.size(), nullptr,
+        "CoCreateInstance");
+    assert(provider_independent_result.normal ==
+           reinterpret_cast<void**>(provider_independent.data() + 0x380));
+    assert(provider_independent_result.delay ==
+           reinterpret_cast<void**>(provider_independent.data() + 0x680));
+    assert(!provider_independent_result.malformed);
+
     auto both = Image(true, true);
     auto both_result = hooks::FindImportSlots(both.data(), both.size(),
                                               "ole32.dll", "CoCreateInstance");
