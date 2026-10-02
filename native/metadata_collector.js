@@ -4,7 +4,14 @@
  if(window.__floggfyMetadata)return;
  window.__floggfyMetadata=true;
  const prefix='FLOGGFY_METADATA_V1:',seenPayload=new Map(),records=[];
- let reported=false,player,root,queue=[],seen=new Set(),walked=0;
+ let reported=false,player,root,queue=[],seen=new Set(),walked=0,lastPlayback='',playbackTime=-Infinity;
+ function playback(data){
+  const payload=Object.entries(data).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&');
+  const now=performance.now();
+  if(payload.length<=4096&&(payload!==lastPlayback||now-playbackTime>=1000)){
+   console.info('FLOGGFY_PLAYBACK_V1:'+payload);lastPlayback=payload;playbackTime=now;
+  }
+ }
  const own=(o,k)=>{try{const d=Object.getOwnPropertyDescriptor(o,k);return d&&'value' in d?d.value:undefined;}catch{return undefined;}};
  const object=o=>o&&typeof o==='object';
  function remember(o){if(!records.includes(o)){if(records.length>=96)records.shift();records.push(o);}}
@@ -86,13 +93,13 @@
  }
  function tick(){
   try{
-   scan();if(!player)return;
+   scan();if(!player){playback({v:1});return;}
    if(!reported){console.info('FLOGGFY_STATUS:cached player found');reported=true;}
    const state=method(player,'getState').call(player),item=own(state,'item'),m=own(item,'metadata')||{},uri=text(own(item,'uri'));
-   if(!/^spotify:track:[A-Za-z0-9]{22}$/.test(uri||''))return;
+   if(!/^spotify:track:[A-Za-z0-9]{22}$/.test(uri||'')){playback({v:1});return;}
    const data={v:1,title:text(own(m,'title')||own(item,'name')),artist:text(own(m,'artist_name')),
     album:text(own(m,'album_title')),uri,duration:Number(text(own(m,'duration')||own(own(item,'duration'),'milliseconds')))/1000,SPOTIFY_URI:uri};
-   if(!data.title||!data.artist||!data.album||!Number.isFinite(data.duration)||data.duration<=0)return;
+   if(!data.title||!data.artist||!data.album||!Number.isFinite(data.duration)||data.duration<=0){playback({v:1});return;}
    // Actual current playback quality, never targetBitrateLevel (the preference).
    const quality=own(state,'playbackQuality')||own(state,'playback_quality');
    const raw=own(quality,'bitrateLevel')||own(quality,'bitrate_level');
@@ -102,6 +109,7 @@
     Number.isInteger(raw)&&raw>=1&&raw<=6?['','low','normal','high','very_high','lossless','lossless_24'][raw]:undefined;
    if(level==='hifi24')level='lossless_24';
    if(['low','normal','high','very_high','lossless','lossless_24','hifi'].includes(level))data.playback_quality=level;
+   playback({v:1,title:data.title,artist:data.artist,album:data.album,uri,duration:data.duration,playback_quality:data.playback_quality});
    for(const record of records)cached(data,record);
    merge(data,item); // Current playback snapshot wins over older cached data.
    const encode=()=>Object.entries(data).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&');
@@ -115,5 +123,6 @@
  window.__floggfyPoll=tick;
  console.info('FLOGGFY_STATUS:cache-only collector started');
  tick();
- if(!window.__floggfyNative)setInterval(tick,1500);
+ // Keep the lightweight current-track heartbeat independent of metadata disk work.
+ setInterval(tick,1000);
 })();

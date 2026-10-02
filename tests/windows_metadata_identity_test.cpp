@@ -38,6 +38,17 @@ history::Browser* ReceiveSyncClient(const void*,history::Client* client,const hi
 void* ReceiveViewClient(history::Client* client,const history::String*,const void*,void*,void*,void*){received_client=client;return &browser.api;}
 }
 int main(){
+    // Current playback bypasses slow metadata enrichment and SMTC entirely.
+    wchar_t current_message[]=L"FLOGGFY_PLAYBACK_V1:v=1&title=Next&artist=Artist&album=Album&uri=spotify:track:0000000000000000000001&duration=200&playback_quality=lossless";
+    history::String current{current_message,wcslen(current_message),nullptr};
+    assert(history::CurrentPlayback(&current));
+    auto playing=history::ReadPlaybackQuality();
+    assert(playing.title[0]==L'N' && playing.level==history::PlaybackLevel::Lossless);
+    wchar_t clear_message[]=L"FLOGGFY_PLAYBACK_V1:v=1";
+    current={clear_message,wcslen(clear_message),nullptr};
+    assert(history::CurrentPlayback(&current));
+    assert(history::ReadPlaybackQuality().title[0]==0);
+
     // Current quality is a fresh exact cached identity, not a historical setting.
     history::Media media; media.title=L"Song";media.artist=L"Artist";media.album=L"Album";media.duration=200;
     history::RichMetadata record;record.title="Song";record.artist="Artist";record.album="Album";

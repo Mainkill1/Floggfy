@@ -167,9 +167,9 @@ int main() {
   auto labels = PlaybackQualityLabels(q);
   assert(labels[0].find(L"&&") != std::wstring::npos &&
          labels[0].find(L'\n') == std::wstring::npos);
-  assert(labels[3].find(L"320 kbps") != std::wstring::npos &&
-         labels[3].find(L"average") != std::wstring::npos);
-  assert(labels[4].find(L"44,100 Hz") != std::wstring::npos &&
+  assert(labels.size() == 4);
+  for (const auto& row : labels) assert(row.find(L"Bitrate:") == std::wstring::npos);
+  assert(labels[3].find(L"44,100 Hz") != std::wstring::npos &&
          labels[1].find(L"Very high") != std::wstring::npos);
 
   std::cout << "PASS: current-source association, ambiguity rejection, Ogg duration corroboration/actual rates, "

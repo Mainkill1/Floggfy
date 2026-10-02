@@ -34,12 +34,14 @@ static_assert(sizeof(Base)==cef_menu::kBaseBytes &&
               "CEF public-prefix ABI");
 using Create=Menu*(*)(Delegate*);
 Create original_create;
+using SetString=int(*)(const wchar_t*,size_t,String*,int);
+SetString set_string=nullptr;
 using AddSubmenu=Menu*(*)(Menu*,int,const String*);
 AddSubmenu original_add_submenu;
 hooks::InitController menu_init;
 hooks::InitController submenu_init;
 constexpr int root_id=28480,downloads_id=28481,location_id=28482,flac_id=28483,ogg_id=28484;
-constexpr int song_id=28485,last_quality_id=song_id+4;
+constexpr int song_id=28485,last_quality_id=song_id+3;
 template<class R,class...A> R Call(Menu* m,unsigned slot,A...a) {
     if(!m || m->base.size<cef_menu::kRequiredMenuBytes ||
        slot>cef_menu::kHighestRequiredMenuSlot || !m->methods[slot]) return R{};
@@ -172,7 +174,30 @@ static void WillShow(Delegate* self,Menu* menu) {
     ReleaseMenu(menu);
 }
 static void Closed(Delegate* self,Menu* menu) { auto* o=Self(self)->original; if(o && o->closed) o->closed(o,menu); else ReleaseMenu(menu); }
-static int Format(Delegate* self,Menu* menu,String* label) { auto* o=Self(self)->original; if(o && o->format) return o->format(o,menu,label); ReleaseMenu(menu); return 0; }
+static int Format(Delegate* self,Menu* menu,String* label) {
+    auto* o=Self(self)->original;int changed=0;
+    if(o && o->format) {
+        menu->base.add_ref(&menu->base);
+        changed=o->format(o,menu,label);
+    }
+    // CEF constructs visible labels before MenuWillShow. Its public label
+    // formatter supplies fresh text during construction, on the UI thread.
+    if(set_string && label && label->str && Capable(menu) &&
+       Call<int>(menu,15,song_id)>=0 && Call<int>(menu,15,downloads_id)>=0) {
+        const wchar_t* prefixes[]={L"Song: ",L"Quality: ",L"Format: ",L"Sample rate: "};
+        for(unsigned i=0;i<4;++i) {
+            const auto length=wcslen(prefixes[i]);
+            if(label->length>=length && !wmemcmp(label->str,prefixes[i],length)) {
+                try {
+                    const auto rows=history::PlaybackQualityLabels(history::ReadPlaybackQuality());
+                    if(set_string(rows[i].data(),rows[i].size(),label,1))changed=1;
+                }catch(...) {/* Keep the original CEF label on allocation failure. */}
+                break;
+            }
+        }
+    }
+    ReleaseMenu(menu);return changed;
+}
 static Menu* Hook(Delegate* delegate) {
     if(!delegate || !cef_menu::SupportsDelegate(delegate->base.size) ||
        !Executable(reinterpret_cast<const void*>(delegate->base.add_ref)) ||
@@ -211,6 +236,9 @@ void StartToDiskMenu(HMODULE cef) {
     const auto now=static_cast<std::uint64_t>(GetTickCount64());
     if(!menu_init.TryBegin(now)) return;
     if(!history::GetSettings().menu) { history::HistoryLog("To Disk menu disabled by INI Menu=0"); menu_init.MarkUnsupported(); return; }
+    auto string_set=GetProcAddress(cef,"cef_string_utf16_set");
+    memcpy(&set_string,&string_set,sizeof(set_string));
+    if(!set_string)history::HistoryLog("To Disk live labels unavailable: cef_string_utf16_set missing");
     auto create=GetProcAddress(cef,"cef_menu_model_create");
     if(!create || !Executable(reinterpret_cast<const void*>(create))) {
         history::HistoryLog("To Disk menu unavailable: cef_menu_model_create capability missing"); menu_init.MarkUnsupported(); return;

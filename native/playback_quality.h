@@ -10,6 +10,7 @@ enum class PlaybackLevel { Unknown, Low, Normal, High, VeryHigh, Lossless, Lossl
 PlaybackLevel ParsePlaybackLevel(const std::string &);
 struct PlaybackQualitySnapshot {
   std::array<wchar_t, 192> title{};
+  uint64_t identity = 0;
   PlaybackFormat format = PlaybackFormat::Unknown;
   unsigned rate = 0;
   double bitrate = 0;
@@ -49,8 +50,10 @@ public:
   void ClearStreams();
   PlaybackQualitySnapshot Snapshot(const std::string &client_quality = {}) const;
 };
-std::array<std::wstring, 5> PlaybackQualityLabels(const PlaybackQualitySnapshot &);
+uint64_t PlaybackIdentity(const std::string &);
+std::array<std::wstring, 4> PlaybackQualityLabels(const PlaybackQualitySnapshot &);
 // Windows bridge: worker publishes a fixed-size snapshot; menu only reads RAM.
 void PublishPlaybackQuality(const PlaybackQualitySnapshot &);
+void PublishClientPlaybackQuality(const PlaybackQualitySnapshot &);
 PlaybackQualitySnapshot ReadPlaybackQuality();
 } // namespace history

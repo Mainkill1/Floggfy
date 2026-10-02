@@ -148,6 +148,7 @@ PlaybackLevel ParsePlaybackLevel(const std::string &value) {
 }
 PlaybackQualitySnapshot PlaybackQualityTracker::Snapshot(const std::string &client_quality) const {
   PlaybackQualitySnapshot out;
+  out.identity = PlaybackIdentity(identity_);
   std::copy(title_.begin(), title_.end(), out.title.begin());
   if (identity_.empty() || last_time_ < settle_until_)
     return out;
@@ -194,7 +195,13 @@ PlaybackQualitySnapshot PlaybackQualityTracker::Snapshot(const std::string &clie
   // Never divide read-ahead bytes by partial decoded coverage.
   return out;
 }
-std::array<std::wstring, 5> PlaybackQualityLabels(const PlaybackQualitySnapshot &q) {
+uint64_t PlaybackIdentity(const std::string &key) {
+  if (key.empty()) return 0;
+  uint64_t hash = 14695981039346656037ULL;
+  for (unsigned char byte : key) { hash ^= byte; hash *= 1099511628211ULL; }
+  return hash;
+}
+std::array<std::wstring, 4> PlaybackQualityLabels(const PlaybackQualitySnapshot &q) {
   std::wstring title(q.title.begin(), std::find(q.title.begin(), q.title.end(), L'\0'));
   if (title.size() > 96) {
     title.resize(95);
@@ -221,22 +228,16 @@ std::array<std::wstring, 5> PlaybackQualityLabels(const PlaybackQualitySnapshot 
     case PlaybackLevel::Lossy: level=L"Lossy";break;
     default:break;
   }
-  std::array<std::wstring, 5> rows = {L"Song: " + (safe.empty() ? L"Unavailable" : safe),
+  std::array<std::wstring, 4> rows = {L"Song: " + (safe.empty() ? L"Unavailable" : safe),
                                       std::wstring(L"Quality: ")+level, L"Format: Unavailable",
-                                      L"Bitrate: Unavailable", L"Sample rate: Unavailable"};
+                                      L"Sample rate: Unavailable"};
   if (q.format == PlaybackFormat::Unknown) return rows;
   rows[2] = q.format == PlaybackFormat::Flac ? L"Format: FLAC" : L"Format: Ogg";
-  wchar_t text[96];
-  if (q.bitrate > 0 && std::isfinite(q.bitrate)) {
-    swprintf(text, 96, q.bitrate >= 1000 ? L"Bitrate: %.0f kbps (average)" : L"Bitrate: %.0f bps (average)",
-             q.bitrate >= 1000 ? q.bitrate / 1000 : q.bitrate);
-    rows[3] = text;
-  }
   if (q.rate) {
     auto number = std::to_wstring(q.rate);
     for (int p = int(number.size()) - 3; p > 0; p -= 3) number.insert(size_t(p), L",");
-    rows[4] = L"Sample rate: " + number + L" Hz";
-    if(q.bits) rows[4] += L" / " + std::to_wstring(q.bits) + L"-bit";
+    rows[3] = L"Sample rate: " + number + L" Hz";
+    if(q.bits) rows[3] += L" / " + std::to_wstring(q.bits) + L"-bit";
   }
   return rows;
 }

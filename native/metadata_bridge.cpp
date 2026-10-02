@@ -5,6 +5,7 @@
 #include "hook_installation.h"
 #include "hook_rollback.h"
 #include "rich_metadata.h"
+#include "playback_quality.h"
 #include "cached_metadata.h"
 #include "history_settings.h"
 #include "vendor/minhook/include/MinHook.h"
@@ -101,8 +102,40 @@ static DWORD WINAPI MetadataWorker(LPVOID) {
  }
  return 0;
 }
+static bool CurrentPlayback(const String* text) {
+ constexpr wchar_t prefix[]=L"FLOGGFY_PLAYBACK_V1:";
+ constexpr size_t n=sizeof(prefix)/sizeof(*prefix)-1;
+ if(!text || !text->str || text->length<n || wmemcmp(text->str,prefix,n))return false;
+ // Bounded cached-state message only: no file reads, enrichment or API calls.
+ try {
+  PlaybackQualitySnapshot snapshot;
+  if(text->length<=n+4096) {
+   std::string payload;payload.reserve(text->length-n);
+   for(size_t i=n;i<text->length;++i) {
+    if(text->str[i]>127){PublishClientPlaybackQuality({});return true;}
+    payload+=char(text->str[i]);
+   }
+   RichMetadata record;std::string error;
+   if(ParseRichMetadata(payload,record,error)) {
+    snapshot.identity=PlaybackIdentity(record.title+"\x1f"+record.artist+"\x1f"+record.album);
+    snapshot.level=ParsePlaybackLevel(record.playback_quality);
+    const int length=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,record.title.data(),int(record.title.size()),nullptr,0);
+    if(length>0 && length<=4096) {
+     std::wstring title(size_t(length),L'\0');
+     MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,record.title.data(),int(record.title.size()),title.data(),length);
+     auto count=std::min<size_t>(title.size(),snapshot.title.size()-1);
+     if(count && title[count-1]>=0xd800 && title[count-1]<=0xdbff)--count;
+     std::copy_n(title.begin(),count,snapshot.title.begin());
+    }
+   }
+  }
+  PublishClientPlaybackQuality(snapshot);
+ }catch(...){PublishClientPlaybackQuality({});}
+ return true;
+}
 static int Console(Display* self,Browser* b,int level,const String* text,const String* source,int line) {
  auto callback=metadata_callbacks.Enter();
+ if(CurrentPlayback(text)){Release(b);return 1;}
  if(text&&text->length<100&&text->length>=15&&wmemcmp(text->str,L"FLOGGFY_STATUS:",15)==0){
   std::wstring status(text->str,text->length);HistoryLog(Utf8(status).c_str());Release(b);return 1;
  }

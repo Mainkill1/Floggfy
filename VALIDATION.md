@@ -132,7 +132,7 @@ cross-version/CEF support limits still apply.
 Enriched `version.dll` SHA-256:
 `153b7d52f4f49973efaedceee79e17348c186158f7d1ce3dd27524448c2a66e0`.
 
-## Playback quality menu
+## RC4 playback quality menu (historical layout)
 
 The bottom of To Disk has five disabled informational rows: song, quality,
 format, bitrate and sample rate (with FLAC bit depth). A worker publishes a fixed
@@ -174,3 +174,26 @@ also displayed 44,100 Hz during development. Final native and Windows suites
 passed, along with the playback tracker under AddressSanitizer and
 UndefinedBehaviorSanitizer. Numeric bitrate was verified with synthetic complete
 streams; this release does not claim an additional full real-track bitrate test.
+
+## Current-track footer correction
+
+The current-track heartbeat reads the existing local player snapshot once per
+second. Its short message bypasses artwork reads and metadata enrichment.
+CEF’s public FormatLabel callback reads a fixed-size RAM snapshot while
+constructing visible labels, before MenuWillShow; it no longer includes
+Bitrate. A fresh client identity takes precedence over a lagging Windows media
+session. Decoder format and sample rate are retained only when identities and
+quality agree. Missing or stale client state clears the footer instead of
+restoring the previous song. No request endpoints are called.
+
+Regression checks cover a client track change ahead of Windows, repeated old
+Windows publications, matching decoder information, expired heartbeats,
+clearing the current song, contradictory FLAC bit depth, pre-show label
+formatting, and four disabled menu rows without duplicates.
+
+Live Windows Spotify 1.3.3.264 validation confirmed that the first submenu
+opening displays the visible current track. Consecutive skips were checked
+after allowing two seconds for the heartbeat: the footer matched the new
+visible track each time, contained four disabled rows, and had no Bitrate row.
+The current observed FLAC stream displayed its validated sample rate and
+bit depth. Older-client runtime behavior remains unvalidated.
