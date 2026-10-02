@@ -10,6 +10,16 @@ else
 fi
 mkdir -p "$floggfy_test_root"
 python3 tests/create_quality_fixtures.py "$floggfy_test_root"
+mkdir -p build/windows-tests
+python3 - <<'PY'
+from pathlib import Path
+script='window.__floggfyNative=true;\n'+Path('native/metadata_collector.js').read_text()
+Path('build/metadata_script.h').write_text('static constexpr wchar_t metadata_script[]=LR"FLOGGFY('+script+')FLOGGFY";\n')
+PY
+for source in buffer hook trampoline hde/hde64; do
+    x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c \
+        "native/vendor/minhook/src/$source.c" -o "build/windows-tests/minhook-${source//\//-}.o"
+done
 common=(-std=c++17 -O2 -Wall -Wextra -Werror -static-libgcc -static-libstdc++)
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_history_test.cpp \
  native/existing_quality.cpp native/file_publication.cpp native/history_settings.cpp \
@@ -17,5 +27,10 @@ x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_history_test.cpp \
  -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-history-test.exe"
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_log_test.cpp native/async_log.cpp \
  native/history_settings.cpp -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-log-test.exe"
+x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_metadata_identity_test.cpp \
+ native/rich_metadata.cpp native/history_settings.cpp native/async_log.cpp \
+ native/media_session.cpp build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 \
+ -lruntimeobject -o "$floggfy_test_root/windows-metadata-identity-test.exe"
 "$floggfy_test_root/windows-history-test.exe"
 "$floggfy_test_root/windows-log-test.exe"
+"$floggfy_test_root/windows-metadata-identity-test.exe"

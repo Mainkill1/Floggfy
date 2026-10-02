@@ -46,7 +46,7 @@ the independently established function RVAs in every sample. The production
 connectivity resolver found `CoCreateInstance` in every sample by import name,
 without a Spotify hash, RVA or provider DLL assumption.
 
-Current v1.1.0 release-candidate `version.dll` SHA-256:
+Previous v1.1.0-rc.1 `version.dll` SHA-256:
 `854249b471baeea8d7072d4403018fde56e933a6a7ddc5e372a4b6e19fd6cd67`.
 
 An installed-client restart of this exact DLL produced two connectivity patch
@@ -74,3 +74,23 @@ delegate callbacks. This establishes static discovery and ABI compatibility for
 the archived packages; they were not executed end to end.
 
 Recording names, per-file hashes and personal listening data are not published.
+
+## CEF client identity crash repair
+
+On Spotify 1.3.3.264, opening the mini player with metadata enabled reproduced
+CEF's fatal `UnwrapDerived called with unexpected class type 0` check. Disabling
+only metadata prevented that crash. The bridge now preserves the original CEF
+client and handler objects and intercepts their callback function addresses.
+
+The Windows identity regression failed before the repair and passed afterward.
+It covers all three browser factories, unchanged client/handler structures,
+original callback arguments and transferred browser references. The Linux
+native/JavaScript suite and Windows history/log/metadata suite all passed.
+
+With metadata enabled, Settings → Connected apps → View succeeded twice and
+the mini player opened without a fatal debugger exception. The cached metadata
+collector still received fields. These are checks of the reported UI paths;
+they do not resolve earlier intermittent freeze reports.
+
+Repaired `version.dll` SHA-256:
+`59503908963397442c8daf4ae95407c98aacc7a0aac714c2866ee8346af82098`.

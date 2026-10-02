@@ -30,8 +30,13 @@ See LICENSE.txt for the CEF license. No CEF binary is redistributed.
 
 Optional metadata bridge: public cef_client, cef_browser, cef_frame,
 cef_display_handler and cef_load_handler declarations at the same revision.
-Their callback reference transfers use the same translator ownership rules.
-Browser/load/display structure sizes are checked before interception.
+The bridge preserves the original client and handler objects and intercepts
+their callback function addresses with MinHook. Replacement C structures break
+CEF's C++ wrapper identity when Spotify retrieves a browser's client again.
+Unmodified callbacks retain their original arguments and reference transfers;
+locally handled console messages consume the transferred browser reference.
+Browser/load/display structure sizes are checked before interception. Callback
+addresses come from the audited public method tables, without module offsets.
 
 The metadata poll task uses the public cef_task_t/cef_post_task ABI from
 https://github.com/chromiumembedded/cef/blob/8219561/include/cef_task.h .
