@@ -88,11 +88,20 @@
   try{
    scan();if(!player)return;
    if(!reported){console.info('FLOGGFY_STATUS:cached player found');reported=true;}
-   const item=own(method(player,'getState').call(player),'item'),m=own(item,'metadata')||{},uri=text(own(item,'uri'));
+   const state=method(player,'getState').call(player),item=own(state,'item'),m=own(item,'metadata')||{},uri=text(own(item,'uri'));
    if(!/^spotify:track:[A-Za-z0-9]{22}$/.test(uri||''))return;
    const data={v:1,title:text(own(m,'title')||own(item,'name')),artist:text(own(m,'artist_name')),
     album:text(own(m,'album_title')),uri,duration:Number(text(own(m,'duration')||own(own(item,'duration'),'milliseconds')))/1000,SPOTIFY_URI:uri};
    if(!data.title||!data.artist||!data.album||!Number.isFinite(data.duration)||data.duration<=0)return;
+   // Actual current playback quality, never targetBitrateLevel (the preference).
+   const quality=own(state,'playbackQuality')||own(state,'playback_quality');
+   const raw=own(quality,'bitrateLevel')||own(quality,'bitrate_level');
+   // Spotify PlaybackQuality.BitrateLevel protobuf values (validated in
+   // 1.2.92, 1.2.94, 1.3.0 and 1.3.3). Unknown additions stay unavailable.
+   let level=typeof raw==='string'?raw.toLowerCase():
+    Number.isInteger(raw)&&raw>=1&&raw<=6?['','low','normal','high','very_high','lossless','lossless_24'][raw]:undefined;
+   if(level==='hifi24')level='lossless_24';
+   if(['low','normal','high','very_high','lossless','lossless_24','hifi'].includes(level))data.playback_quality=level;
    for(const record of records)cached(data,record);
    merge(data,item); // Current playback snapshot wins over older cached data.
    const encode=()=>Object.entries(data).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&');

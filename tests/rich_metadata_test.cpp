@@ -13,6 +13,10 @@ int main() {
  assert(!ParseRichMetadata(std::string(131073,'x'),m,e));
  assert(!ParseRichMetadata("v=1&title=X&artist=A&album=B&duration=1&uri=x&UNKNOWN=abc",m,e));
  assert(!ParseRichMetadata("v=1&title=X&artist=A&album=B&duration=1&uri=spotify%3Atrack%3Ax&LYRICS="+std::string(65537,'x'),m,e));
+ assert(ParseRichMetadata("v=1&title=Song&artist=Artist&album=Album&duration=200&uri=spotify%3Atrack%3Aa&playback_quality=very_high",m,e));
+ assert(m.playback_quality=="very_high" && !m.fields.count("playback_quality"));
+ assert(ParseRichMetadata("v=1&title=Song&artist=Artist&album=Album&duration=200&uri=spotify%3Atrack%3Aa&playback_quality=3",m,e));
+ assert(m.playback_quality.empty());
  MetadataCache cache;
  assert(ParseRichMetadata("v=1&title=Song&artist=Artist&album=Album&duration=200&uri=spotify%3Atrack%3Aa&DATE=2026",m,e)); cache.Put(m);
  assert(cache.Find("Song","Artist","Album",200));

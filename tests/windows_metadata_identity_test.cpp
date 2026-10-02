@@ -38,6 +38,21 @@ history::Browser* ReceiveSyncClient(const void*,history::Client* client,const hi
 void* ReceiveViewClient(history::Client* client,const history::String*,const void*,void*,void*,void*){received_client=client;return &browser.api;}
 }
 int main(){
+    // Current quality is a fresh exact cached identity, not a historical setting.
+    history::Media media; media.title=L"Song";media.artist=L"Artist";media.album=L"Album";media.duration=200;
+    history::RichMetadata record;record.title="Song";record.artist="Artist";record.album="Album";
+    record.uri="spotify:track:0000000000000000000001";record.duration=200;
+    record.playback_quality="very_high";record.quality_time=GetTickCount64();
+    history::cache.Put(record);
+    assert(history::ReadClientPlaybackQuality(media)=="very_high");
+    media.artist=L"Other";assert(history::ReadClientPlaybackQuality(media).empty());media.artist=L"Artist";
+    record.quality_time=GetTickCount64()-30000;history::cache.Put(record);
+    assert(history::ReadClientPlaybackQuality(media).empty());
+    record.quality_time=GetTickCount64()+30000;history::cache.Put(record);
+    assert(history::ReadClientPlaybackQuality(media).empty());
+    record.quality_time=GetTickCount64();history::cache.Put(record);
+    record.uri="spotify:track:0000000000000000000002";history::cache.Put(record);
+    assert(history::ReadClientPlaybackQuality(media).empty());
     assert(MH_Initialize()==MH_OK);
     CefStorage<history::Client> storage;
     expected_client=&storage.api;

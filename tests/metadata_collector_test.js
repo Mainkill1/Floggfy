@@ -26,6 +26,23 @@ context.window.__floggfyPoll();assert(!output.at(-1).includes('DATE=')&&!output.
 state.item.metadata.year='2024';state.item.metadata.genre='Jazz';
 context.window.__floggfyPoll();assert(output.at(-1).includes('YEAR=2024')&&output.at(-1).includes('GENRE=Jazz'));
 const trap=o=>{Object.defineProperty(o,'month',{enumerable:true,get(){getters++;forbidden();}});return o;};
+state.playbackQuality={bitrateLevel:'VERY_HIGH',targetBitrateLevel:'LOSSLESS'};
+context.window.__floggfyPoll();assert(output.at(-1).includes('playback_quality=very_high'));
+state.playbackQuality.bitrateLevel='LOSSLESS';context.window.__floggfyPoll();
+assert(output.at(-1).includes('playback_quality=lossless'));
+state.playbackQuality.bitrateLevel=99;context.window.__floggfyPoll();
+assert(!output.at(-1).includes('playback_quality=')); // Unknown enum, never use target quality.
+for(const [i,level] of ['low','normal','high','very_high','lossless','lossless_24'].entries()){
+ state.playbackQuality.bitrateLevel=i+1;context.window.__floggfyPoll();
+ assert(output.at(-1).includes('playback_quality='+level));
+}
+state.playbackQuality.bitrateLevel='HIFI24';context.window.__floggfyPoll();
+assert(output.at(-1).includes('playback_quality=lossless_24'));
+state.playbackQuality=undefined;state.playback_quality={bitrate_level:'HIGH'};
+context.window.__floggfyPoll();assert(output.at(-1).includes('playback_quality=high'));
+const qualityTrap={};Object.defineProperty(qualityTrap,'bitrate_level',{get(){getters++;forbidden();}});
+state.playback_quality=qualityTrap;context.window.__floggfyPoll();
+assert(!output.at(-1).includes('playback_quality='));
 state.item.metadata.year=undefined;state.item.album={date:trap({year:2026})};
 Object.defineProperty(state.item,'lyrics',{enumerable:true,get(){getters++;forbidden();}});
 context.window.__floggfyPoll();assert(output.at(-1).includes('DATE=2026'));

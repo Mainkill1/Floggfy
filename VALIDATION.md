@@ -131,3 +131,46 @@ cross-version/CEF support limits still apply.
 
 Enriched `version.dll` SHA-256:
 `153b7d52f4f49973efaedceee79e17348c186158f7d1ce3dd27524448c2a66e0`.
+
+## Playback quality menu
+
+The bottom of To Disk has five disabled informational rows: song, quality,
+format, bitrate and sample rate (with FLAC bit depth). A worker publishes a fixed
+RAM snapshot; the menu uses a nonblocking read and rejects snapshots older than
+three seconds. Opening this section performs no file, artwork or endpoint reads.
+Downloads-off observation uses the existing bounded queue and retains only small
+headers and counters, without creating whole-song capture buffers.
+
+The existing renderer collector reads actual current playbackQuality/
+playback_quality from its local player snapshot, never targetBitrateLevel.
+Known string levels and protobuf enum values 1–6 are normalized; new values
+remain unavailable. The numeric enum mapping was checked in the installed
+1.3.3.264 DLL and the archived 1.3.0.277, 1.2.94.583 and 1.2.92.148 DLLs.
+Native use requires an exact title, artist, album and duration cache match,
+candidate uniqueness and receipt age under twenty seconds. Playback quality is
+not embedded into permanent song tags. Metadata=0 disables this optional source;
+validated decoder headers still identify lossless quality and FLAC bit depth.
+
+Synthetic Linux and Windows tests cover current-vs-target quality, quality
+changes, missing/unknown fields, zero network/service/accessor calls, stale/wrong/
+ambiguous cache identities, Ogg duration corroboration, read-ahead rejection,
+same-song replay, separate title/timeline transitions, seek invalidation,
+codec/quality conflicts, menu placement,
+refresh, disabled-command ownership, snapshot contention and expiry. Observer
+tests verify that showing quality cannot enable saving and preserves the original
+Ogg parser return.
+
+Numeric bitrate is the average encoded bitrate once the complete stream is
+known, rather than read-ahead bytes divided by partially decoded time. Ogg decoder
+association waits for EOS to corroborate duration. Decoder matching uses timing
+and duration heuristics, not a native track ID; unknown or ambiguous sources
+remain unavailable. Labels refresh on opening the submenu, rather than changing
+continuously while it stays open. No estimated file size is displayed.
+
+On installed Windows Spotify 1.3.3.264, all five disabled rows appeared in the
+actual To Disk submenu. Cached Lossless quality was displayed with Downloads
+off, and the audio library remained unchanged. A live observed FLAC stream
+also displayed 44,100 Hz during development. Final native and Windows suites
+passed, along with the playback tracker under AddressSanitizer and
+UndefinedBehaviorSanitizer. Numeric bitrate was verified with synthetic complete
+streams; this release does not claim an additional full real-track bitrate test.

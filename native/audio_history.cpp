@@ -7,6 +7,7 @@
 #include "hook_init_state.h"
 #include "hook_rollback.h"
 #include "metadata_bridge.h"
+#include "playback_quality.h"
 #include "async_log.h"
 #include "bounded_queue.h"
 #include <atomic>
@@ -45,13 +46,14 @@ FlacError original_flac_error;
 void* flac_targets[4]={};
 hooks::CallbackCounter audio_callbacks;
 struct Slot { uintptr_t context; unsigned length; double time; unsigned kind,epoch; uint64_t input_length;
-    uint32_t format; bool matched; unsigned char bytes[65307]; };
+    uint32_t format; bool matched,capture; unsigned char bytes[65307]; };
 constexpr unsigned capacity=128;
 Slot* queue;
 unsigned head=0,tail=0,count=0;
 SRWLOCK queue_lock=SRWLOCK_INIT;
 HANDLE event;
 volatile LONG dropped=0,calls=0,pages=0;
+std::atomic<bool> quality_enabled{false};
 std::wstring output;
 size_t memory_limit=500*1024*1024;
 static double Now() { return double(GetTickCount64())/1000.0; }
@@ -92,7 +94,8 @@ static int32_t Hook(void* sync,OggPage* page) {
     auto callback=audio_callbacks.Enter();
     int32_t result=original(sync,page);
     InterlockedIncrement(&calls);
-    if(!OggEnabled()) return result;
+    const bool capture=OggEnabled();
+    if(!capture && !quality_enabled.load(std::memory_order_relaxed)) return result;
     if(result<=0 || !page || page->header_length<27 || page->header_length>282 ||
        page->body_length<0 || page->body_length>65025 ||
        page->header_length+page->body_length!=result || result>65307) return result;
@@ -101,7 +104,7 @@ static int32_t Hook(void* sync,OggPage* page) {
     if(count==capacity) InterlockedIncrement(&dropped);
     else {
         Slot& s=queue[tail]; s.context=reinterpret_cast<uintptr_t>(sync);
-        s.length=unsigned(result); s.time=Now(); s.kind=0; s.epoch=CaptureEpoch();
+        s.length=unsigned(result); s.time=Now(); s.kind=0; s.epoch=CaptureEpoch(); s.capture=capture;
         std::memcpy(s.bytes,page->header,page->header_length);
         if(page->body_length) std::memcpy(s.bytes+page->header_length,page->body,page->body_length);
         tail=(tail+1)%capacity; ++count;
@@ -132,14 +135,17 @@ static bool Pop(Slot& s) {
     ReleaseSRWLockExclusive(&queue_lock); return ready;
 }
 static void FlacEvent(void* context,unsigned kind,const void* bytes=nullptr,size_t n=0,unsigned status=0) {
-    if(!FlacEnabled()) return;
+    const bool capture=FlacEnabled();
+    if(!capture && !quality_enabled.load(std::memory_order_relaxed)) return;
     AcquireSRWLockExclusive(&queue_lock);
     do {
         unsigned amount=unsigned(std::min(n,size_t(65307)));
         if(count==capacity) { InterlockedIncrement(&dropped); break; }
         Slot& s=queue[tail]; s.context=reinterpret_cast<uintptr_t>(context); s.kind=kind;
-        s.length=amount; s.time=Now(); s.format=status; s.epoch=CaptureEpoch();
-        if(amount) memcpy(s.bytes,bytes,amount);
+        s.capture=capture; s.input_length=amount;
+        s.length=(!capture && kind==3) ? std::min(amount,42u) : amount;
+        s.time=Now(); s.format=status; s.epoch=CaptureEpoch();
+        if(s.length) memcpy(s.bytes,bytes,s.length);
         tail=(tail+1)%capacity; ++count;
         n-=amount;
         if(n) bytes=static_cast<const unsigned char*>(bytes)+amount;
@@ -267,7 +273,7 @@ static DWORD WINAPI Worker(LPVOID) {
     std::map<uintptr_t,std::unique_ptr<Capture>> active;
     std::vector<std::unique_ptr<Capture>> ready;
     std::vector<Heard> heard;
-    Listen listen; MediaReader reader; Media current;
+    Listen listen; MediaReader reader; Media current; PlaybackQualityTracker quality; std::string client_quality;
     double next_media=0,next_log=0;
     unsigned generation=~0u,epoch=~0u; bool enabled=false;
     try {
@@ -287,12 +293,13 @@ static DWORD WINAPI Worker(LPVOID) {
                 }
                 epoch=preferences.capture_epoch;
             }
-            if(!enabled) {
+            if(!enabled && !quality_enabled.load(std::memory_order_relaxed)) {
+                PublishPlaybackQuality({});
                 Slot discard; while(Pop(discard)) {}
                 WaitForSingleObject(event,200); continue;
             }
             if(dropped!=overflow) {
-                overflow=dropped; active.clear(); ready.clear(); heard.clear(); listen.eligible=false;
+                overflow=dropped; active.clear(); ready.clear(); heard.clear(); listen.eligible=false; quality.ClearStreams();
                 Log("capture queue overflow; streams and listening coverage invalidated");
             }
             Slot s;
@@ -302,7 +309,17 @@ static DWORD WINAPI Worker(LPVOID) {
                     char line[180]; snprintf(line,sizeof(line),"FORMAT kind=%u matched=%d input_bytes=%llu prefix=%s",
                       s.format,s.matched,static_cast<unsigned long long>(s.input_length),prefix); Log(line); continue;
                 }
-                if(s.epoch!=epoch) continue;
+                if(quality_enabled.load(std::memory_order_relaxed)) {
+                    switch(s.kind) {
+                        case 0: quality.Ogg(s.context,s.bytes,s.length,s.time); break;
+                        case 2: quality.FlacBegin(s.context,s.time); break;
+                        case 3: quality.FlacBytes(s.context,s.bytes,s.length,size_t(s.input_length)); break;
+                        case 4: quality.FlacFrame(s.context,s.bytes,s.length); break;
+                        case 5: quality.FlacEnd(s.context,true); break;
+                        case 6: quality.FlacEnd(s.context,false); break;
+                    }
+                }
+                if(!enabled || !s.capture || s.epoch!=epoch) continue;
                 if(s.kind>=2) {
                     auto found=active.find(s.context);
                     if(s.kind==2) {
@@ -369,9 +386,21 @@ static DWORD WINAPI Worker(LPVOID) {
                     ready.push_back(std::move(found->second)); active.erase(found);
                 }
             }
+            if(!enabled) {
+                if(now>=next_media) {
+                    Media media;
+                    if(reader.Read(media,false)) {quality.Media(media.Key(),media.title,media.position,media.duration,Now(),media.playing);client_quality=ReadClientPlaybackQuality(media);}
+                    else {quality.Media({},L"",0,0,Now());client_quality.clear();}
+                    next_media=Now()+0.5;
+                }
+                PublishPlaybackQuality(quality.Snapshot(client_quality));
+                WaitForSingleObject(event,50);continue;
+            }
             if(now>=next_media) {
                 Media media;
                 if(reader.Read(media)) {
+                    quality.Media(media.Key(),media.title,media.position,media.duration,Now(),media.playing);
+                    client_quality=ReadClientPlaybackQuality(media);
                     std::string previous=listen.identity; double previous_start=listen.start_time;
                     bool was_eligible=listen.eligible;
                     double prior_position=listen.last_position,prior_duration=listen.duration,prior_time=listen.last_time;
@@ -402,9 +431,10 @@ static DWORD WINAPI Worker(LPVOID) {
                     }
                     if(listen.transient) Log("timeline reset at natural end; waiting for matching title");
                     else current=std::move(media);
-                } else { listen.eligible=false; Log("Spotify media snapshot unavailable; listen invalidated"); }
+                } else { listen.eligible=false; quality.Media({},L"",0,0,Now()); Log("Spotify media snapshot unavailable; listen invalidated"); }
                 next_media=Now()+0.5;
             }
+            PublishPlaybackQuality(quality.Snapshot(client_quality));
             // A media-session read may block while the menu changes settings.
             // Apply that generation before considering any publication.
             if(GetSettings().generation!=generation) continue;
@@ -440,6 +470,7 @@ static DWORD WINAPI Worker(LPVOID) {
             WaitForSingleObject(event,50);
         }
     } catch(...) { Log("history worker stopped after an exception; playback remains with original parser"); }
+    PublishPlaybackQuality({});
     workers_running.store(false,std::memory_order_release);
     if(save_event) SetEvent(save_event);
     MH_DisableHook(target);
@@ -454,6 +485,7 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
     if(!audio_init.TryBegin(now)) return;
     (void)proxy;
     auto preferences=GetSettings(); output=preferences.root;
+    quality_enabled.store(preferences.menu,std::memory_order_relaxed);
     if(output.empty()) { Log("save location unavailable; history initialization will retry"); audio_init.Retry(now); return; }
     spotify::HookTargets discovered{};
     const auto discovery=DiscoverTargets(spotify_module,discovered);

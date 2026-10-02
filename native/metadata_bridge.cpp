@@ -75,14 +75,14 @@ static MetadataCache cache;static SRWLOCK cache_lock=SRWLOCK_INIT,message_lock=S
 static hooks::InitController metadata_init;
 static hooks::CallbackCounter metadata_callbacks;
 static std::atomic<bool> metadata_running{false},metadata_polling{false};
-struct Message {char data[131073];size_t length=0;};
+struct Message { ULONGLONG time=0; char data[131073];size_t length=0;};
 static std::array<Message,4> messages;static size_t head=0,tail=0,count=0;static HANDLE message_event=nullptr;
 static bool Enqueue(const String* value) {
  constexpr wchar_t prefix[]=L"FLOGGFY_METADATA_V1:";constexpr size_t n=sizeof(prefix)/sizeof(*prefix)-1;
  if(!value||value->length<=n||value->length>n+131072||wmemcmp(value->str,prefix,n))return false;
  if(TryAcquireSRWLockExclusive(&message_lock)) {
   if(count<messages.size()) {
-   auto& m=messages[tail];m.length=value->length-n;bool valid=true;
+   auto& m=messages[tail];m.time=GetTickCount64();m.length=value->length-n;bool valid=true;
    for(size_t i=0;i<m.length;i++){wchar_t c=value->str[n+i];if(c>127){valid=false;break;}m.data[i]=char(c);}
    if(valid){tail=(tail+1)%messages.size();++count;SetEvent(message_event);}
   } ReleaseSRWLockExclusive(&message_lock);
@@ -94,6 +94,7 @@ static DWORD WINAPI MetadataWorker(LPVOID) {
  while(metadata_running.load(std::memory_order_acquire)){if(metadata_polling.load(std::memory_order_acquire))SchedulePoll();bool got=false;AcquireSRWLockExclusive(&message_lock);if(count){m=messages[head];head=(head+1)%messages.size();--count;got=true;}ReleaseSRWLockExclusive(&message_lock);
   if(!got){WaitForSingleObject(message_event,1000);continue;}
   RichMetadata metadata;std::string error;if(!ParseRichMetadata(std::string(m.data,m.length),metadata,error))continue;
+  metadata.quality_time=m.time;
   try {EnrichStoredMetadata(metadata);}catch(...){HistoryLog("cached metadata unavailable; ordinary tags retained");}
   AcquireSRWLockExclusive(&cache_lock);cache.Put(metadata);ReleaseSRWLockExclusive(&cache_lock);
   HistoryLog(("metadata cached fields="+std::to_string(metadata.fields.size())+" date="+(metadata.fields.count("DATE")?metadata.fields.at("DATE"):std::string{})+" lyrics_bytes="+std::to_string((metadata.fields.count("LYRICS")?metadata.fields.at("LYRICS").size():0))).c_str());
@@ -154,6 +155,17 @@ static Create original_create;static Sync original_sync;static View original_vie
 static int CreateHook(const void* win,Client* client,const String* url,const void* settings,void* extra,void* context){auto callback=metadata_callbacks.Enter();return original_create(win,ObserveClient(client),url,settings,extra,context);}
 static Browser* SyncHook(const void* win,Client* client,const String* url,const void* settings,void* extra,void* context){auto callback=metadata_callbacks.Enter();return original_sync(win,ObserveClient(client),url,settings,extra,context);}
 static void* ViewHook(Client* client,const String* url,const void* settings,void* extra,void* context,void* delegate){auto callback=metadata_callbacks.Enter();return original_view(ObserveClient(client),url,settings,extra,context,delegate);}
+}
+std::string ReadClientPlaybackQuality(const Media& media) {
+ if(!GetSettings().metadata)return {};
+ const auto now=GetTickCount64();
+ AcquireSRWLockShared(&cache_lock);
+ auto m=cache.Find(Utf8(media.title),Utf8(media.artist),Utf8(media.album),media.duration);
+ std::string level;
+ if(m && m->quality_time && now>=m->quality_time && now-m->quality_time<=20000)
+  level=m->playback_quality;
+ ReleaseSRWLockShared(&cache_lock);
+ return level;
 }
 void EnrichTags(const Media& media,Tags& tags) {
  if(!GetSettings().metadata)return;

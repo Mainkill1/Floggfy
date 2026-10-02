@@ -90,7 +90,7 @@ static bool Artwork(void* properties, Media& out) {
 MediaReader::~MediaReader() {
     Release(manager_); if(initialized_) RoUninitialize();
 }
-bool MediaReader::Read(Media& out) {
+bool MediaReader::Read(Media& out,bool include_artwork) {
     if(!initialized_) {
         HRESULT hr=RoInitialize(RO_INIT_MULTITHREADED);
         if(FAILED(hr)) return false;
@@ -147,9 +147,11 @@ bool MediaReader::Read(Media& out) {
     if(media.playing && elapsed>=0 && elapsed<86400) media.position+=elapsed;
     media.position=std::max(0.0,std::min(media.position,media.duration));
     if(media.title.empty() || media.duration<=0) return false;
-    if(media.Key()==cached_.Key() && !cached_.cover.empty()) {
-        media.cover=cached_.cover; media.cover_extension=cached_.cover_extension;
-    } else Artwork(properties.p,media);
+    if(include_artwork) {
+        if(media.Key()==cached_.Key() && !cached_.cover.empty()) {
+            media.cover=cached_.cover; media.cover_extension=cached_.cover_extension;
+        } else Artwork(properties.p,media);
+    }
     cached_=media; out=std::move(media); return true;
 }
 }

@@ -3,6 +3,7 @@
 #include "cef_menu_capability.h"
 #include "hook_init_state.h"
 #include "history_settings.h"
+#include "playback_quality.h"
 #include "vendor/minhook/include/MinHook.h"
 #include <atomic>
 #include <cstdio>
@@ -38,6 +39,7 @@ AddSubmenu original_add_submenu;
 hooks::InitController menu_init;
 hooks::InitController submenu_init;
 constexpr int root_id=28480,downloads_id=28481,location_id=28482,flac_id=28483,ogg_id=28484;
+constexpr int song_id=28485,last_quality_id=song_id+4;
 template<class R,class...A> R Call(Menu* m,unsigned slot,A...a) {
     if(!m || m->base.size<cef_menu::kRequiredMenuBytes ||
        slot>cef_menu::kHighestRequiredMenuSlot || !m->methods[slot]) return R{};
@@ -70,6 +72,16 @@ static bool Main(Menu* menu) {
     for(size_t index=0;index<count;++index) types[index]=Call<int>(menu,23,index);
     return cef_menu::LooksLikeMainMenu(false,types,count);
 }
+static void UpdateQuality(Menu* menu) {
+    const auto labels=history::PlaybackQualityLabels(history::ReadPlaybackQuality());
+    if(Call<int>(menu,15,song_id)<0) Call<int>(menu,3);
+    for(unsigned i=0;i<labels.size();++i) {
+        int id=song_id+int(i);auto text=Text(labels[i]);
+        if(Call<int>(menu,15,id)<0)Call<int>(menu,4,id,&text);
+        else Call<int>(menu,20,id,&text);
+        Call<int>(menu,36,id,0);
+    }
+}
 static void Populate(Menu* menu) {
     if(!Main(menu)) {
         static volatile LONG logged=0;
@@ -97,6 +109,7 @@ static void Populate(Menu* menu) {
     if(inserted) { std::wstring location=L"Save Location"; auto text=Text(location); Call<int>(child,4,location_id,&text); }
     item(flac_id,state.flac ? L"FLAC (Enabled)" : L"FLAC (Disabled)",state.flac,true);
     item(ogg_id,state.ogg ? L"Ogg (Enabled)" : L"Ogg (Disabled)",state.ogg,true);
+    UpdateQuality(child);
     child->base.release(&child->base);
     if(inserted) history::HistoryLog("To Disk inserted into Spotify main menu: Downloads, Save Location, FLAC, Ogg");
 }
@@ -121,6 +134,7 @@ static int One(Base* p) { return Self(p)->refs.load()==1; }
 static int Any(Base* p) { return Self(p)->refs.load()!=0; }
 static void ReleaseMenu(Menu* menu) { if(menu && menu->base.release) menu->base.release(&menu->base); }
 static void Execute(Delegate* self,Menu* menu,int command,int flags) {
+    if(command>=song_id && command<=last_quality_id) {ReleaseMenu(menu);return;}
     auto* w=Self(self); auto settings=history::GetSettings(); bool handled=true,ok=true;
     switch(command) {
         case downloads_id: ok=history::SetDownloads(!settings.downloads); break;
@@ -153,7 +167,9 @@ static void WillShow(Delegate* self,Menu* menu) {
     // CEF transfers one menu reference into every delegate callback. Retain
     // another across the original callback, which consumes its argument.
     if(o && o->will_show) { menu->base.add_ref(&menu->base); o->will_show(o,menu); }
-    Populate(menu); ReleaseMenu(menu);
+    if(Capable(menu) && Call<int>(menu,15,song_id)>=0) UpdateQuality(menu);
+    else Populate(menu);
+    ReleaseMenu(menu);
 }
 static void Closed(Delegate* self,Menu* menu) { auto* o=Self(self)->original; if(o && o->closed) o->closed(o,menu); else ReleaseMenu(menu); }
 static int Format(Delegate* self,Menu* menu,String* label) { auto* o=Self(self)->original; if(o && o->format) return o->format(o,menu,label); ReleaseMenu(menu); return 0; }

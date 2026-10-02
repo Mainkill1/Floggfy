@@ -10,8 +10,8 @@ constexpr std::size_t kKnownDelegateBytes = 96;
 constexpr std::size_t kHighestRequiredMenuSlot = 40;
 constexpr std::size_t kRequiredMenuBytes =
     kBaseBytes + (kHighestRequiredMenuSlot + 1) * sizeof(void*);
-constexpr std::array<std::size_t, 12> kRequiredMenuSlots = {
-    0, 1, 2, 4, 5, 7, 15, 20, 23, 28, 36, 40,
+constexpr std::array<std::size_t, 13> kRequiredMenuSlots = {
+    0, 1, 2, 3, 4, 5, 7, 15, 20, 23, 28, 36, 40,
 };
 
 constexpr bool SupportsDelegate(std::size_t bytes) noexcept {
