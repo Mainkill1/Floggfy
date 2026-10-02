@@ -14,7 +14,17 @@ static std::vector<unsigned char> read(const std::wstring& p) {
 }
 int main() {
     wchar_t exe[2048]; GetModuleFileNameW(nullptr,exe,2048); std::wstring dir=exe; dir.resize(dir.find_last_of(L'\\'));
+    auto ini=dir+L"\\SpotifyHistory.ini"; DeleteFileW(ini.c_str());
+    check(GetFileAttributesW(ini.c_str())==INVALID_FILE_ATTRIBUTES,"INI absent before initialization");
     InitSettings(GetModuleHandleW(nullptr));
+    check(GetFileAttributesW(ini.c_str())!=INVALID_FILE_ATTRIBUTES,"missing INI created beside DLL");
+    auto defaults=GetSettings();
+    check(!defaults.downloads && defaults.menu && defaults.ogg && defaults.flac &&
+          defaults.metadata && defaults.log && !defaults.debug_log,
+          "generated INI loads complete default switches");
+    check(defaults.save_location.empty() && defaults.max_buffered_mib==500,
+          "generated INI uses default Music location and 500 MiB buffer");
+    check(GetPrivateProfileIntW(L"History",L"StopAfter",UINT(-1),ini.c_str())==UINT(-1),"generated INI omits history limit");
     auto low=dir+L"\\low.ogg",high=dir+L"\\high.ogg",target=dir+L"\\published.ogg";
     Quality qlow,qhigh,qflac; check(ReadQuality(low,qlow) && qlow.bitrate==160000,"real CRC Vorbis low bitrate header");
     check(ReadQuality(high,qhigh) && qhigh.bitrate==320000,"real CRC Vorbis high bitrate header");
@@ -35,7 +45,7 @@ int main() {
     unsigned epoch=GetSettings().capture_epoch;
     check(SetDownloads(true) && SetDownloads(false) && GetSettings().capture_epoch==epoch+2 && CaptureEpoch()==epoch+2,"missed off-on transitions still advance capture epoch");
     check(FlushSettings(5000),"background settings persisted");
-    check(GetPrivateProfileIntW(L"To Disk",L"Downloads",9,(dir+L"\\SpotifyHistory.ini").c_str())==0,"INI persists disabled setting");
+    check(GetPrivateProfileIntW(L"To Disk",L"Downloads",9,ini.c_str())==0,"INI persists disabled setting");
     auto root=dir+L"\\Pending-"+std::to_wstring(GetCurrentProcessId()); epoch=GetSettings().capture_epoch;
     check(SetSaveLocation(root) && GetSettings().root==root,"save directory persistence");
     check(GetFileAttributesW(root.c_str())==INVALID_FILE_ATTRIBUTES && GetSettings().capture_epoch==epoch,"save location does not precreate folders or invalidate capture");

@@ -4,7 +4,7 @@
 #include <cstdlib>
 #include <set>
 namespace history {
-static bool Utf8Valid(const std::string& s) {
+bool MetadataTextValid(const std::string& s) {
  for(size_t i=0;i<s.size();) {
   unsigned char b=s[i++]; if(b<128) {if(!b) return false; continue;}
   unsigned n=b>=0xc2&&b<=0xdf?1:b>=0xe0&&b<=0xef?2:b>=0xf0&&b<=0xf4?3:99;
@@ -19,13 +19,13 @@ static bool Decode(const std::string& s,std::string& out) {
  out.clear(); for(size_t i=0;i<s.size();i++) {
   if(s[i]=='%') {if(i+2>=s.size()||Hex(s[i+1])<0||Hex(s[i+2])<0) return false; out+=char(Hex(s[i+1])*16+Hex(s[i+2])); i+=2;}
   else out+=s[i];
- } return Utf8Valid(out);
+ } return MetadataTextValid(out);
 }
 bool RichMetadata::Matches(const std::string& t,const std::string& a,const std::string& al,double d) const {
  return title==t&&artist==a&&album==al&&std::fabs(duration-d)<=1.0;
 }
-bool ParseRichMetadata(const std::string& input,RichMetadata& out,std::string& error) {
- static const std::set<std::string> allowed={"v","title","artist","album","uri","duration","DATE","YEAR","GENRE","LYRICS","DISCNUMBER","DISCTOTAL","TRACKTOTAL","ISRC","PUBLISHER","LANGUAGE","COMMENT","SPOTIFY_URI"};
+static bool ParseMetadata(const std::string& input,RichMetadata& out,std::string& error,bool playback) {
+ static const std::set<std::string> allowed={"v","playback_quality","title","artist","album","uri","duration","ARTIST","ALBUMARTIST","DATE","YEAR","GENRE","LYRICS","TRACKNUMBER","DISCNUMBER","DISCTOTAL","TRACKTOTAL","ISRC","LABEL","ORGANIZATION","PUBLISHER","COPYRIGHT","PHONOGRAMCOPYRIGHT","COMPOSER","REMIXER","CONDUCTOR","LANGUAGE","COMMENT","SPOTIFY_URI"};
  auto fail=[&](const char* e){error=e; return false;};
  if(input.size()>131072) return fail("metadata too large");
  std::map<std::string,std::string> kv;
@@ -37,13 +37,18 @@ bool ParseRichMetadata(const std::string& input,RichMetadata& out,std::string& e
   if(value.size()>(key=="LYRICS"?65536u:4096u)) return fail("field too large");
   kv.emplace(key,std::move(value)); p=end+1;
  }
- if(kv["v"]!="1"||kv["title"].empty()||kv["artist"].empty()||kv["album"].empty()||kv["uri"].rfind("spotify:track:",0)!=0) return fail("missing identity");
+ const bool episode=playback && kv["uri"].rfind("spotify:episode:",0)==0;
+ if(kv["v"]!="1"||kv["title"].empty()||(!episode && (kv["artist"].empty()||kv["album"].empty()||kv["uri"].rfind("spotify:track:",0)!=0))) return fail("missing identity");
  char* last=nullptr; double d=strtod(kv["duration"].c_str(),&last);
  if(!last||*last||!std::isfinite(d)||d<=0||d>86400) return fail("invalid duration");
  RichMetadata m; m.title=kv["title"];m.artist=kv["artist"];m.album=kv["album"];m.uri=kv["uri"];m.duration=d;
+ const std::set<std::string> levels={"low","normal","high","very_high","lossless","lossless_24","hifi"};
+ if(levels.count(kv["playback_quality"]))m.playback_quality=kv["playback_quality"];
  for(auto& entry:kv) if(entry.first[0]>='A'&&entry.first[0]<='Z'&&!entry.second.empty()) m.fields.insert(entry);
  out=std::move(m); error.clear(); return true;
 }
+bool ParseRichMetadata(const std::string& input,RichMetadata& out,std::string& error) {return ParseMetadata(input,out,error,false);}
+bool ParsePlaybackMetadata(const std::string& input,RichMetadata& out,std::string& error) {return ParseMetadata(input,out,error,true);}
 void MetadataCache::Put(const RichMetadata& m) {
  records_.erase(std::remove_if(records_.begin(),records_.end(),[&](const auto& r){return r.uri==m.uri;}),records_.end());
  records_.push_back(m); while(records_.size()>24) records_.pop_front();

@@ -22,9 +22,10 @@ depth against STREAMINFO. Any decoder error or coverage gap invalidates the stre
 Publication requires all STREAMINFO samples plus a complete audible listen. The
 existing native FLAC decoder continues handling playback unchanged.
 
-The complete Spotify.dll SHA-256 guard is
-`0731eca3ec438395815907c04653c63a917b55bf0ebdd83c96f041424a92b54b`.
-Unknown builds fail closed. The guard does not change signed Spotify files.
+Hook targets are discovered in the loaded Spotify DLL from decoder instruction
+anchors and Windows x64 function metadata. Missing, ambiguous or inconsistent
+matches fail closed before any audio hook is installed. Signed Spotify files are
+never modified.
 
 ## Single-file native tagging
 
@@ -53,6 +54,7 @@ picture, full decoding, sample count, frame CRCs and source MD5 when supplied.
 FLAC streams without a known total sample count are rejected. General podcast/
 audiobook category enrichment and video extraction remain separate work. The
 memory cap can reject long recordings; it never spills partial tracks to disk.
-Future Spotify builds need fresh ABI and live capture validation before accepting
-a new binary hash. Additional live tests for higher bit depths, same-title repeats,
-long pauses, seeks, mixed-codec transitions and overflow remain useful coverage.
+Future Spotify builds with rewritten decoder boundaries need fresh ABI and live
+capture validation before adding new instruction anchors. Additional live tests
+for higher bit depths, same-title repeats, long pauses, seeks, mixed-codec
+transitions and overflow remain useful coverage.

@@ -7,6 +7,7 @@ struct FlacInfo {
     unsigned rate=0,channels=0,bits=0,min_block=0,max_block=0;
     uint64_t total_samples=0;
 };
+FlacParse ParseFlacStreamInfo(const uint8_t* source,size_t length,FlacInfo& info);
 FlacParse ParseFlacMetadata(const std::vector<uint8_t>& source,FlacInfo& info,size_t& audio);
 FlacParse ParseFlacMetadata(const CompressedBuffer& source,FlacInfo& info,size_t& audio);
 struct FlacCoverage {

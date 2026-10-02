@@ -4,7 +4,10 @@
 #include "ogg_tags.h"
 #include "flac_history_core.h"
 #include "history_settings.h"
+#include "hook_init_state.h"
+#include "hook_rollback.h"
 #include "metadata_bridge.h"
+#include "playback_quality.h"
 #include "async_log.h"
 #include "bounded_queue.h"
 #include <atomic>
@@ -12,8 +15,8 @@
 #include "existing_quality.h"
 #include "file_publication.h"
 #include "media_session.h"
+#include "spotify_hook_discovery.h"
 #include "vendor/minhook/include/MinHook.h"
-#include <bcrypt.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -41,17 +44,18 @@ FlacRead original_flac_read;
 FlacFrame original_flac_frame;
 FlacError original_flac_error;
 void* flac_targets[4]={};
+hooks::CallbackCounter audio_callbacks;
 struct Slot { uintptr_t context; unsigned length; double time; unsigned kind,epoch; uint64_t input_length;
-    uint32_t format; bool matched; unsigned char bytes[65307]; };
+    uint32_t format; bool matched,capture; unsigned char bytes[65307]; };
 constexpr unsigned capacity=128;
 Slot* queue;
 unsigned head=0,tail=0,count=0;
 SRWLOCK queue_lock=SRWLOCK_INIT;
 HANDLE event;
 volatile LONG dropped=0,calls=0,pages=0;
+std::atomic<bool> quality_enabled{false};
 std::wstring output;
-unsigned stop_after=0;
-size_t memory_limit=64*1024*1024;
+size_t memory_limit=500*1024*1024;
 static double Now() { return double(GetTickCount64())/1000.0; }
 static void Log(const char* message) {
     HistoryLog(message);
@@ -59,43 +63,39 @@ static void Log(const char* message) {
 static bool Directories(const std::wstring& path) {
     return EnsureDirectory(path);
 }
-static bool Supported(HMODULE module) {
-    // Never scan for a loose pattern or reuse this RVA on an unknown build.
-    static const unsigned char entry[]={0x48,0x89,0x5c,0x24,0x10,0x48,0x89,0x6c,0x24,0x18,
-      0x48,0x89,0x74,0x24,0x20,0x57,0x41,0x54,0x41,0x55,0x41,0x56,0x41,0x57,0x48,0x83,0xec,0x40,0x48,0x63,0x79,0x10};
-    auto base=reinterpret_cast<unsigned char*>(module);
-    auto dos=reinterpret_cast<IMAGE_DOS_HEADER*>(base);
-    if(dos->e_magic!=IMAGE_DOS_SIGNATURE || dos->e_lfanew<=0 || dos->e_lfanew>4096) return false;
-    auto nt=reinterpret_cast<IMAGE_NT_HEADERS64*>(base+dos->e_lfanew);
-    if(nt->Signature!=IMAGE_NT_SIGNATURE || nt->FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64 ||
-       nt->OptionalHeader.SizeOfImage<=0xebf0cc || std::memcmp(base+0xebef18,entry,sizeof(entry))) return false;
-    wchar_t path[2048]; if(!GetModuleFileNameW(module,path,2048)) return false;
-    HANDLE file=CreateFileW(path,GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
-        nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
-    if(file==INVALID_HANDLE_VALUE) return false;
-    BCRYPT_ALG_HANDLE algorithm=nullptr; BCRYPT_HASH_HANDLE hash=nullptr;
-    bool ok=BCryptOpenAlgorithmProvider(&algorithm,BCRYPT_SHA256_ALGORITHM,nullptr,0)>=0;
-    if(ok) ok=BCryptCreateHash(algorithm,&hash,nullptr,0,nullptr,0,0)>=0;
-    unsigned char buffer[65536],digest[32]; DWORD read=0;
-    while(ok) {
-        if(!ReadFile(file,buffer,sizeof(buffer),&read,nullptr)) { ok=false; break; }
-        if(!read) break;
-        if(BCryptHashData(hash,buffer,read,0)<0) ok=false;
+static spotify::DiscoveryResult DiscoverTargets(HMODULE module,spotify::HookTargets& targets) {
+    auto* base=reinterpret_cast<unsigned char*>(module);
+    auto* dos=reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+    if(dos->e_magic!=IMAGE_DOS_SIGNATURE || dos->e_lfanew<=0 || dos->e_lfanew>4096)
+        return spotify::DiscoveryResult::InvalidImage;
+    auto* nt=reinterpret_cast<IMAGE_NT_HEADERS64*>(base+dos->e_lfanew);
+    if(nt->Signature!=IMAGE_NT_SIGNATURE || nt->FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64)
+        return spotify::DiscoveryResult::InvalidImage;
+    return spotify::DiscoverHookTargets(base,nt->OptionalHeader.SizeOfImage,targets);
+}
+
+static const char* DiscoveryFailure(spotify::DiscoveryResult result) {
+    switch(result) {
+        case spotify::DiscoveryResult::InvalidImage:return "invalid PE image";
+        case spotify::DiscoveryResult::MissingTarget:return "required instruction anchor missing";
+        case spotify::DiscoveryResult::AmbiguousTarget:return "instruction anchor is ambiguous";
+        case spotify::DiscoveryResult::InconsistentLayout:return "target layout failed structural checks";
+        case spotify::DiscoveryResult::Found:return "none";
     }
-    if(ok) ok=BCryptFinishHash(hash,digest,sizeof(digest),0)>=0;
-    if(hash) BCryptDestroyHash(hash);
-    if(algorithm) BCryptCloseAlgorithmProvider(algorithm,0);
-    CloseHandle(file);
-    if(!ok) return false;
-    const char* expected="0731eca3ec438395815907c04653c63a917b55bf0ebdd83c96f041424a92b54b";
-    char hex[65]; for(unsigned i=0;i<32;i++) snprintf(hex+2*i,3,"%02x",digest[i]);
-    if(std::strcmp(hex,expected)) return false;
-    target=base+0xebef18; return true;
+    return "unknown discovery failure";
+}
+
+static void* DiscoveredTarget(HMODULE module,const spotify::HookTargets& targets,
+                              spotify::TargetKind kind) {
+    const auto rva=spotify::TargetRva(targets,kind);
+    return rva?reinterpret_cast<unsigned char*>(module)+rva:nullptr;
 }
 static int32_t Hook(void* sync,OggPage* page) {
+    auto callback=audio_callbacks.Enter();
     int32_t result=original(sync,page);
     InterlockedIncrement(&calls);
-    if(!OggEnabled()) return result;
+    const bool capture=OggEnabled();
+    if(!capture && !quality_enabled.load(std::memory_order_relaxed)) return result;
     if(result<=0 || !page || page->header_length<27 || page->header_length>282 ||
        page->body_length<0 || page->body_length>65025 ||
        page->header_length+page->body_length!=result || result>65307) return result;
@@ -104,7 +104,7 @@ static int32_t Hook(void* sync,OggPage* page) {
     if(count==capacity) InterlockedIncrement(&dropped);
     else {
         Slot& s=queue[tail]; s.context=reinterpret_cast<uintptr_t>(sync);
-        s.length=unsigned(result); s.time=Now(); s.kind=0; s.epoch=CaptureEpoch();
+        s.length=unsigned(result); s.time=Now(); s.kind=0; s.epoch=CaptureEpoch(); s.capture=capture;
         std::memcpy(s.bytes,page->header,page->header_length);
         if(page->body_length) std::memcpy(s.bytes+page->header_length,page->body,page->body_length);
         tail=(tail+1)%capacity; ++count;
@@ -112,6 +112,7 @@ static int32_t Hook(void* sync,OggPage* page) {
     ReleaseSRWLockExclusive(&queue_lock); SetEvent(event); return result;
 }
 static void* FormatHook(void* out,const void* input) {
+    auto callback=audio_callbacks.Enter();
     // Verified ABI: input is {const byte*, size_t}; result is {uint32_t kind, bool valid}.
     // Read only a short diagnostic prefix. The original detector chooses the format.
     void* result=original_sniff(out,input);
@@ -134,14 +135,17 @@ static bool Pop(Slot& s) {
     ReleaseSRWLockExclusive(&queue_lock); return ready;
 }
 static void FlacEvent(void* context,unsigned kind,const void* bytes=nullptr,size_t n=0,unsigned status=0) {
-    if(!FlacEnabled()) return;
+    const bool capture=FlacEnabled();
+    if(!capture && !quality_enabled.load(std::memory_order_relaxed)) return;
     AcquireSRWLockExclusive(&queue_lock);
     do {
         unsigned amount=unsigned(std::min(n,size_t(65307)));
         if(count==capacity) { InterlockedIncrement(&dropped); break; }
         Slot& s=queue[tail]; s.context=reinterpret_cast<uintptr_t>(context); s.kind=kind;
-        s.length=amount; s.time=Now(); s.format=status; s.epoch=CaptureEpoch();
-        if(amount) memcpy(s.bytes,bytes,amount);
+        s.capture=capture; s.input_length=amount;
+        s.length=(!capture && kind==3) ? std::min(amount,42u) : amount;
+        s.time=Now(); s.format=status; s.epoch=CaptureEpoch();
+        if(s.length) memcpy(s.bytes,bytes,s.length);
         tail=(tail+1)%capacity; ++count;
         n-=amount;
         if(n) bytes=static_cast<const unsigned char*>(bytes)+amount;
@@ -149,10 +153,12 @@ static void FlacEvent(void* context,unsigned kind,const void* bytes=nullptr,size
     ReleaseSRWLockExclusive(&queue_lock); SetEvent(event);
 }
 static void* FlacInitHook(void* context,void* result) {
+    auto callback=audio_callbacks.Enter();
     FlacEvent(context,2);
     return original_flac_init(context,result);
 }
 static int FlacReadHook(void* context,unsigned char* buffer,size_t* length) {
+    auto callback=audio_callbacks.Enter();
     size_t requested=*length;
     int status=original_flac_read(context,buffer,length);
     if(status==0 && *length && *length<=requested) FlacEvent(context,3,buffer,*length);
@@ -161,12 +167,14 @@ static int FlacReadHook(void* context,unsigned char* buffer,size_t* length) {
     return status;
 }
 static int FlacFrameHook(void* context,const void* frame,const void* pcm) {
+    auto callback=audio_callbacks.Enter();
     int status=original_flac_frame(context,frame,pcm);
     if(status==0) FlacEvent(context,4,frame,32);
     else FlacEvent(context,5,nullptr,0,unsigned(status));
     return status;
 }
 static void FlacErrorHook(void* context,unsigned error) {
+    auto callback=audio_callbacks.Enter();
     original_flac_error(context,error);
     FlacEvent(context,5,nullptr,0,error);
 }
@@ -241,8 +249,10 @@ static BoundedQueue<SaveJob,2> saves;
 static HANDLE save_event=nullptr;
 static std::atomic<size_t> publishing_reserved{0};
 static std::atomic<unsigned> saved_count{0};
+static std::atomic<bool> workers_running{false};
+static hooks::InitController audio_init;
 static DWORD WINAPI SaveWorker(LPVOID) {
-    for(;;) {
+    while(workers_running.load(std::memory_order_acquire)) {
         SaveJob job;
         if(!saves.Pop(job)){WaitForSingleObject(save_event,200);continue;}
         std::string identity=Utf8(job.heard.media.artist)+" - "+Utf8(job.heard.media.title);
@@ -250,29 +260,30 @@ static DWORD WINAPI SaveWorker(LPVOID) {
             auto result=Publish(*job.capture,job.heard,job.epoch);
             if(result==Publication::Saved) {
                 auto settings=GetSettings();
-                if(settings.capture_epoch==job.epoch) {unsigned count=++saved_count;if(settings.stop_after && count>=settings.stop_after)SetDownloads(false);}
+                if(settings.capture_epoch==job.epoch) ++saved_count;
                 LogActivity("finished",identity);
             } else LogActivity(result==Publication::Failed?"failed":"finished",identity+(result==Publication::Failed?" (publication failed)":" (skipped existing file or changed settings)"));
         } catch(...) {LogActivity("failed",identity+" (publication exception)");}
         job.capture.reset();publishing_reserved.fetch_sub(job.reserved);
     }
+    return 0;
 }
 static DWORD WINAPI Worker(LPVOID) {
     LONG overflow=0;
     std::map<uintptr_t,std::unique_ptr<Capture>> active;
     std::vector<std::unique_ptr<Capture>> ready;
     std::vector<Heard> heard;
-    Listen listen; MediaReader reader; Media current;
+    Listen listen; MediaReader reader; Media current; PlaybackQualityTracker quality; std::string client_quality;
     double next_media=0,next_log=0;
     unsigned generation=~0u,epoch=~0u; bool enabled=false;
     try {
-        for(;;) {
+        while(workers_running.load(std::memory_order_acquire)) {
             double now=Now();
             auto preferences=GetSettings();
             if(preferences.generation!=generation) {
                 bool initial=generation==~0u;
                 generation=preferences.generation;
-                output=preferences.root; memory_limit=size_t(preferences.max_buffered_mib)*1024*1024; stop_after=preferences.stop_after;
+                output=preferences.root; memory_limit=size_t(preferences.max_buffered_mib)*1024*1024;
                 bool capture=preferences.downloads && (preferences.ogg || preferences.flac);
                 if(capture!=enabled || initial || preferences.capture_epoch!=epoch) {
                     active.clear(); ready.clear(); heard.clear(); listen={}; current={}; next_media=0;
@@ -282,12 +293,13 @@ static DWORD WINAPI Worker(LPVOID) {
                 }
                 epoch=preferences.capture_epoch;
             }
-            if(!enabled) {
+            if(!enabled && !quality_enabled.load(std::memory_order_relaxed)) {
+                PublishPlaybackQuality({});
                 Slot discard; while(Pop(discard)) {}
                 WaitForSingleObject(event,200); continue;
             }
             if(dropped!=overflow) {
-                overflow=dropped; active.clear(); ready.clear(); heard.clear(); listen.eligible=false;
+                overflow=dropped; active.clear(); ready.clear(); heard.clear(); listen.eligible=false; quality.ClearStreams();
                 Log("capture queue overflow; streams and listening coverage invalidated");
             }
             Slot s;
@@ -297,7 +309,17 @@ static DWORD WINAPI Worker(LPVOID) {
                     char line[180]; snprintf(line,sizeof(line),"FORMAT kind=%u matched=%d input_bytes=%llu prefix=%s",
                       s.format,s.matched,static_cast<unsigned long long>(s.input_length),prefix); Log(line); continue;
                 }
-                if(s.epoch!=epoch) continue;
+                if(quality_enabled.load(std::memory_order_relaxed)) {
+                    switch(s.kind) {
+                        case 0: quality.Ogg(s.context,s.bytes,s.length,s.time); break;
+                        case 2: quality.FlacBegin(s.context,s.time); break;
+                        case 3: quality.FlacBytes(s.context,s.bytes,s.length,size_t(s.input_length)); break;
+                        case 4: quality.FlacFrame(s.context,s.bytes,s.length); break;
+                        case 5: quality.FlacEnd(s.context,true); break;
+                        case 6: quality.FlacEnd(s.context,false); break;
+                    }
+                }
+                if(!enabled || !s.capture || s.epoch!=epoch) continue;
                 if(s.kind>=2) {
                     auto found=active.find(s.context);
                     if(s.kind==2) {
@@ -364,9 +386,21 @@ static DWORD WINAPI Worker(LPVOID) {
                     ready.push_back(std::move(found->second)); active.erase(found);
                 }
             }
+            if(!enabled) {
+                if(now>=next_media) {
+                    Media media;
+                    if(reader.Read(media,false)) {quality.Media(media.Key(),media.title,media.position,media.duration,Now(),media.playing);client_quality=ReadClientPlaybackQuality(media);}
+                    else {quality.Media({},L"",0,0,Now());client_quality.clear();}
+                    next_media=Now()+0.5;
+                }
+                PublishPlaybackQuality(quality.Snapshot(client_quality));
+                WaitForSingleObject(event,50);continue;
+            }
             if(now>=next_media) {
                 Media media;
                 if(reader.Read(media)) {
+                    quality.Media(media.Key(),media.title,media.position,media.duration,Now(),media.playing);
+                    client_quality=ReadClientPlaybackQuality(media);
                     std::string previous=listen.identity; double previous_start=listen.start_time;
                     bool was_eligible=listen.eligible;
                     double prior_position=listen.last_position,prior_duration=listen.duration,prior_time=listen.last_time;
@@ -397,9 +431,10 @@ static DWORD WINAPI Worker(LPVOID) {
                     }
                     if(listen.transient) Log("timeline reset at natural end; waiting for matching title");
                     else current=std::move(media);
-                } else { listen.eligible=false; Log("Spotify media snapshot unavailable; listen invalidated"); }
+                } else { listen.eligible=false; quality.Media({},L"",0,0,Now()); Log("Spotify media snapshot unavailable; listen invalidated"); }
                 next_media=Now()+0.5;
             }
+            PublishPlaybackQuality(quality.Snapshot(client_quality));
             // A media-session read may block while the menu changes settings.
             // Apply that generation before considering any publication.
             if(GetSettings().generation!=generation) continue;
@@ -432,10 +467,12 @@ static DWORD WINAPI Worker(LPVOID) {
                 char line[350]; snprintf(line,sizeof(line),"status calls=%ld pages=%ld dropped=%ld active=%zu ready=%zu saved=%u pos=%.3f/%.3f eligible=%d buffered=%zu",
                   calls,pages,dropped,active.size(),ready.size(),saved_count.load(),current.position,current.duration,listen.eligible,buffered); Log(line); next_log=now+10;
             }
-            if(stop_after && saved_count.load()>=stop_after) { Log("showcase limit reached; Downloads disabled"); SetDownloads(false); }
             WaitForSingleObject(event,50);
         }
     } catch(...) { Log("history worker stopped after an exception; playback remains with original parser"); }
+    PublishPlaybackQuality({});
+    workers_running.store(false,std::memory_order_release);
+    if(save_event) SetEvent(save_event);
     MH_DisableHook(target);
     MH_DisableHook(sniff_target);
     for(auto address:flac_targets) if(address) MH_DisableHook(address);
@@ -443,38 +480,111 @@ static DWORD WINAPI Worker(LPVOID) {
 }
 }
 
-void StartAudioHistory(HMODULE spotify,HMODULE proxy) {
-    static bool attempted=false; if(attempted) return; attempted=true;
+void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
+    const auto now=static_cast<std::uint64_t>(GetTickCount64());
+    if(!audio_init.TryBegin(now)) return;
     (void)proxy;
     auto preferences=GetSettings(); output=preferences.root;
-    if(output.empty()) { Log("save location unavailable; history disabled"); return; }
-    Log("native history enabled; memory capture; embedded metadata/art; no scratch files; no FFmpeg; complete listens only");
-    if(!Supported(spotify)) { Log("unsupported Spotify.dll hash or parser prologue; capture disabled"); return; }
+    quality_enabled.store(preferences.menu,std::memory_order_relaxed);
+    if(output.empty()) { Log("save location unavailable; history initialization will retry"); audio_init.Retry(now); return; }
+    spotify::HookTargets discovered{};
+    const auto discovery=DiscoverTargets(spotify_module,discovered);
+    if(discovery!=spotify::DiscoveryResult::Found) {
+        char message[220];snprintf(message,sizeof(message),
+            "Spotify audio target discovery failed: %s; capture disabled",
+            DiscoveryFailure(discovery));Log(message);
+        audio_init.MarkUnsupported();return;
+    }
+    target=DiscoveredTarget(spotify_module,discovered,spotify::TargetKind::OggPageSeek);
+    sniff_target=DiscoveredTarget(spotify_module,discovered,spotify::TargetKind::FormatSniff);
+    flac_targets[0]=DiscoveredTarget(spotify_module,discovered,spotify::TargetKind::FlacInit);
+    flac_targets[1]=DiscoveredTarget(spotify_module,discovered,spotify::TargetKind::FlacRead);
+    flac_targets[2]=DiscoveredTarget(spotify_module,discovered,spotify::TargetKind::FlacFrame);
+    flac_targets[3]=DiscoveredTarget(spotify_module,discovered,spotify::TargetKind::FlacError);
+    auto release_resources=[] {
+        if(event) { CloseHandle(event); event=nullptr; }
+        if(save_event) { CloseHandle(save_event); save_event=nullptr; }
+        if(queue) { HeapFree(GetProcessHeap(),0,queue); queue=nullptr; }
+        head=tail=count=0;
+        original=nullptr; original_sniff=nullptr; original_flac_init=nullptr;
+        original_flac_read=nullptr; original_flac_frame=nullptr; original_flac_error=nullptr;
+        target=nullptr; sniff_target=nullptr;
+        for(auto& address:flac_targets) address=nullptr;
+    };
     save_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);
-    if(!save_event){Log("publication worker event failed");return;}
-    auto publisher=CreateThread(nullptr,0,SaveWorker,nullptr,0,nullptr);
-    if(!publisher){Log("publication worker startup failed");return;}SetThreadPriority(publisher,THREAD_PRIORITY_BELOW_NORMAL);CloseHandle(publisher);
     queue=static_cast<Slot*>(HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof(Slot)*capacity));
     event=CreateEventW(nullptr,FALSE,FALSE,nullptr);
-    if(!queue || !event) { Log("queue allocation failed; capture disabled"); return; }
+    if(!save_event || !queue || !event) {
+        Log("audio queue resources unavailable; initialization will retry"); release_resources(); audio_init.Retry(now); return;
+    }
+    workers_running.store(true,std::memory_order_release);
+    HANDLE publisher=CreateThread(nullptr,0,SaveWorker,nullptr,0,nullptr);
+    if(!publisher) {
+        workers_running.store(false,std::memory_order_release);
+        Log("publication worker startup failed; initialization will retry"); release_resources(); audio_init.Retry(now); return;
+    }
+    SetThreadPriority(publisher,THREAD_PRIORITY_BELOW_NORMAL);
+    HANDLE worker=CreateThread(nullptr,0,Worker,nullptr,0,nullptr);
+    if(!worker) {
+        workers_running.store(false,std::memory_order_release); SetEvent(save_event);
+        const bool stopped=WaitForSingleObject(publisher,5000)==WAIT_OBJECT_0;CloseHandle(publisher);
+        if(stopped) {Log("audio worker startup failed; initialization will retry");release_resources();audio_init.Retry(now);}
+        else {Log("audio worker startup failed and publisher did not quiesce; state preserved");audio_init.MarkUnsupported();}
+        return;
+    }
+    auto close_threads=[&] {CloseHandle(publisher);CloseHandle(worker);publisher=nullptr;worker=nullptr;};
+    void* created_targets[6]={};unsigned created_count=0;
+    auto rollback=[&] {
+        hooks::RollbackStatus result;
+        auto disabled=[](MH_STATUS value){return value==MH_OK||value==MH_ERROR_DISABLED||value==MH_ERROR_NOT_CREATED;};
+        auto removed=[](MH_STATUS value){return value==MH_OK||value==MH_ERROR_NOT_CREATED;};
+        for(unsigned i=0;i<created_count;i++)result.ObserveDisable(disabled(MH_DisableHook(created_targets[i])));
+        for(unsigned waited=0;audio_callbacks.Active()&&waited<5000;++waited)Sleep(1);
+        result.ObserveQuiescence(audio_callbacks.Active()==0);
+        if(result.quiescent)for(unsigned i=0;i<created_count;i++)result.ObserveRemove(removed(MH_RemoveHook(created_targets[i])));
+        if(!result.CanRelease()){close_threads();return false;}
+        workers_running.store(false,std::memory_order_release);SetEvent(event);SetEvent(save_event);
+        const bool worker_stopped=WaitForSingleObject(worker,5000)==WAIT_OBJECT_0;
+        const bool publisher_stopped=WaitForSingleObject(publisher,5000)==WAIT_OBJECT_0;
+        close_threads();
+        if(!worker_stopped||!publisher_stopped)return false;
+        release_resources();return true;
+    };
+    auto create_hook=[&](void* address,void* callback,void** trampoline) {
+        MH_STATUS result=MH_CreateHook(address,callback,trampoline);
+        if(result==MH_OK)created_targets[created_count++]=address;
+        return result;
+    };
     MH_STATUS status=MH_Initialize(); if(status==MH_ERROR_ALREADY_INITIALIZED) status=MH_OK;
-    if(status==MH_OK) status=MH_CreateHook(target,reinterpret_cast<void*>(Hook),reinterpret_cast<void**>(&original));
-    sniff_target=reinterpret_cast<unsigned char*>(spotify)+0xe9c550;
-    if(status==MH_OK) status=MH_CreateHook(sniff_target,reinterpret_cast<void*>(FormatHook),reinterpret_cast<void**>(&original_sniff));
-    const uintptr_t flac_rvas[]={0xe95f2c,0xe9663c,0xe969f4,0xe959d0};
+    if(status==MH_OK) status=create_hook(target,reinterpret_cast<void*>(Hook),reinterpret_cast<void**>(&original));
+    if(status==MH_OK) status=create_hook(sniff_target,reinterpret_cast<void*>(FormatHook),reinterpret_cast<void**>(&original_sniff));
     void* flac_callbacks[]={reinterpret_cast<void*>(FlacInitHook),reinterpret_cast<void*>(FlacReadHook),reinterpret_cast<void*>(FlacFrameHook),reinterpret_cast<void*>(FlacErrorHook)};
     void** flac_originals[]={reinterpret_cast<void**>(&original_flac_init),reinterpret_cast<void**>(&original_flac_read),reinterpret_cast<void**>(&original_flac_frame),reinterpret_cast<void**>(&original_flac_error)};
     for(unsigned i=0;status==MH_OK && i<4;i++) {
-        flac_targets[i]=reinterpret_cast<unsigned char*>(spotify)+flac_rvas[i];
-        status=MH_CreateHook(flac_targets[i],flac_callbacks[i],flac_originals[i]);
+        status=create_hook(flac_targets[i],flac_callbacks[i],flac_originals[i]);
         if(status==MH_OK) status=MH_QueueEnableHook(flac_targets[i]);
     }
     if(status==MH_OK) status=MH_QueueEnableHook(target);
     if(status==MH_OK) status=MH_QueueEnableHook(sniff_target);
-    if(status==MH_OK) status=MH_ApplyQueued();
-    char message[180]; snprintf(message,sizeof(message),"parser hook RVA=0xEBEF18 status=%s",MH_StatusToString(status)); Log(message);
-    if(status!=MH_OK) { MH_DisableHook(target); MH_DisableHook(sniff_target); for(auto address:flac_targets) if(address) MH_DisableHook(address); return; }
-    HANDLE worker=CreateThread(nullptr,0,Worker,nullptr,0,nullptr);
-    if(worker) CloseHandle(worker);
-    else { MH_DisableHook(target); MH_DisableHook(sniff_target); for(auto address:flac_targets) if(address) MH_DisableHook(address); Log("worker thread creation failed; capture disabled"); }
+    bool apply_attempted=false;
+    if(status==MH_OK) {apply_attempted=true;status=MH_ApplyQueued();}
+    if(status!=MH_OK) {
+        char message[200];snprintf(message,sizeof(message),"audio hook installation failed: %s",MH_StatusToString(status));Log(message);
+        if(apply_attempted) {
+            // MH_ApplyQueued may have published some detours before reporting a
+            // failure. A thread can be between the detour entry and our C++
+            // callback counter, so keep every trampoline and callback resource
+            // alive for the process lifetime after disabling the hooks.
+            for(unsigned i=0;i<created_count;i++) MH_DisableHook(created_targets[i]);
+            workers_running.store(false,std::memory_order_release);SetEvent(event);SetEvent(save_event);
+            WaitForSingleObject(worker,5000);WaitForSingleObject(publisher,5000);close_threads();
+            Log("audio hook activation failed; disabled hook state preserved for callback safety");
+            audio_init.MarkUnsupported();
+        } else if(rollback()){Log("audio hook rollback complete; retry scheduled");audio_init.Retry(now);}
+        else {Log("audio hook rollback incomplete; callback state preserved and retries disabled");audio_init.MarkUnsupported();}
+        return;
+    }
+    close_threads();
+    audio_init.Activate();
+    Log("native history active; dynamic Spotify targets; memory capture; embedded metadata/art; complete listens only");
 }

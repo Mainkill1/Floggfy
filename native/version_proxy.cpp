@@ -5,13 +5,16 @@
 #include <windows.h>
 #include <iphlpapi.h>
 #include <netlistmgr.h>
-#include <delayimp.h>
 #include <cstdio>
 #include <cstring>
 #include "audio_history.h"
+#include "hook_init_state.h"
 #include "history_settings.h"
-#include "to_disk_menu.h"
 #include "metadata_bridge.h"
+#include "module_pending.h"
+#include "pe_imports.h"
+#include "to_disk_menu.h"
+#include "startup_ready.h"
 
 // Spotify-local proxy. All version APIs go to the original System32 DLL.
 // The connectivity repair and optional native history stay inside Spotify.
@@ -21,6 +24,8 @@ static HMODULE real_version;
 static bool spotify_main;
 static HMODULE proxy_module;
 static volatile LONG logged_results;
+static hooks::PendingModule pending_spotify;
+static hooks::InitController connectivity_init;
 
 static void Log(const char* message) {
     history::HistoryLog(message);
@@ -161,7 +166,10 @@ static HRESULT STDMETHODCALLTYPE EnumClone(IEnumNetworkConnections* self, IEnumN
     return result;
 }
 
-static DWORD AdapterConnectivity(const GUID& id) {
+// This compatibility override intentionally treats a usable adapter address as
+// Internet connectivity. It repairs Spotify's broken NLM interpretation; it is
+// not an independent Internet reachability test.
+static DWORD SyntheticAdapterConnectivity(const GUID& id) {
     ULONG size = 16384;
     auto memory = static_cast<IP_ADAPTER_ADDRESSES*>(HeapAlloc(GetProcessHeap(), 0, size));
     if (!memory) return 0;
@@ -207,13 +215,13 @@ static HRESULT STDMETHODCALLTYPE ConnectionConnectivity(INetworkConnection* self
     if (SUCCEEDED(result) && out && !(*out & (NLM_CONNECTIVITY_IPV4_INTERNET | NLM_CONNECTIVITY_IPV6_INTERNET))) {
         GUID adapter;
         if (SUCCEEDED(self->GetAdapterId(&adapter))) {
-            DWORD flags = AdapterConnectivity(adapter);
+            DWORD flags = SyntheticAdapterConnectivity(adapter);
             if (flags) {
                 DWORD previous = static_cast<DWORD>(*out);
                 *out = static_cast<NLM_CONNECTIVITY>(previous | flags);
                 if (InterlockedIncrement(&logged_results) <= 16) {
                     char message[160];
-                    snprintf(message, sizeof(message), "INetworkConnection::GetConnectivity original=0x%lX repaired=0x%lX; adapter is up",
+                    snprintf(message, sizeof(message), "NLM compatibility override original=0x%lX synthetic=0x%lX; adapter has a usable address",
                         static_cast<unsigned long>(previous), static_cast<unsigned long>(*out));
                     Log(message);
                 }
@@ -232,45 +240,76 @@ static HRESULT WINAPI RepairCoCreateInstance(REFCLSID clsid, LPUNKNOWN outer, DW
     return result;
 }
 
-static bool HookSpotifyImports(HMODULE module) {
-    if (!module) return false;
+enum class ImportHookResult { Active, Unsupported, RetryableFailure };
+
+static DWORD MappedImageSize(HMODULE module) {
+    if (!module) return 0;
     auto base = reinterpret_cast<BYTE*>(module);
     auto dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew < 0 || dos->e_lfanew > 4096) return false;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew < 0 || dos->e_lfanew > 4096) return 0;
     auto nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64) return false;
-    DWORD image_size = nt->OptionalHeader.SizeOfImage;
-    auto range = [image_size](DWORD offset, SIZE_T length) {
-        return offset != 0 && static_cast<ULONGLONG>(offset) + length <= image_size;
-    };
-    auto directory = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT];
-    if (!range(directory.VirtualAddress, directory.Size)) return false;
-    auto descriptors = reinterpret_cast<ImgDelayDescr*>(base + directory.VirtualAddress);
-    for (DWORD i = 0; (i + 1) * sizeof(ImgDelayDescr) <= directory.Size; i++) {
-        auto& d = descriptors[i];
-        if (!d.rvaDLLName) break;
-        if (!(d.grAttrs & dlattrRva) || !range(d.rvaDLLName, 10) ||
-            !range(d.rvaINT, sizeof(IMAGE_THUNK_DATA64)) || !range(d.rvaIAT, sizeof(void*))) continue;
-        if (_stricmp(reinterpret_cast<const char*>(base + d.rvaDLLName), "ole32.dll")) continue;
-        auto names = reinterpret_cast<IMAGE_THUNK_DATA64*>(base + d.rvaINT);
-        auto slots = reinterpret_cast<void**>(base + d.rvaIAT);
-        for (DWORD j = 0; range(d.rvaINT + j * sizeof(*names), sizeof(*names)) &&
-                           range(d.rvaIAT + j * sizeof(void*), sizeof(void*)); j++) {
-            ULONGLONG name = names[j].u1.AddressOfData;
-            if (!name) break;
-            if (IMAGE_SNAP_BY_ORDINAL64(name) || name > MAXDWORD || !range(static_cast<DWORD>(name), 32)) continue;
-            auto entry = reinterpret_cast<IMAGE_IMPORT_BY_NAME*>(base + static_cast<DWORD>(name));
-            if (strcmp(reinterpret_cast<const char*>(entry->Name), "CoCreateInstance")) continue;
-            void* replacement = reinterpret_cast<void*>(RepairCoCreateInstance);
-            if (slots[j] == replacement) return true;
-            DWORD protection;
-            if (!VirtualProtect(&slots[j], sizeof(void*), PAGE_READWRITE, &protection)) return false;
-            InterlockedExchangePointer(reinterpret_cast<void* volatile*>(&slots[j]), replacement);
-            DWORD ignored; VirtualProtect(&slots[j], sizeof(void*), protection, &ignored);
-            return true;
-        }
+    if (nt->Signature != IMAGE_NT_SIGNATURE || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
+        nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) return 0;
+    return nt->OptionalHeader.SizeOfImage;
+}
+
+static bool WriteImportSlot(void** slot, void* value, void** previous) {
+    if (!slot) return true;
+    if (*slot == value) {
+        if (previous) *previous = value;
+        return true;
     }
-    return false;
+    DWORD protection = 0;
+    if (!VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &protection)) return false;
+    void* old = InterlockedExchangePointer(reinterpret_cast<void* volatile*>(slot), value);
+    DWORD ignored = 0;
+    const bool restored = VirtualProtect(slot, sizeof(void*), protection, &ignored) != FALSE;
+    if (!restored) {
+        DWORD current = 0;
+        if (VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &current)) {
+            InterlockedExchangePointer(reinterpret_cast<void* volatile*>(slot), old);
+            VirtualProtect(slot, sizeof(void*), protection, &ignored);
+        }
+        return false;
+    }
+    if (previous) *previous = old;
+    return true;
+}
+
+static ImportHookResult HookSpotifyImports(HMODULE module) {
+    const DWORD image_size = MappedImageSize(module);
+    if (!image_size) return ImportHookResult::Unsupported;
+    auto* base = reinterpret_cast<std::uint8_t*>(module);
+    // Search by the API name across every import provider. Windows may expose
+    // COM through ole32, combase, or an API-set DLL in different client builds.
+    const auto imports = hooks::FindImportSlots(base, image_size, nullptr, "CoCreateInstance");
+    void** slots[] = {imports.normal, imports.delay};
+    void* previous[2] = {};
+    bool changed[2] = {};
+    void* replacement = reinterpret_cast<void*>(RepairCoCreateInstance);
+    unsigned found = 0;
+    for (unsigned i = 0; i < 2; ++i) {
+        if (!slots[i]) continue;
+        ++found;
+        const bool was_replacement = *slots[i] == replacement;
+        if (!WriteImportSlot(slots[i], replacement, &previous[i])) {
+            for (unsigned rollback = 0; rollback < i; ++rollback) {
+                if (changed[rollback]) WriteImportSlot(slots[rollback], previous[rollback], nullptr);
+            }
+            return ImportHookResult::RetryableFailure;
+        }
+        changed[i] = !was_replacement;
+    }
+    if (!found) return ImportHookResult::Unsupported;
+    if (changed[0] || changed[1]) {
+        char message[192];
+        snprintf(message, sizeof(message),
+                 "connectivity import hook active: normal-IAT=%s delay-IAT=%s%s",
+                 imports.normal ? "patched" : "absent", imports.delay ? "patched" : "absent",
+                 imports.malformed ? " malformed-table-observed" : "");
+        Log(message);
+    }
+    return ImportHookResult::Active;
 }
 
 struct NotificationString { USHORT length, maximum; PWSTR buffer; };
@@ -284,24 +323,68 @@ struct NotificationData {
 static VOID CALLBACK DllNotification(ULONG reason, const NotificationData* data, PVOID) {
     if (reason != 1 || !data || !data->base_name || !data->base_name->buffer) return;
     const auto& name = *data->base_name;
-    if (name.length == 22 && !_wcsnicmp(name.buffer, L"Spotify.dll", 11))
-        HookSpotifyImports(static_cast<HMODULE>(data->base));
+    if (name.length == 11 * sizeof(wchar_t) && hooks::IsSpotifyModuleName(name.buffer, 11))
+        pending_spotify.Publish(reinterpret_cast<std::uintptr_t>(data->base));
+}
+
+static void StartConnectivityHook(HMODULE module) {
+    // Delay-import resolution can replace an IAT slot after our first patch.
+    // Keep verifying the live slots from this normal worker context; an
+    // already-patched slot is a no-op and does not emit another log record.
+    if (connectivity_init.State() == hooks::InitState::Active) {
+        HookSpotifyImports(module);
+        return;
+    }
+    const auto now = static_cast<std::uint64_t>(GetTickCount64());
+    if (!connectivity_init.TryBegin(now)) return;
+    switch (HookSpotifyImports(module)) {
+        case ImportHookResult::Active:
+            connectivity_init.Activate();
+            break;
+        case ImportHookResult::Unsupported:
+            Log("connectivity import hook unavailable: CoCreateInstance import not found or PE unsupported");
+            connectivity_init.MarkUnsupported();
+            break;
+        case ImportHookResult::RetryableFailure:
+            Log("connectivity import hook failed temporarily; retry scheduled");
+            connectivity_init.Retry(now);
+            break;
+    }
 }
 
 static DWORD WINAPI StartupMonitor(LPVOID) {
+    wchar_t path[MAX_PATH];
+    DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH);
+    wchar_t* name = length && length < MAX_PATH ? wcsrchr(path, L'\\') : nullptr;
+    spotify_main = name && !_wcsicmp(name + 1, L"Spotify.exe") && !wcsstr(GetCommandLineW(), L"--type=");
+    if (!spotify_main) return 0;
+
+    using Register = LONG (NTAPI*)(ULONG, decltype(&DllNotification), PVOID, PVOID*);
+    FARPROC address = GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "LdrRegisterDllNotification");
+    Register register_notification = nullptr;
+    static_assert(sizeof(register_notification) == sizeof(address), "Function pointer sizes must match");
+    memcpy(&register_notification, &address, sizeof(address));
+    static PVOID notification_cookie = nullptr;
+    if (register_notification) register_notification(0, DllNotification, nullptr, &notification_cookie);
+
     history::InitSettings(proxy_module);
     Log("version.dll proxy loaded; no Windows settings or signed files changed");
-    // Recheck during startup in case a loader replaces the initial delay slot.
-    for (unsigned i = 0; i < 600; i++) {
+    // Polling also covers clients that loaded Spotify.dll before notification
+    // registration. Stay alive at low frequency so late loads and temporary
+    // allocation or hook failures remain recoverable.
+    for (unsigned i = 0;; ++i) {
+        const bool spotify_notification = pending_spotify.Consume() != 0;
+        (void)spotify_notification;
         HMODULE cef;
         if(GetModuleHandleExW(0,L"libcef.dll",&cef)) { history::StartMetadataCollector(cef); StartToDiskMenu(cef); FreeLibrary(cef); }
         HMODULE module;
         if (GetModuleHandleExW(0, L"Spotify.dll", &module)) {
-            HookSpotifyImports(module);
+            StartConnectivityHook(module);
             if (i >= 80) StartAudioHistory(module, proxy_module);
             FreeLibrary(module);
         }
-        Sleep(25);
+        if(i==0)startup::SignalReady();
+        Sleep(i < 600 ? 25 : 1000);
     }
     return 0;
 }
@@ -310,21 +393,8 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(instance);
         proxy_module = instance;
-        wchar_t path[MAX_PATH];
-        DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH);
-        wchar_t* name = length && length < MAX_PATH ? wcsrchr(path, L'\\') : nullptr;
-        spotify_main = name && !_wcsicmp(name + 1, L"Spotify.exe") && !wcsstr(GetCommandLineW(), L"--type=");
-        if (spotify_main) {
-            using Register = LONG (NTAPI*)(ULONG, decltype(&DllNotification), PVOID, PVOID*);
-            FARPROC address = GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "LdrRegisterDllNotification");
-            Register register_notification;
-            static_assert(sizeof(register_notification) == sizeof(address), "Function pointer sizes must match");
-            memcpy(&register_notification, &address, sizeof(address));
-            PVOID cookie;
-            if (register_notification) register_notification(0, DllNotification, nullptr, &cookie);
-            HANDLE thread = CreateThread(nullptr, 0, StartupMonitor, nullptr, 0, nullptr);
-            if (thread) CloseHandle(thread);
-        }
+        HANDLE thread = CreateThread(nullptr, 0, StartupMonitor, nullptr, 0, nullptr);
+        if (thread) CloseHandle(thread);
     }
     return TRUE;
 }

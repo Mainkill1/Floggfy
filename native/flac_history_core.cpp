@@ -1,6 +1,22 @@
 #include "flac_history_core.h"
 #include <cstring>
 namespace history {
+static bool StreamInfo(const uint8_t* b,FlacInfo& info) {
+            info.min_block=(unsigned(b[0])<<8)|b[1]; info.max_block=(unsigned(b[2])<<8)|b[3];
+            uint64_t packed=0; for(unsigned i=10;i<18;i++) packed=(packed<<8)|b[i];
+            info.rate=unsigned(packed>>44); info.channels=unsigned((packed>>41)&7)+1;
+            info.bits=unsigned((packed>>36)&31)+1; info.total_samples=packed&0xfffffffffULL;
+            if(!info.rate || info.rate>655350 || info.bits<4 || info.min_block<16 || info.max_block<info.min_block) return false;
+    return true;
+}
+FlacParse ParseFlacStreamInfo(const uint8_t* source,size_t length,FlacInfo& info) {
+    if(length<4)return FlacParse::NeedMore;
+    if(!source || memcmp(source,"fLaC",4))return FlacParse::Invalid;
+    if(length<8)return FlacParse::NeedMore;
+    if((source[4]&127)!=0 || source[5]!=0 || source[6]!=0 || source[7]!=34)return FlacParse::Invalid;
+    if(length<42)return FlacParse::NeedMore;
+    return StreamInfo(source+8,info)?FlacParse::Valid:FlacParse::Invalid;
+}
 template<class Source> static FlacParse Metadata(const Source& source,FlacInfo& info,size_t& audio) {
     audio=0;
     if(source.size()<4) return FlacParse::NeedMore;
@@ -16,11 +32,7 @@ template<class Source> static FlacParse Metadata(const Source& source,FlacInfo& 
         if(n>source.size()-p) return FlacParse::NeedMore;
         if(first) {
             uint8_t b[34]; for(unsigned i=0;i<34;i++) b[i]=source[p+i];
-            info.min_block=(unsigned(b[0])<<8)|b[1]; info.max_block=(unsigned(b[2])<<8)|b[3];
-            uint64_t packed=0; for(unsigned i=10;i<18;i++) packed=(packed<<8)|b[i];
-            info.rate=unsigned(packed>>44); info.channels=unsigned((packed>>41)&7)+1;
-            info.bits=unsigned((packed>>36)&31)+1; info.total_samples=packed&0xfffffffffULL;
-            if(!info.rate || info.rate>655350 || info.bits<4 || info.min_block<16 || info.max_block<info.min_block) return FlacParse::Invalid;
+            if(!StreamInfo(b,info)) return FlacParse::Invalid;
             first=false;
         }
         p+=n;
