@@ -1,80 +1,60 @@
 # Floggfy
 
-A music downloader mod for the Windows Spotify client, inspired by [Soggfy](https://github.com/Rafiuth/Soggfy).
+Save the music you play in Spotify on Windows.
 
-## Features
+- Saves fully played tracks as Ogg or FLAC, with cover art and available song details.
+- Sorts music by artist and album.
+- Skips songs you already have, unless a better-quality version is available.
 
-- Saves fully played tracks in their original Ogg or FLAC format.
-- Embeds cover art and metadata, including lyrics when already cached by the client.
-- Organizes music by artist and album; skips existing files unless a quality upgrade is available.
-- Saves in the background, with an optional activity log capped at 5 MiB.
-- Shows the current item and available quality, codec and sample rate at the bottom of **To Disk**, even with Downloads off.
+## Install
 
-## Installation and usage
+Choose one download from [Releases](https://github.com/Mainkill1/Floggfy/releases):
 
-Live tested with **Windows x64 Spotify 1.3.3.264**. Dynamic audio and connectivity
-discovery was also checked against signed Spotify DLLs from 1.3.0.277,
-1.2.94.583 and 1.2.92.148; those older clients were not run end to end.
-Microsoft Store installs are unvalidated.
-
-1. Quit Spotify and choose one mode from [Releases](https://github.com/Mainkill1/Floggfy/releases).
-2. Open your Spotify installation folder, usually `%APPDATA%\Spotify`.
-3. Copy the files for your chosen mode beside `Spotify.exe`:
-
-| Mode | Download | How to start |
+| Option | Files to install | How to start |
 | --- | --- | --- |
-| **Automatic** | `version.dll` | Start Spotify normally; Floggfy loads automatically. |
-| **Launcher** | Launcher ZIP: `Floggfy.exe`, `Floggfy.dll` | Start `Floggfy.exe` with Floggfy, or `Spotify.exe` without it. |
+| **Always on** | `version.dll` | Open Spotify normally. |
+| **Launcher** | `Floggfy.exe` and `Floggfy.dll` from the Launcher ZIP | `Floggfy.exe` with Floggfy; Spotify normally without it. |
 
-**Install only one mode.** When switching to Launcher, remove Floggfy's old
-`version.dll`. The launcher rejects a mixed installation. It force-stops running
-Spotify processes from the same installation before starting a fresh instance.
-To switch back to Spotify without Floggfy, quit Spotify completely and start
-`Spotify.exe`. Keep the launcher EXE and DLL from the same release.
+1. Quit Spotify completely.
+2. Open your Spotify folder, usually `%APPDATA%\Spotify`.
+3. Put your chosen files beside `Spotify.exe`.
 
-If Automatic mode does not load on your system, use Launcher mode.
-Floggfy creates `SpotifyHistory.ini` beside the DLL when missing; preserve your
-existing INI when upgrading. Open the top-left menu → **To Disk**, enable
-**Downloads**, and play a track from start to finish without seeking or skipping.
-Tracks save to your Windows Music folder under `Spotify/Artists/Artist/Album`.
-To uninstall, quit Spotify and remove the files for your chosen mode.
+Use only one option. Remove Floggfy's `version.dll` when switching to the launcher.
+The launcher closes and restarts Spotify. Quit Spotify completely before switching
+back to plain Spotify.
+
+## Save music
+
+Open Spotify's top-left menu → **To Disk** → enable **Downloads**.
+Play a song from start to finish without skipping or seeking.
+
+Music saves under `Spotify/Artists/Artist/Album` in your Windows Music folder.
+
+FLAC needs lossless playback in Spotify. Floggfy does not convert Ogg into FLAC.
 
 ## Settings
 
-**To Disk** provides Downloads, Save Location, FLAC and Ogg controls.
-The bottom rows refresh when the submenu opens. Quality uses the current cached
-player state or validated decoder headers. Track information refreshes once per second.
-Episodes retain their title even when Spotify does not report quality. Unavailable
-values mean the client omitted them or the Ogg/FLAC decoder has not been matched;
-the selected quality preference is never substituted for actual playback quality.
-See the inline comments in [SpotifyHistory.ini](SpotifyHistory.ini)
-for other settings.
+**To Disk** includes **Downloads**, **Save Location**, **FLAC** and **Ogg** controls.
 
-If Spotify becomes unstable, quit it and try `Metadata=0`, then `Menu=0` in the INI.
-Restart after editing.
+The bottom shows the current item and available quality details.
 
-If **To Disk** is absent after a Spotify update, quit Spotify and set
-`Downloads=1` directly in `SpotifyHistory.ini`. Audio capture does not depend on
-the optional menu or metadata integrations.
+`SpotifyHistory.ini` is created automatically. Keep your existing file when
+upgrading. Use it to disable the menu, extra song details or activity log.
 
-## Notes
+## Having trouble?
 
-- Audio quality comes from Spotify's playback settings. FLAC requires a lossless source; no conversion or FFmpeg is used.
-- Extra metadata reads existing renderer and local Spotify caches in the background. It includes contributing artists, release dates, labels and copyright when cached; no endpoint requests are made. Explicit publisher credits stay separate from labels, and missing fields are omitted.
-- Audio hook locations are discovered from invariant decoder instructions and
-  Windows x64 function metadata. Missing, ambiguous or inconsistent matches disable
-  capture before any hook is installed.
-- Connectivity repair finds `CoCreateInstance` by its PE import name across normal
-  and delay import tables, independent of Spotify hashes, offsets and the provider
-  DLL name. It keeps verifying the live delay slot because Windows may replace it
-  during delayed resolution.
-- The **To Disk** menu finds CEF through its exported factory, validates the live
-  public menu structures and required executable methods, and recognizes the
-  top-level menu structurally. It has no Spotify offsets, CEF version allowlist or
-  English `File`/`Edit`/`View` dependency.
+- **Floggfy doesn't load:** try the launcher option.
+- **Spotify crashes:** quit it, set `Metadata=0` in `SpotifyHistory.ini`, and restart. If needed, try `Menu=0` too.
+- **Menu missing:** quit Spotify and set `Downloads=1` in the INI to save without it.
+
+Tested with Windows x64 Spotify **1.3.3.264**. Updates may need a new Floggfy release. [Report a problem](https://github.com/Mainkill1/Floggfy/issues).
+
+To uninstall, quit Spotify and remove the Floggfy files you installed.
 
 ## Credits
 
-[Rafiuth/Soggfy](https://github.com/Rafiuth/Soggfy), [Soggfy-Fixed](https://github.com/SuperSecretEyeball/Soggfy-Fixed) and [Spicetify](https://github.com/spicetify/cli).
+Based on [Soggfy](https://github.com/Rafiuth/Soggfy), with work from
+[Soggfy-Fixed](https://github.com/SuperSecretEyeball/Soggfy-Fixed) and
+[Spicetify](https://github.com/spicetify/cli).
 
-[MIT license](LICENSE). Third-party licenses are included. Not affiliated with Spotify.
+[MIT license](LICENSE). Not affiliated with Spotify.
