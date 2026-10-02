@@ -44,6 +44,21 @@ int main(){
     assert(history::CurrentPlayback(&current));
     auto playing=history::ReadPlaybackQuality();
     assert(playing.title[0]==L'N' && playing.level==history::PlaybackLevel::Lossless);
+    wchar_t episode_message[]=L"FLOGGFY_PLAYBACK_V1:v=1&title=Episode&uri=spotify:episode:0000000000000000000001&duration=4030&playback_quality=high";
+    current={episode_message,wcslen(episode_message),nullptr};
+    assert(history::CurrentPlayback(&current));
+    playing=history::ReadPlaybackQuality();
+    assert(playing.title[0]==L'E' && playing.level==history::PlaybackLevel::High);
+    assert(playing.format==history::PlaybackFormat::Unknown);
+    // A same-title prior episode must not lend its decoder to a different URI.
+    auto previous=playing;previous.format=history::PlaybackFormat::Ogg;previous.rate=44100;
+    history::PublishPlaybackQuality(previous);
+    wchar_t next_episode[]=L"FLOGGFY_PLAYBACK_V1:v=1&title=Episode&uri=spotify:episode:0000000000000000000002&duration=4030";
+    current={next_episode,wcslen(next_episode),nullptr};
+    assert(history::CurrentPlayback(&current));
+    playing=history::ReadPlaybackQuality();
+    assert(playing.identity!=previous.identity && playing.title[0]==L'E');
+    assert(playing.format==history::PlaybackFormat::Unknown && playing.level==history::PlaybackLevel::Unknown);
     wchar_t clear_message[]=L"FLOGGFY_PLAYBACK_V1:v=1";
     current={clear_message,wcslen(clear_message),nullptr};
     assert(history::CurrentPlayback(&current));

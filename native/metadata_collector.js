@@ -96,10 +96,13 @@
    scan();if(!player){playback({v:1});return;}
    if(!reported){console.info('FLOGGFY_STATUS:cached player found');reported=true;}
    const state=method(player,'getState').call(player),item=own(state,'item'),m=own(item,'metadata')||{},uri=text(own(item,'uri'));
-   if(!/^spotify:track:[A-Za-z0-9]{22}$/.test(uri||'')){playback({v:1});return;}
-   const data={v:1,title:text(own(m,'title')||own(item,'name')),artist:text(own(m,'artist_name')),
-    album:text(own(m,'album_title')),uri,duration:Number(text(own(m,'duration')||own(own(item,'duration'),'milliseconds')))/1000,SPOTIFY_URI:uri};
-   if(!data.title||!data.artist||!data.album||!Number.isFinite(data.duration)||data.duration<=0){playback({v:1});return;}
+   if(!/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')){playback({v:1});return;}
+   const track=uri.startsWith('spotify:track:'),show=own(item,'show')||{};
+   const data={v:1,title:text(own(m,'title')||own(item,'name')),
+    artist:text(own(m,'artist_name'))||artists(own(item,'artists'))[0]||text(own(m,'show.publisher')||own(m,'show_name')||own(show,'publisher')),
+    album:text(own(m,'album_title')||own(show,'name')||own(m,'show_name')),uri,
+    duration:Number(text(own(m,'duration')||own(own(item,'duration'),'milliseconds')||own(state,'duration')))/1000,SPOTIFY_URI:uri};
+   if(!data.title||(track&&(!data.artist||!data.album))||!Number.isFinite(data.duration)||data.duration<=0){playback({v:1});return;}
    // Actual current playback quality, never targetBitrateLevel (the preference).
    const quality=own(state,'playbackQuality')||own(state,'playback_quality');
    const raw=own(quality,'bitrateLevel')||own(quality,'bitrate_level');
@@ -110,6 +113,7 @@
    if(level==='hifi24')level='lossless_24';
    if(['low','normal','high','very_high','lossless','lossless_24','hifi'].includes(level))data.playback_quality=level;
    playback({v:1,title:data.title,artist:data.artist,album:data.album,uri,duration:data.duration,playback_quality:data.playback_quality});
+   if(!track)return; // Episode footer does not enter music-tag enrichment.
    for(const record of records)cached(data,record);
    merge(data,item); // Current playback snapshot wins over older cached data.
    const encode=()=>Object.entries(data).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&');

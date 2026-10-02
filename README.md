@@ -8,7 +8,7 @@ A music downloader mod for the Windows Spotify client, inspired by [Soggfy](http
 - Embeds cover art and metadata, including lyrics when already cached by the client.
 - Organizes music by artist and album; skips existing files unless a quality upgrade is available.
 - Saves in the background, with an optional activity log capped at 5 MiB.
-- Shows the current song, quality level, codec and sample rate at the bottom of **To Disk**, even with Downloads off.
+- Shows the current item and available quality, codec and sample rate at the bottom of **To Disk**, even with Downloads off.
 
 ## Installation and usage
 
@@ -44,7 +44,9 @@ To uninstall, quit Spotify and remove the files for your chosen mode.
 **To Disk** provides Downloads, Save Location, FLAC and Ogg controls.
 The bottom rows refresh when the submenu opens. Quality uses the current cached
 player state or validated decoder headers. Track information refreshes once per second.
-Unavailable values mean the source has not yet been matched or fully measured.
+Episodes retain their title even when Spotify does not report quality. Unavailable
+values mean the client omitted them or the Ogg/FLAC decoder has not been matched;
+the selected quality preference is never substituted for actual playback quality.
 See the inline comments in [SpotifyHistory.ini](SpotifyHistory.ini)
 for other settings.
 

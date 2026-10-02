@@ -256,3 +256,20 @@ and a restart from an already hooked session also succeeded. Automatic mode
 was then restored and loaded version.dll normally with the menu working.
 The original personal INI was restored exactly. Packaged binaries match these
 live-tested files; media names and private diagnostics are excluded.
+
+## Episode footer identity
+
+The heartbeat now accepts current episode titles without requiring music album
+or artist tags. Episodes use their URI identity and do not enter music enrichment
+or borrow decoder details from the music identity. Regression tests cover missing
+music tags, same-title episodes with different URIs, and unknown actual quality
+with a lossless target preference. The title remains available without inventing
+a quality level. Existing Ogg/FLAC association and complete-listen tests pass.
+
+On installed Spotify 1.3.3.264, an episode previously cleared the whole footer;
+the corrected build displayed its current title. Its cached actual quality and
+format were unknown, so codec, sample rate and quality remained unavailable.
+This is an episode-title correction, not evidence of a new live Ogg quality test.
+The native and full Windows suites passed; the additional same-title identity
+regression failed before its fix and passed afterward on Windows. Private
+diagnostics were removed and the original personal INI restored for final use.

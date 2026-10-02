@@ -67,6 +67,19 @@ fresh.metadata.year='2024';context.window.__floggfyPoll();
 assert(output.at(-1).includes('DATE=2024-05-06')); // Do not replace a full date with a coarse year.
 const indexed=[];Object.defineProperty(indexed,'0',{get(){getters++;forbidden();}});fresh.metadata.genres=indexed;
 context.window.__floggfyPoll();
+// The current-item footer includes episodes, even without music album tags.
+const musicMessages=output.filter(x=>x.startsWith('FLOGGFY_METADATA_V1:')).length;
+state.item={uri:'spotify:episode:0000000000000000000005',name:'Episode',duration:{milliseconds:4030000},metadata:{show_name:'Show'}};
+state.playbackQuality={bitrateLevel:'HIGH'};state.playback_quality=undefined;
+context.window.__floggfyPoll();
+assert(currentMessages().at(-1).includes('title=Episode'));
+assert(currentMessages().at(-1).includes('uri=spotify%3Aepisode%3A'));
+assert(currentMessages().at(-1).includes('playback_quality=high'));
+state.playbackQuality={bitrateLevel:0,targetBitrateLevel:5,targetBitrateAvailable:false};
+context.window.__floggfyPoll();
+assert(currentMessages().at(-1).includes('title=Episode'));
+assert(!currentMessages().at(-1).includes('playback_quality='));
+assert.equal(output.filter(x=>x.startsWith('FLOGGFY_METADATA_V1:')).length,musicMessages);
 Object.defineProperty(state,'item',{get(){getters++;forbidden();},configurable:true});context.window.__floggfyPoll();
 assert.equal(requests,0);assert.equal(resolutions,0);assert.equal(getters,0);
 assert(!/https?:\/\/|AuthorizationAPI|\.resolve\(|\.fetchQuery\(/.test(script));

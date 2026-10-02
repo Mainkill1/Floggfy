@@ -116,8 +116,11 @@ static bool CurrentPlayback(const String* text) {
     payload+=char(text->str[i]);
    }
    RichMetadata record;std::string error;
-   if(ParseRichMetadata(payload,record,error)) {
-    snapshot.identity=PlaybackIdentity(record.title+"\x1f"+record.artist+"\x1f"+record.album);
+   if(ParsePlaybackMetadata(payload,record,error)) {
+    // Episodes can share a title and omit music tags. Keep their URI identity
+    // separate from SMTC's music key; that cannot identify an episode decoder.
+    snapshot.identity=PlaybackIdentity(record.uri.rfind("spotify:episode:",0)==0
+        ? record.uri : record.title+"\x1f"+record.artist+"\x1f"+record.album);
     snapshot.level=ParsePlaybackLevel(record.playback_quality);
     const int length=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,record.title.data(),int(record.title.size()),nullptr,0);
     if(length>0 && length<=4096) {
