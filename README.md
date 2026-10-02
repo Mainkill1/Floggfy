@@ -41,7 +41,7 @@ the optional menu or metadata integrations.
 ## Notes
 
 - Audio quality comes from Spotify's playback settings. FLAC requires a lossless source; no conversion or FFmpeg is used.
-- Extra metadata uses existing client caches only. No endpoint requests are made, and missing fields are omitted.
+- Extra metadata reads existing renderer and local Spotify caches in the background. It includes contributing artists, release dates, labels and copyright when cached; no endpoint requests are made. Explicit publisher credits stay separate from labels, and missing fields are omitted.
 - Audio hook locations are discovered from invariant decoder instructions and
   Windows x64 function metadata. Missing, ambiguous or inconsistent matches disable
   capture before any hook is installed.

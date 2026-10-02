@@ -17,5 +17,8 @@ int main() {
  assert(ParseRichMetadata("v=1&title=Song&artist=Artist&album=Album&duration=200&uri=spotify%3Atrack%3Aa&DATE=2026",m,e)); cache.Put(m);
  assert(cache.Find("Song","Artist","Album",200));
  m.uri="spotify:track:b"; cache.Put(m); assert(!cache.Find("Song","Artist","Album",200));
+ assert(ParseRichMetadata("v=1&title=Song&artist=Artist&album=Album&duration=200&uri=spotify%3Atrack%3A123&ARTIST=Artist%3B%20Guest&ALBUMARTIST=Artist%3B%20Guest&LABEL=Example%20Records&ORGANIZATION=Example%20Records&COPYRIGHT=Example%20Rights&PUBLISHER=Example%20Publishing",m,e));
+ assert(m.artist=="Artist" && m.fields.at("ARTIST")=="Artist; Guest");
+ assert(m.fields.at("LABEL")=="Example Records" && m.fields.at("PUBLISHER")=="Example Publishing");
  std::cout<<"PASS: bounded UTF-8 metadata, identity matching and ambiguity rejection\n";
 }

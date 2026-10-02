@@ -37,3 +37,7 @@ build/rich-metadata-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/bounded_queue_test.cpp -o build/bounded-queue-test
 build/bounded-queue-test
 node tests/metadata_collector_test.js
+
+python3 tests/create_cache_fixtures.py build/cache-fixtures
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/cached_metadata_test.cpp native/cached_metadata.cpp native/rich_metadata.cpp -o build/cached-metadata-test
+build/cached-metadata-test

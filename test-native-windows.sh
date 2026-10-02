@@ -10,6 +10,9 @@ else
 fi
 mkdir -p "$floggfy_test_root"
 python3 tests/create_quality_fixtures.py "$floggfy_test_root"
+python3 tests/create_cache_fixtures.py "$floggfy_test_root/cache-fixtures"
+mkdir -p "$floggfy_test_root/cache-users/synthetic-user/primary.ldb"
+cp "$floggfy_test_root/cache-fixtures/separate-album.ldb" "$floggfy_test_root/cache-users/synthetic-user/primary.ldb/000001.ldb"
 mkdir -p build/windows-tests
 python3 - <<'PY'
 from pathlib import Path
@@ -28,9 +31,14 @@ x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_history_test.cpp \
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_log_test.cpp native/async_log.cpp \
  native/history_settings.cpp -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-log-test.exe"
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_metadata_identity_test.cpp \
- native/rich_metadata.cpp native/history_settings.cpp native/async_log.cpp \
+ native/rich_metadata.cpp native/cached_metadata.cpp native/cached_metadata_windows.cpp native/history_settings.cpp native/async_log.cpp \
  native/media_session.cpp build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 \
  -lruntimeobject -o "$floggfy_test_root/windows-metadata-identity-test.exe"
 "$floggfy_test_root/windows-history-test.exe"
 "$floggfy_test_root/windows-log-test.exe"
 "$floggfy_test_root/windows-metadata-identity-test.exe"
+
+x86_64-w64-mingw32-g++ "${common[@]}" tests/cached_metadata_test.cpp native/cached_metadata.cpp native/rich_metadata.cpp -o "$floggfy_test_root/cached-metadata-test.exe"
+"$floggfy_test_root/cached-metadata-test.exe" "$(wslpath -w "$floggfy_test_root/cache-fixtures")"
+x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_cached_metadata_test.cpp native/cached_metadata.cpp native/cached_metadata_windows.cpp native/rich_metadata.cpp -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-cached-metadata-test.exe"
+"$floggfy_test_root/windows-cached-metadata-test.exe" "$(wslpath -w "$floggfy_test_root/cache-users")"

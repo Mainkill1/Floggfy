@@ -30,7 +30,7 @@ static constexpr char default_ini[]=
     "Ogg=1\r\n"
     "; Captures native FLAC when Spotify supplies lossless audio.\r\n"
     "Flac=1\r\n"
-    "; Uses metadata already cached by the client and makes no requests.\r\n"
+    "; Reads existing renderer and local client caches; makes no requests.\r\n"
     "Metadata=1\r\n"
     "; Activity log in Save Location, capped at 5 MiB.\r\n"
     "Log=1\r\n"

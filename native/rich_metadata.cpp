@@ -4,7 +4,7 @@
 #include <cstdlib>
 #include <set>
 namespace history {
-static bool Utf8Valid(const std::string& s) {
+bool MetadataTextValid(const std::string& s) {
  for(size_t i=0;i<s.size();) {
   unsigned char b=s[i++]; if(b<128) {if(!b) return false; continue;}
   unsigned n=b>=0xc2&&b<=0xdf?1:b>=0xe0&&b<=0xef?2:b>=0xf0&&b<=0xf4?3:99;
@@ -19,13 +19,13 @@ static bool Decode(const std::string& s,std::string& out) {
  out.clear(); for(size_t i=0;i<s.size();i++) {
   if(s[i]=='%') {if(i+2>=s.size()||Hex(s[i+1])<0||Hex(s[i+2])<0) return false; out+=char(Hex(s[i+1])*16+Hex(s[i+2])); i+=2;}
   else out+=s[i];
- } return Utf8Valid(out);
+ } return MetadataTextValid(out);
 }
 bool RichMetadata::Matches(const std::string& t,const std::string& a,const std::string& al,double d) const {
  return title==t&&artist==a&&album==al&&std::fabs(duration-d)<=1.0;
 }
 bool ParseRichMetadata(const std::string& input,RichMetadata& out,std::string& error) {
- static const std::set<std::string> allowed={"v","title","artist","album","uri","duration","DATE","YEAR","GENRE","LYRICS","DISCNUMBER","DISCTOTAL","TRACKTOTAL","ISRC","PUBLISHER","LANGUAGE","COMMENT","SPOTIFY_URI"};
+ static const std::set<std::string> allowed={"v","title","artist","album","uri","duration","ARTIST","ALBUMARTIST","DATE","YEAR","GENRE","LYRICS","TRACKNUMBER","DISCNUMBER","DISCTOTAL","TRACKTOTAL","ISRC","LABEL","ORGANIZATION","PUBLISHER","COPYRIGHT","PHONOGRAMCOPYRIGHT","COMPOSER","REMIXER","CONDUCTOR","LANGUAGE","COMMENT","SPOTIFY_URI"};
  auto fail=[&](const char* e){error=e; return false;};
  if(input.size()>131072) return fail("metadata too large");
  std::map<std::string,std::string> kv;

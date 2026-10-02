@@ -94,3 +94,40 @@ they do not resolve earlier intermittent freeze reports.
 
 Repaired `version.dll` SHA-256:
 `59503908963397442c8daf4ae95407c98aacc7a0aac714c2866ee8346af82098`.
+
+## Cached catalogue metadata enrichment
+
+The renderer collector now exports every cached contributing artist and album
+artist, retains full release dates, and separates label/organization tags from
+explicit publisher credits. The metadata worker also reads existing Spotify
+LevelDB tables and complete WAL records through shared read-only file handles;
+it does not open/recover the database, take its lock, query endpoints or construct
+client services. Exact cache URI, embedded protobuf GID, title, album and duration
+are verified before merge. Cached artist lists cannot remove renderer artists.
+
+Synthetic Linux and Windows tests passed for separate album records, signed
+protobuf dates, artist lists, label/copyright tags, exact identity and wrong-GID
+rejection, Snappy compression, WAL fragments/truncated tails and tombstones.
+Checksum-valid repeated block handles and excessive aggregate expansion are
+rejected. AddressSanitizer and UndefinedBehaviorSanitizer passed the cache suite.
+The Windows suite also verified concurrent shared reads, an exclusively held
+WAL, and rejection of readable corruption instead of silently using older data.
+Existing history, Ogg/FLAC tagging, log and CEF object-identity regressions passed.
+
+The installed Windows Spotify 1.3.3.264 client received enriched fields through
+the production metadata worker, stayed responsive and initialized connectivity
+repair. A metadata-only update to an existing FLAC preserved its compressed audio,
+STREAMINFO and embedded artwork byte for byte. Private recordings and cache
+records are not included in the repository or release.
+
+Lookup work uses background I/O priority, bounded files/bytes, block expansion
+limits and a 24-entry memo cache. Its two-second cutoff is cooperative between
+file operations, not cancellation of a stalled disk read. Spotify can exclusively
+hold its active WAL; in that specific sharing-lock case the reader uses matching
+readable SST catalogue records, which may lag WAL updates or evictions. Other
+read/parse failures retain ordinary tags. Missing fields remain absent. This
+change does not automatically retag the entire existing library, and earlier
+cross-version/CEF support limits still apply.
+
+Enriched `version.dll` SHA-256:
+`153b7d52f4f49973efaedceee79e17348c186158f7d1ce3dd27524448c2a66e0`.

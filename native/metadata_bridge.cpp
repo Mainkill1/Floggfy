@@ -5,6 +5,7 @@
 #include "hook_installation.h"
 #include "hook_rollback.h"
 #include "rich_metadata.h"
+#include "cached_metadata.h"
 #include "history_settings.h"
 #include "vendor/minhook/include/MinHook.h"
 #include "../build/metadata_script.h"
@@ -88,10 +89,12 @@ static bool Enqueue(const String* value) {
  } return true;
 }
 static DWORD WINAPI MetadataWorker(LPVOID) {
+ SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL);
  Message m;
  while(metadata_running.load(std::memory_order_acquire)){if(metadata_polling.load(std::memory_order_acquire))SchedulePoll();bool got=false;AcquireSRWLockExclusive(&message_lock);if(count){m=messages[head];head=(head+1)%messages.size();--count;got=true;}ReleaseSRWLockExclusive(&message_lock);
   if(!got){WaitForSingleObject(message_event,1000);continue;}
   RichMetadata metadata;std::string error;if(!ParseRichMetadata(std::string(m.data,m.length),metadata,error))continue;
+  try {EnrichStoredMetadata(metadata);}catch(...){HistoryLog("cached metadata unavailable; ordinary tags retained");}
   AcquireSRWLockExclusive(&cache_lock);cache.Put(metadata);ReleaseSRWLockExclusive(&cache_lock);
   HistoryLog(("metadata cached fields="+std::to_string(metadata.fields.size())+" date="+(metadata.fields.count("DATE")?metadata.fields.at("DATE"):std::string{})+" lyrics_bytes="+std::to_string((metadata.fields.count("LYRICS")?metadata.fields.at("LYRICS").size():0))).c_str());
  }

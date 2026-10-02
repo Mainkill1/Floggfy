@@ -10,6 +10,7 @@ struct RichMetadata {
  bool Matches(const std::string&,const std::string&,const std::string&,double) const;
 };
 bool ParseRichMetadata(const std::string&,RichMetadata&,std::string&);
+bool MetadataTextValid(const std::string&);
 class MetadataCache {
  std::deque<RichMetadata> records_;
 public:
