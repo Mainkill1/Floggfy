@@ -20,7 +20,7 @@ static bool AnyRunning(const std::wstring& exe) {
   CloseHandle(snapshot);return found;
 }
 int wmain(int argc,wchar_t** argv) {
-  assert(argc==2);std::wstring folder=argv[1],exe=folder+L"\\Spotify.exe",dll=folder+L"\\version.dll";
+  assert(argc==2);std::wstring folder=argv[1],exe=folder+L"\\Spotify.exe",dll=folder+L"\\Floggfy.dll";
   PROCESS_INFORMATION process{};std::wstring error;
   auto command=L"\""+exe+L"\"";STARTUPINFOW info{};info.cb=sizeof(info);
   // The issue's normal startup skips the adjacent DLL.
@@ -49,14 +49,50 @@ int wmain(int argc,wchar_t** argv) {
   assert(!startup::Launch(folder,process,error) && !process.hProcess);
   assert(error.find(L"initialization timed out")!=std::wstring::npos && !AnyRunning(exe));
   assert(DeleteFileW(dll.c_str()));assert(MoveFileW((dll+L".saved").c_str(),dll.c_str()));
-  // An existing instance is never killed or reused as a late-injection target.
+  // Mixed installations cannot promise a normal launch without Floggfy.
+  const auto automatic=folder+L"\\version.dll";
+  assert(CopyFileW(dll.c_str(),automatic.c_str(),TRUE));
+  assert(!startup::Launch(folder,process,error) && !process.hProcess);
+  assert(error.find(L"version.dll")!=std::wstring::npos && !AnyRunning(exe));
+  assert(DeleteFileW(automatic.c_str()));
+  // Relaunch stops all matching processes, but leaves another installation alone.
   command=L"\""+exe+L"\"";
-  PROCESS_INFORMATION existing{};
+  PROCESS_INFORMATION existing{},helper{},other{};
   assert(CreateProcessW(exe.c_str(),command.data(),nullptr,nullptr,FALSE,CREATE_SUSPENDED,nullptr,folder.c_str(),&info,&existing));
-  assert(!startup::Launch(folder,process,error) && error.find(L"Quit Spotify")!=std::wstring::npos);
-  assert(WaitForSingleObject(existing.hProcess,0)==WAIT_TIMEOUT);
-  assert(TerminateProcess(existing.hProcess,0));assert(WaitForSingleObject(existing.hProcess,3000)==WAIT_OBJECT_0);
-  CloseHandle(existing.hThread);CloseHandle(existing.hProcess);
-  std::puts("PASS: System32-first bypass, pre-entry load, debugger detach, missing/invalid DLL, readiness timeout cleanup and existing-instance preservation");
+  command=L"\""+exe+L"\"";
+  assert(CreateProcessW(exe.c_str(),command.data(),nullptr,nullptr,FALSE,CREATE_SUSPENDED,nullptr,folder.c_str(),&info,&helper));
+  const auto other_folder=folder+L"\\other-install",other_exe=other_folder+L"\\Spotify.exe";
+  assert(CreateDirectoryW(other_folder.c_str(),nullptr) || GetLastError()==ERROR_ALREADY_EXISTS);
+  assert(CopyFileW(exe.c_str(),other_exe.c_str(),FALSE));
+  command=L"\""+other_exe+L"\"";
+  assert(CreateProcessW(other_exe.c_str(),command.data(),nullptr,nullptr,FALSE,CREATE_SUSPENDED,nullptr,other_folder.c_str(),&info,&other));
+  // An unrelated installation may permit querying but deny termination.
+  BYTE sid[SECURITY_MAX_SID_SIZE]{};DWORD sid_size=sizeof(sid);
+  assert(CreateWellKnownSid(WinWorldSid,nullptr,sid,&sid_size));
+  BYTE acl_buffer[256]{};auto* acl=reinterpret_cast<ACL*>(acl_buffer);
+  assert(InitializeAcl(acl,sizeof(acl_buffer),ACL_REVISION));
+  assert(AddAccessAllowedAce(acl,ACL_REVISION,PROCESS_ALL_ACCESS & ~PROCESS_TERMINATE,sid));
+  SECURITY_DESCRIPTOR descriptor{};
+  assert(InitializeSecurityDescriptor(&descriptor,SECURITY_DESCRIPTOR_REVISION));
+  assert(SetSecurityDescriptorDacl(&descriptor,TRUE,acl,FALSE));
+  assert(SetKernelObjectSecurity(other.hProcess,DACL_SECURITY_INFORMATION,&descriptor));
+  HANDLE query=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION|SYNCHRONIZE,FALSE,other.dwProcessId);
+  assert(query);CloseHandle(query);
+  HANDLE denied=OpenProcess(PROCESS_TERMINATE,FALSE,other.dwProcessId);
+  assert(!denied && GetLastError()==ERROR_ACCESS_DENIED);
+  bool launched=startup::Launch(folder,process,error);
+  bool stopped=WaitForSingleObject(existing.hProcess,0)==WAIT_OBJECT_0 && WaitForSingleObject(helper.hProcess,0)==WAIT_OBJECT_0;
+  bool preserved=WaitForSingleObject(other.hProcess,0)==WAIT_TIMEOUT;
+  // Always clean the suspended test fixtures, including the pre-fix failure.
+  for(auto* child:{&existing,&helper,&other}) {
+    if(WaitForSingleObject(child->hProcess,0)==WAIT_TIMEOUT)assert(TerminateProcess(child->hProcess,0));
+    assert(WaitForSingleObject(child->hProcess,3000)==WAIT_OBJECT_0);
+    CloseHandle(child->hThread);CloseHandle(child->hProcess);
+  }
+  assert(launched && stopped && preserved);
+  assert(WaitForSingleObject(process.hProcess,10000)==WAIT_OBJECT_0);
+  assert(GetExitCodeProcess(process.hProcess,&code) && code==0);
+  CloseHandle(process.hThread);CloseHandle(process.hProcess);
+  std::puts("PASS: System32-first bypass, pre-entry load, debugger detach, failure cleanup, mixed-mode rejection, automatic restart and other-install preservation");
   return 0;
 }

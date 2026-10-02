@@ -14,7 +14,7 @@ extern "C" { PIMAGE_TLS_CALLBACK startup_callback __attribute__((section(".CRT$X
 int wmain() {
   if(!system_version || LoadLibraryW(L"version.dll")!=system_version)return 10;
   wchar_t path[32768]{};GetModuleFileNameW(nullptr,path,32768);
-  std::wstring local=path;local.resize(local.find_last_of(L'\\')+1);local+=L"version.dll";
+  std::wstring local=path;local.resize(local.find_last_of(L'\\')+1);local+=L"Floggfy.dll";
   auto proxy=GetModuleHandleW(local.c_str());
   if(!proxy || proxy==system_version)return 11;
   if(!GetProcAddress(proxy,"SpotifyConnectivityFixVersion"))return 12;

@@ -17,19 +17,27 @@ discovery was also checked against signed Spotify DLLs from 1.3.0.277,
 1.2.94.583 and 1.2.92.148; those older clients were not run end to end.
 Microsoft Store installs are unvalidated.
 
-1. Quit Spotify and download the ZIP from [Releases](https://github.com/Mainkill1/Floggfy/releases).
+1. Quit Spotify and choose one mode from [Releases](https://github.com/Mainkill1/Floggfy/releases).
 2. Open your Spotify installation folder, usually `%APPDATA%\Spotify`.
-3. Copy `version.dll` into that folder beside `Spotify.exe`.
-4. Start Spotify. Floggfy creates `SpotifyHistory.ini` beside the DLL when it is missing.
-5. Open Spotify's top-left menu → **To Disk**, enable **Downloads**, and play a track from start to finish without seeking or skipping.
+3. Copy the files for your chosen mode beside `Spotify.exe`:
 
-If Spotify skips the local DLL on normal startup, quit Spotify,
-copy the included `Floggfy.exe` beside `Spotify.exe` and `version.dll`, then
-start `Floggfy.exe`. This optional launcher explicitly loads the adjacent DLL
-before application startup. Keep the EXE and DLL from the same release.
+| Mode | Download | How to start |
+| --- | --- | --- |
+| **Automatic** | `version.dll` | Start Spotify normally; Floggfy loads automatically. |
+| **Launcher** | Launcher ZIP: `Floggfy.exe`, `Floggfy.dll` | Start `Floggfy.exe` with Floggfy, or `Spotify.exe` without it. |
 
+**Install only one mode.** When switching to Launcher, remove Floggfy's old
+`version.dll`. The launcher rejects a mixed installation. It force-stops running
+Spotify processes from the same installation before starting a fresh instance.
+To switch back to Spotify without Floggfy, quit Spotify completely and start
+`Spotify.exe`. Keep the launcher EXE and DLL from the same release.
+
+If Automatic mode does not load on your system, use Launcher mode.
+Floggfy creates `SpotifyHistory.ini` beside the DLL when missing; preserve your
+existing INI when upgrading. Open the top-left menu → **To Disk**, enable
+**Downloads**, and play a track from start to finish without seeking or skipping.
 Tracks save to your Windows Music folder under `Spotify/Artists/Artist/Album`.
-To uninstall, quit Spotify and remove Floggfy's `version.dll` and optional `Floggfy.exe`.
+To uninstall, quit Spotify and remove the files for your chosen mode.
 
 ## Settings
 

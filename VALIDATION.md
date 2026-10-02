@@ -200,20 +200,23 @@ bit depth. Older-client runtime behavior remains unvalidated.
 
 ## Startup fallback and localized menu
 
-The optional Floggfy.exe launcher addresses System32 VERSION.dll winning the
+The Launcher-mode Floggfy.exe addresses System32 VERSION.dll winning the
 normal module-name lookup. It stops a newly created Spotify process at its
 PE entry point after loader initialization, restores the entry instruction,
-detaches debugging, and loads the adjacent version.dll by absolute path.
+detaches debugging, and loads the adjacent Floggfy.dll by absolute path.
 It resolves LoadLibraryW relative to its actual owning Windows module, checks
 the complete loaded DLL path, waits for worker readiness, and resumes Spotify.
 Module snapshots retry bounded ERROR_BAD_LENGTH failures during loader churn.
 Signed Spotify files and Windows DLL-search policy are not modified. Existing
-Spotify instances are left untouched; the user must quit them first.
+Spotify processes from the matching executable path are force-stopped before
+the new process starts. Shutdown is bounded; other installations are left alone.
 
 The Windows startup fixture preloads System32 VERSION.dll before entry.
 Normal launch demonstrably skips the adjacent DLL. The fallback loads it and
 detaches its debugger. Failure checks cover absent/invalid DLLs, an unavailable
-readiness signal, and preservation of an existing instance.
+readiness signal, and rejection of mixed automatic/launcher installations.
+Restart checks cover multiple matching processes and preservation of a process
+from a different installation path.
 
 Menu discovery already uses public CEF item types rather than translated
 File/Edit/View labels. Regression models use Japanese, German mnemonics and
@@ -221,10 +224,35 @@ Arabic labels. Live Japanese Spotify 1.3.3.264 displayed To Disk alongside
 ファイル, 編集 and 表示; its Downloads toggle changed the INI correctly.
 These tests do not establish live support for every Spotify version or locale.
 
-The packaged launcher was also run on installed Spotify 1.3.3.264 with the
-new DLL. It exited successfully, the main process loaded the adjacent DLL,
+The earlier RC6 launcher was also run on installed Spotify 1.3.3.264 with its
+version.dll. It exited successfully, the main process loaded the adjacent DLL,
 and Spotify remained responsive. The Japanese To Disk menu, Downloads toggle
 and four current-track rows worked after that launch. A second launch after
 restoring the original language and INI also succeeded. Spotify 1.3.1 from
 the startup report was not available for a live test; the System32-first
 failure was reproduced with the Windows fixture instead.
+
+## Automatic and Launcher modes
+
+The release has exactly two assets: the Automatic-mode version.dll and a
+Launcher ZIP containing Floggfy.exe and the same DLL bytes named Floggfy.dll.
+The ZIP includes binary checksums and the default INI; the standalone DLL
+creates the INI when missing. Mixed-mode installation is rejected before
+shutdown or injection.
+
+The Windows fixture confirms that normal Spotify startup does not load
+Floggfy.dll, while launcher startup explicitly loads it before application
+entry. Restart tests stop multiple matching processes and preserve an unrelated
+installation whose DACL permits querying but denies termination. Initialization
+failure cleanup and System32-first loading regressions still pass. The native
+and full Windows suites passed after these changes.
+
+Live Windows Spotify 1.3.3.264 checks confirmed normal startup in Launcher mode
+loaded neither local DLL, then Floggfy.exe stopped every previously running
+Spotify process from that installation and started a responsive new instance
+with Floggfy.dll loaded. The To Disk menu and four current-track rows worked.
+Launching plain Spotify again left Floggfy unloaded; a second launcher restart
+and a restart from an already hooked session also succeeded. Automatic mode
+was then restored and loaded version.dll normally with the menu working.
+The original personal INI was restored exactly. Packaged binaries match these
+live-tested files; media names and private diagnostics are excluded.
