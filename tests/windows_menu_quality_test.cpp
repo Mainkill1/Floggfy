@@ -149,6 +149,22 @@ int main() {
   assert(child.entries[7].label.find(L"Ogg") != std::wstring::npos);
   Populate(&root.api);
   assert(child.entries.size() == 9 && child.refs == 1);
+  // Main-menu recognition uses types, never translated labels or mnemonics.
+  const wchar_t* localized[][3]={
+    {L"ファイル",L"編集",L"表示"},
+    {L"&Datei",L"&Bearbeiten",L"&Ansicht"},
+    {L"ملف",L"تحرير",L"عرض"}
+  };
+  for(const auto& labels:localized) {
+    Model translated;Init(translated);
+    translated.entries={{1,5,labels[0]},{2,5,labels[1]},{3,5,labels[2]}};
+    Populate(&translated.api);
+    assert(translated.child && translated.entries.size()==4);
+    assert(translated.entries.back().label==L"To Disk");
+    assert(translated.child->entries.size()==9 && translated.child->refs==1);
+    Populate(&translated.api);
+    assert(translated.entries.size()==4 && translated.child->entries.size()==9);
+  }
   // The client changes first while SMTC still publishes the previous song.
   history::PlaybackQualitySnapshot actual;
   actual.identity=history::PlaybackIdentity("Next\x1f" "Artist\x1f" "Album");

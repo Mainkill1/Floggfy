@@ -197,3 +197,34 @@ after allowing two seconds for the heartbeat: the footer matched the new
 visible track each time, contained four disabled rows, and had no Bitrate row.
 The current observed FLAC stream displayed its validated sample rate and
 bit depth. Older-client runtime behavior remains unvalidated.
+
+## Startup fallback and localized menu
+
+The optional Floggfy.exe launcher addresses System32 VERSION.dll winning the
+normal module-name lookup. It stops a newly created Spotify process at its
+PE entry point after loader initialization, restores the entry instruction,
+detaches debugging, and loads the adjacent version.dll by absolute path.
+It resolves LoadLibraryW relative to its actual owning Windows module, checks
+the complete loaded DLL path, waits for worker readiness, and resumes Spotify.
+Module snapshots retry bounded ERROR_BAD_LENGTH failures during loader churn.
+Signed Spotify files and Windows DLL-search policy are not modified. Existing
+Spotify instances are left untouched; the user must quit them first.
+
+The Windows startup fixture preloads System32 VERSION.dll before entry.
+Normal launch demonstrably skips the adjacent DLL. The fallback loads it and
+detaches its debugger. Failure checks cover absent/invalid DLLs, an unavailable
+readiness signal, and preservation of an existing instance.
+
+Menu discovery already uses public CEF item types rather than translated
+File/Edit/View labels. Regression models use Japanese, German mnemonics and
+Arabic labels. Live Japanese Spotify 1.3.3.264 displayed To Disk alongside
+ファイル, 編集 and 表示; its Downloads toggle changed the INI correctly.
+These tests do not establish live support for every Spotify version or locale.
+
+The packaged launcher was also run on installed Spotify 1.3.3.264 with the
+new DLL. It exited successfully, the main process loaded the adjacent DLL,
+and Spotify remained responsive. The Japanese To Disk menu, Downloads toggle
+and four current-track rows worked after that launch. A second launch after
+restoring the original language and INI also succeeded. Spotify 1.3.1 from
+the startup report was not available for a live test; the System32-first
+failure was reproduced with the Windows fixture instead.

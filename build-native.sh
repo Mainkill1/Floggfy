@@ -24,3 +24,8 @@ x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -shared \
 # PE rewriting by strip otherwise inserts the current time even though the
 # linker timestamp is disabled, producing a different DLL hash on every build.
 SOURCE_DATE_EPOCH=1 x86_64-w64-mingw32-strip --strip-unneeded build/version.dll
+
+x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -municode -mwindows \
+    -static-libgcc -static-libstdc++ -Wl,--no-insert-timestamp,--dynamicbase,--nxcompat \
+    native/floggfy_launcher.cpp native/startup_launcher.cpp -o build/Floggfy.exe
+SOURCE_DATE_EPOCH=1 x86_64-w64-mingw32-strip --strip-unneeded build/Floggfy.exe

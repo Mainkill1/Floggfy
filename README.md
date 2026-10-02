@@ -23,8 +23,13 @@ Microsoft Store installs are unvalidated.
 4. Start Spotify. Floggfy creates `SpotifyHistory.ini` beside the DLL when it is missing.
 5. Open Spotify's top-left menu → **To Disk**, enable **Downloads**, and play a track from start to finish without seeking or skipping.
 
+If Spotify skips the local DLL on normal startup, quit Spotify,
+copy the included `Floggfy.exe` beside `Spotify.exe` and `version.dll`, then
+start `Floggfy.exe`. This optional launcher explicitly loads the adjacent DLL
+before application startup. Keep the EXE and DLL from the same release.
+
 Tracks save to your Windows Music folder under `Spotify/Artists/Artist/Album`.
-To uninstall, quit Spotify and remove Floggfy's `version.dll`.
+To uninstall, quit Spotify and remove Floggfy's `version.dll` and optional `Floggfy.exe`.
 
 ## Settings
 

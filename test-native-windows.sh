@@ -53,3 +53,19 @@ x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/wind
 
 x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_quality_observer_test.cpp native/playback_quality_windows.cpp "${quality_sources[@]}" native/media_session.cpp native/library_layout.cpp native/existing_quality.cpp native/file_publication.cpp native/spotify_hook_discovery.cpp native/history_settings.cpp native/async_log.cpp build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_test_root/windows-quality-observer-test.exe"
 "$floggfy_test_root/windows-quality-observer-test.exe"
+
+# Synthetic host preloads System32 VERSION.dll before its entry point.
+x86_64-w64-mingw32-g++ "${common[@]}" -municode tests/windows_startup_host.cpp -o "$floggfy_test_root/Spotify-startup-host.exe"
+x86_64-w64-mingw32-g++ "${common[@]}" -municode tests/windows_startup_test.cpp native/startup_launcher.cpp -o "$floggfy_test_root/windows-startup-test.exe"
+# Build the complete proxy so its ordinary startup readiness is tested too.
+bash build-native.sh
+python3 - "$floggfy_test_root" <<'PYFIXTURE'
+from pathlib import Path
+import shutil,sys,subprocess
+root=Path(sys.argv[1]);fixture=root/'startup-fixture';fixture.mkdir(exist_ok=True)
+shutil.copy2(root/'Spotify-startup-host.exe',fixture/'Spotify.exe')
+shutil.copy2('build/version.dll',fixture/'version.dll')
+location=subprocess.check_output(['wslpath','-w',str(fixture/'Media')],text=True).strip()
+(fixture/'SpotifyHistory.ini').write_text('[To Disk]\nDownloads=0\nMenu=0\nMetadata=0\nLog=0\nSave Location='+location+'\n')
+PYFIXTURE
+"$floggfy_test_root/windows-startup-test.exe" "$(wslpath -w "$floggfy_test_root/startup-fixture")"

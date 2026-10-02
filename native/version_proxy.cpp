@@ -14,6 +14,7 @@
 #include "module_pending.h"
 #include "pe_imports.h"
 #include "to_disk_menu.h"
+#include "startup_ready.h"
 
 // Spotify-local proxy. All version APIs go to the original System32 DLL.
 // The connectivity repair and optional native history stay inside Spotify.
@@ -382,6 +383,7 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
             if (i >= 80) StartAudioHistory(module, proxy_module);
             FreeLibrary(module);
         }
+        if(i==0)startup::SignalReady();
         Sleep(i < 600 ? 25 : 1000);
     }
     return 0;

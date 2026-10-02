@@ -12,9 +12,10 @@ release_name = 'Floggfy-v1.1.0-Windows-x64.zip'
 for old_archive in out.glob('Floggfy-v*-Windows-x64.zip'):
     if old_archive.name != release_name:
         old_archive.unlink()
-shutil.copy2(root / 'build' / 'version.dll', out / 'version.dll')
+for name in ['version.dll', 'Floggfy.exe']:
+    shutil.copy2(root / 'build' / name, out / name)
 digest = hashlib.sha256((out / 'version.dll').read_bytes()).hexdigest()
-(out / 'SHA256SUMS.txt').write_text(f'{digest}  version.dll\n')
+(out / 'SHA256SUMS.txt').write_text(''.join(f'{hashlib.sha256((out / name).read_bytes()).hexdigest()}  {name}\n' for name in ['version.dll', 'Floggfy.exe']))
 with zipfile.ZipFile(out / release_name, 'w') as archive:
     def add(path, arcname):
         info = zipfile.ZipInfo(arcname, (1980, 1, 1, 0, 0, 0))
@@ -22,7 +23,7 @@ with zipfile.ZipFile(out / release_name, 'w') as archive:
         info.external_attr = 0o100644 << 16
         archive.writestr(info, Path(path).read_bytes())
 
-    for name in ['version.dll', 'SHA256SUMS.txt']:
+    for name in ['version.dll', 'Floggfy.exe', 'SHA256SUMS.txt']:
         add(out / name, name)
     for name in ['README.md', 'LICENSE', 'SpotifyHistory.ini']:
         add(root / name, name)
