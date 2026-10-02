@@ -15,11 +15,9 @@ Choose one download from [Releases](https://github.com/Mainkill1/Floggfy/release
 | **Always on** | `version.dll` | Open Spotify normally. |
 | **Launcher** | `Floggfy.exe` and `Floggfy.dll` from the Launcher ZIP | `Floggfy.exe` with Floggfy; Spotify normally without it. |
 
-Open your Spotify folder, usually `%APPDATA%\Spotify`.
-Put your chosen files beside `Spotify.exe`.
-
-<img width="670" height="172" alt="image" src="https://github.com/user-attachments/assets/4efec58b-663b-4d3d-af31-4bf9fa04b0e1" />
-
+1. Quit Spotify completely.
+2. Open your Spotify folder, usually `%APPDATA%\Spotify`.
+3. Put your chosen files beside `Spotify.exe`.
 
 Use only one option. Remove Floggfy's `version.dll` when switching to the launcher.
 The launcher closes and restarts Spotify. Quit Spotify completely before switching
@@ -39,9 +37,6 @@ FLAC needs lossless playback in Spotify. Floggfy does not convert Ogg into FLAC.
 **To Disk** includes **Downloads**, **Save Location**, **FLAC** and **Ogg** controls.
 
 The bottom shows the current item and available quality details.
-
-<img width="338" height="362" alt="image" src="https://github.com/user-attachments/assets/b6294a3d-c09d-4dba-926a-72a1529d1db7" />
-
 
 `SpotifyHistory.ini` is created automatically. Keep your existing file when
 upgrading. Use it to disable the menu, extra song details or activity log.
