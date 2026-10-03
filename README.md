@@ -6,6 +6,8 @@ Save the music you play in Spotify on Windows.
 - Sorts music by artist and album.
 - Skips songs you already have, unless a better-quality version is available.
 
+### DJ mode is not supported as it modifies and trims the audio file.
+
 ## Install
 
 Choose one download from [Releases](https://github.com/Mainkill1/Floggfy/releases):
