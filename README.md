@@ -6,7 +6,7 @@ Save the music you play in Spotify on Windows.
 - Sorts music by artist and album.
 - Skips songs you already have, unless a better-quality version is available.
 
-### DJ mode is not supported as it modifies and trims the audio file.
+### Disable Automix under Edit -> Preferences -> Playback as it trims songs and will fail downloads.
 
 ## Install
 
