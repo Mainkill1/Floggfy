@@ -63,7 +63,7 @@ This software does not decrypt or download music from Spotify.
 To be exact, it simply "records" the music that is being played.
 This software does not promote piracy or music sharing in anyway.
 
-Any output this software provides should not to be shared online and should be kept to personal use only. 
+Any output this software provides should not to be shared, and is intended for personal use only. 
 
 ## Credits
 
