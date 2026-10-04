@@ -58,9 +58,16 @@ Tested with Windows x64 Spotify **1.3.3.264**. Updates may need a new Floggfy re
 
 To uninstall, quit Spotify and remove the Floggfy files you installed.
 
+## Legal Notice
+This software does not decrypt or download music from Spotify.
+To be exact, it simply "records" the music that is being played.
+This software does not promote piracy or music sharing in anyway.
+
+Any output this software provides should not to be shared online and should be kept to personal use only. 
+
 ## Credits
 
-Based on [Soggfy](https://github.com/Rafiuth/Soggfy), with work from
+Based on [Soggfy](https://github.com/Rafiuth/Soggfy), with work reviewed from
 [Soggfy-Fixed](https://github.com/SuperSecretEyeball/Soggfy-Fixed) and
 [Spicetify](https://github.com/spicetify/cli).
 
