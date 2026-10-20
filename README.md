@@ -1,5 +1,12 @@
 # Floggfy
 
+## Support Development
+
+If you find this project useful, consider supporting its development.
+
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20Development-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/mainkill1)
+
+
 Save the music you play in Spotify on Windows.
 
 - Saves fully played tracks as Ogg or FLAC, with cover art and available song details.
@@ -24,8 +31,7 @@ Put your chosen files beside `Spotify.exe`.
 
 
 Use only one option. Remove Floggfy's `version.dll` when switching to the launcher.
-The launcher closes and restarts Spotify. Quit Spotify completely before switching
-back to plain Spotify.
+The launcher will automatically close and restart Spotify when ran. To return to normal Spotify, quit Spotify completely then launch it like normal.
 
 ## Save music
 
