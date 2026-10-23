@@ -15,6 +15,7 @@
 #include "existing_quality.h"
 #include "file_publication.h"
 #include "recent_downloads.h"
+#include "song_destination.h"
 #include "lyrics_update.h"
 #include "media_session.h"
 #include "spotify_hook_discovery.h"
@@ -198,6 +199,10 @@ static Catalog CatalogFor(const Media& media) {
     if(_wcsicmp(c.artist.c_str(),L"Various Artists")==0) c.kind=MediaKind::VariousArtists;
     return c;
 }
+static void PublishCurrentDestination(const Media& media,const Settings& settings) {
+    PublishSongDestination(media.title.empty() ? 0 : PlaybackIdentity(media.Key()),
+                           settings.root,CatalogFor(media),settings.music_folder,settings.generation);
+}
 static std::string Grouped(unsigned value) {
     auto text=std::to_string(value);
     for(int p=int(text.size())-3;p>0;p-=3)text.insert(size_t(p),",");
@@ -339,6 +344,7 @@ static DWORD WINAPI Worker(LPVOID) {
             }
             if(!enabled && !quality_enabled.load(std::memory_order_relaxed)) {
                 PublishPlaybackQuality({});
+                PublishSongDestination(0,L"",{},false,0);
                 Slot discard; while(Pop(discard)) {}
                 WaitForSingleObject(event,200); continue;
             }
@@ -433,8 +439,8 @@ static DWORD WINAPI Worker(LPVOID) {
             if(!enabled) {
                 if(now>=next_media) {
                     Media media;
-                    if(reader.Read(media,false)) {quality.Media(media.Key(),media.title,media.position,media.duration,Now(),media.playing);client_quality=ReadClientPlaybackQuality(media);}
-                    else {quality.Media({},L"",0,0,Now());client_quality.clear();}
+                    if(reader.Read(media,false)) {PublishCurrentDestination(media,GetSettings());quality.Media(media.Key(),media.title,media.position,media.duration,Now(),media.playing);client_quality=ReadClientPlaybackQuality(media);}
+                    else {PublishSongDestination(0,L"",{},false,0);quality.Media({},L"",0,0,Now());client_quality.clear();}
                     next_media=Now()+0.5;
                 }
                 PublishPlaybackQuality(quality.Snapshot(client_quality));
@@ -443,6 +449,7 @@ static DWORD WINAPI Worker(LPVOID) {
             if(now>=next_media) {
                 Media media;
                 if(reader.Read(media)) {
+                    PublishCurrentDestination(media,GetSettings());
                     quality.Media(media.Key(),media.title,media.position,media.duration,Now(),media.playing);
                     client_quality=ReadClientPlaybackQuality(media);
                     std::string previous=listen.identity; double previous_start=listen.start_time;
@@ -475,7 +482,7 @@ static DWORD WINAPI Worker(LPVOID) {
                     }
                     if(listen.transient) Log("timeline reset at natural end; waiting for matching title");
                     else current=std::move(media);
-                } else { listen.eligible=false; quality.Media({},L"",0,0,Now()); Log("Spotify media snapshot unavailable; listen invalidated"); }
+                } else { PublishSongDestination(0,L"",{},false,0);listen.eligible=false; quality.Media({},L"",0,0,Now()); Log("Spotify media snapshot unavailable; listen invalidated"); }
                 next_media=Now()+0.5;
             }
             PublishPlaybackQuality(quality.Snapshot(client_quality));
@@ -515,6 +522,7 @@ static DWORD WINAPI Worker(LPVOID) {
         }
     } catch(...) { Log("history worker stopped after an exception; playback remains with original parser"); }
     PublishPlaybackQuality({});
+    PublishSongDestination(0,L"",{},false,0);
     workers_running.store(false,std::memory_order_release);
     if(save_event) SetEvent(save_event);
     MH_DisableHook(target);

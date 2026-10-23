@@ -60,6 +60,12 @@ static void TestPublicationLogging() {
   Heard heard;heard.media.title=L"Log Track";heard.media.artist=L"Log Artist";heard.media.album=L"Log Album";heard.media.track=1;
   heard.media.cover=artwork_fixture::png();heard.media.cover_extension=L".png";
   const auto settings=GetSettings();const auto path=OutputPath(settings.root,CatalogFor(heard.media),L".flac",settings.music_folder);
+  // Destination is available before publication, and remains the same for
+  // existing files and quality upgrades. No save outcome gates this snapshot.
+  PublishCurrentDestination(heard.media,settings);
+  std::wstring song_folder;
+  assert(ReadSongDestination(PlaybackIdentity(heard.media.Key()),settings.generation,song_folder));
+  assert(song_folder==path.substr(0,path.find_last_of(L'\\')));
   auto make=[](unsigned rate,unsigned bits){
     auto c=std::make_unique<Capture>();c->lossless=true;c->flac={rate,2,bits,4096,4096,8192};c->coverage.samples=8192;c->coverage.frames=2;
     std::vector<uint8_t> bytes={'f','L','a','C',128,0,0,34};bytes.resize(42);bytes[8]=bytes[10]=16;
