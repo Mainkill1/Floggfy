@@ -1,9 +1,10 @@
 ## PR #11 review corrections (after e8ae8f8)
 
-Exactly one targeted execution was used for each of the six review issues.
-There were no exploratory runs, reruns, full-suite runs, fuzz/stress runs or live
-Spotify checks in this pass. Implementation and regression cases received static
-review before these executions.
+The original correction pass used exactly one targeted execution per issue.
+After its settings failure, a separately authorized follow-up compiled and ran
+issue 5 once more with a deterministic redundant-notification check: it passed.
+Total: seven executions, two for issue 5 and one for each other issue. No full
+suites, fuzz/stress runs or live Spotify checks ran in either pass.
 
 | Issue | Command | Executions | Result |
 | --- | --- | --- | --- |
@@ -11,7 +12,7 @@ review before these executions.
 | 2: asynchronous thumbnail retention | `bash test-pr11-corrections.sh 2` | 1 | Pass (Windows, injected media provider) |
 | 3: collision destination reuse | `bash test-pr11-corrections.sh 3` | 1 | Pass (Windows) |
 | 4: delayed-title/repeat reconciliation | `bash test-pr11-corrections.sh 4` | 1 | Pass (portable) |
-| 5: settings persistence failures | `bash test-pr11-corrections.sh 5` | 1 | Fail at final staging-file cleanup assertion; correction not rerun |
+| 5: settings persistence failures | `bash test-pr11-corrections.sh 5` | 2 | Original cleanup assertion failed; authorized follow-up passed (Windows) |
 | 6: Vorbis setup-header validation | `bash test-pr11-corrections.sh 6` | 1 | Pass (portable) |
 
 Issue 5 reached its final cleanup assertion after the exception, denied-write,
@@ -20,13 +21,18 @@ found that a pending notification could redundantly persist a generation already
 acknowledged by `FlushSettings`, exposing a staging file after the flush returned.
 No leftover staging file remained on later read-only inspection. The worker now
 skips already-persisted generations while retaining retries for failed generations.
-This final correction was reviewed statically but **was not compiled or executed
-again**; issue 5 is not reported as passing.
+The authorized follow-up compiles the actual persistence worker and deliberately
+signals it again after a successful flush. It waits for that notification to be
+fully processed, then verifies no additional INI read occurred, file bytes remain
+unchanged, flush still succeeds and no staging file remains. All original failure,
+retry, Unicode and unknown-section checks also passed. This validates the final
+settings guard without relying only on the timing of the original failure.
 
 One standalone `bash build-native.sh` invocation built the DLL and launcher
 successfully before the targeted tests and final settings correction. The vendor
 parser emitted two unsuppressed unused-function warnings. This build therefore
-does not verify the final settings edit. Project C++ checks retain `-Werror`;
+does not include the final settings edit; the follow-up Windows test compiled
+and executed that edit directly. Project C++ checks retain `-Werror`;
 no warnings were suppressed to pass a test.
 
 Coverage includes missing/invalid/inferior/better artwork; repeated custom tags

@@ -19,20 +19,32 @@ enum class Failure {None,AfterRead,Read};
 std::atomic<Failure> failure{Failure::None};
 std::atomic<bool> throw_logging{false};
 std::atomic<unsigned> logging_failures{0};
+std::atomic<unsigned> read_attempts{0},persistence_wakes{0},completed_wakes{0};
 thread_local bool fail_allocation=false;
+DWORD ObservedWait(HANDLE handle,DWORD timeout) {
+    // Only the persistence worker waits indefinitely in the included source.
+    // A return to its wait boundary confirms the preceding attempt has finished.
+    if(timeout==INFINITE)completed_wakes=persistence_wakes.load();
+    const auto result=WaitForSingleObject(handle,timeout);
+    if(timeout==INFINITE&&result==WAIT_OBJECT_0)++persistence_wakes;
+    return result;
+}
 }
 void* operator new(std::size_t n){if(fail_allocation){fail_allocation=false;throw std::bad_alloc();}if(auto p=HeapAlloc(GetProcessHeap(),0,n?n:1))return p;throw std::bad_alloc();}
 void operator delete(void* p) noexcept {if(p)HeapFree(GetProcessHeap(),0,p);}
 void operator delete(void* p,std::size_t) noexcept {if(p)HeapFree(GetProcessHeap(),0,p);}
 namespace history { namespace settings_file {
 bool ReadWithFault(const std::wstring& path,std::wstring& text,bool& unicode) {
+    ++read_attempts;
     const bool ok=Read(path,text,unicode);
     if(ok&&failure.load()==Failure::AfterRead)fail_allocation=true;
     return ok&&failure.load()!=Failure::Read;
 }
 }}
 #define Read ReadWithFault
+#define WaitForSingleObject ObservedWait
 #include "../native/history_settings.cpp"
+#undef WaitForSingleObject
 #undef Read
 namespace history {
 void StartLogger(){}
@@ -49,6 +61,17 @@ static void Retry(unsigned generation) {
     failure=Failure::None;throw_logging=false;SetEvent(history::settings_signal);
     const auto deadline=GetTickCount64()+5000;
     while(static_cast<LONG>(unsigned(Progress())-generation)<0){assert(GetTickCount64()<deadline);Sleep(1);}
+    assert(history::FlushSettings(5000));
+}
+static void CheckRedundantNotification(const std::wstring& path) {
+    const auto before=Bytes(path);
+    const auto reads=read_attempts.load(),wake=persistence_wakes.load();
+    assert(SetEvent(history::settings_signal));
+    const auto deadline=GetTickCount64()+5000;
+    // Wait for this notification to be consumed AND its processing to finish.
+    // This cannot mistake the preceding successful flush for our notification.
+    while(completed_wakes.load()<=wake){assert(GetTickCount64()<deadline);Sleep(1);}
+    assert(read_attempts.load()==reads&&Bytes(path)==before);
     assert(history::FlushSettings(5000));
 }
 int main() {
@@ -79,7 +102,8 @@ int main() {
     assert(text.find(L"; preserve unknown configuration comment")!=std::wstring::npos&&text.find(L"[Unknown]\r\nKeep=original")!=std::wstring::npos);
     assert(GetPrivateProfileIntW(L"To Disk",L"UpdateExistingMetadata",9,path.c_str())==0);
     wchar_t location[32768];GetPrivateProfileStringW(L"To Disk",L"Save Location",L"",location,32768,path.c_str());assert(std::wstring(location)==unicode_path);
+    CheckRedundantNotification(path);
     WIN32_FIND_DATAW data{};HANDLE stages=FindFirstFileW((path+L".settings-*").c_str(),&data);assert(stages==INVALID_HANDLE_VALUE);
     assert(DeleteFileW(path.c_str()));
-    puts("PASS: persistence exceptions/read/write failures never acknowledge unwritten generations, retries recover and Unicode/unknown settings survive");
+    puts("PASS: failed persistence never acknowledges unwritten generations; retries recover; Unicode/unknown settings survive; redundant notifications perform no file I/O or leave staging files");
 }
