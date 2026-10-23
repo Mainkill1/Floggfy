@@ -192,7 +192,7 @@ struct Wrapped {
     // Formatting can repeat for accessibility while the menu is displayed.
     bool recent_open=false;
     history::PlaybackQualitySnapshot song{};
-    std::wstring song_folder;
+    std::wstring song_file;
     bool song_bound=false;
     bool CapableCached(Menu* menu) { return capability.Check(menu); }
     void ClearValidation() { capability.ClearValidation(); }
@@ -206,9 +206,9 @@ static int Any(Base* p) { return Self(p)->refs.load()!=0; }
 static void ReleaseMenu(Menu* menu) { if(menu && menu->base.release) menu->base.release(&menu->base); }
 static void BindSong(Wrapped* wrapped) {
     const auto snapshot=history::ReadPlaybackQuality();
-    std::wstring folder;
-    history::ReadSongDestination(snapshot.identity,history::GetSettings().generation,folder);
-    wrapped->song_folder.swap(folder);
+    std::wstring saved_file;
+    history::ReadSongDestination(snapshot.identity,history::GetSettings().generation,saved_file);
+    wrapped->song_file.swap(saved_file);
     wrapped->song=snapshot;
     wrapped->song_bound=true;
 }
@@ -283,22 +283,29 @@ static void RevealRecent(const std::wstring& path) {
     else {delete copy;MessageBoxW(GetActiveWindow(),L"Explorer could not be started.",L"Latest Downloads >",MB_OK|MB_ICONINFORMATION);}
 }
 static DWORD WINAPI RevealSongWorker(void* argument) {
-    std::unique_ptr<std::wstring> folder(static_cast<std::wstring*>(argument));
+    std::unique_ptr<std::wstring> saved_file(static_cast<std::wstring*>(argument));
     const HRESULT initialized=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
-    bool created=false,opened=false;
+    bool available=false,opened=false;
     try {
-        created=history::EnsureDirectory(*folder);
-        if(created) opened=reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr,L"open",folder->c_str(),nullptr,nullptr,SW_SHOWNORMAL))>32;
-    } catch(...) {/* Directory helpers may allocate; never unwind out of a thread. */}
+        // A file may disappear after the worker snapshot was displayed. Check
+        // the bound file again on this click, without recreating its folder.
+        const auto attributes=GetFileAttributesW(history::WindowsPath(*saved_file).c_str());
+        available=attributes!=INVALID_FILE_ATTRIBUTES && !(attributes&FILE_ATTRIBUTE_DIRECTORY);
+        const auto slash=saved_file->find_last_of(L"\\/");
+        if(available && slash!=std::wstring::npos) {
+            const auto folder=saved_file->substr(0,slash);
+            opened=reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr,L"open",folder.c_str(),nullptr,nullptr,SW_SHOWNORMAL))>32;
+        }
+    } catch(...) {/* Never unwind out of a click worker on allocation failure. */}
     if(!opened)
-        MessageBoxW(nullptr,created ? L"Explorer could not open this song's folder." :
-                    L"This song's save folder could not be created or accessed.",
-                    L"Song folder",MB_OK|MB_ICONERROR);
+        MessageBoxW(nullptr,available ? L"Explorer could not open this song's folder." :
+                    L"This song's saved audio is no longer available at its saved location.",
+                    L"Song folder",MB_OK|MB_ICONINFORMATION);
     if(SUCCEEDED(initialized)) CoUninitialize();
     return 0;
 }
-static void RevealSong(const std::wstring& folder) {
-    auto* copy=new(std::nothrow) std::wstring(folder);
+static void RevealSong(const std::wstring& saved_file) {
+    auto* copy=new(std::nothrow) std::wstring(saved_file);
     if(!copy) return;
     HANDLE worker=CreateThread(nullptr,0,RevealSongWorker,copy,0,nullptr);
     if(worker) CloseHandle(worker);
@@ -306,7 +313,7 @@ static void RevealSong(const std::wstring& folder) {
 }
 static void Execute(Delegate* self,Menu* menu,int command,int flags) {
     if(command==song_id) {
-        try {if(!Self(self)->song_folder.empty()) RevealSong(Self(self)->song_folder);}
+        try {if(!Self(self)->song_file.empty()) RevealSong(Self(self)->song_file);}
         catch(...) {/* Keep allocation failures inside the CEF callback. */}
         ReleaseMenu(menu);return;
     }
@@ -354,7 +361,7 @@ static void WillShow(Delegate* self,Menu* menu) {
     if(o && o->will_show) { menu->base.add_ref(&menu->base); o->will_show(o,menu); }
     if(Self(self)->CapableCached(menu) && Call<int>(menu,15,song_id)>=0) {
         if(!Self(self)->song_bound) BindSong(Self(self));
-        UpdateQuality(menu,&Self(self)->song,&Self(self)->song_folder);
+        UpdateQuality(menu,&Self(self)->song,&Self(self)->song_file);
     }
     else Populate(menu);
     ReleaseMenu(menu);
@@ -377,7 +384,7 @@ static int Format(Delegate* self,Menu* menu,String* label) {
             try { if(Self(self)->CapableCached(child) && Call<int>(child,15,song_id)>=0 &&
                      Call<int>(child,15,downloads_id)>=0) {
                          if(!Self(self)->recent_open) BindSong(Self(self));
-                         UpdateQuality(child,&Self(self)->song,&Self(self)->song_folder);
+                         UpdateQuality(child,&Self(self)->song,&Self(self)->song_file);
                          if(!Self(self)->recent_open) RefreshRecent(Self(self),child);
                      } }
             catch(...) {/* Keep prior visibility on allocation failure. */}
@@ -398,7 +405,7 @@ static int Format(Delegate* self,Menu* menu,String* label) {
             try {
                 if(i==0 && (!Self(self)->recent_open || !Self(self)->song_bound)) BindSong(Self(self));
                 const auto rows=history::PlaybackQualityLabels(i==0 ? Self(self)->song : history::ReadPlaybackQuality());
-                if(i==0) Call<int>(menu,36,song_id,int(!Self(self)->song_folder.empty()));
+                if(i==0) Call<int>(menu,36,song_id,int(!Self(self)->song_file.empty()));
                 if(set_string(rows[i].data(),rows[i].size(),label,1))changed=1;
             }catch(...) {/* Keep the original CEF label on allocation failure. */}
             break;

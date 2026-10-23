@@ -51,10 +51,10 @@ Explorer at its saved folder.
 Song remains visible, and Quality appears when known. Format and Sample rate
 appear only for confirmed FLAC playback; unavailable technical rows are hidden.
 
-Click the current **Song** row to open its destination folder, including when
-the song already exists or is waiting to be saved. A missing folder is created
-when clicked; failures show an error message. Opening a folder does not count
-as a download.
+The current **Song** row stays visible but greyed out until a matching saved
+FLAC or Ogg file exists. Click it to open the containing folder. If the file was removed,
+an unavailable notice is shown. Folders are created only when saving audio;
+opening a folder does not count as a download.
 
 Lyrics are collected automatically when Spotify provides them; the lyrics panel
 does not need to be open. Timed lyrics are embedded as LRC text in the `LYRICS`
