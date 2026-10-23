@@ -132,8 +132,8 @@ The current **Song** row stays visible but greyed out unless a matching saved
 FLAC or Ogg file exists. When enabled, it opens the containing folder. A separate
 worker checks destination paths; capture processing and menu rendering only
 exchange bounded requests and memory snapshots. Superseded results cannot enable
-a different track or save location, and `Menu=0` disables destination probes. The click rechecks
-the file so deletion produces an unavailable notice instead of opening an
+a different track or save location, and `Menu=0` disables destination probes.
+The click rechecks the file so deletion produces an unavailable notice instead of opening an
 empty folder. Only audio saves create directories. Folder clicks do not add
 download history entries.
 
@@ -177,7 +177,9 @@ python3 package-release.py
 ```
 
 `tests/windows_history_test.cpp` exercises actual Windows file publication,
-duplicate skips, failed upgrades, atomic replacements and preference persistence.
+duplicate skips, failed upgrades, staged publication and preference persistence.
+Additional Windows regressions cover interrupted publication, conflicting targets,
+slow destination probes, Unicode settings reloads and blocked metadata enrichment.
 The independent validators use Xiph libraries or the
 Xiph FLAC CLI only in the development environment; the DLL does not depend on them.
 Vendored MinHook, libogg and CEF declarations retain their upstream licenses.
@@ -188,7 +190,9 @@ The metadata worker prefers the largest available validated original Spotify
 album cover over the Windows media thumbnail, which may contain branding. Windows artwork
 remains the fallback if the original is unavailable. Image dimensions and depth
 are written into FLAC PICTURE metadata. Artwork downloads and metadata lookups
-run outside menu and playback-tracking callbacks.
+run outside menu and playback-tracking callbacks. A separate bounded enrichment
+worker keeps slow artwork/cache requests from delaying the client polling heartbeat.
+Fresh basic snapshots retain already discovered fields for the same recording.
 
 Available extra tags include artists, album artists, release date/year, track and
 disc numbers/totals, label, ISRC, language, copyright and lyrics. Missing fields

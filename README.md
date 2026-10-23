@@ -71,7 +71,8 @@ other available metadata continue to work. `Metadata=0` disables all extra metad
 
 
 `SpotifyHistory.ini` is created automatically. Keep your existing file when
-upgrading. Use it to disable the menu, extra song details or activity log. At the 5 MiB log limit, the oldest complete
+upgrading. Settings are stored as Unicode so save locations survive restart;
+older INI files are migrated while preserving their preferences. Use it to disable the menu, extra song details or activity log. At the 5 MiB log limit, the oldest complete
 lines are removed as new entries arrive. Completed saves include the audio quality
 and final file size. Skipped songs are logged with the reason, including an
 existing file of the same or better quality.
