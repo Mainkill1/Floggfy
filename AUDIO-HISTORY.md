@@ -58,18 +58,29 @@ Default music paths are:
 ```
 
 Album folders have no year prefix. Filenames have no timestamps. Missing track
-numbers omit the numeric prefix. Cover artwork and title, artist, album, album
-artist and track number are embedded in the single audio file. No image/JSON
+numbers omit the numeric prefix. Later discs include a disc prefix. Title, artist,
+album, album artist and track number are embedded in the single audio file.
+Validated cover artwork is included when available; missing artwork does not
+discard completed audio. No image/JSON
 sidecars or per-song directories are created. Buffers remain in RAM until a
 complete listen and complete stream have been verified. Directories are created
 only when publishing a file.
 
-An existing target is skipped at equal or higher quality. A Vorbis upgrade requires
-higher known nominal bitrate and no sample-rate reduction. FLAC upgrades require
-matching channel count, no bit-depth/sample-rate reduction, and a verified
-increase. Existing FLAC prevents saving a lower-quality Vorbis counterpart.
-Unknown quality is preserved. A quality upgrade stages a **fully compiled** file
-beside the old one and replaces it atomically; no track fragments are staged.
+Existing audio is skipped at equal or higher quality only after validating its
+complete container and recording identity. Spotify track URI takes precedence;
+without it, the full textual identity, disc/track numbers and duration must agree.
+Sanitized or shortened names that collide use a deterministic suffix. Unrelated
+or unverified files are preserved. A verified complete FLAC suppresses a Vorbis
+counterpart only for the same recording.
+
+A Vorbis upgrade requires higher known nominal bitrate and no sample-rate
+reduction. FLAC upgrades require matching channel count, no bit-depth/sample-rate
+reduction, and a verified increase. All saves first write and flush a completed
+file beside the destination, then promote it without overwriting an unexpected
+target. Upgrades reserve the verified old file before promotion; an interruption
+can briefly leave the usual path absent, but keeps the old recording recoverable.
+The next publication attempt recovers the retained recording without overwriting
+a conflicting target. No track fragments are staged during playback.
 
 Choosing a custom `Media` root retains the requested `Music\Artists` branch.
 The default Music/Spotify root uses `Artists` directly to avoid another Music
@@ -92,8 +103,9 @@ Personal recording details are not published.
 Skips, seeks, missing pages/frames, decoder errors, ambiguous track association,
 queue overflow and memory limits prevent publication. Capture begins with source
 headers and a listen observed near position zero. Streams without a known FLAC
-total sample count are currently rejected. Same-title repeat/loop handling needs
-additional live coverage. Metadata fields absent from the public Windows session
+total sample count are currently rejected. Natural same-track repeats establish
+a new listen generation after a bounded timeline/title confirmation interval;
+seeks, pauses and excessive observation gaps do not count as completed listens. Metadata fields absent from the public Windows session
 are not invented. Audio targets are discovered from invariant decoder instructions
 and Windows x64 function metadata; missing or ambiguous matches disable capture.
 Menu integration checks its supported CEF version and structure sizes.
@@ -108,7 +120,7 @@ when the on-disk format is verified; incomparable or unverified files get an
 explicit retention reason.
 
 The last ten successful saved paths are held in memory for this Spotify run.
-**Latest Downloads >**, directly below **Save Location**, is hidden until the first
+**Latest Downloads**, directly below **Save Location**, is hidden until the first
 successful download. Selecting a song opens its containing folder in Explorer.
 Skips, failed writes and lyric-only updates do not add history entries. Menu
 snapshots stay fixed while open so a new download cannot redirect an existing
@@ -117,8 +129,10 @@ Explorer failures produce an error notice. Menu construction performs no filesys
 or shell work.
 
 The current **Song** row stays visible but greyed out unless a matching saved
-FLAC or Ogg file exists. When enabled, it opens the containing folder. The audio worker checks the same paths used for file
-publication, while menu rendering only reads its snapshot. The click rechecks
+FLAC or Ogg file exists. When enabled, it opens the containing folder. A separate
+worker checks destination paths; capture processing and menu rendering only
+exchange bounded requests and memory snapshots. Superseded results cannot enable
+a different track or save location, and `Menu=0` disables destination probes. The click rechecks
 the file so deletion produces an unavailable notice instead of opening an
 empty folder. Only audio saves create directories. Folder clicks do not add
 download history entries.

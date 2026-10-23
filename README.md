@@ -45,7 +45,7 @@ FLAC needs lossless playback in Spotify. Floggfy does not convert Ogg into FLAC.
 ## Settings
 
 **To Disk** includes **Downloads**, **Save Location**, **FLAC**, **Ogg** and **Lyrics** controls.
-After a successful download, **Latest Downloads >** appears directly below **Save Location**.
+After a successful download, **Latest Downloads** appears directly below **Save Location**.
 It lists up to ten recently saved songs from this Spotify run; click one to open
 Explorer at its saved folder.
 Song remains visible, and Quality appears when known. Format and Sample rate
