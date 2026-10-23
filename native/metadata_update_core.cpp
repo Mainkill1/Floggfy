@@ -56,6 +56,47 @@ void LyricsDelta(const Tags& existing,const Tags& incoming,Tags& delta) {
     }
     if(!lyrics.empty() && (!old_words || IsSyncedLyrics(lyrics)))delta.fields.emplace_back("LYRICS",std::move(lyrics));
 }
+constexpr const char* artwork_source="FLOGGFY_ARTWORK_SOURCE";
+bool BetterArtwork(const RecordingFile& existing,const Tags& incoming) {
+    if(!existing.artwork_edit_safe)return false;
+    RecordingArtwork candidate;
+    if(!ReadRecordingArtwork(incoming.cover,candidate) || candidate.mime!=incoming.mime)return false;
+    auto identical=[&](const RecordingArtwork& old){return old.valid && old.bytes==candidate.bytes && old.digest==candidate.digest;};
+    if(identical(existing.artwork))return false;
+    for(const auto& old:existing.artworks)if(identical(old))return false;
+    if(!existing.artwork.valid)return true;
+    if(Value(incoming,artwork_source)!="spotify-client")return false;
+    auto smaller=[&](const RecordingArtwork& old){return old.valid && (candidate.width<old.width || candidate.height<old.height);};
+    if(smaller(existing.artwork))return false;
+    for(const auto& old:existing.artworks)if(smaller(old))return false;
+    if(candidate.width>existing.artwork.width || candidate.height>existing.artwork.height)return true;
+    return Value(incoming,artwork_source)=="spotify-client" && Value(existing.tags,artwork_source)!="spotify-client";
+}
+struct MetadataPlan {
+    Tags delta;
+    bool picture=false;
+    bool Needed() const {return picture || !delta.fields.empty();}
+};
+MetadataPlan PlanMetadata(const RecordingFile& existing,const Tags& incoming) {
+    MetadataPlan plan;
+    if(!existing.complete || !existing.owned)return plan;
+    auto& delta=plan.delta;std::set<std::string> populated;
+    for(const auto& field:existing.tags.fields)if(Words(field.second))populated.insert(Upper(field.first));
+    for(const auto& field:incoming.fields) {
+        const auto key=Upper(field.first);
+        if(!TextKey(key) || !Words(field.second) || key.rfind("HISTORY_",0)==0 || key=="METADATA_BLOCK_PICTURE" ||
+           key==artwork_source || key=="LYRICS" || key=="UNSYNCEDLYRICS" || key=="YEAR" || key=="DATE" || populated.count(key))continue;
+        delta.fields.emplace_back(key,field.second);
+    }
+    ReleaseDateDelta(existing.tags,incoming,delta);LyricsDelta(existing.tags,incoming,delta);
+    plan.picture=BetterArtwork(existing,incoming);
+    if(plan.picture) {
+        const auto source=Value(incoming,artwork_source);
+        if(source=="spotify-client")delta.fields.emplace_back(artwork_source,source);
+        else if(Words(Value(existing.tags,artwork_source)))delta.fields.emplace_back(artwork_source,"");
+    }
+    return plan;
+}
 uint32_t Little(const uint8_t* bytes) {
     return uint32_t(bytes[0])|(uint32_t(bytes[1])<<8)|(uint32_t(bytes[2])<<16)|(uint32_t(bytes[3])<<24);
 }
@@ -93,6 +134,7 @@ bool FillFlac(const std::vector<uint8_t>& source,const Tags& delta,const std::ve
     if(!found){error="owned recording has no comments";return false;}
     std::set<std::string> replaced;
     for(const auto& field:delta.fields)replaced.insert(Upper(field.first));
+    if(!picture.empty())replaced.insert("METADATA_BLOCK_PICTURE");
     fields.erase(std::remove_if(fields.begin(),fields.end(),[&](const auto& field) {
         const auto split=field.find('=');return split!=std::string::npos && replaced.count(Upper(field.substr(0,split)));
     }),fields.end());
@@ -107,11 +149,12 @@ bool FillFlac(const std::vector<uint8_t>& source,const Tags& delta,const std::ve
     output.assign(source.begin(),source.begin()+4);
     for(size_t p=4;p<audio;) {
         const auto type=source[p]&127;const size_t size=(size_t(source[p+1])<<16)|(size_t(source[p+2])<<8)|source[p+3];
-        // Insert before the original last block. Its last flag and every
-        // existing non-comment block (including padding/art) stay byte exact.
-        if((source[p]&128) && !picture.empty())Block(output,6,picture);
+        // Only accepted front-cover upgrades remove old PICTURE blocks. If
+        // the old last block is a picture, its replacement keeps the last bit;
+        // otherwise insert before the original last block, preserving padding.
+        if((source[p]&128) && !picture.empty())Block(output,uint8_t(6|(type==6?128:0)),picture);
         if(type==4)Block(output,source[p],comments);
-        else output.insert(output.end(),source.begin()+p,source.begin()+p+4+size);
+        else if(type!=6 || picture.empty())output.insert(output.end(),source.begin()+p,source.begin()+p+4+size);
         p+=4+size;
     }
     output.insert(output.end(),source.begin()+audio,source.end());return true;
@@ -120,24 +163,20 @@ bool SameQuality(const Quality& a,const Quality& b) {
     return a.codec==b.codec && a.rate==b.rate && a.channels==b.channels && a.bits==b.bits && a.bitrate==b.bitrate;
 }
 }
+bool NeedsRecordingMetadata(const RecordingFile& existing,const Tags& incoming) {return PlanMetadata(existing,incoming).Needed();}
 MetadataUpdate FillRecordingMetadata(const std::vector<uint8_t>& source,const Tags& incoming,
     const Catalog& catalog,std::vector<uint8_t>& output,std::string& error) {
     output.clear();error.clear();RecordingFile existing;
     if(!InspectRecording(source.data(),source.size(),existing) || !existing.complete || !existing.owned || !MatchesRecording(existing,catalog)) {
         error="recording is not complete, owned and identity matched";return MetadataUpdate::Invalid;
     }
-    Tags delta;std::set<std::string> populated;
-    for(const auto& field:existing.tags.fields)if(Words(field.second))populated.insert(Upper(field.first));
-    for(const auto& field:incoming.fields) {
-        const auto key=Upper(field.first);
-        if(!TextKey(key) || !Words(field.second) || key.rfind("HISTORY_",0)==0 || key=="METADATA_BLOCK_PICTURE" ||
-           key=="LYRICS" || key=="UNSYNCEDLYRICS" || key=="YEAR" || key=="DATE" || populated.count(key))continue;
-        delta.fields.emplace_back(key,field.second);
+    auto plan=PlanMetadata(existing,incoming);
+    if(!plan.Needed())return MetadataUpdate::Unchanged;
+    auto& delta=plan.delta;std::vector<uint8_t> picture;
+    if(plan.picture) {
+        if(!BuildPicture(incoming,picture)){error="invalid artwork candidate";return MetadataUpdate::Invalid;}
+        delta.cover=incoming.cover;delta.mime=incoming.mime;
     }
-    ReleaseDateDelta(existing.tags,incoming,delta);LyricsDelta(existing.tags,incoming,delta);
-    std::vector<uint8_t> picture;
-    if(!existing.has_artwork && BuildPicture(incoming,picture)) {delta.cover=incoming.cover;delta.mime=incoming.mime;}
-    if(delta.fields.empty() && picture.empty())return MetadataUpdate::Unchanged;
     const bool updated=existing.quality.codec==Codec::Flac ? FillFlac(source,delta,picture,output,error) : TagOgg(source,delta,output,error);
     RecordingFile result;
     if(!updated || !InspectRecording(output.data(),output.size(),result) || !result.complete || !result.owned ||

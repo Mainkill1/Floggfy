@@ -1,5 +1,6 @@
 #include "recording_file.h"
 #include "ogg_history_core.h"
+#include "image_info.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -13,7 +14,64 @@ std::string Field(const Tags& tags,const char* name) {
     for(const auto& field:tags.fields) if(field.first==name) return field.second;
     return {};
 }
-bool Comments(const uint8_t* b,size_t size,Tags& tags,bool vorbis,bool& has_artwork) {
+uint32_t Big(const uint8_t* bytes) {return (uint32_t(bytes[0])<<24)|(uint32_t(bytes[1])<<16)|(uint32_t(bytes[2])<<8)|bytes[3];}
+void Picture(const uint8_t* bytes,size_t size,RecordingFile& record) {
+    record.has_artwork=true;
+    // Only front covers are rewritten. Unknown layouts and other picture
+    // types remain opaque so an album-art refresh cannot discard a booklet.
+    if(size<4 || Big(bytes)!=3){record.artwork_edit_safe=false;return;}
+    size_t at=4;
+    if(size-at<4)return;
+    const auto mime_size=Big(bytes+at);at+=4;if(mime_size>size-at)return;
+    const bool png=mime_size==9 && !memcmp(bytes+at,"image/png",9);
+    const bool jpeg=mime_size==10 && !memcmp(bytes+at,"image/jpeg",10);at+=mime_size;
+    if(!png && !jpeg){record.artwork_edit_safe=false;return;}
+    if(size-at<4)return;
+    const auto description_size=Big(bytes+at);at+=4;if(description_size>size-at)return;at+=description_size;
+    if(size-at<20)return;
+    at+=16;const auto length=Big(bytes+at);at+=4;
+    if(length!=size-at)return;
+    if(length>4*1024*1024){record.artwork_edit_safe=false;return;}
+    // A bad/missing signature is confirmed corrupt for its declared format.
+    // A recognizable but unsupported/bounds-rejected image is opaque: never
+    // mistake an inspection limit for permission to replace a good cover.
+    if((png && (length<8 || memcmp(bytes+at,"\x89PNG\r\n\x1a\n",8))) ||
+       (jpeg && (length<2 || bytes[at]!=0xff || bytes[at+1]!=0xd8)))return;
+    RecordingArtwork image;
+    if(!ReadRecordingArtwork(std::vector<uint8_t>(bytes+at,bytes+at+length),image)){record.artwork_edit_safe=false;return;}
+    record.artworks.push_back(image);
+    if(!record.artwork.valid || uint64_t(image.width)*image.height>uint64_t(record.artwork.width)*record.artwork.height)
+        record.artwork=std::move(image);
+}
+bool Base64Picture(const std::string& text,std::vector<uint8_t>& output) {
+    if(text.size()>metadata_limit)return false;
+    output.clear();output.reserve(text.size()/4*3);
+    int group[4]{};unsigned count=0;bool ended=false;
+    auto digit=[](unsigned char c)->int {
+        if(c>='A'&&c<='Z')return c-'A';
+        if(c>='a'&&c<='z')return c-'a'+26;
+        if(c>='0'&&c<='9')return c-'0'+52;
+        if(c=='+')return 62;
+        if(c=='/')return 63;
+        return c=='='?-2:-1;
+    };
+    for(unsigned char c:text) {
+        if(c==' ' || c=='\r' || c=='\n' || c=='\t')continue;
+        if(ended)return false;
+        const int value=digit(c);if(value==-1)return false;group[count++]=value;
+        if(count<4)continue;
+        count=0;if(group[0]<0 || group[1]<0)return false;
+        output.push_back(uint8_t((group[0]<<2)|(group[1]>>4)));
+        if(group[2]==-2){if(group[3]!=-2 || (group[1]&15))return false;ended=true;continue;}
+        if(group[2]<0)return false;
+        output.push_back(uint8_t((group[1]<<4)|(group[2]>>2)));
+        if(group[3]==-2){if(group[2]&3)return false;ended=true;continue;}
+        if(group[3]<0)return false;
+        output.push_back(uint8_t((group[2]<<6)|group[3]));
+    }
+    return count==0 && !output.empty();
+}
+bool Comments(const uint8_t* b,size_t size,RecordingFile& record,bool vorbis) {
     size_t p=0;
     auto string=[&](std::string& value) {
         if(size-p<4) return false;
@@ -33,8 +91,13 @@ bool Comments(const uint8_t* b,size_t size,Tags& tags,bool vorbis,bool& has_artw
         auto key=value.substr(0,equals);
         for(char& c:key) if(c>='a'&&c<='z') c=char(c-'a'+'A');
         // Artwork can dwarf all textual metadata and is irrelevant to identity.
-        if(key=="METADATA_BLOCK_PICTURE") {if(equals+1<value.size())has_artwork=true;}
-        else tags.fields.emplace_back(std::move(key),value.substr(equals+1));
+        if(key=="METADATA_BLOCK_PICTURE") {
+            if(equals+1<value.size()) {
+                record.has_artwork=true;std::vector<uint8_t> picture;
+                if(Base64Picture(value.substr(equals+1),picture))Picture(picture.data(),picture.size(),record);
+                else record.artwork_edit_safe=false;
+            }
+        } else record.tags.fields.emplace_back(std::move(key),value.substr(equals+1));
     }
     return vorbis ? p+1==size && b[p]==1 : p==size;
 }
@@ -168,9 +231,9 @@ bool Flac(const uint8_t* b,size_t size,RecordingFile& out) {
         unsigned type=b[p]&127; last=(b[p]&128)!=0;
         size_t length=(size_t(b[p+1])<<16)|(size_t(b[p+2])<<8)|b[p+3]; p+=4;
         if(type==127 || length>size-p || p+length>metadata_limit || (type==0&&p!=8)) return false;
-        if(type==6)out.has_artwork=true;
+        if(type==6)Picture(b+p,length,out);
         if(type==4) {
-            if(comments || !Comments(b+p,length,out.tags,false,out.has_artwork)) return false;
+            if(comments || !Comments(b+p,length,out,false)) return false;
             comments=true;
         }
         p+=length;
@@ -210,7 +273,7 @@ bool Ogg(const uint8_t* b,size_t size,RecordingFile& out) {
             if(packets<3) {
                 const unsigned kind[]={1,3,5};
                 if(packet.size()<7 || packet[0]!=kind[packets] || std::memcmp(packet.data()+1,"vorbis",6)) return true;
-                if(packets==1 && !Comments(packet.data()+7,packet.size()-7,out.tags,true,out.has_artwork)) return false;
+                if(packets==1 && !Comments(packet.data()+7,packet.size()-7,out,true)) return false;
             }
             ++packets; packet.clear();
         }
@@ -234,6 +297,16 @@ std::string Utf8(const std::wstring& value) {
     }
     return result;
 }
+}
+bool ReadRecordingArtwork(const std::vector<uint8_t>& bytes,RecordingArtwork& out) {
+    out={};ImageInfo info;if(!ReadImageInfo(bytes,info))return false;
+    out.valid=true;out.width=info.width;out.height=info.height;out.bytes=bytes.size();out.mime=info.mime;
+    out.digest={14695981039346656037ULL,0x9e3779b97f4a7c15ULL};
+    for(unsigned char byte:bytes) {
+        out.digest[0]^=byte;out.digest[0]*=1099511628211ULL;
+        out.digest[1]^=uint64_t(byte)+0x9e3779b97f4a7c15ULL+(out.digest[1]<<6)+(out.digest[1]>>2);
+    }
+    return true;
 }
 bool InspectRecording(const uint8_t* bytes,size_t size,RecordingFile& out) {
     out={};
