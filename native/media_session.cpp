@@ -82,10 +82,13 @@ static bool Artwork(void* properties, Media& out) {
     if(FAILED(Call(returned.p,7,&length)) || length!=size ||
        !Query(returned.p,L"{905a0fef-bc53-11df-8c49-001e4fc686da}",access) ||
        FAILED(Call(access.p,3,&bytes))) return false;
-    if(length>=3 && bytes[0]==0xff && bytes[1]==0xd8 && bytes[2]==0xff) out.cover_extension=L".jpg";
-    else if(length>=8 && !std::memcmp(bytes,"\x89PNG\r\n\x1a\n",8)) out.cover_extension=L".png";
-    else return false;
-    out.cover.assign(bytes,bytes+length); return true;
+    std::vector<uint8_t> image(bytes,bytes+length); ImageInfo info;
+    if(!ReadImageInfo(image,info)) return false;
+    ImageInfo previous;
+    if(ReadImageInfo(out.cover,previous) &&
+       uint64_t(info.width)*info.height<uint64_t(previous.width)*previous.height) return false;
+    out.cover_extension=info.mime=="image/png" ? L".png" : L".jpg";
+    out.cover=std::move(image); return true;
 }
 MediaReader::~MediaReader() {
     Release(manager_); if(initialized_) RoUninitialize();
@@ -150,8 +153,12 @@ bool MediaReader::Read(Media& out,bool include_artwork) {
     if(include_artwork) {
         if(media.Key()==cached_.Key() && !cached_.cover.empty()) {
             media.cover=cached_.cover; media.cover_extension=cached_.cover_extension;
-        } else Artwork(properties.p,media);
+        }
+        // Read runs on the history worker; failed refreshes retain the last cover.
+        if(artwork_refresh_.Due(media.Key(),GetTickCount64())) Artwork(properties.p,media);
     }
-    cached_=media; out=std::move(media); return true;
+    // Metadata-only reads must not discard artwork or restart its refresh policy.
+    if(include_artwork) cached_=media;
+    out=std::move(media); return true;
 }
 }

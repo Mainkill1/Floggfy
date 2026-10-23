@@ -1,3 +1,4 @@
+#include "artwork_fixture.h"
 #include "../native/flac_history_core.h"
 #include <cstdio>
 #include <cstdlib>
@@ -23,7 +24,7 @@ int main(int argc,char**argv) {
     FlacCoverage gap; check(!gap.Frame(info,4096,44100,2,16,0,1),"missing first frame rejected");
     FlacCoverage variable; check(variable.Frame(info,4096,44100,2,16,1,0) && !variable.Frame(info,4096,44100,2,16,1,5000),"variable-block seek/gap rejected");
     Tags tags; tags.fields={{"TITLE","Track"},{"ARTIST","Artist"},{"ALBUM","Album"}};
-    tags.cover={137,80,78,71,13,10,26,10}; tags.mime="image/png";
+    tags.cover=artwork_fixture::png(); tags.mime="image/png";
     std::vector<uint8_t> out; std::string error;
     check(TagFlac(b,tags,out,error),"native FLAC tag/picture construction");
     FlacInfo tagged; size_t start;

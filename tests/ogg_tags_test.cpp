@@ -1,3 +1,4 @@
+#include "artwork_fixture.h"
 #include "../native/ogg_tags.h"
 #include <ogg/ogg.h>
 #include <cstdio>
@@ -25,9 +26,17 @@ static std::vector<uint8_t> fixture() {
     ogg_stream_clear(&stream); return input;
 }
 int main(int argc,char** argv) {
+    history::Tags invalid; invalid.mime="image/png"; invalid.cover={137,80,78,71,13,10,26,10};
+    std::vector<uint8_t> malformed;
+    check(!history::BuildPicture(invalid,malformed),"signature-only artwork rejected");
     auto source=fixture(); history::Tags tags;
     tags.fields={{"TITLE","A title"},{"ARTIST","An artist"},{"HISTORY_COMPLETE_LISTEN","1"}};
-    tags.mime="image/png"; tags.cover.resize(100000,'x'); std::memcpy(tags.cover.data(),"\x89PNG\r\n\x1a\n",8);
+    tags.mime="image/png"; tags.cover=artwork_fixture::png(true);
+    std::vector<uint8_t> pictureBlock;
+    check(history::BuildPicture(tags,pictureBlock),"valid picture built");
+    // type + MIME length/string + description length: dimensions begin at byte 21.
+    check(pictureBlock[24]==1 && pictureBlock[28]==1 && pictureBlock[32]==32,
+          "FLAC picture records width height and bit depth");
     std::vector<uint8_t> output; std::string error;
     check(history::TagOgg(source,tags,output,error),"native tagger accepts complete stream");
     check(output.size()>source.size()+100000,"embedded picture spans multiple Ogg pages");
