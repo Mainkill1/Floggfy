@@ -197,13 +197,43 @@ static Catalog CatalogFor(const Media& media) {
     if(_wcsicmp(c.artist.c_str(),L"Various Artists")==0) c.kind=MediaKind::VariousArtists;
     return c;
 }
+static std::string Grouped(unsigned value) {
+    auto text=std::to_string(value);
+    for(int p=int(text.size())-3;p>0;p-=3)text.insert(size_t(p),",");
+    return text;
+}
+static std::string SavedAudioDetails(const Quality& quality,size_t bytes) {
+    std::string text=quality.codec==Codec::Flac ? "FLAC" : "Ogg Vorbis";
+    if(quality.codec==Codec::Flac && quality.bits)text+=" "+std::to_string(quality.bits)+"-bit";
+    if(quality.codec==Codec::Vorbis && quality.bitrate) {
+        text+=quality.bitrate%1000 ? " "+std::to_string(quality.bitrate)+" bps nominal" : " "+std::to_string(quality.bitrate/1000)+" kbps nominal";
+    }
+    if(quality.rate)text+=", "+Grouped(quality.rate)+" Hz";
+    char size[96];snprintf(size,sizeof(size),"%.2f MiB (%llu bytes)",double(bytes)/(1024*1024),static_cast<unsigned long long>(bytes));
+    return text+" | "+size;
+}
+static std::string ExistingSkipReason(const std::wstring& path,const Quality& incoming) {
+    Quality existing;
+    if(!ReadQuality(path,existing))return "existing file quality could not be verified; retained";
+    const bool same=existing.codec==incoming.codec && existing.rate && existing.rate==incoming.rate &&
+        existing.channels && existing.channels==incoming.channels &&
+        (existing.codec==Codec::Flac ? existing.bits && existing.bits==incoming.bits : existing.bitrate && existing.bitrate==incoming.bitrate);
+    if(same)return "same quality already exists on disk";
+    if(HigherQuality(existing,incoming))return "better quality already exists on disk";
+    return "existing file retained; incoming audio is not a verified quality upgrade";
+}
 enum class Publication { Saved,Skipped,Failed };
 static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch) {
+    const std::string identity=Utf8(heard.media.artist)+" - "+Utf8(heard.media.title);
+    auto finish=[&](Publication status,const char* event,const std::string& detail) {
+        // Put outcome facts first so a long title cannot truncate quality/size.
+        LogActivity(event,detail+" | "+identity);return status;
+    };
     SYSTEMTIME t; GetSystemTime(&t); wchar_t stamp[64];
     swprintf(stamp,64,L"%04u-%02u-%02uT%02u:%02u:%02uZ",t.wYear,t.wMonth,t.wDay,t.wHour,t.wMinute,t.wSecond);
     auto catalog=CatalogFor(heard.media);
     auto settings=GetSettings();
-    if(settings.capture_epoch!=expected_epoch || !settings.downloads || !(c.lossless ? settings.flac : settings.ogg)) return Publication::Skipped;
+    if(settings.capture_epoch!=expected_epoch || !settings.downloads || !(c.lossless ? settings.flac : settings.ogg)) return finish(Publication::Skipped,"skipped","capture settings changed or downloads/format disabled");
     std::wstring destination=OutputPath(settings.root,catalog,c.lossless ? L".flac" : L".ogg",settings.music_folder);
     std::wstring flac=OutputPath(settings.root,catalog,L".flac",settings.music_folder);
     Quality quality=c.Encoding(),lossless;
@@ -234,27 +264,28 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
            latest.generation==settings.generation && latest.downloads && latest.lyrics && latest.metadata && latest.flac) {
             const auto& path=existing_lossless ? flac : destination;
             const auto result=UpdateFlacLyrics(path,tags);
-            if(result==FileLyricsUpdate::Updated){Log(("LYRICS UPDATED "+Utf8(path)).c_str());return Publication::Saved;}
-            if(result==FileLyricsUpdate::Failed){Log("lyric update failed; existing file retained");return Publication::Failed;}
+            if(result==FileLyricsUpdate::Updated){Log(("LYRICS UPDATED "+Utf8(path)).c_str());return finish(Publication::Saved,"updated","lyrics updated; existing audio retained");}
+            if(result==FileLyricsUpdate::Failed)return finish(Publication::Failed,"failed","lyric update failed; existing file retained");
         }
         Log(("SKIP existing equal, higher or unverified quality "+Utf8(existing_lossless ? flac : destination)).c_str());
-        return Publication::Skipped;
+        return finish(Publication::Skipped,"skipped",ExistingSkipReason(existing_lossless ? flac : destination,quality));
     }
     if(c.lossless && decision==SaveDecision::Upgrade && settings.metadata && settings.lyrics)
         PreserveFlacLyrics(destination,tags);
     std::vector<uint8_t> tagged; std::string error;
     auto source=c.data.Flatten();
     bool tagged_ok=c.lossless ? TagFlac(source,tags,tagged,error) : TagOgg(source,tags,tagged,error);
-    if(!tagged_ok) { Log(("native tagging failed: "+error).c_str()); return Publication::Failed; }
+    if(!tagged_ok)return finish(Publication::Failed,"failed","tagging failed: "+error);
     auto latest=GetSettings();
-    if(latest.generation!=settings.generation || !latest.downloads || !(c.lossless ? latest.flac : latest.ogg)) return Publication::Skipped;
-    if(!Directories(destination.substr(0,destination.find_last_of(L'\\')))) return Publication::Failed;
+    if(latest.generation!=settings.generation || !latest.downloads || !(c.lossless ? latest.flac : latest.ogg)) return finish(Publication::Skipped,"skipped","capture settings changed or downloads/format disabled");
+    if(!Directories(destination.substr(0,destination.find_last_of(L'\\')))) return finish(Publication::Failed,"failed","could not create save directory");
     // First and only audio disk write: the complete, tagged file. No scratch
     // paths, sidecars, per-song directories, decoder or encoder are involved.
     auto publication=PublishBytes(destination,quality,tagged.data(),tagged.size());
-    if(publication==FilePublication::Skipped) return Publication::Skipped;
-    if(publication==FilePublication::Failed) { Log("final publication failed; existing file retained"); return Publication::Failed; }
-    std::string line=(publication==FilePublication::Upgraded ? "UPGRADED " : "SAVED ")+Utf8(destination); Log(line.c_str()); return Publication::Saved;
+    if(publication==FilePublication::Skipped)return finish(Publication::Skipped,"skipped",ExistingSkipReason(destination,quality));
+    if(publication==FilePublication::Failed)return finish(Publication::Failed,"failed","file publication failed; existing file retained");
+    std::string line=(publication==FilePublication::Upgraded ? "UPGRADED " : "SAVED ")+Utf8(destination); Log(line.c_str());
+    return finish(Publication::Saved,publication==FilePublication::Upgraded ? "upgraded" : "finished",SavedAudioDetails(quality,tagged.size()));
 }
 struct SaveJob {std::unique_ptr<Capture> capture;Heard heard;unsigned epoch=0;size_t reserved=0;};
 static BoundedQueue<SaveJob,2> saves;
@@ -273,8 +304,7 @@ static DWORD WINAPI SaveWorker(LPVOID) {
             if(result==Publication::Saved) {
                 auto settings=GetSettings();
                 if(settings.capture_epoch==job.epoch) ++saved_count;
-                LogActivity("finished",identity);
-            } else LogActivity(result==Publication::Failed?"failed":"finished",identity+(result==Publication::Failed?" (publication failed)":" (skipped existing file or changed settings)"));
+            }
         } catch(...) {LogActivity("failed",identity+" (publication exception)");}
         job.capture.reset();publishing_reserved.fetch_sub(job.reserved);
     }

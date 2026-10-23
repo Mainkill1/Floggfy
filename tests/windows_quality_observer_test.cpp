@@ -2,6 +2,7 @@
 // buffers are retained, and original parser return values remain unchanged.
 #include "../native/audio_history.cpp"
 #include <cassert>
+#include <sstream>
 #include "artwork_fixture.h"
 namespace history {
 std::string ReadClientPlaybackQuality(const Media&) {return {};}
@@ -35,9 +36,73 @@ static void TestLyricsPublication() {
   write();assert(SetLyrics(false));assert(Publish(capture,heard,CaptureEpoch())==Publication::Skipped);
   DeleteFileW(path.c_str());assert(SetDownloads(false));
 }
+static void WaitLog(const std::string& prefix,const std::string& suffix) {
+  const auto path=WindowsPath(GetSettings().root+L"\\Floggfy.log");const auto deadline=GetTickCount64()+5000;
+  while(GetTickCount64()<deadline){
+    HANDLE f=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,0,nullptr);
+    if(f!=INVALID_HANDLE_VALUE){
+      DWORD size=GetFileSize(f,nullptr),n=0;std::string text;
+      if(size!=INVALID_FILE_SIZE && size<=5*1024*1024){text.resize(size);if(!ReadFile(f,text.data(),size,&n,nullptr))text.clear();else text.resize(n);}
+      CloseHandle(f);std::istringstream lines(text);std::string line;
+      while(std::getline(lines,line))if(line.find(prefix)!=std::string::npos && line.find(suffix)!=std::string::npos)return;
+    }
+    Sleep(10);
+  }
+  std::fprintf(stderr,"Missing activity log: %s ... %s\n",prefix.c_str(),suffix.c_str());assert(false);
+}
+static void TestPublicationLogging() {
+  assert(GetSettings().log && !GetSettings().debug_log);
+  assert(SavedAudioDetails({Codec::Vorbis,44100,2,0,320000},1048576)=="Ogg Vorbis 320 kbps nominal, 44,100 Hz | 1.00 MiB (1048576 bytes)");
+  assert(SavedAudioDetails({Codec::Vorbis,44100,2,0,0},1048576)=="Ogg Vorbis, 44,100 Hz | 1.00 MiB (1048576 bytes)");
+  wchar_t temp[2048];GetTempPathW(2048,temp);
+  assert(SetSaveLocation(std::wstring(temp)+L"Floggfy-publication-log-"+std::to_wstring(GetCurrentProcessId())));
+  assert(SetDownloads(true)&&SetFlac(true)&&SetOgg(true)&&SetLyrics(false));
+  Heard heard;heard.media.title=L"Log Track";heard.media.artist=L"Log Artist";heard.media.album=L"Log Album";heard.media.track=1;
+  heard.media.cover=artwork_fixture::png();heard.media.cover_extension=L".png";
+  const auto settings=GetSettings();const auto path=OutputPath(settings.root,CatalogFor(heard.media),L".flac",settings.music_folder);
+  auto make=[](unsigned rate,unsigned bits){
+    auto c=std::make_unique<Capture>();c->lossless=true;c->flac={rate,2,bits,4096,4096,8192};c->coverage.samples=8192;c->coverage.frames=2;
+    std::vector<uint8_t> bytes={'f','L','a','C',128,0,0,34};bytes.resize(42);bytes[8]=bytes[10]=16;
+    const uint64_t packed=(uint64_t(rate)<<44)|(uint64_t(1)<<41)|(uint64_t(bits-1)<<36)|8192;
+    for(unsigned i=0;i<8;i++)bytes[18+i]=uint8_t(packed>>(56-8*i));
+    bytes.insert(bytes.end(),{255,248,1,2,3,4});
+    c->bytes=bytes.size();assert(c->data.Append(bytes.data(),bytes.size(),65536));return c;
+  };
+  auto capture=make(44100,16);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Saved);
+  WIN32_FILE_ATTRIBUTE_DATA attributes{};assert(GetFileAttributesExW(path.c_str(),GetFileExInfoStandard,&attributes));
+  auto size=std::to_string((uint64_t(attributes.nFileSizeHigh)<<32)|attributes.nFileSizeLow);
+  WaitLog("finished FLAC 16-bit, 44,100 Hz", "("+size+" bytes) | Log Artist - Log Track");
+  capture=make(44100,24);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Saved);
+  assert(GetFileAttributesExW(path.c_str(),GetFileExInfoStandard,&attributes));size=std::to_string((uint64_t(attributes.nFileSizeHigh)<<32)|attributes.nFileSizeLow);
+  WaitLog("upgraded FLAC 24-bit, 44,100 Hz", "("+size+" bytes) | Log Artist - Log Track");
+  capture=make(44100,24);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped);
+  WaitLog("skipped same quality already exists on disk", "Log Artist - Log Track");
+  capture=make(44100,16);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped);
+  WaitLog("skipped better quality already exists on disk", "Log Artist - Log Track");
+  capture=make(48000,16);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped);
+  WaitLog("skipped existing file retained; incoming audio is not a verified quality upgrade", "Log Artist - Log Track");
+  assert(DeleteFileW(path.c_str()));
+  assert(EnsureDirectory(path.substr(0,path.find_last_of(L'\\'))));
+  HANDLE f=CreateFileW(path.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,0,nullptr);DWORD n;
+  assert(f!=INVALID_HANDLE_VALUE&&WriteFile(f,"unknown",7,&n,nullptr));CloseHandle(f);
+  capture=make(44100,24);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped);
+  WaitLog("skipped existing file quality could not be verified; retained", "Log Artist - Log Track");
+  assert(DeleteFileW(path.c_str()));
+  assert(SetDownloads(false));assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped);
+  WaitLog("skipped capture settings changed or downloads/format disabled", "Log Artist - Log Track");
+  assert(SetDownloads(true));capture=make(44100,24);capture->data.Flatten();
+  assert(Publish(*capture,heard,CaptureEpoch())==Publication::Failed);
+  WaitLog("failed tagging failed:","Log Artist - Log Track");
+  assert(SetDownloads(false));
+  std::puts("PASS: normal publication logs contain final quality/size and accurate same/better/unverified/settings skip reasons");
+}
 int main() {
+  wchar_t ini_path[2048];GetModuleFileNameW(nullptr,ini_path,2048);std::wstring ini=ini_path;ini.resize(ini.find_last_of(L'\\')+1);ini+=L"SpotifyHistory.ini";
+  assert(WritePrivateProfileStringW(L"To Disk",L"Log",L"1",ini.c_str()));
+  assert(WritePrivateProfileStringW(L"To Disk",L"DebugLog",L"0",ini.c_str()));
   InitSettings(nullptr);
   TestLyricsPublication();
+  TestPublicationLogging();
   assert(SetDownloads(false)); // Explicit fixture preference, independent of install defaults.
   assert(!GetSettings().downloads);
   queue =
