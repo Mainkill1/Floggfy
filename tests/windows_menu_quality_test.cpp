@@ -12,8 +12,8 @@ static SIZE_T CountQuery(LPCVOID p,PMEMORY_BASIC_INFORMATION m,SIZE_T n) {
 }
 static unsigned filesystem_calls=0,shell_calls=0,message_calls=0;
 static bool saved_file_exists=true;
-static std::wstring selected_path;
-static DWORD WINAPI FileAttributes(LPCWSTR) {++filesystem_calls;return saved_file_exists ? FILE_ATTRIBUTE_NORMAL : INVALID_FILE_ATTRIBUTES;}
+static std::wstring selected_path,checked_path;
+static DWORD WINAPI FileAttributes(LPCWSTR path) {checked_path=path;++filesystem_calls;return saved_file_exists ? FILE_ATTRIBUTE_NORMAL : INVALID_FILE_ATTRIBUTES;}
 static HRESULT WINAPI ParseItem(PCWSTR path,IBindCtx*,PIDLIST_ABSOLUTE* item,SFGAOF,SFGAOF*) {
   selected_path=path;*item=static_cast<PIDLIST_ABSOLUTE>(CoTaskMemAlloc(sizeof(ITEMIDLIST)));return S_OK;
 }
@@ -24,7 +24,9 @@ static int WINAPI ShowMessage(HWND,LPCWSTR text,LPCWSTR,UINT) {
   ++message_calls;assert(std::wstring(text).find(L"no longer available")!=std::wstring::npos);return IDOK;
 }
 static HANDLE WINAPI RunClickWorker(LPSECURITY_ATTRIBUTES,SIZE_T,LPTHREAD_START_ROUTINE entry,LPVOID value,DWORD,LPDWORD) {
-  entry(value);return CreateEventW(nullptr,FALSE,FALSE,nullptr);
+  auto thread=CreateEventW(nullptr,FALSE,FALSE,nullptr);
+  if(thread)entry(value);
+  return thread;
 }
 #define GetFileAttributesW FileAttributes
 #define SHParseDisplayName ParseItem
@@ -206,7 +208,7 @@ int main() {
   assert(root.child);
   auto &child = *root.child;
   assert(Index(&child.api,28490)==Index(&child.api,location_id)+1);
-  assert(child.entries[Index(&child.api,28490)].label==L"View last DLs");
+  assert(child.entries[Index(&child.api,28490)].label==L"Latest Downloads >");
   assert(!child.entries[Index(&child.api,recent_id)].visible);
   assert(child.child && child.child->refs==1);
   assert(!child.child->entries[0].enabled);
@@ -381,6 +383,11 @@ int main() {
   assert(filesystem_calls==fs_before_labels && shell_calls==4 && recent.refs==1);
   Retain(&recent.api.base);Execute(&wrapped.api,&recent.api,first_recent_id,0);
   assert(selected_path==L"C:\\Music\\escaped.flac" && shell_calls==5 && recent.refs==1);
+  const auto long_path=L"C:\\Music\\"+std::wstring(280,L'a')+L".flac";
+  published_recent={{L"Long saved path",long_path,8}};build_root();
+  Retain(&recent.api.base);Execute(&wrapped.api,&recent.api,first_recent_id,0);
+  assert(checked_path==history::WindowsPath(long_path));
+  assert(selected_path==long_path && shell_calls==6);
   q.format=history::PlaybackFormat::Ogg;q.level=history::PlaybackLevel::VeryHigh;q.bits=0;
   actual.level=q.level;history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
   build_root();assert(!child.entries[9].visible && !child.entries[10].visible);

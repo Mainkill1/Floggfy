@@ -108,7 +108,7 @@ when the on-disk format is verified; incomparable or unverified files get an
 explicit retention reason.
 
 The last ten successful saved paths are held in memory for this Spotify run.
-**View last DLs**, directly below **Save Location**, is hidden until the first
+**Latest Downloads >**, directly below **Save Location**, is hidden until the first
 successful download. Selecting a song opens Explorer with that file selected.
 Skips, failed writes and lyric-only updates do not add history entries. Menu
 snapshots stay fixed while open so a new download cannot redirect an existing

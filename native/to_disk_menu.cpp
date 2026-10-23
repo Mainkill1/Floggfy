@@ -152,7 +152,7 @@ static void Populate(Menu* menu) {
     item(downloads_id,state.downloads ? L"Downloads (Enabled)" : L"Downloads (Disabled)",state.downloads,true);
     if(inserted) { std::wstring location=L"Save Location"; auto text=Text(location); Call<int>(child,4,location_id,&text); }
     if(inserted) {
-        std::wstring label=L"View last DLs"; auto text=Text(label);
+        std::wstring label=L"Latest Downloads >"; auto text=Text(label);
         if(auto* recent=Call<Menu*>(child,7,recent_id,&text)) {
             std::wstring empty=L"No downloads yet"; auto placeholder=Text(empty);
             Call<int>(recent,4,first_recent_id,&placeholder);
@@ -245,7 +245,7 @@ static void RefreshRecent(Wrapped* wrapped,Menu* child) {
 static DWORD WINAPI RevealRecentWorker(void* argument) {
     std::unique_ptr<std::wstring> path(static_cast<std::wstring*>(argument));
     const HRESULT initialized=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
-    const auto attributes=GetFileAttributesW(path->c_str());
+    const auto attributes=GetFileAttributesW(history::WindowsPath(*path).c_str());
     HRESULT result=HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
     if(attributes!=INVALID_FILE_ATTRIBUTES && !(attributes&FILE_ATTRIBUTE_DIRECTORY)) {
         PIDLIST_ABSOLUTE item=nullptr;
@@ -256,7 +256,7 @@ static DWORD WINAPI RevealRecentWorker(void* argument) {
     if(FAILED(result)) MessageBoxW(nullptr,
         attributes==INVALID_FILE_ATTRIBUTES || (attributes&FILE_ATTRIBUTE_DIRECTORY) ?
         L"This download is no longer available at its saved location." :
-        L"Explorer could not show this download.",L"View last DLs",MB_OK|MB_ICONINFORMATION);
+        L"Explorer could not show this download.",L"Latest Downloads >",MB_OK|MB_ICONINFORMATION);
     if(SUCCEEDED(initialized)) CoUninitialize();
     return 0;
 }
@@ -266,7 +266,7 @@ static void RevealRecent(const std::wstring& path) {
     // Filesystem and shell work belongs to a click, away from CEF's UI thread.
     HANDLE worker=CreateThread(nullptr,0,RevealRecentWorker,copy,0,nullptr);
     if(worker) CloseHandle(worker);
-    else {delete copy;MessageBoxW(GetActiveWindow(),L"Explorer could not be started.",L"View last DLs",MB_OK|MB_ICONINFORMATION);}
+    else {delete copy;MessageBoxW(GetActiveWindow(),L"Explorer could not be started.",L"Latest Downloads >",MB_OK|MB_ICONINFORMATION);}
 }
 static void Execute(Delegate* self,Menu* menu,int command,int flags) {
     if(command>=first_recent_id && command<first_recent_id+int(history::kRecentDownloadLimit)) {
