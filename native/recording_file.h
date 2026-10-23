@@ -11,6 +11,7 @@ struct RecordingFile {
     Tags tags;
     bool complete=false;
     bool owned=false;
+    bool has_artwork=false;
 };
 bool InspectRecording(const uint8_t* bytes,size_t size,RecordingFile& out);
 bool MatchesRecording(const RecordingFile& file,const Catalog& catalog);

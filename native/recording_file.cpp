@@ -13,7 +13,7 @@ std::string Field(const Tags& tags,const char* name) {
     for(const auto& field:tags.fields) if(field.first==name) return field.second;
     return {};
 }
-bool Comments(const uint8_t* b,size_t size,Tags& tags,bool vorbis) {
+bool Comments(const uint8_t* b,size_t size,Tags& tags,bool vorbis,bool& has_artwork) {
     size_t p=0;
     auto string=[&](std::string& value) {
         if(size-p<4) return false;
@@ -33,7 +33,8 @@ bool Comments(const uint8_t* b,size_t size,Tags& tags,bool vorbis) {
         auto key=value.substr(0,equals);
         for(char& c:key) if(c>='a'&&c<='z') c=char(c-'a'+'A');
         // Artwork can dwarf all textual metadata and is irrelevant to identity.
-        if(key!="METADATA_BLOCK_PICTURE") tags.fields.emplace_back(std::move(key),value.substr(equals+1));
+        if(key=="METADATA_BLOCK_PICTURE") {if(equals+1<value.size())has_artwork=true;}
+        else tags.fields.emplace_back(std::move(key),value.substr(equals+1));
     }
     return vorbis ? p+1==size && b[p]==1 : p==size;
 }
@@ -167,8 +168,9 @@ bool Flac(const uint8_t* b,size_t size,RecordingFile& out) {
         unsigned type=b[p]&127; last=(b[p]&128)!=0;
         size_t length=(size_t(b[p+1])<<16)|(size_t(b[p+2])<<8)|b[p+3]; p+=4;
         if(type==127 || length>size-p || p+length>metadata_limit || (type==0&&p!=8)) return false;
+        if(type==6)out.has_artwork=true;
         if(type==4) {
-            if(comments || !Comments(b+p,length,out.tags,false)) return false;
+            if(comments || !Comments(b+p,length,out.tags,false,out.has_artwork)) return false;
             comments=true;
         }
         p+=length;
@@ -208,7 +210,7 @@ bool Ogg(const uint8_t* b,size_t size,RecordingFile& out) {
             if(packets<3) {
                 const unsigned kind[]={1,3,5};
                 if(packet.size()<7 || packet[0]!=kind[packets] || std::memcmp(packet.data()+1,"vorbis",6)) return true;
-                if(packets==1 && !Comments(packet.data()+7,packet.size()-7,out.tags,true)) return false;
+                if(packets==1 && !Comments(packet.data()+7,packet.size()-7,out.tags,true,out.has_artwork)) return false;
             }
             ++packets; packet.clear();
         }

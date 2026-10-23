@@ -103,7 +103,7 @@ static bool SameTrack(const Tags& existing,const Tags& incoming) {
     }
     return true;
 }
-static bool Synced(const std::string& words) {
+bool IsSyncedLyrics(const std::string& words) {
     size_t p=0;unsigned previous=0,lines=0;
     while(p<words.size()) {
         if(words[p++]!='[')return false;
@@ -127,8 +127,8 @@ bool CopyFlacLyrics(const std::vector<uint8_t>& source,Tags& incoming) {
     const auto lyrics=Value(existing,"LYRICS"),alias=Value(existing,"UNSYNCEDLYRICS");
     const auto old=!lyrics.empty()?lyrics:alias;
     const auto current=Value(incoming,"LYRICS");
-    if(old.empty()||Synced(current))return false;
-    if((!current.empty()||!Value(incoming,"UNSYNCEDLYRICS").empty())&&!Synced(old))return false;
+    if(old.empty()||IsSyncedLyrics(current))return false;
+    if((!current.empty()||!Value(incoming,"UNSYNCEDLYRICS").empty())&&!IsSyncedLyrics(old))return false;
     for(auto it=incoming.fields.begin();it!=incoming.fields.end();)if(Upper(it->first)=="LYRICS")it=incoming.fields.erase(it);else ++it;
     incoming.fields.push_back({!lyrics.empty()?"LYRICS":"UNSYNCEDLYRICS",old});return true;
 }
@@ -137,7 +137,7 @@ LyricsUpdate FillFlacLyrics(const std::vector<uint8_t>& source,const Tags& incom
     if(lyrics.empty() || lyrics.size()>65536)return LyricsUpdate::Unchanged;
     Tags existing;if(!ReadFlacComments(source,existing,error))return LyricsUpdate::Invalid;
     const auto old=Value(existing,"LYRICS"),alias=Value(existing,"UNSYNCEDLYRICS");
-    if((!old.empty()||!alias.empty())&&(!Synced(lyrics)||Synced(old)||Synced(alias)))return LyricsUpdate::Unchanged;
+    if((!old.empty()||!alias.empty())&&(!IsSyncedLyrics(lyrics)||IsSyncedLyrics(old)||IsSyncedLyrics(alias)))return LyricsUpdate::Unchanged;
     if(!SameTrack(existing,incoming))return LyricsUpdate::Unchanged;
     std::string vendor;std::vector<std::string> fields;size_t audio=0;
     if(!CommentFields(source,vendor,fields,audio))return LyricsUpdate::Invalid;
