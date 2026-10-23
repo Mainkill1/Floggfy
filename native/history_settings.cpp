@@ -36,6 +36,8 @@ static constexpr char default_ini[]=
     "Metadata=1\r\n"
     "; Automatically obtains lyrics; Metadata=0 disables all enrichment.\r\n"
     "Lyrics=1\r\n"
+    "; Allows metadata-only upgrades to existing saved files.\r\n"
+    "UpdateExistingMetadata=1\r\n"
     "; Activity log in Save Location, capped at 5 MiB.\r\n"
     "Log=1\r\n"
     "DebugLog=0\r\n"
@@ -58,6 +60,7 @@ static DWORD WINAPI PersistSettings(LPVOID) {
             if(ok) {
                 auto flag=[&](const wchar_t* key,bool value){settings_file::Set(text,key,value?L"1":L"0");};
                 flag(L"Downloads",snapshot.downloads);flag(L"Ogg",snapshot.ogg);flag(L"FLAC",snapshot.flac);flag(L"Lyrics",snapshot.lyrics);
+                flag(L"UpdateExistingMetadata",snapshot.update_existing_metadata);
                 settings_file::Set(text,L"Save Location",snapshot.save_location);
                 ok=settings_file::Write(ini,text);
             }
@@ -111,6 +114,7 @@ void InitSettings(HMODULE proxy) {
     settings.flac=GetPrivateProfileIntW(L"To Disk",L"FLAC",1,ini.c_str())!=0;
     settings.metadata=GetPrivateProfileIntW(L"To Disk",L"Metadata",1,ini.c_str())!=0;
     settings.lyrics=GetPrivateProfileIntW(L"To Disk",L"Lyrics",1,ini.c_str())!=0;
+    settings.update_existing_metadata=GetPrivateProfileIntW(L"To Disk",L"UpdateExistingMetadata",1,ini.c_str())!=0;
     settings.log=GetPrivateProfileIntW(L"To Disk",L"Log",1,ini.c_str())!=0;
     settings.debug_log=GetPrivateProfileIntW(L"To Disk",L"DebugLog",0,ini.c_str())!=0;
     settings.max_buffered_mib=std::max(8u,std::min(512u,GetPrivateProfileIntW(L"History",L"MaxBufferedMiB",500,ini.c_str())));
@@ -163,6 +167,7 @@ bool SetDownloads(bool v) { return Set(L"Downloads",v,settings.downloads,&downlo
 bool SetOgg(bool v) { return Set(L"Ogg",v,settings.ogg,&ogg_enabled); }
 bool SetFlac(bool v) { return Set(L"FLAC",v,settings.flac,&flac_enabled); }
 bool SetLyrics(bool v) { return Set(L"Lyrics",v,settings.lyrics,nullptr,false); }
+bool SetUpdateExistingMetadata(bool v) { return Set(L"UpdateExistingMetadata",v,settings.update_existing_metadata,nullptr,false); }
 bool SetSaveLocation(const std::wstring& root) {
     if(root.empty() || root.size()>2047 || !(root.size()>2 && (root[1]==L':' || root.rfind(L"\\\\",0)==0))) return false;
     DWORD attributes=GetFileAttributesW(WindowsPath(root).c_str());

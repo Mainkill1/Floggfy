@@ -349,6 +349,7 @@ void EnrichTags(const Media& media,Tags& tags) {
  const auto preferences=GetSettings();if(!preferences.metadata)return;
  RichMetadata metadata;if(!ReadCachedMetadata(media,metadata))return;
  for(const auto& field:metadata.fields) {
+  if(field.first=="FLOGGFY_ARTWORK_SOURCE")continue;
   if(field.first=="LYRICS"&&!preferences.lyrics)continue;
   tags.fields.erase(std::remove_if(tags.fields.begin(),tags.fields.end(),[&](const auto& entry){return entry.first==field.first;}),tags.fields.end());
   tags.fields.push_back(field);
@@ -357,6 +358,10 @@ void EnrichTags(const Media& media,Tags& tags) {
   std::vector<uint8_t> cover;std::string mime;ImageInfo original;
   if(GetAlbumArtwork(metadata.uri,cover,mime)&&ReadImageInfo(cover,original)) {
    tags.cover=std::move(cover);tags.mime=original.mime;
+   // Provenance belongs to the validated client image actually selected above,
+   // never to a cached text record or an unchanged Windows thumbnail fallback.
+   tags.fields.erase(std::remove_if(tags.fields.begin(),tags.fields.end(),[](const auto& field){return field.first=="FLOGGFY_ARTWORK_SOURCE";}),tags.fields.end());
+   tags.fields.push_back({"FLOGGFY_ARTWORK_SOURCE","spotify-client"});
    HistoryLog(("artwork source=album width="+std::to_string(original.width)+" height="+std::to_string(original.height)).c_str());
   }
  }

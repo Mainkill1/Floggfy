@@ -4,7 +4,7 @@
 namespace history {
 struct Settings {
     bool downloads=true,ogg=true,flac=true,menu=true,music_folder=false;
-    bool metadata=true,lyrics=true,log=true,debug_log=false;
+    bool metadata=true,lyrics=true,update_existing_metadata=true,log=true,debug_log=false;
     unsigned max_buffered_mib=500,generation=0,capture_epoch=0;
     std::wstring root,save_location;
 };
@@ -14,6 +14,8 @@ bool SetDownloads(bool enabled);
 bool SetOgg(bool enabled);
 bool SetFlac(bool enabled);
 bool SetLyrics(bool enabled);
+// INI-only user preference; changing optional enrichment never resets capture.
+bool SetUpdateExistingMetadata(bool enabled);
 bool SetSaveLocation(const std::wstring& root);
 bool OggEnabled();
 bool FlacEnabled();
