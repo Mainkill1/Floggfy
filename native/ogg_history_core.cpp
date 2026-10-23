@@ -88,7 +88,7 @@ std::string Listen::Observe(const std::string& key,double pos,double length,
     }
     if(key!=identity) {
         const bool pending=phase==ListenPhase::AwaitingIdentity && time>=wrap_time && time-wrap_time<=2;
-        const bool observed_start=pending && is_playing && std::fabs(length-wrap_length)<=1.0 &&
+        const bool observed_start=pending && eligible && is_playing && std::fabs(length-wrap_length)<=1.0 &&
             pos>=wrap_position-0.1 && pos<=wrap_position+(time-wrap_time)+1.5;
         const double next_start=observed_start ? wrap_start : time-pos;
         if(NaturalEnd(*this,pending ? wrap_time-last_time : elapsed) &&
@@ -103,7 +103,7 @@ std::string Listen::Observe(const std::string& key,double pos,double length,
         const double expected=wrap_position+(time-wrap_time);
         // A title update gets a short bounded window. If the same identity
         // continues on a valid new timeline, this is a new repeat instance.
-        if(waiting<0 || waiting>2 || !is_playing ||
+        if(!eligible || waiting<0 || waiting>2 || !is_playing ||
            pos<wrap_position-0.1 || pos>expected+1.5) {
             eligible=false;phase=ListenPhase::Tracking;pending_start=false;
             last_time=time;last_position=pos;playing=is_playing;return {};

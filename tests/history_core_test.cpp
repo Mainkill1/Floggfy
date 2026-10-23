@@ -117,5 +117,10 @@ int main() {
     for(int i=6;i<10;++i)pause_end.Observe("one",i,10,true,7+i-5);
     check(pause_end.Observe("two",0,10,true,12)=="one" && pause_end.completed_time==12,
           "pause duration cannot shift completed boundary to an earlier or new instance");
+    Listen invalidated_wrap;invalidated_wrap.Observe("one",0,10,true,0);
+    for(int i=1;i<10;++i)invalidated_wrap.Observe("one",i,10,true,i);
+    invalidated_wrap.Observe("one",.1,10,true,10.1);invalidated_wrap.eligible=false;
+    check(invalidated_wrap.Observe("one",1.2,10,true,11.2).empty() && invalidated_wrap.completed_generation==0 && !invalidated_wrap.transient,
+          "failed observation or overflow invalidates a pending repeat completion");
     std::puts("PASS: Ogg integrity and complete-listen cases");
 }
