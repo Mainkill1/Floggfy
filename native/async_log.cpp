@@ -4,6 +4,7 @@
 #include <array>
 #include <cstring>
 #include <cstdio>
+#include <string>
 namespace history {namespace {
 constexpr size_t cap=5*1024*1024;
 struct Record {char event[16];char detail[768];};
@@ -29,10 +30,24 @@ static DWORD WINAPI Run(LPVOID){
 }
 bool WriteCappedLog(const std::wstring& path,const std::string& line){
  if(line.empty()||line.size()>cap)return false;
- HANDLE h=CreateFileW(WindowsPath(path).c_str(),GENERIC_WRITE,FILE_SHARE_READ,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+ HANDLE h=CreateFileW(WindowsPath(path).c_str(),GENERIC_READ|GENERIC_WRITE,FILE_SHARE_READ,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
  if(h==INVALID_HANDLE_VALUE)return false;
  LARGE_INTEGER size{},pos{};bool ok=GetFileSizeEx(h,&size)!=0;
- if(ok){if(size.QuadPart<0||size.QuadPart>static_cast<LONGLONG>(cap-line.size())){pos.QuadPart=0;ok=SetFilePointerEx(h,pos,nullptr,FILE_BEGIN)&&SetEndOfFile(h);}else ok=SetFilePointerEx(h,pos,nullptr,FILE_END)!=0;}
+ if(ok && size.QuadPart<0)ok=false;
+ if(ok && size.QuadPart>static_cast<LONGLONG>(cap-line.size())) {
+  // Read only the bounded tail. Include the preceding byte so a tail that
+  // already starts on a line boundary does not lose an extra complete line.
+  const auto budget=cap-line.size();
+  pos.QuadPart=size.QuadPart-static_cast<LONGLONG>(budget)-1;
+  std::string tail(budget+1,'\0');DWORD read=0;
+  ok=SetFilePointerEx(h,pos,nullptr,FILE_BEGIN)&&ReadFile(h,tail.data(),DWORD(tail.size()),&read,nullptr)&&read==tail.size();
+  if(ok){
+   auto boundary=tail.find('\n');
+   tail=boundary==std::string::npos ? std::string{} : tail.substr(boundary+1);
+   pos.QuadPart=0;DWORD retained=0;
+   ok=SetFilePointerEx(h,pos,nullptr,FILE_BEGIN)&&WriteFile(h,tail.data(),DWORD(tail.size()),&retained,nullptr)&&retained==tail.size()&&SetEndOfFile(h);
+  }
+ } else if(ok) ok=SetFilePointerEx(h,pos,nullptr,FILE_END)!=0;
  DWORD written=0;if(ok)ok=WriteFile(h,line.data(),DWORD(line.size()),&written,nullptr)&&written==line.size();CloseHandle(h);return ok;
 }
 void StartLogger(){if(signal)return;signal=CreateEventW(nullptr,FALSE,FALSE,nullptr);if(!signal)return;auto thread=CreateThread(nullptr,0,Run,nullptr,0,nullptr);if(thread){SetThreadPriority(thread,THREAD_PRIORITY_BELOW_NORMAL);CloseHandle(thread);}else{CloseHandle(signal);signal=nullptr;}}

@@ -1,3 +1,44 @@
+## Version 1.2
+
+The portable native regression suite and Windows regression/startup suite pass.
+Coverage includes new-install defaults and saved disabled preferences, menu
+capability fast paths, bounded metadata requests and cancellation, exact-track
+association, artwork validation/cache, embedded LRC timing, Unicode lyrics,
+metadata-only FLAC updates, audio-quality upgrade protection, locked-file
+preservation and oldest-line log rotation at 5 MiB.
+
+Live checks used Windows x64 Spotify 1.2.93.667 and 1.3.6.1921. On 1.2.93.667,
+the earlier candidate attached menu and metadata hooks on three fresh starts,
+passed all 15 menu probes and obtained lyrics with the lyrics panel closed.
+On 1.3.6.1921, both hooks attached on three fresh starts and lyrics arrived with
+the panel closed. Initial menu probes passed 14 of 15 times; the first physical
+click timed out for an unconfirmed reason. Five subsequent probes on the final
+DLL passed, taking 43–67 ms including UI Automation lookup.
+
+A complete-listen capture on 1.3.6.1921 contains embedded synchronized lyrics,
+a 640 × 640 JPEG album cover and track/album metadata. Replaying into an existing
+plain-lyrics FLAC upgraded it to 27 timestamped LRC lines (936 UTF-8 bytes).
+Independent comparisons confirmed identical compressed audio, all non-comment
+metadata blocks and all unrelated comment fields. Both the fresh synchronized
+capture and the metadata-upgraded file pass full Xiph FLAC decoding, frame CRCs
+and supplied STREAMINFO audio MD5 verification.
+
+Spotify supplied 16-bit/44.1 kHz stereo FLAC in these recent captures. An older
+24-bit capture of the same track is a different audio rendition; the audio-byte
+preservation check compares a file before and after retagging, not those two
+renditions. Existing higher-quality audio is not replaced by lower-quality audio.
+
+The client service now requests track/album metadata and lyrics automatically.
+Lyrics availability remains track-dependent, and internal Spotify APIs can change.
+`Lyrics=0` disables lyric requests, discovery and updates; `Metadata=0` disables
+all extra metadata collection. Existing-library lyric updates apply to FLAC after
+a complete replay. No bulk library scan or separate LRC files are created.
+
+## Historical validation for version 1.1.0
+
+The notes below describe the previous cache-only collector and earlier releases;
+their cache-only, missing-lyrics and log-reset statements do not describe 1.2.
+
 ## Automated checks
 
 `bash test-native.sh` covers Ogg integrity/complete listens, native artwork/tags,

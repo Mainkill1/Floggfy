@@ -7,6 +7,8 @@ build/hook-init-state-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/hook_installation_test.cpp -o build/hook-installation-test
 build/hook-installation-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/hook_rollback_test.cpp -o build/hook-rollback-test
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/hook_startup_batch_test.cpp -o build/hook-startup-batch-test
+build/hook-startup-batch-test
 build/hook-rollback-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/cef_identity_test.cpp -o build/cef-identity-test
 build/cef-identity-test
@@ -22,12 +24,12 @@ g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/history_core_test.cpp native/ogg_
 build/history-core-test
 gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/ogg-framing-test.o
 g++ -std=c++17 -O2 -Wall -Wextra -Werror -I native/vendor/libogg/include \
-    tests/ogg_tags_test.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/ogg-framing-test.o -o build/ogg-tags-test
+    tests/ogg_tags_test.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/ogg-framing-test.o -o build/ogg-tags-test
 build/ogg-tags-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/library_layout_test.cpp native/library_layout.cpp -o build/library-layout-test
 build/library-layout-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror -I native/vendor/libogg/include \
-    tests/flac_history_test.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/ogg-framing-test.o -o build/flac-history-test
+    tests/flac_history_test.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/ogg-framing-test.o -o build/flac-history-test
 build/flac-history-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/compressed_buffer_test.cpp native/compressed_buffer.cpp -o build/compressed-buffer-test
 build/compressed-buffer-test
@@ -42,5 +44,8 @@ python3 tests/create_cache_fixtures.py build/cache-fixtures
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/cached_metadata_test.cpp native/cached_metadata.cpp native/rich_metadata.cpp -o build/cached-metadata-test
 build/cached-metadata-test
 
-g++ -std=c++17 -O2 -Wall -Wextra -Werror -I native/vendor/libogg/include tests/playback_quality_test.cpp native/playback_quality.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/ogg-framing-test.o -o build/playback-quality-test
+g++ -std=c++17 -O2 -Wall -Wextra -Werror -I native/vendor/libogg/include tests/playback_quality_test.cpp native/playback_quality.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/ogg-framing-test.o -o build/playback-quality-test
 build/playback-quality-test
+
+g++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread tests/album_artwork_test.cpp native/album_artwork.cpp native/image_info.cpp -o build/album-artwork-test
+build/album-artwork-test

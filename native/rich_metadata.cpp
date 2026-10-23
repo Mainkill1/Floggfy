@@ -25,7 +25,7 @@ bool RichMetadata::Matches(const std::string& t,const std::string& a,const std::
  return title==t&&artist==a&&album==al&&std::fabs(duration-d)<=1.0;
 }
 static bool ParseMetadata(const std::string& input,RichMetadata& out,std::string& error,bool playback) {
- static const std::set<std::string> allowed={"v","playback_quality","title","artist","album","uri","duration","ARTIST","ALBUMARTIST","DATE","YEAR","GENRE","LYRICS","TRACKNUMBER","DISCNUMBER","DISCTOTAL","TRACKTOTAL","ISRC","LABEL","ORGANIZATION","PUBLISHER","COPYRIGHT","PHONOGRAMCOPYRIGHT","COMPOSER","REMIXER","CONDUCTOR","LANGUAGE","COMMENT","SPOTIFY_URI"};
+ static const std::set<std::string> allowed={"v","artwork_url","playback_quality","title","artist","album","uri","duration","ARTIST","ALBUMARTIST","DATE","YEAR","GENRE","LYRICS","TRACKNUMBER","DISCNUMBER","DISCTOTAL","TRACKTOTAL","ISRC","LABEL","ORGANIZATION","PUBLISHER","COPYRIGHT","PHONOGRAMCOPYRIGHT","COMPOSER","REMIXER","CONDUCTOR","LANGUAGE","COMMENT","SPOTIFY_URI"};
  auto fail=[&](const char* e){error=e; return false;};
  if(input.size()>131072) return fail("metadata too large");
  std::map<std::string,std::string> kv;
@@ -41,7 +41,7 @@ static bool ParseMetadata(const std::string& input,RichMetadata& out,std::string
  if(kv["v"]!="1"||kv["title"].empty()||(!episode && (kv["artist"].empty()||kv["album"].empty()||kv["uri"].rfind("spotify:track:",0)!=0))) return fail("missing identity");
  char* last=nullptr; double d=strtod(kv["duration"].c_str(),&last);
  if(!last||*last||!std::isfinite(d)||d<=0||d>86400) return fail("invalid duration");
- RichMetadata m; m.title=kv["title"];m.artist=kv["artist"];m.album=kv["album"];m.uri=kv["uri"];m.duration=d;
+ RichMetadata m; m.title=kv["title"];m.artist=kv["artist"];m.album=kv["album"];m.uri=kv["uri"];m.duration=d;m.artwork_url=kv["artwork_url"];
  const std::set<std::string> levels={"low","normal","high","very_high","lossless","lossless_24","hifi"};
  if(levels.count(kv["playback_quality"]))m.playback_quality=kv["playback_quality"];
  for(auto& entry:kv) if(entry.first[0]>='A'&&entry.first[0]<='Z'&&!entry.second.empty()) m.fields.insert(entry);

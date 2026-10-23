@@ -21,6 +21,8 @@ int main() {
  assert(m.title=="Episode" && m.artist.empty() && m.album.empty() && m.playback_quality=="high");
  assert(!ParseRichMetadata("v=1&title=Episode&artist=Show&album=Show&uri=spotify%3Aepisode%3A123&duration=4030",m,e));
  assert(!ParsePlaybackMetadata("v=1&title=Episode&uri=spotify%3Ashow%3A123&duration=4030",m,e));
+ assert(ParseRichMetadata("v=1&title=Song&artist=Artist&album=Album&duration=200&uri=spotify%3Atrack%3Aa&artwork_url=https%3A%2F%2Fi.scdn.co%2Fimage%2Fabc",m,e));
+ assert(m.artwork_url=="https://i.scdn.co/image/abc" && !m.fields.count("artwork_url"));
  MetadataCache cache;
  assert(ParseRichMetadata("v=1&title=Song&artist=Artist&album=Album&duration=200&uri=spotify%3Atrack%3Aa&DATE=2026",m,e)); cache.Put(m);
  assert(cache.Find("Song","Artist","Album",200));

@@ -2,6 +2,7 @@
 #include "to_disk_menu.h"
 #include "cef_menu_capability.h"
 #include "hook_init_state.h"
+#include "hook_startup_minhook.h"
 #include "history_settings.h"
 #include "playback_quality.h"
 #include "vendor/minhook/include/MinHook.h"
@@ -39,9 +40,12 @@ SetString set_string=nullptr;
 using AddSubmenu=Menu*(*)(Menu*,int,const String*);
 AddSubmenu original_add_submenu;
 hooks::InitController menu_init;
+hooks::CallbackCounter menu_callbacks;
+hooks::QueuedHookSet<1> menu_startup_hooks;
+bool menu_prepared=false;
 hooks::InitController submenu_init;
 constexpr int root_id=28480,downloads_id=28481,location_id=28482,flac_id=28483,ogg_id=28484;
-constexpr int song_id=28485,last_quality_id=song_id+3;
+constexpr int song_id=28485,last_quality_id=song_id+3,lyrics_id=28489;
 template<class R,class...A> R Call(Menu* m,unsigned slot,A...a) {
     if(!m || m->base.size<cef_menu::kRequiredMenuBytes ||
        slot>cef_menu::kHighestRequiredMenuSlot || !m->methods[slot]) return R{};
@@ -67,8 +71,29 @@ static bool Capable(Menu* menu) {
         if(!Executable(menu->methods[slot])) return false;
     return true;
 }
+struct MenuCapabilities {
+    // Cache executable capability by the copied function table, never model
+    // address: CEF can destroy/reuse model wrappers between callbacks. This
+    // owns no model reference, so the model/delegate cannot form a cycle.
+    std::array<const void*,cef_menu::kRequiredMenuSlots.size()+2> functions{};
+    bool validated=false;
+    size_t validated_size=0;
+    void ClearValidation() { validated=false; }
+    bool Check(Menu* menu) {
+        if(!menu || menu->base.size<cef_menu::kRequiredMenuBytes) return false;
+        decltype(functions) current{};
+        current[0]=reinterpret_cast<const void*>(menu->base.add_ref);
+        current[1]=reinterpret_cast<const void*>(menu->base.release);
+        for(size_t i=0;i<cef_menu::kRequiredMenuSlots.size();++i)
+            current[i+2]=menu->methods[cef_menu::kRequiredMenuSlots[i]];
+        if(validated && menu->base.size==validated_size && current==functions) return true;
+        ClearValidation();
+        if(!Capable(menu)) return false;
+        functions=current;validated_size=menu->base.size;validated=true;return true;
+    }
+};
 static bool Main(Menu* menu) {
-    if(!Capable(menu) || Call<int>(menu,0)) return false;
+    if(Call<int>(menu,0)) return false;
     const size_t count=Call<size_t>(menu,2); if(count<3 || count>30) return false;
     int types[30]{};
     for(size_t index=0;index<count;++index) types[index]=Call<int>(menu,23,index);
@@ -85,6 +110,11 @@ static void UpdateQuality(Menu* menu) {
     }
 }
 static void Populate(Menu* menu) {
+    static thread_local MenuCapabilities capability;
+    if(!capability.Check(menu) || Call<int>(menu,0)) return;
+    // Construction invokes us once for every submenu. Once our root exists,
+    // do no structural scan, snapshot copy, child refresh or insertion work.
+    if(Call<int>(menu,15,root_id)>=0) return;
     if(!Main(menu)) {
         static volatile LONG logged=0;
         if(InterlockedIncrement(&logged)<=3)
@@ -111,11 +141,13 @@ static void Populate(Menu* menu) {
     if(inserted) { std::wstring location=L"Save Location"; auto text=Text(location); Call<int>(child,4,location_id,&text); }
     item(flac_id,state.flac ? L"FLAC (Enabled)" : L"FLAC (Disabled)",state.flac,true);
     item(ogg_id,state.ogg ? L"Ogg (Enabled)" : L"Ogg (Disabled)",state.ogg,true);
+    item(lyrics_id,state.lyrics ? L"Lyrics (Enabled)" : L"Lyrics (Disabled)",state.lyrics,true);
     UpdateQuality(child);
     child->base.release(&child->base);
-    if(inserted) history::HistoryLog("To Disk inserted into Spotify main menu: Downloads, Save Location, FLAC, Ogg");
+    if(inserted) history::HistoryLog("To Disk inserted into Spotify main menu: Downloads, Save Location, FLAC, Ogg, Lyrics");
 }
 static Menu* AddSubmenuHook(Menu* menu,int id,const String* text) {
+    auto callback=menu_callbacks.Enter();
     Menu* result=original_add_submenu(menu,id,text);
     // MenuWillShow occurs after CEF has built the visible menu. Insert while
     // Spotify constructs the model so the first opening contains our items.
@@ -127,7 +159,10 @@ struct Wrapped {
     Delegate api;
     std::atomic<unsigned> refs{1};
     Delegate* original=nullptr;
-    ~Wrapped() { if(original) original->base.release(&original->base); }
+    MenuCapabilities capability;
+    bool CapableCached(Menu* menu) { return capability.Check(menu); }
+    void ClearValidation() { capability.ClearValidation(); }
+    ~Wrapped() { ClearValidation(); if(original) original->base.release(&original->base); }
 };
 static Wrapped* Self(void* p) { return static_cast<Wrapped*>(p); }
 static void Add(Base* p) { Self(p)->refs.fetch_add(1,std::memory_order_relaxed); }
@@ -142,14 +177,15 @@ static void Execute(Delegate* self,Menu* menu,int command,int flags) {
         case downloads_id: ok=history::SetDownloads(!settings.downloads); break;
         case ogg_id: ok=history::SetOgg(!settings.ogg); break;
         case location_id: history::PickSaveLocation(GetActiveWindow()); break;
+        case lyrics_id: ok=history::SetLyrics(!settings.lyrics); break;
         case flac_id: ok=history::SetFlac(!settings.flac); break;
         default: handled=false;
     }
     if(handled) {
-        if(command==downloads_id || command==ogg_id || command==flac_id) {
+        if(command==downloads_id || command==ogg_id || command==flac_id || command==lyrics_id) {
             auto updated=history::GetSettings();
-            bool value=command==downloads_id ? updated.downloads : command==ogg_id ? updated.ogg : updated.flac;
-            std::wstring label=command==downloads_id ? L"Downloads" : command==ogg_id ? L"Ogg" : L"FLAC";
+            bool value=command==downloads_id ? updated.downloads : command==ogg_id ? updated.ogg : command==lyrics_id ? updated.lyrics : updated.flac;
+            std::wstring label=command==downloads_id ? L"Downloads" : command==ogg_id ? L"Ogg" : command==lyrics_id ? L"Lyrics" : L"FLAC";
             label+=value ? L" (Enabled)" : L" (Disabled)"; auto text=Text(label);
             Call<int>(menu,20,command,&text); Call<int>(menu,40,command,int(value));
             char line[160]; snprintf(line,sizeof(line),"To Disk command=%d accepted=%d enabled=%d",command,ok,value); history::HistoryLog(line);
@@ -169,11 +205,11 @@ static void WillShow(Delegate* self,Menu* menu) {
     // CEF transfers one menu reference into every delegate callback. Retain
     // another across the original callback, which consumes its argument.
     if(o && o->will_show) { menu->base.add_ref(&menu->base); o->will_show(o,menu); }
-    if(Capable(menu) && Call<int>(menu,15,song_id)>=0) UpdateQuality(menu);
+    if(Self(self)->CapableCached(menu) && Call<int>(menu,15,song_id)>=0) UpdateQuality(menu);
     else Populate(menu);
     ReleaseMenu(menu);
 }
-static void Closed(Delegate* self,Menu* menu) { auto* o=Self(self)->original; if(o && o->closed) o->closed(o,menu); else ReleaseMenu(menu); }
+static void Closed(Delegate* self,Menu* menu) { Self(self)->ClearValidation(); auto* o=Self(self)->original; if(o && o->closed) o->closed(o,menu); else ReleaseMenu(menu); }
 static int Format(Delegate* self,Menu* menu,String* label) {
     auto* o=Self(self)->original;int changed=0;
     if(o && o->format) {
@@ -182,23 +218,26 @@ static int Format(Delegate* self,Menu* menu,String* label) {
     }
     // CEF constructs visible labels before MenuWillShow. Its public label
     // formatter supplies fresh text during construction, on the UI thread.
-    if(set_string && label && label->str && Capable(menu) &&
-       Call<int>(menu,15,song_id)>=0 && Call<int>(menu,15,downloads_id)>=0) {
+    // Reject ordinary labels before capability queries or model scans. Most
+    // menus contain no quality rows, so this keeps their formatting cheap.
+    if(set_string && label && label->str) {
         const wchar_t* prefixes[]={L"Song: ",L"Quality: ",L"Format: ",L"Sample rate: "};
         for(unsigned i=0;i<4;++i) {
             const auto length=wcslen(prefixes[i]);
-            if(label->length>=length && !wmemcmp(label->str,prefixes[i],length)) {
-                try {
-                    const auto rows=history::PlaybackQualityLabels(history::ReadPlaybackQuality());
-                    if(set_string(rows[i].data(),rows[i].size(),label,1))changed=1;
-                }catch(...) {/* Keep the original CEF label on allocation failure. */}
-                break;
-            }
+            if(label->length<length || wmemcmp(label->str,prefixes[i],length)) continue;
+            if(!Self(self)->CapableCached(menu) || Call<int>(menu,15,song_id)<0 ||
+               Call<int>(menu,15,downloads_id)<0) break;
+            try {
+                const auto rows=history::PlaybackQualityLabels(history::ReadPlaybackQuality());
+                if(set_string(rows[i].data(),rows[i].size(),label,1))changed=1;
+            }catch(...) {/* Keep the original CEF label on allocation failure. */}
+            break;
         }
     }
     ReleaseMenu(menu);return changed;
 }
 static Menu* Hook(Delegate* delegate) {
+    auto callback=menu_callbacks.Enter();
     if(!delegate || !cef_menu::SupportsDelegate(delegate->base.size) ||
        !Executable(reinterpret_cast<const void*>(delegate->base.add_ref)) ||
        !Executable(reinterpret_cast<const void*>(delegate->base.release)))
@@ -232,22 +271,46 @@ static Menu* Hook(Delegate* delegate) {
     return result;
 }
 }
-void StartToDiskMenu(HMODULE cef) {
+static void FinishMenuStartup(bool applied,bool activation_attempted) {
+    if(!menu_prepared)return;
+    menu_prepared=false;
+    if(applied){menu_init.Activate();history::HistoryLog("runtime-capability CEF main-menu integration: MH_OK (shared startup activation)");return;}
+    const auto rollback=hooks::RollbackStartupHooks(menu_startup_hooks,[]{
+        for(unsigned waited=0;menu_callbacks.Active()&&waited<5000;++waited)Sleep(1);
+        return menu_callbacks.Active()==0;
+    },!activation_attempted);
+    // A thread can be entering a detour before its callback counter increments.
+    // After any activation attempt retain all trampolines, even with no submenu.
+    // A partially applied root may already have installed the submenu hook.
+    // Its callback/delegate state must survive even if root cleanup succeeded.
+    if(!activation_attempted&&rollback.CanRelease()&&!original_add_submenu){
+        menu_init.Retry(GetTickCount64());history::HistoryLog("To Disk startup activation failed; rollback complete; retry scheduled");
+    } else {
+        menu_init.MarkUnsupported();history::HistoryLog("To Disk startup activation failed or rollback unsafe; trampoline state preserved and retries disabled");
+    }
+}
+void FinalizeToDiskMenu(bool applied) {FinishMenuStartup(applied,true);}
+bool PrepareToDiskMenu(HMODULE cef) {
     const auto now=static_cast<std::uint64_t>(GetTickCount64());
-    if(!menu_init.TryBegin(now)) return;
-    if(!history::GetSettings().menu) { history::HistoryLog("To Disk menu disabled by INI Menu=0"); menu_init.MarkUnsupported(); return; }
+    if(!menu_init.TryBegin(now)) return false;
+    if(!history::GetSettings().menu) { history::HistoryLog("To Disk menu disabled by INI Menu=0"); menu_init.MarkUnsupported(); return false; }
     auto string_set=GetProcAddress(cef,"cef_string_utf16_set");
     memcpy(&set_string,&string_set,sizeof(set_string));
     if(!set_string)history::HistoryLog("To Disk live labels unavailable: cef_string_utf16_set missing");
     auto create=GetProcAddress(cef,"cef_menu_model_create");
     if(!create || !Executable(reinterpret_cast<const void*>(create))) {
-        history::HistoryLog("To Disk menu unavailable: cef_menu_model_create capability missing"); menu_init.MarkUnsupported(); return;
+        history::HistoryLog("To Disk menu unavailable: cef_menu_model_create capability missing"); menu_init.MarkUnsupported(); return false;
     }
+    menu_prepared=true;
     MH_STATUS status=MH_Initialize(); if(status==MH_ERROR_ALREADY_INITIALIZED) status=MH_OK;
     if(status==MH_OK) status=MH_CreateHook(reinterpret_cast<void*>(create),reinterpret_cast<void*>(Hook),reinterpret_cast<void**>(&original_create));
-    bool created=status==MH_OK;
-    if(status==MH_OK) status=MH_EnableHook(reinterpret_cast<void*>(create));
-    if(status==MH_OK) menu_init.Activate();
-    else {if(created)MH_RemoveHook(reinterpret_cast<void*>(create));menu_init.Retry(now);}
-    char line[220]; snprintf(line,sizeof(line),"runtime-capability CEF main-menu integration: %s%s",MH_StatusToString(status),status==MH_OK?"":"; retry scheduled"); history::HistoryLog(line);
+    if(status==MH_OK)menu_startup_hooks.Add(reinterpret_cast<void*>(create));
+    if(status!=MH_OK||!hooks::QueueStartupHooks(menu_startup_hooks)){
+        char line[180];snprintf(line,sizeof(line),"To Disk startup hook preparation failed: %s",MH_StatusToString(status));history::HistoryLog(line);
+        FinishMenuStartup(false,false);return false;
+    }
+    return true;
+}
+void StartToDiskMenu(HMODULE cef) {
+    if(PrepareToDiskMenu(cef))FinalizeToDiskMenu(MH_ApplyQueued()==MH_OK);
 }

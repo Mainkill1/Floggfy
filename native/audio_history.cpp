@@ -14,6 +14,7 @@
 #include "library_layout.h"
 #include "existing_quality.h"
 #include "file_publication.h"
+#include "lyrics_update.h"
 #include "media_session.h"
 #include "spotify_hook_discovery.h"
 #include "vendor/minhook/include/MinHook.h"
@@ -206,13 +207,8 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     std::wstring destination=OutputPath(settings.root,catalog,c.lossless ? L".flac" : L".ogg",settings.music_folder);
     std::wstring flac=OutputPath(settings.root,catalog,L".flac",settings.music_folder);
     Quality quality=c.Encoding(),lossless;
-    if(!c.lossless && ReadQuality(flac,lossless) && lossless.codec==Codec::Flac) {
-        Log(("SKIP existing lossless file "+Utf8(flac)).c_str()); return Publication::Skipped;
-    }
-    SaveDecision decision=DecideSave(destination,quality);
-    if(decision==SaveDecision::Skip) {
-        Log(("SKIP existing equal, higher or unverified quality "+Utf8(destination)).c_str()); return Publication::Skipped;
-    }
+    const bool existing_lossless=!c.lossless && ReadQuality(flac,lossless) && lossless.codec==Codec::Flac;
+    SaveDecision decision=existing_lossless ? SaveDecision::Skip : DecideSave(destination,quality);
     Tags tags;
     tags.fields={{"TITLE",Utf8(heard.media.title)},{"ARTIST",Utf8(heard.media.artist)},
       {"ALBUM",Utf8(heard.media.album)},{"ALBUMARTIST",Utf8(heard.media.album_artist)},
@@ -230,6 +226,22 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     tags.cover=heard.media.cover; tags.mime=heard.media.cover_extension==L".png" ? "image/png" : "image/jpeg";
     if(!heard.media.genre.empty())tags.fields.push_back({"GENRE",Utf8(heard.media.genre)});
     EnrichTags(heard.media,tags);
+    if(decision==SaveDecision::Skip) {
+        // An audio duplicate may still be a metadata upgrade. Always patch
+        // the existing FLAC, including when this listen used lossy playback.
+        const auto latest=GetSettings();
+        if(settings.metadata && settings.lyrics && settings.flac && (c.lossless || existing_lossless) &&
+           latest.generation==settings.generation && latest.downloads && latest.lyrics && latest.metadata && latest.flac) {
+            const auto& path=existing_lossless ? flac : destination;
+            const auto result=UpdateFlacLyrics(path,tags);
+            if(result==FileLyricsUpdate::Updated){Log(("LYRICS UPDATED "+Utf8(path)).c_str());return Publication::Saved;}
+            if(result==FileLyricsUpdate::Failed){Log("lyric update failed; existing file retained");return Publication::Failed;}
+        }
+        Log(("SKIP existing equal, higher or unverified quality "+Utf8(existing_lossless ? flac : destination)).c_str());
+        return Publication::Skipped;
+    }
+    if(c.lossless && decision==SaveDecision::Upgrade && settings.metadata && settings.lyrics)
+        PreserveFlacLyrics(destination,tags);
     std::vector<uint8_t> tagged; std::string error;
     auto source=c.data.Flatten();
     bool tagged_ok=c.lossless ? TagFlac(source,tags,tagged,error) : TagOgg(source,tags,tagged,error);

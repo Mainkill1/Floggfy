@@ -9,6 +9,7 @@
 #include <cstring>
 #include "audio_history.h"
 #include "hook_init_state.h"
+#include "hook_startup_minhook.h"
 #include "history_settings.h"
 #include "metadata_bridge.h"
 #include "module_pending.h"
@@ -376,7 +377,18 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
         const bool spotify_notification = pending_spotify.Consume() != 0;
         (void)spotify_notification;
         HMODULE cef;
-        if(GetModuleHandleExW(0,L"libcef.dll",&cef)) { history::StartMetadataCollector(cef); StartToDiskMenu(cef); FreeLibrary(cef); }
+        if(GetModuleHandleExW(0,L"libcef.dll",&cef)) {
+            // Queue all initial observers before one suspension/resume. Enabling
+            // either set separately can let CEF construct the other object first.
+            hooks::StartTogether(
+                [&]{return history::PrepareMetadataCollector(cef);},
+                [&]{return PrepareToDiskMenu(cef);},
+                []{const auto status=MH_ApplyQueued();
+                    if(status!=MH_OK)Log("CEF startup hook batch activation failed; rolling back owned hooks");
+                    return status==MH_OK;},
+                history::FinalizeMetadataCollector,FinalizeToDiskMenu);
+            FreeLibrary(cef);
+        }
         HMODULE module;
         if (GetModuleHandleExW(0, L"Spotify.dll", &module)) {
             StartConnectivityHook(module);

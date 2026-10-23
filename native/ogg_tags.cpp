@@ -1,4 +1,5 @@
 #include "ogg_tags.h"
+#include "image_info.h"
 #include "ogg_history_core.h"
 #include <ogg/ogg.h>
 #include <algorithm>
@@ -29,12 +30,13 @@ static std::string Base64(const std::vector<uint8_t>& v) {
 }
 bool BuildPicture(const Tags& tags,std::vector<uint8_t>& picture) {
     picture.clear();
-    if(tags.cover.empty() || tags.cover.size()>4*1024*1024 ||
-       (tags.mime!="image/png" && tags.mime!="image/jpeg")) return false;
+    ImageInfo info;
+    if(!ReadImageInfo(tags.cover,info) || tags.mime!=info.mime) return false;
     Number(picture,3,true);
     Number(picture,uint32_t(tags.mime.size()),true); picture.insert(picture.end(),tags.mime.begin(),tags.mime.end());
     Number(picture,0,true);
-    for(int i=0;i<4;i++) Number(picture,0,true);
+    Number(picture,info.width,true); Number(picture,info.height,true);
+    Number(picture,info.depth,true); Number(picture,info.colors,true);
     Number(picture,uint32_t(tags.cover.size()),true); picture.insert(picture.end(),tags.cover.begin(),tags.cover.end());
     return true;
 }

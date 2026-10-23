@@ -1,5 +1,6 @@
 #pragma once
 #include <windows.h>
+#include "image_info.h"
 #include <string>
 #include <vector>
 namespace history {
@@ -18,6 +19,7 @@ class MediaReader {
     void* manager_ = nullptr;
     bool initialized_ = false;
     Media cached_;
+    ThumbnailRefresh artwork_refresh_;
 public:
     ~MediaReader();
     bool Read(Media& out,bool include_artwork=true);

@@ -11,7 +11,7 @@ Save the music you play in Spotify on Windows.
 
 - Saves fully played tracks as Ogg or FLAC, with cover art and available song details.
 - Sorts music by artist and album.
-- Skips songs you already have, unless a better-quality version is available.
+- Skips existing audio unless a better-quality version is available; existing FLAC files can also receive lyric upgrades.
 
 ### Disable Automix under Edit -> Preferences -> Playback as it trims songs and will fail downloads.
 
@@ -35,7 +35,7 @@ The launcher will automatically close and restart Spotify when ran. To return to
 
 ## Save music
 
-Open Spotify's top-left menu → **To Disk** → enable **Downloads**.
+Downloads starts enabled on a new installation. Use Spotify's top-left menu → **To Disk** to pause or resume saving. Existing saved preferences are preserved.
 Play a song from start to finish without skipping or seeking.
 
 Music saves under `Spotify/Artists/Artist/Album` in your Windows Music folder.
@@ -44,15 +44,27 @@ FLAC needs lossless playback in Spotify. Floggfy does not convert Ogg into FLAC.
 
 ## Settings
 
-**To Disk** includes **Downloads**, **Save Location**, **FLAC** and **Ogg** controls.
+**To Disk** includes **Downloads**, **Save Location**, **FLAC**, **Ogg** and **Lyrics** controls.
 
 The bottom shows the current item and available quality details.
+
+Lyrics are collected automatically when Spotify provides them; the lyrics panel
+does not need to be open. Timed lyrics are embedded as LRC text in the `LYRICS`
+tag; lyrics without timing use plain text. No separate `.lrc` file is created.
+After a complete replay, an existing FLAC can receive missing lyrics or upgrade
+plain lyrics to synchronized lyrics, even when the current playback quality is
+lower. Its audio, artwork and other tags stay intact. Already synchronized lyrics
+are retained, and audio quality upgrades keep existing lyrics if needed.
+Turn **Lyrics** off in **To Disk**, or set `Lyrics=0` in
+the INI, if a Spotify update causes compatibility problems. Album artwork and
+other available metadata continue to work. `Metadata=0` disables all extra metadata collection.
 
 <img width="338" height="362" alt="image" src="https://github.com/user-attachments/assets/b6294a3d-c09d-4dba-926a-72a1529d1db7" />
 
 
 `SpotifyHistory.ini` is created automatically. Keep your existing file when
-upgrading. Use it to disable the menu, extra song details or activity log.
+upgrading. Use it to disable the menu, extra song details or activity log. At the 5 MiB log limit, the oldest complete
+lines are removed as new entries arrive.
 
 ## Having trouble?
 
@@ -60,7 +72,7 @@ upgrading. Use it to disable the menu, extra song details or activity log.
 - **Spotify crashes:** quit it, set `Metadata=0` in `SpotifyHistory.ini`, and restart. If needed, try `Menu=0` too.
 - **Menu missing:** quit Spotify and set `Downloads=1` in the INI to save without it.
 
-Tested with Windows x64 Spotify **1.3.3.264**. Updates may need a new Floggfy release. [Report a problem](https://github.com/Mainkill1/Floggfy/issues).
+Tested with Windows x64 Spotify **1.2.93.667** and **1.3.6.1921**. Updates may need a new Floggfy release. [Report a problem](https://github.com/Mainkill1/Floggfy/issues).
 
 To uninstall, quit Spotify and remove the Floggfy files you installed.
 

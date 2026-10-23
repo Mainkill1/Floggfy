@@ -65,6 +65,99 @@ static bool Fields(const uint8_t* b,size_t n,const Tags& tags,std::string& vendo
     }
     return p==n;
 }
+static bool CommentFields(const std::vector<uint8_t>& source,std::string& vendor,std::vector<std::string>& fields,size_t& audio) {
+    FlacInfo info;if(ParseFlacMetadata(source,info,audio)!=FlacParse::Valid || source.size()-audio<2)return false;
+    unsigned count=0;
+    for(size_t p=4;p<audio;){
+        unsigned kind=source[p]&127;size_t n=(size_t(source[p+1])<<16)|(size_t(source[p+2])<<8)|source[p+3];p+=4;
+        if(kind==4){
+            // Fields() removes legacy artwork comments during full retagging;
+            // a metadata-only fill must instead preserve every original field.
+            if(++count>1)return false;
+            size_t q=0;auto read=[&](std::string& value){if(n-q<4)return false;size_t len=Little(source.data()+p+q);q+=4;if(len>n-q)return false;value.assign(reinterpret_cast<const char*>(source.data()+p+q),len);q+=len;return true;};
+            if(!read(vendor)||n-q<4)return false;
+            uint32_t entries=Little(source.data()+p+q);q+=4;if(entries>100000 || entries>(n-q)/4)return false;
+            for(uint32_t i=0;i<entries;i++){std::string field;if(!read(field)||field.find('=')==std::string::npos)return false;fields.push_back(std::move(field));}
+            if(q!=n)return false;
+        }
+        p+=n;
+    }
+    return true;
+}
+bool ReadFlacComments(const std::vector<uint8_t>& source,Tags& tags,std::string& error) {
+    tags={};error.clear();std::string vendor;std::vector<std::string> fields;size_t audio=0;
+    if(!CommentFields(source,vendor,fields,audio)){error="invalid FLAC comments";return false;}
+    for(const auto& field:fields){auto split=field.find('=');tags.fields.push_back({Upper(field.substr(0,split)),field.substr(split+1)});}
+    return true;
+}
+static bool Words(const std::string& s){return s.find_first_not_of(" \r\n\t")!=std::string::npos;}
+static std::string Value(const Tags& tags,const char* key){for(const auto& field:tags.fields)if(Upper(field.first)==key&&Words(field.second))return field.second;return {};}
+static bool SameTrack(const Tags& existing,const Tags& incoming) {
+    const auto old_uri=Value(existing,"SPOTIFY_URI"),new_uri=Value(incoming,"SPOTIFY_URI");
+    if(!old_uri.empty()&&!new_uri.empty()){
+        if(old_uri!=new_uri)return false;
+    }else{
+        for(const char* key:{"TITLE","ARTIST","ALBUM"}){
+            const auto value=Value(existing,key);if(value.empty()||value!=Value(incoming,key))return false;
+        }
+    }
+    return true;
+}
+static bool Synced(const std::string& words) {
+    size_t p=0;unsigned previous=0,lines=0;
+    while(p<words.size()) {
+        if(words[p++]!='[')return false;
+        unsigned minutes=0,digits=0;while(p<words.size()&&words[p]>='0'&&words[p]<='9'){if(++digits>4)return false;minutes=minutes*10+unsigned(words[p++]-'0');}
+        if(digits<2||p+7>=words.size()||words[p++]!=':')return false;
+        auto digit=[&](){if(p>=words.size()||words[p]<'0'||words[p]>'9')return -1;return int(words[p++]-'0');};
+        int a=digit(),b=digit();if(a<0||b<0||a*10+b>=60||p>=words.size()||words[p++]!='.')return false;
+        int c=digit(),d=digit();if(c<0||d<0)return false;
+        unsigned fraction=unsigned(c*100+d*10);
+        if(p<words.size()&&words[p]>='0'&&words[p]<='9')fraction+=unsigned(digit());
+        if(p>=words.size()||words[p++]!=']')return false;
+        unsigned time=minutes*60000+unsigned(a*10+b)*1000+fraction;
+        if(time>86400000||(lines&&time<previous))return false;
+        previous=time;++lines;
+        auto newline=words.find('\n',p);p=newline==std::string::npos?words.size():newline+1;
+    }
+    return lines>0;
+}
+bool CopyFlacLyrics(const std::vector<uint8_t>& source,Tags& incoming) {
+    Tags existing;std::string error;if(!ReadFlacComments(source,existing,error)||!SameTrack(existing,incoming))return false;
+    const auto lyrics=Value(existing,"LYRICS"),alias=Value(existing,"UNSYNCEDLYRICS");
+    const auto old=!lyrics.empty()?lyrics:alias;
+    const auto current=Value(incoming,"LYRICS");
+    if(old.empty()||Synced(current))return false;
+    if((!current.empty()||!Value(incoming,"UNSYNCEDLYRICS").empty())&&!Synced(old))return false;
+    for(auto it=incoming.fields.begin();it!=incoming.fields.end();)if(Upper(it->first)=="LYRICS")it=incoming.fields.erase(it);else ++it;
+    incoming.fields.push_back({!lyrics.empty()?"LYRICS":"UNSYNCEDLYRICS",old});return true;
+}
+LyricsUpdate FillFlacLyrics(const std::vector<uint8_t>& source,const Tags& incoming,std::vector<uint8_t>& output,std::string& error) {
+    output.clear();error.clear();auto lyrics=Value(incoming,"LYRICS");
+    if(lyrics.empty() || lyrics.size()>65536)return LyricsUpdate::Unchanged;
+    Tags existing;if(!ReadFlacComments(source,existing,error))return LyricsUpdate::Invalid;
+    const auto old=Value(existing,"LYRICS"),alias=Value(existing,"UNSYNCEDLYRICS");
+    if((!old.empty()||!alias.empty())&&(!Synced(lyrics)||Synced(old)||Synced(alias)))return LyricsUpdate::Unchanged;
+    if(!SameTrack(existing,incoming))return LyricsUpdate::Unchanged;
+    std::string vendor;std::vector<std::string> fields;size_t audio=0;
+    if(!CommentFields(source,vendor,fields,audio))return LyricsUpdate::Invalid;
+    // Remove only empty LYRICS fields, leaving aliases and all unrelated tags.
+    std::vector<uint8_t> comments;Number(comments,uint32_t(vendor.size()));comments.insert(comments.end(),vendor.begin(),vendor.end());
+    size_t count=1;for(const auto& field:fields)if(Upper(field.substr(0,field.find('=')))!="LYRICS")++count;
+    Number(comments,uint32_t(count));
+    for(const auto& field:fields)if(Upper(field.substr(0,field.find('=')))!="LYRICS"){Number(comments,uint32_t(field.size()));comments.insert(comments.end(),field.begin(),field.end());}
+    const auto field="LYRICS="+lyrics;Number(comments,uint32_t(field.size()));comments.insert(comments.end(),field.begin(),field.end());
+    if(comments.size()>0xffffff){error="FLAC comments too large";return LyricsUpdate::Invalid;}
+    output={'f','L','a','C'};bool found=false;
+    for(size_t p=4;p<audio;){
+        const unsigned kind=source[p]&127;size_t n=(size_t(source[p+1])<<16)|(size_t(source[p+2])<<8)|source[p+3];
+        if(kind==4){found=true;output.push_back(source[p]);output.push_back(uint8_t(comments.size()>>16));output.push_back(uint8_t(comments.size()>>8));output.push_back(uint8_t(comments.size()));output.insert(output.end(),comments.begin(),comments.end());}
+        else {output.insert(output.end(),source.begin()+p,source.begin()+p+4+n);if(!found && p+4+n==audio)output[output.size()-n-4]&=127;}
+        p+=4+n;
+    }
+    if(!found){output.insert(output.end(),{132,uint8_t(comments.size()>>16),uint8_t(comments.size()>>8),uint8_t(comments.size())});output.insert(output.end(),comments.begin(),comments.end());}
+    output.insert(output.end(),source.begin()+audio,source.end());return LyricsUpdate::Updated;
+}
 bool TagFlac(const std::vector<uint8_t>& source,const Tags& tags,std::vector<uint8_t>& output,std::string& error) {
     output.clear(); error.clear();
     auto fail=[&](const char* why) { error=why; output.clear(); return false; };

@@ -16,13 +16,13 @@ static bool IsMusic(std::wstring root) {
     return !music_path.empty() && (_wcsicmp(root.c_str(),music_path.c_str())==0 ||
         _wcsicmp(root.c_str(),(music_path+L"\\Spotify").c_str())==0);
 }
-static volatile LONG downloads_enabled=0,ogg_enabled=1,flac_enabled=1,capture_epoch=0,log_enabled=1,debug_enabled=0;
+static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,capture_epoch=0,log_enabled=1,debug_enabled=0;
 static HANDLE settings_signal=nullptr,persist_done=nullptr;
 static volatile LONG persisted_generation=-1,persist_failed=0;
 static constexpr char default_ini[]=
     "[To Disk]\r\n"
     "; Settings also appear in the To Disk menu.\r\n"
-    "Downloads=0\r\n"
+    "Downloads=1\r\n"
     "; Set Menu=0 before starting Spotify to disable native menu integration.\r\n"
     "Menu=1\r\n"
     "; Empty uses the Windows Music folder plus \\Spotify.\r\n"
@@ -30,8 +30,10 @@ static constexpr char default_ini[]=
     "Ogg=1\r\n"
     "; Captures native FLAC when Spotify supplies lossless audio.\r\n"
     "Flac=1\r\n"
-    "; Reads existing renderer and local client caches; makes no requests.\r\n"
+    "; Enables metadata enrichment using the local Spotify client.\r\n"
     "Metadata=1\r\n"
+    "; Automatically obtains lyrics; Metadata=0 disables all enrichment.\r\n"
+    "Lyrics=1\r\n"
     "; Activity log in Save Location, capped at 5 MiB.\r\n"
     "Log=1\r\n"
     "DebugLog=0\r\n"
@@ -53,7 +55,7 @@ static DWORD WINAPI PersistSettings(LPVOID) {
         auto snapshot=GetSettings();
         bool ok=true;
         auto flag=[&](const wchar_t* key,bool value) { if(!WritePrivateProfileStringW(L"To Disk",key,value?L"1":L"0",ini.c_str()))ok=false; };
-        flag(L"Downloads",snapshot.downloads);flag(L"Ogg",snapshot.ogg);flag(L"FLAC",snapshot.flac);
+        flag(L"Downloads",snapshot.downloads);flag(L"Ogg",snapshot.ogg);flag(L"FLAC",snapshot.flac);flag(L"Lyrics",snapshot.lyrics);
         if(!WritePrivateProfileStringW(L"To Disk",L"Save Location",snapshot.save_location.c_str(),ini.c_str()))ok=false;
         InterlockedExchange(&persist_failed,!ok);InterlockedExchange(&persisted_generation,LONG(snapshot.generation));
         SetEvent(persist_done);if(!ok)LogActivity("failed","settings persistence");
@@ -97,11 +99,12 @@ void InitSettings(HMODULE proxy) {
        (GetLastError()==ERROR_FILE_NOT_FOUND || GetLastError()==ERROR_PATH_NOT_FOUND) &&
        !CreateDefaultIni(ini))
         QueueDiagnostic("failed to create default SpotifyHistory.ini; using built-in settings");
-    settings.downloads=GetPrivateProfileIntW(L"To Disk",L"Downloads",GetPrivateProfileIntW(L"History",L"Enabled",0,ini.c_str()),ini.c_str())!=0;
+    settings.downloads=GetPrivateProfileIntW(L"To Disk",L"Downloads",GetPrivateProfileIntW(L"History",L"Enabled",1,ini.c_str()),ini.c_str())!=0;
     settings.menu=GetPrivateProfileIntW(L"To Disk",L"Menu",1,ini.c_str())!=0;
     settings.ogg=GetPrivateProfileIntW(L"To Disk",L"Ogg",1,ini.c_str())!=0;
     settings.flac=GetPrivateProfileIntW(L"To Disk",L"FLAC",1,ini.c_str())!=0;
     settings.metadata=GetPrivateProfileIntW(L"To Disk",L"Metadata",1,ini.c_str())!=0;
+    settings.lyrics=GetPrivateProfileIntW(L"To Disk",L"Lyrics",1,ini.c_str())!=0;
     settings.log=GetPrivateProfileIntW(L"To Disk",L"Log",1,ini.c_str())!=0;
     settings.debug_log=GetPrivateProfileIntW(L"To Disk",L"DebugLog",0,ini.c_str())!=0;
     settings.max_buffered_mib=std::max(8u,std::min(512u,GetPrivateProfileIntW(L"History",L"MaxBufferedMiB",500,ini.c_str())));
@@ -136,12 +139,12 @@ bool DebugLoggingEnabled() { return debug_enabled!=0; }
 bool OggEnabled() { return downloads_enabled && ogg_enabled; }
 bool FlacEnabled() { return downloads_enabled && flac_enabled; }
 unsigned CaptureEpoch() { return unsigned(InterlockedCompareExchange(&capture_epoch,0,0)); }
-static bool Set(const wchar_t* key,bool value,bool& field,volatile LONG* fast) {
+static bool Set(const wchar_t* key,bool value,bool& field,volatile LONG* fast,bool affects_capture=true) {
     AcquireSRWLockExclusive(&lock);
     bool ok=settings_signal!=nullptr;
     (void)key;
     if(ok) {
-        if(field!=value) { ++settings.capture_epoch; InterlockedExchange(&capture_epoch,LONG(settings.capture_epoch)); }
+        if(affects_capture && field!=value) { ++settings.capture_epoch; InterlockedExchange(&capture_epoch,LONG(settings.capture_epoch)); }
         field=value; if(fast) InterlockedExchange(fast,value); ++settings.generation;
     }
     ReleaseSRWLockExclusive(&lock); if(ok)SetEvent(settings_signal); return ok;
@@ -149,6 +152,7 @@ static bool Set(const wchar_t* key,bool value,bool& field,volatile LONG* fast) {
 bool SetDownloads(bool v) { return Set(L"Downloads",v,settings.downloads,&downloads_enabled); }
 bool SetOgg(bool v) { return Set(L"Ogg",v,settings.ogg,&ogg_enabled); }
 bool SetFlac(bool v) { return Set(L"FLAC",v,settings.flac,&flac_enabled); }
+bool SetLyrics(bool v) { return Set(L"Lyrics",v,settings.lyrics,nullptr,false); }
 bool SetSaveLocation(const std::wstring& root) {
     if(root.empty() || root.size()>2047 || !(root.size()>2 && (root[1]==L':' || root.rfind(L"\\\\",0)==0))) return false;
     DWORD attributes=GetFileAttributesW(WindowsPath(root).c_str());

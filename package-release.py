@@ -7,7 +7,7 @@ from pathlib import Path
 import zipfile
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--version', default='1.1.0')
+parser.add_argument('--version', default='1.2')
 version = parser.parse_args().version
 if not version or any(c not in '0123456789abcdefghijklmnopqrstuvwxyz.-' for c in version):
     parser.error('version must contain only lowercase letters, digits, dots and hyphens')
