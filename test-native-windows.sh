@@ -91,3 +91,9 @@ x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/wind
  native/media_session.cpp native/image_info.cpp native/playback_quality_windows.cpp native/playback_quality.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/windows-tests/metadata-ogg.o build/windows-tests/minhook-*.o \
  -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_test_root/windows-artwork-enrichment-test.exe"
 "$floggfy_test_root/windows-artwork-enrichment-test.exe"
+
+floggfy_windows_root=$(cmd.exe /c echo %SystemRoot% 2>/dev/null | tr -d '\r')
+floggfy_powershell="$(wslpath -u "$floggfy_windows_root")/System32/WindowsPowerShell/v1.0/powershell.exe"
+"$floggfy_powershell" -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+ -File "$(wslpath -w "$PWD/tests/windows_startup_diagnostics_test.ps1")" \
+ -ReportScript "$(wslpath -w "$PWD/tools/diagnose-startup.ps1")"
