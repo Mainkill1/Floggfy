@@ -8,7 +8,7 @@ import struct
 import subprocess
 
 
-def validate(path, executable, raw=False):
+def validate(path, executable, raw=False, require_artwork=False):
     data=path.read_bytes()
     assert data[:4]==b'fLaC', 'Missing native FLAC signature'
     cursor=4; blocks=[]; last=False
@@ -69,15 +69,16 @@ def validate(path, executable, raw=False):
         assert int(tags['HISTORY_SAMPLES'])==samples and int(tags['HISTORY_SAMPLE_RATE'])==rate
         assert int(tags['HISTORY_BITS_PER_SAMPLE'])==bits
         assert abs(float(tags['HISTORY_MEDIA_DURATION'])-samples/rate)<=1
+    if require_artwork:
         assert any(p['type']==3 for p in pictures), 'Missing embedded front cover'
     return {'path':str(path),'title':tags.get('TITLE'),'artist':tags.get('ARTIST'),'album':tags.get('ALBUM'),'album_artist':tags.get('ALBUMARTIST'),'track_number':int(tags.get('TRACKNUMBER','0')),'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest(),'duration_seconds':samples/rate,'sample_rate':rate,'channels':channels,'bits_per_sample':bits,'decoded_samples':samples,'decode_errors':0,'decoded_pcm_sha256':sha.hexdigest(),'streaminfo_md5_supplied':supplied_md5,'streaminfo_md5_verified':supplied_md5,'pictures':pictures,'embedded_tags':sorted(tags),'complete_listen':tags.get('HISTORY_COMPLETE_LISTEN')=='1'}
 
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('path',type=Path);parser.add_argument('--flac',default='flac');parser.add_argument('--required',type=int,default=1);parser.add_argument('--raw',action='store_true');parser.add_argument('--report',type=Path)
+    parser=argparse.ArgumentParser();parser.add_argument('path',type=Path);parser.add_argument('--flac',default='flac');parser.add_argument('--required',type=int,default=1);parser.add_argument('--raw',action='store_true');parser.add_argument('--report',type=Path);parser.add_argument('--require-artwork',action='store_true',help='Also require optional embedded cover artwork')
     args=parser.parse_args();files=[args.path] if args.path.is_file() else sorted(args.path.rglob('*.flac'))
     assert len(files)==args.required, f'Expected {args.required} files, found {len(files)}'
-    rows=[validate(path,args.flac,args.raw) for path in files]
+    rows=[validate(path,args.flac,args.raw,args.require_artwork) for path in files]
     report={'validator':'Xiph FLAC full decode, frame CRC and source STREAMINFO MD5 when supplied; no FFmpeg','sample_count':len(rows),'samples':rows}
     if args.report:args.report.write_text(json.dumps(report,indent=2)+'\n')
     print(json.dumps(report,indent=2))

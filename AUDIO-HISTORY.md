@@ -22,6 +22,7 @@ Flac=1
 Ogg=1
 Metadata=1
 Lyrics=1
+UpdateExistingMetadata=1
 Log=1
 DebugLog=0
 
@@ -38,6 +39,9 @@ MaxBufferedMiB=500
 - **FLAC/Ogg:** select which original source formats to retain. Enabling FLAC does
   not convert Vorbis playback into lossless audio. Spotify must supply FLAC.
 - **Metadata:** enriches tracks using existing client state, cached metadata, and Spotify's authenticated track/album services. Set 0 and restart to disable its hooks.
+- **UpdateExistingMetadata:** default on. Set 0 to disable metadata-only changes
+  to existing files, including lyrics and artwork upgrades. New audio saves and
+  quality replacements still follow Downloads and the format settings.
 - **Lyrics:** default on. Requests available lyrics automatically through Spotify's
   existing client service, even with the lyrics panel closed. Set 0 in the INI or
   use the menu toggle to stop lyric discovery, cancel pending lyric work, and
@@ -204,9 +208,14 @@ track. Synchronized lyrics are embedded as millisecond LRC text in `LYRICS`,
 with plain text used when timing is unavailable or invalid. No sidecars are created.
 After a complete replay, verified existing FLAC and Ogg files can receive missing
 text metadata and missing artwork even when no audio upgrade is planned. Existing
-populated values, compressed audio and artwork are preserved. Plain lyrics can
+populated text and compressed audio are preserved. Better validated Spotify
+client covers may replace smaller or unmarked legacy thumbnails without reducing
+resolution. Identical images, higher-resolution covers and artwork whose format
+or layout cannot be safely assessed are retained. Plain lyrics can
 upgrade to synchronized lyrics; existing synchronized lyrics are retained. A
 lower-quality replay can enrich an existing FLAC without replacing its audio.
 `Lyrics=0` disables lyric enrichment while allowing other metadata fills;
-`Metadata=0` disables metadata-only updates. Updates are logged separately and do
+`Metadata=0` or `UpdateExistingMetadata=0` disables metadata-only updates. The
+update planner reuses the quality inspection and skips reopening, retagging or
+staging an existing file when no metadata or artwork changes are needed. Updates are logged separately and do
 not add a Latest Downloads entry. There is no bulk library scan.

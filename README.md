@@ -60,10 +60,14 @@ Lyrics are collected automatically when Spotify provides them; the lyrics panel
 does not need to be open. Timed lyrics are embedded as LRC text in the `LYRICS`
 tag; lyrics without timing use plain text. No separate `.lrc` file is created.
 After a complete replay, existing FLAC and Ogg files can receive missing tags
-and artwork even when no audio replacement is needed. Plain lyrics can upgrade
+and artwork even when no audio replacement is needed. Better validated Spotify
+cover art can replace smaller or legacy thumbnail images without reducing
+resolution; identical images are left alone. Plain lyrics can upgrade
 to synchronized lyrics. Existing values and compressed audio stay intact, including
 when lower-quality playback enriches a saved FLAC. Metadata-only updates are logged
-separately and do not appear in Latest Downloads. Already synchronized lyrics
+separately and do not appear in Latest Downloads. Set `UpdateExistingMetadata=0`
+in the INI to leave existing-file metadata and artwork unchanged. The default is
+`1`. Files needing no metadata or artwork changes are not rewritten. Already synchronized lyrics
 are retained, and audio quality upgrades keep existing lyrics if needed.
 Turn **Lyrics** off in **To Disk**, or set `Lyrics=0` in
 the INI, if a Spotify update causes compatibility problems. Album artwork and

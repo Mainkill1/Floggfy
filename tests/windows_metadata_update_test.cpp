@@ -37,6 +37,9 @@ int main() {
         old.fields[5].second=flac?"native compressed FLAC input":"native compressed Ogg pages";
         assert(flac?TagFlac(recording_fixture::fixture(44100,24),old,bytes,error):TagOgg(recording_fixture::ogg(),old,bytes,error));
         const auto path=root+(flac?L"\\Track.flac":L"\\Track.ogg");Write(path,bytes);
+        WIN32_FILE_ATTRIBUTE_DATA before{},after{};assert(GetFileAttributesExW(path.c_str(),GetFileExInfoStandard,&before));
+        assert(UpdateRecordingMetadata(path,incoming,catalog,GetSettings().generation+1)==FileMetadataUpdate::Skipped);
+        assert(GetFileAttributesExW(path.c_str(),GetFileExInfoStandard,&after)&&CompareFileTime(&before.ftLastWriteTime,&after.ftLastWriteTime)==0);
         assert(UpdateRecordingMetadata(path,incoming,catalog)==FileMetadataUpdate::Updated);
         RecordingFile result;assert(ReadRecording(path,result)&&result.complete&&result.owned&&result.has_artwork&&MatchesRecording(result,catalog));
         assert(Field(result.tags,"GENRE")=="Rock"&&Field(result.tags,"YEAR")=="2021"&&Field(result.tags,"COMMENT")=="keep");

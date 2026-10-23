@@ -60,7 +60,7 @@ vf.ov_read.argtypes = [c.c_void_p, c.c_void_p, c.c_int, c.c_int, c.c_int, c.c_in
 vf.ov_read.restype = c.c_long
 
 
-def validate(path, raw=False):
+def validate(path, raw=False, require_artwork=False):
     data = path.read_bytes()
     offset = pages = 0
     serial = previous = granule = rate = channels = None
@@ -139,8 +139,10 @@ def validate(path, raw=False):
         assert tags['HISTORY_COMPLETE_LISTEN'] == '1' and tags['HISTORY_TRANSCODED'] == '0'
         assert int(tags['HISTORY_SAMPLES']) == total and int(tags['HISTORY_SAMPLE_RATE']) == rate
         assert abs(float(tags['HISTORY_MEDIA_DURATION']) - total/rate) <= 1, 'Track association duration mismatch'
-        for key in ['TITLE', 'ARTIST', 'ALBUM', 'METADATA_BLOCK_PICTURE']:
+        for key in ['TITLE', 'ARTIST', 'ALBUM']:
             assert tags.get(key), f'Missing embedded {key}'
+    if require_artwork:
+        assert tags.get('METADATA_BLOCK_PICTURE'), 'Missing embedded front cover'
     image = b''
     mime = None
     if 'METADATA_BLOCK_PICTURE' in tags:
@@ -181,10 +183,11 @@ parser.add_argument('directory', type=Path)
 parser.add_argument('--required', type=int, default=3)
 parser.add_argument('--report', type=Path)
 parser.add_argument('--raw', action='store_true', help='Validate audio without requiring history tags')
+parser.add_argument('--require-artwork', action='store_true', help='Also require optional embedded cover artwork')
 args = parser.parse_args()
 files = [args.directory] if args.directory.is_file() else sorted(args.directory.rglob('*.ogg'))
 assert len(files) == args.required, f'Expected {args.required} complete samples; found {len(files)}'
-results = [validate(path, args.raw) for path in files]
+results = [validate(path, args.raw, args.require_artwork) for path in files]
 assert len({row['sha256'] for row in results}) == len(results), 'Duplicate samples'
 report = {'validator': 'Xiph libogg CRC + libvorbisfile full PCM decode; no FFmpeg',
           'sample_count': len(results), 'samples': results}

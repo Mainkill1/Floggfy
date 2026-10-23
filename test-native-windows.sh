@@ -26,7 +26,7 @@ done
 common=(-std=c++17 -O2 -Wall -Wextra -Werror -static-libgcc -static-libstdc++)
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_history_test.cpp \
  native/recording_file.cpp native/existing_quality.cpp native/file_publication.cpp native/history_settings.cpp \
- native/async_log.cpp native/library_layout.cpp native/ogg_history_core.cpp \
+ native/async_log.cpp native/library_layout.cpp native/ogg_history_core.cpp native/image_info.cpp \
  -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-history-test.exe"
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_log_test.cpp native/async_log.cpp \
  native/history_settings.cpp -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-log-test.exe"
@@ -82,7 +82,7 @@ x86_64-w64-mingw32-g++ "${common[@]}" tests/album_artwork_test.cpp native/album_
 floggfy_settings_test_root="$floggfy_test_root/settings-defaults"
 mkdir -p "$floggfy_settings_test_root"
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_settings_test.cpp -lole32 -luuid -lshell32 -o "$floggfy_settings_test_root/windows-settings-test.exe"
-for scenario in new missing zero legacy-zero lyrics-zero; do
+for scenario in new missing zero legacy-zero lyrics-zero updates-zero; do
     "$floggfy_settings_test_root/windows-settings-test.exe" "$scenario"
 done
 

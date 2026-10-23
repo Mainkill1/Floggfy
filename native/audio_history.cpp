@@ -18,6 +18,7 @@
 #include "song_destination.h"
 #include "lyrics_update.h"
 #include "metadata_update_windows.h"
+#include "metadata_update_core.h"
 #include "media_session.h"
 #include "spotify_hook_discovery.h"
 #include "vendor/minhook/include/MinHook.h"
@@ -220,9 +221,17 @@ static std::string SavedAudioDetails(const Quality& quality,size_t bytes) {
     char size[96];snprintf(size,sizeof(size),"%.2f MiB (%llu bytes)",double(bytes)/(1024*1024),static_cast<unsigned long long>(bytes));
     return text+" | "+size;
 }
-static std::string ExistingSkipReason(const std::wstring& path,const Quality& incoming) {
-    Quality existing;
-    if(!ReadQuality(path,existing))return "existing file quality could not be verified; retained";
+static std::string ExistingSkipReason(const std::wstring& path,const Quality& incoming,
+                                      const Catalog& catalog,const RecordingFile* inspected=nullptr) {
+    RecordingFile fresh;
+    if(!inspected) {
+        if(!ReadRecording(path,fresh))return "existing file quality could not be verified; retained";
+        inspected=&fresh;
+    }
+    if(!inspected->complete)return "existing file quality could not be verified; retained";
+    if(!MatchesRecording(*inspected,catalog))return "different recording found at destination; retained";
+    if(!inspected->owned)return "existing file is not a Floggfy recording; retained";
+    const auto& existing=inspected->quality;
     const bool same=existing.codec==incoming.codec && existing.rate && existing.rate==incoming.rate &&
         existing.channels && existing.channels==incoming.channels &&
         (existing.codec==Codec::Flac ? existing.bits && existing.bits==incoming.bits : existing.bitrate && existing.bitrate==incoming.bitrate);
@@ -241,8 +250,16 @@ static void ApplyCatalogIdentity(Tags& tags,const Catalog& catalog) {
     SetIdentityTag(tags,"DISCNUMBER",catalog.disc ? std::to_string(catalog.disc) : std::string{});
     SetIdentityTag(tags,"SPOTIFY_URI",catalog.spotify_uri);
 }
+static void FillThumbnailFallback(MediaReader* reader,const Media& expected,Tags& tags) {
+    if(!reader || !tags.cover.empty())return;
+    Media current;
+    if(reader->Read(current,true) && current.Key()==expected.Key()) {
+        tags.cover=std::move(current.cover);
+        tags.mime=current.cover_extension==L".png" ? "image/png" : "image/jpeg";
+    }
+}
 enum class Publication { Saved,Skipped,Failed };
-static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch) {
+static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch,MediaReader* fallback_artwork=nullptr) {
     const std::string identity=Utf8(heard.media.artist)+" - "+Utf8(heard.media.title);
     auto finish=[&](Publication status,const char* event,const std::string& detail) {
         // Put outcome facts first so a long title cannot truncate quality/size.
@@ -253,7 +270,7 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     auto catalog=CatalogFor(heard.media);
     auto settings=GetSettings();
     if(settings.capture_epoch!=expected_epoch || !settings.downloads || !(c.lossless ? settings.flac : settings.ogg)) return finish(Publication::Skipped,"skipped","capture settings changed or downloads/format disabled");
-    Quality quality=c.Encoding(),lossless;
+    Quality quality=c.Encoding();
     Tags tags;
     tags.fields={{"TITLE",Utf8(heard.media.title)},{"ARTIST",Utf8(heard.media.artist)},
       {"ALBUM",Utf8(heard.media.album)},{"ALBUMARTIST",Utf8(heard.media.album_artist)},
@@ -278,32 +295,37 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     const auto destination=ResolveRecordingPath(OutputPath(settings.root,catalog,c.lossless ? L".flac" : L".ogg",settings.music_folder),catalog);
     if(destination.empty())return finish(Publication::Failed,"failed","no safe recording destination; existing files retained");
     const auto flac=c.lossless ? destination : ResolveRecordingPath(OutputPath(settings.root,catalog,L".flac",settings.music_folder),catalog);
-    const bool existing_lossless=!c.lossless && !flac.empty() && ExistingRecording(flac,catalog,lossless) && lossless.codec==Codec::Flac;
-    const auto decision=existing_lossless ? SaveDecision::Skip : DecideSave(destination,quality,catalog);
+    RecordingFile inspected;
+    const bool existing_lossless=!c.lossless && !flac.empty() && ReadRecording(flac,inspected) &&
+        inspected.complete && MatchesRecording(inspected,catalog) && inspected.quality.codec==Codec::Flac;
+    const auto decision=existing_lossless ? SaveDecision::Skip : DecideSave(destination,quality,catalog,&inspected);
     if(decision==SaveDecision::Skip) {
         // An audio duplicate may still have missing metadata. Update only a
         // verified matching recording; this never adds a Latest Downloads entry.
         const auto latest=GetSettings();
         const bool target_enabled=existing_lossless ? settings.flac : (c.lossless ? settings.flac : settings.ogg);
-        if(settings.metadata && target_enabled && latest.generation==settings.generation &&
-           latest.downloads && latest.metadata) {
+        if(settings.metadata && settings.update_existing_metadata && target_enabled && latest.generation==settings.generation &&
+           latest.downloads && latest.metadata && latest.update_existing_metadata) {
             const auto& path=existing_lossless ? flac : destination;
-            RecordingFile existing;
-            if(ReadRecording(path,existing) && existing.owned && existing.complete && MatchesRecording(existing,catalog)) {
-                const auto result=UpdateRecordingMetadata(path,tags,catalog);
+            // A verified existing cover needs no Windows thumbnail lookup.
+            if(inspected.owned && inspected.complete && !inspected.has_artwork)
+                FillThumbnailFallback(fallback_artwork,heard.media,tags);
+            if(inspected.owned && inspected.complete && NeedsRecordingMetadata(inspected,tags)) {
+                const auto result=UpdateRecordingMetadata(path,tags,catalog,settings.generation);
                 if(result==FileMetadataUpdate::Updated) {
                     RefreshSongDestination();Log(("METADATA UPDATED "+Utf8(path)).c_str());
-                    return finish(Publication::Saved,"updated","missing metadata added; existing audio retained");
+                    return finish(Publication::Saved,"updated","metadata and artwork updated; existing audio retained");
                 }
                 if(result==FileMetadataUpdate::Failed)
                     return finish(Publication::Failed,"failed","metadata update failed; existing file retained");
             }
         }
         Log(("SKIP existing equal, higher or unverified quality "+Utf8(existing_lossless ? flac : destination)).c_str());
-        return finish(Publication::Skipped,"skipped",ExistingSkipReason(existing_lossless ? flac : destination,quality));
+        return finish(Publication::Skipped,"skipped",ExistingSkipReason(existing_lossless ? flac : destination,quality,catalog,&inspected));
     }
     if(c.lossless && decision==SaveDecision::Upgrade && settings.metadata && settings.lyrics)
         PreserveFlacLyrics(destination,tags,catalog);
+    FillThumbnailFallback(fallback_artwork,heard.media,tags);
     std::vector<uint8_t> tagged; std::string error;
     auto source=c.data.Flatten();
     bool tagged_ok=c.lossless ? TagFlac(source,tags,tagged,error) : TagOgg(source,tags,tagged,error);
@@ -314,7 +336,7 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     // Only complete tagged audio reaches the bounded save worker's staged,
     // flushed publication protocol. Recording identity authorizes replacement.
     auto publication=PublishBytes(destination,quality,tagged.data(),tagged.size(),catalog);
-    if(publication==FilePublication::Skipped)return finish(Publication::Skipped,"skipped",ExistingSkipReason(destination,quality));
+    if(publication==FilePublication::Skipped)return finish(Publication::Skipped,"skipped",ExistingSkipReason(destination,quality,catalog));
     if(publication==FilePublication::Failed)return finish(Publication::Failed,"failed","file publication failed; existing file retained");
     RefreshSongDestination();
     ImageInfo artwork;
@@ -337,16 +359,9 @@ static DWORD WINAPI SaveWorker(LPVOID) {
         if(!saves.Pop(job)){WaitForSingleObject(save_event,200);continue;}
         std::string identity=Utf8(job.heard.media.artist)+" - "+Utf8(job.heard.media.title);
         try {
-            // SMTC thumbnail streams can block. Keep this fallback on the save
-            // worker and never attach artwork from a different current song.
-            if(job.heard.media.cover.empty()) {
-                Media artwork;
-                if(fallback_artwork.Read(artwork,true) && artwork.Key()==job.heard.media.Key()) {
-                    job.heard.media.cover=std::move(artwork.cover);
-                    job.heard.media.cover_extension=std::move(artwork.cover_extension);
-                }
-            }
-            auto result=Publish(*job.capture,job.heard,job.epoch);
+            // Optional thumbnail reads happen only when publication needs one,
+            // on this storage worker, never while capturing or skipping a no-op.
+            auto result=Publish(*job.capture,job.heard,job.epoch,&fallback_artwork);
             if(result==Publication::Saved) {
                 auto settings=GetSettings();
                 if(settings.capture_epoch==job.epoch) ++saved_count;

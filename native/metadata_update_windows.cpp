@@ -9,8 +9,15 @@ namespace history {
 namespace {
 struct CloseFile {void operator()(void* file)const{if(file&&file!=INVALID_HANDLE_VALUE)CloseHandle(file);}};
 using File=std::unique_ptr<void,CloseFile>;
+bool UpdateEnabled(unsigned expected_generation) {
+    if(expected_generation==~0u)return true;
+    const auto preferences=GetSettings();
+    return preferences.generation==expected_generation && preferences.downloads &&
+           preferences.metadata && preferences.update_existing_metadata;
 }
-FileMetadataUpdate UpdateRecordingMetadata(const std::wstring& path,const Tags& incoming,const Catalog& catalog) {
+}
+FileMetadataUpdate UpdateRecordingMetadata(const std::wstring& path,const Tags& incoming,const Catalog& catalog,unsigned expected_generation) {
+    if(!UpdateEnabled(expected_generation))return FileMetadataUpdate::Skipped;
     // Retain the exact source object through promotion, preventing a metadata
     // update from replacing another process's newly created recording.
     File file(CreateFileW(WindowsPath(path).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,
@@ -27,6 +34,7 @@ FileMetadataUpdate UpdateRecordingMetadata(const std::wstring& path,const Tags& 
     const auto result=FillRecordingMetadata(source,incoming,catalog,patched,error);
     if(result==MetadataUpdate::Unchanged)return FileMetadataUpdate::Skipped;
     if(result!=MetadataUpdate::Updated)return FileMetadataUpdate::Failed;
+    if(!UpdateEnabled(expected_generation))return FileMetadataUpdate::Skipped;
     return PublishMetadataBytes(path,patched.data(),patched.size(),catalog,file.get())==FilePublication::Upgraded
         ? FileMetadataUpdate::Updated : FileMetadataUpdate::Failed;
 }

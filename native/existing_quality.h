@@ -13,5 +13,6 @@ bool RecoverRecording(const std::wstring& path,const Catalog& catalog);
 std::wstring ResolveRecordingPath(const std::wstring& base,const Catalog& catalog);
 enum class SaveDecision { NewFile, Upgrade, Skip };
 SaveDecision DecideSave(const std::wstring& path,const Quality& incoming);
-SaveDecision DecideSave(const std::wstring& path,const Quality& incoming,const Catalog& catalog);
+// Optional inspection lets callers plan metadata changes without rereading the file.
+SaveDecision DecideSave(const std::wstring& path,const Quality& incoming,const Catalog& catalog,RecordingFile* inspected=nullptr);
 }

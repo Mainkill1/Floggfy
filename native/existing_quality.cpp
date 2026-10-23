@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <utility>
 #include <vector>
+#include <utility>
 namespace history {
 namespace {
 struct Handle {
@@ -110,12 +111,14 @@ SaveDecision DecideSave(const std::wstring& path,const Quality&) {
     // Callers without a recording identity may create, but cannot replace.
     return Missing(path)?SaveDecision::NewFile:SaveDecision::Skip;
 }
-SaveDecision DecideSave(const std::wstring& path,const Quality& incoming,const Catalog& catalog) {
+SaveDecision DecideSave(const std::wstring& path,const Quality& incoming,const Catalog& catalog,RecordingFile* inspected) {
+    if(inspected)*inspected={};
     if(Missing(path)) return SaveDecision::NewFile;
     RecordingFile existing;
     if(!ReadRecording(path,existing) || !MatchesRecording(existing,catalog)) return SaveDecision::Skip;
-    if(!existing.owned) return SaveDecision::Skip;
-    if(!existing.complete || HigherQuality(incoming,existing.quality)) return SaveDecision::Upgrade;
-    return SaveDecision::Skip;
+    const auto decision=existing.owned && (!existing.complete || HigherQuality(incoming,existing.quality))
+        ? SaveDecision::Upgrade : SaveDecision::Skip;
+    if(inspected)*inspected=std::move(existing);
+    return decision;
 }
 }

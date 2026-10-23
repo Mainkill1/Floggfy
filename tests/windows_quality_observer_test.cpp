@@ -1,11 +1,18 @@
 // Exercise real hook event handling with downloads off: no complete compressed
 // buffers are retained, and original parser return values remain unchanged.
+#define UpdateRecordingMetadata CountedMetadataUpdate
 #include "../native/audio_history.cpp"
+#undef UpdateRecordingMetadata
 #include <cassert>
 #include <sstream>
 #include "artwork_fixture.h"
 #include "recording_fixture.h"
+static unsigned metadata_update_calls=0;
 namespace history {
+FileMetadataUpdate UpdateRecordingMetadata(const std::wstring&,const Tags&,const Catalog&,unsigned);
+FileMetadataUpdate CountedMetadataUpdate(const std::wstring& path,const Tags& incoming,const Catalog& catalog,unsigned generation) {
+ ++metadata_update_calls;return UpdateRecordingMetadata(path,incoming,catalog,generation);
+}
 std::string ReadClientPlaybackQuality(const Media&) {return {};}
 void EnrichCatalog(const Media&,Catalog&) {}
 void EnrichTags(const Media &, Tags & tags) {
@@ -58,8 +65,18 @@ static void TestLyricsPublication() {
   std::vector<uint8_t> existing;std::string error;assert(TagFlac(source,tags,existing,error));
   auto write=[&]{DeleteFileW(path.c_str());HANDLE f=CreateFileW(path.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,0,nullptr);assert(f!=INVALID_HANDLE_VALUE);DWORD n;assert(WriteFile(f,existing.data(),DWORD(existing.size()),&n,nullptr));CloseHandle(f);};
   Capture capture;capture.lossless=true;capture.flac={44100,2,16,16,16,16};
-  write();assert(Publish(capture,heard,CaptureEpoch())==Publication::Saved);
-  assert(Publish(capture,heard,CaptureEpoch())==Publication::Skipped);
+  write();assert(SetUpdateExistingMetadata(false));
+  const auto before_updates=metadata_update_calls;
+  assert(Publish(capture,heard,CaptureEpoch())==Publication::Skipped&&metadata_update_calls==before_updates);
+  RecordingFile untouched;assert(ReadRecording(path,untouched));
+  for(const auto& field:untouched.tags.fields)assert(field.first!="GENRE"&&field.first!="LYRICS");
+  assert(SetUpdateExistingMetadata(true));
+  assert(Publish(capture,heard,CaptureEpoch())==Publication::Saved&&metadata_update_calls==before_updates+1);
+  WIN32_FILE_ATTRIBUTE_DATA before{},after{};assert(GetFileAttributesExW(path.c_str(),GetFileExInfoStandard,&before));
+  assert(Publish(capture,heard,CaptureEpoch())==Publication::Skipped&&metadata_update_calls==before_updates+1);
+  assert(GetFileAttributesExW(path.c_str(),GetFileExInfoStandard,&after)&&CompareFileTime(&before.ftLastWriteTime,&after.ftLastWriteTime)==0);
+  WIN32_FIND_DATAW staged{};HANDLE stage=FindFirstFileW((path+L".complete-*").c_str(),&staged);
+  assert(stage==INVALID_HANDLE_VALUE);
   Quality q;assert(ReadQuality(path,q)&&q.bits==24);
   // Lower-quality Vorbis playback can fill a better existing FLAC too.
   write();capture.lossless=false;assert(Publish(capture,heard,CaptureEpoch())==Publication::Saved);
