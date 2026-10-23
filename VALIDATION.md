@@ -1,3 +1,65 @@
+## Recording integrity and metadata-update candidate
+
+The unchanged `bash test-native.sh` and `bash test-native-windows.sh` commands
+pass on the combined candidate. The Windows suite also builds and tests the DLL
+and launcher. GCC 14 with `_FORTIFY_SOURCE=2`, `-O2` and `-Werror` passes the FLAC
+test that previously ignored `fread` results. No warning suppression is required.
+Independent source review found no unresolved findings after its corrections.
+
+Regression coverage includes:
+
+- Storage blocked for more than three seconds while capture queue production,
+  draining and listen observations continue; stale requests and `Menu=0` handling.
+- Complete-file and recording-identity checks, disc/name collisions, owned partial
+  recovery, conflicting writers, locked files and actual publisher process
+  termination during first saves and upgrades.
+- Repeat-one generations, seeks, delayed titles, pauses and invalidated coverage.
+- Unicode INI migration and fresh-process reload, failed migration preservation,
+  large legacy files, concurrent persistence and exception-safe lock ownership.
+- Metadata heartbeat freshness during blocked enrichment and retained rich fields.
+- Missing artwork and metadata fills for FLAC/Ogg, unchanged compressed audio,
+  preserved custom/repeated fields and padding, date/year conflicts, synchronized
+  lyrics, metadata-only race protection and unchanged second passes.
+- Existing-metadata opt-out persistence, generation changes during updates,
+  no-op bypasses, identical images, trusted client-cover upgrades, larger-cover
+  preservation and unsupported/oversized-image preservation for FLAC/Ogg.
+- Checked read failures, short reads, size changes, allocation failures, frozen
+  menu targets, reference cleanup, and the **Latest Downloads** label.
+
+Live checks used Windows x64 Spotify **1.3.6.1921** and an isolated output folder.
+Repeat-one produced a complete FLAC on the first cycle. After optional date/year,
+lyrics and artwork were removed from that test copy, the next complete cycle
+restored them without changing the compressed audio bytes. The restored FLAC
+passes independent Xiph decoding, frame CRC and STREAMINFO audio MD5 checks.
+The menu hid Latest Downloads before a save and enabled the Song folder shortcut
+only for verified saved audio; its final submenu label is Latest Downloads.
+
+On the final code candidate, a separate complete replay with
+`UpdateExistingMetadata=0` preserved the seeded existing file byte-for-byte and
+kept its modification time. Enabling the option restored missing date/year and
+lyrics and upgraded a deliberately small 1 × 1 PNG cover to the validated
+640 × 640 Spotify JPEG without changing the compressed audio.
+
+A further complete repeat preserved both file bytes and modification time,
+confirming an unchanged replay does not rewrite the file. The final enriched
+FLAC also passes independent Xiph decoding, frame CRC and supplied STREAMINFO
+MD5 checks with artwork required.
+
+The final DLL also saved a complete 320 kbps nominal, 44.1 kHz stereo Ogg
+recording (9,177,757 bytes). Independent Xiph Vorbis decoding and Ogg CRC checks
+pass. Artwork was unavailable for this song; the audio and text tags were saved
+successfully, exercising the optional-artwork path. Original DLL and INI backups
+were restored byte-for-byte after live testing. All music fixtures stayed in an
+isolated test location.
+
+Slow-storage and interrupted-publication evidence comes from controlled Windows
+fault/process tests, not a real SMB outage or killing Spotify mid-write. An
+interrupted write can leave a `.complete-*` staging file; it is never accepted as
+the final recording. Upgrade recovery may briefly leave the normal path absent
+while retaining the prior audio. Unknown/unowned files are preserved. Existing-file
+inspection uses a separate temporary buffer capped at 512 MiB per worker.
+
+
 ## Version 1.2
 
 The portable native regression suite and Windows regression/startup suite pass.
