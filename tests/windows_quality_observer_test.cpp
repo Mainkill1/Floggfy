@@ -8,7 +8,10 @@
 namespace history {
 std::string ReadClientPlaybackQuality(const Media&) {return {};}
 void EnrichCatalog(const Media&,Catalog&) {}
-void EnrichTags(const Media &, Tags & tags) { if(GetSettings().lyrics)tags.fields.push_back({"LYRICS","automatic lyric fill"}); }
+void EnrichTags(const Media &, Tags & tags) {
+ if(GetSettings().metadata) {tags.fields.push_back({"GENRE","Rock"});tags.fields.push_back({"DATE","2021-07-23"});tags.fields.push_back({"YEAR","2021"});}
+ if(GetSettings().lyrics)tags.fields.push_back({"LYRICS","automatic lyric fill"});
+}
 } // namespace history
 static int parser_calls = 0;
 static int32_t Parser(void *, OggPage *) {
@@ -60,7 +63,12 @@ static void TestLyricsPublication() {
   Quality q;assert(ReadQuality(path,q)&&q.bits==24);
   // Lower-quality Vorbis playback can fill a better existing FLAC too.
   write();capture.lossless=false;assert(Publish(capture,heard,CaptureEpoch())==Publication::Saved);
-  write();assert(SetLyrics(false));assert(Publish(capture,heard,CaptureEpoch())==Publication::Skipped);
+  write();assert(SetLyrics(false));assert(Publish(capture,heard,CaptureEpoch())==Publication::Saved);
+  RecordingFile enriched;assert(ReadRecording(path,enriched)&&enriched.quality.bits==24);
+  auto field=[&](const char* key){for(const auto& value:enriched.tags.fields)if(value.first==key)return value.second;return std::string();};
+  assert(field("GENRE")=="Rock"&&field("YEAR")=="2021"&&field("DATE")=="2021-07-23"&&field("LYRICS").empty());
+  assert(Publish(capture,heard,CaptureEpoch())==Publication::Skipped);
+  std::vector<RecentDownload> metadata_recent;assert(ReadRecentDownloads(metadata_recent)&&metadata_recent.empty());
   DeleteFileW(path.c_str());assert(SetDownloads(false));
 }
 static void WaitLog(const std::string& prefix,const std::string& suffix) {

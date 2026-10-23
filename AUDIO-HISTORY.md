@@ -114,7 +114,7 @@ Activity and opt-in diagnostics are in `Floggfy.log` in the selected save root.
 At 5 MiB, the log removes the oldest complete lines to make room for each new
 entry. Logging and INI persistence use separate workers.
 Completed saves log the captured audio format/quality and final tagged file size
-in MiB and bytes. Upgrade, lyric-only update, skipped-file, changed-setting and
+in MiB and bytes. Upgrade, metadata-only update, skipped-file, changed-setting and
 failure outcomes are distinct. Equal/better existing audio is identified only
 when the on-disk format is verified; incomparable or unverified files get an
 explicit retention reason.
@@ -122,7 +122,7 @@ explicit retention reason.
 The last ten successful saved paths are held in memory for this Spotify run.
 **Latest Downloads**, directly below **Save Location**, is hidden until the first
 successful download. Selecting a song opens its containing folder in Explorer.
-Skips, failed writes and lyric-only updates do not add history entries. Menu
+Skips, failed writes and metadata-only updates do not add history entries. Menu
 snapshots stay fixed while open so a new download cannot redirect an existing
 item's click target. A deleted file or folder produces an unavailable notice;
 Explorer failures produce an error notice. Menu construction performs no filesystem
@@ -200,9 +200,12 @@ are omitted. Requests use Spotify's existing client service and remain bounded;
 unsupported service shapes retain basic tags. Lyrics are not guaranteed for every
 track. Synchronized lyrics are embedded as millisecond LRC text in `LYRICS`,
 with plain text used when timing is unavailable or invalid. No sidecars are created.
-After a complete replay, existing FLAC files can receive missing lyrics or upgrade
-plain lyrics to synchronized lyrics while retaining their compressed audio,
-artwork and other metadata. This also works when the replay uses lower-quality
-audio. Already synchronized lyrics are retained. Audio-quality upgrades preserve
-available existing lyrics when lyric metadata is enabled. Other equal- or
-higher-quality audio is skipped; there is no bulk library scan.
+After a complete replay, verified existing FLAC and Ogg files can receive missing
+text metadata and missing artwork even when no audio upgrade is planned. Existing
+populated values, compressed audio and artwork are preserved. Plain lyrics can
+upgrade to synchronized lyrics; existing synchronized lyrics are retained. A
+lower-quality replay can enrich an existing FLAC without replacing its audio.
+`Lyrics=0` disables lyric enrichment while allowing other metadata fills;
+`Metadata=0` disables metadata-only updates. Updates are logged separately and do
+not add a Latest Downloads entry. There is no bulk library scan.
+

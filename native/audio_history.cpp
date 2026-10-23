@@ -17,6 +17,7 @@
 #include "recent_downloads.h"
 #include "song_destination.h"
 #include "lyrics_update.h"
+#include "metadata_update_windows.h"
 #include "media_session.h"
 #include "spotify_hook_discovery.h"
 #include "vendor/minhook/include/MinHook.h"
@@ -280,23 +281,29 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     const bool existing_lossless=!c.lossless && !flac.empty() && ExistingRecording(flac,catalog,lossless) && lossless.codec==Codec::Flac;
     const auto decision=existing_lossless ? SaveDecision::Skip : DecideSave(destination,quality,catalog);
     if(decision==SaveDecision::Skip) {
-        // An audio duplicate may still be a metadata upgrade. Always patch
-        // the existing FLAC, including when this listen used lossy playback.
+        // An audio duplicate may still have missing metadata. Update only a
+        // verified matching recording; this never adds a Latest Downloads entry.
         const auto latest=GetSettings();
-        if(settings.metadata && settings.lyrics && settings.flac && (c.lossless || existing_lossless) &&
-           latest.generation==settings.generation && latest.downloads && latest.lyrics && latest.metadata && latest.flac) {
+        const bool target_enabled=existing_lossless ? settings.flac : (c.lossless ? settings.flac : settings.ogg);
+        if(settings.metadata && target_enabled && latest.generation==settings.generation &&
+           latest.downloads && latest.metadata) {
             const auto& path=existing_lossless ? flac : destination;
             RecordingFile existing;
-            const auto result=ReadRecording(path,existing) && existing.owned && existing.complete && MatchesRecording(existing,catalog) ?
-                UpdateFlacLyrics(path,tags) : FileLyricsUpdate::Skipped;
-            if(result==FileLyricsUpdate::Updated){RefreshSongDestination();Log(("LYRICS UPDATED "+Utf8(path)).c_str());return finish(Publication::Saved,"updated","lyrics updated; existing audio retained");}
-            if(result==FileLyricsUpdate::Failed)return finish(Publication::Failed,"failed","lyric update failed; existing file retained");
+            if(ReadRecording(path,existing) && existing.owned && existing.complete && MatchesRecording(existing,catalog)) {
+                const auto result=UpdateRecordingMetadata(path,tags,catalog);
+                if(result==FileMetadataUpdate::Updated) {
+                    RefreshSongDestination();Log(("METADATA UPDATED "+Utf8(path)).c_str());
+                    return finish(Publication::Saved,"updated","missing metadata added; existing audio retained");
+                }
+                if(result==FileMetadataUpdate::Failed)
+                    return finish(Publication::Failed,"failed","metadata update failed; existing file retained");
+            }
         }
         Log(("SKIP existing equal, higher or unverified quality "+Utf8(existing_lossless ? flac : destination)).c_str());
         return finish(Publication::Skipped,"skipped",ExistingSkipReason(existing_lossless ? flac : destination,quality));
     }
     if(c.lossless && decision==SaveDecision::Upgrade && settings.metadata && settings.lyrics)
-        PreserveFlacLyrics(destination,tags);
+        PreserveFlacLyrics(destination,tags,catalog);
     std::vector<uint8_t> tagged; std::string error;
     auto source=c.data.Flatten();
     bool tagged_ok=c.lossless ? TagFlac(source,tags,tagged,error) : TagOgg(source,tags,tagged,error);

@@ -54,3 +54,7 @@ build/album-artwork-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror -I native/vendor/libogg/include \
     tests/recording_file_test.cpp native/recording_file.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/ogg-framing-test.o -o build/recording-file-test
 build/recording-file-test
+
+g++ -std=c++17 -O2 -Wall -Wextra -Werror -I native/vendor/libogg/include \
+ tests/metadata_update_test.cpp native/metadata_update_core.cpp native/recording_file.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/ogg-framing-test.o -o build/metadata-update-test
+build/metadata-update-test
