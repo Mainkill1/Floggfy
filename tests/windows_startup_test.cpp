@@ -28,6 +28,16 @@ int wmain(int argc,wchar_t** argv) {
   assert(WaitForSingleObject(process.hProcess,10000)==WAIT_OBJECT_0);
   DWORD code=0;assert(GetExitCodeProcess(process.hProcess,&code) && code==11);
   CloseHandle(process.hThread);CloseHandle(process.hProcess);
+  // The proxy must bootstrap without any of its version exports being called,
+  // even when the System32 DLL was loaded first and remains the bare-name result.
+  const auto second_proxy=folder+L"\\version.dll";
+  assert(CopyFileW(dll.c_str(),second_proxy.c_str(),TRUE));
+  command=L"\""+exe+L"\" --load-local-version";
+  assert(CreateProcessW(exe.c_str(),command.data(),nullptr,nullptr,FALSE,0,nullptr,folder.c_str(),&info,&process));
+  assert(WaitForSingleObject(process.hProcess,15000)==WAIT_OBJECT_0);
+  assert(GetExitCodeProcess(process.hProcess,&code) && code==0);
+  CloseHandle(process.hThread);CloseHandle(process.hProcess);
+  assert(DeleteFileW(second_proxy.c_str()));
   // The fallback loads it before the host entry point and detaches its debugger.
   if(!startup::Launch(folder,process,error))std::fwprintf(stderr,L"%ls\n",error.c_str());
   assert(process.hProcess);
