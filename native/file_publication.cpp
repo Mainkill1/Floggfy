@@ -55,6 +55,40 @@ bool SameFile(HANDLE handle,const std::wstring& path) {
         GetFileInformationByHandle(current.value,&b) && a.dwVolumeSerialNumber==b.dwVolumeSerialNumber &&
         a.nFileIndexHigh==b.nFileIndexHigh && a.nFileIndexLow==b.nFileIndexLow;
 }
+bool PrepareBackupSlot(const std::wstring& path,const Catalog& catalog) {
+    const auto previous=path+L".previous";
+    Handle backup{CreateFileW(WindowsPath(previous).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,
+        nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
+    if(backup.value==INVALID_HANDLE_VALUE) {
+        const auto error=GetLastError();
+        return error==ERROR_FILE_NOT_FOUND || error==ERROR_PATH_NOT_FOUND;
+    }
+    // The caller holds the current target against writes/deletion. Lock the
+    // backup too, then inspect both exact objects before retiring any bytes.
+    RecordingFile current,retained;
+    if(!SameFile(backup.value,previous) || !ReadRecording(path,current) ||
+       (!current.complete && !current.owned) || !MatchesRecording(current,catalog) ||
+       !ReadRecording(previous,retained) || !retained.owned || !MatchesRecording(retained,catalog)) return false;
+    const auto& a=current.quality;const auto& b=retained.quality;
+    const bool equal=a.codec==b.codec && a.rate==b.rate && a.channels==b.channels &&
+                     a.bits==b.bits && a.bitrate==b.bitrate;
+    if(current.complete && (!retained.complete || equal || HigherQuality(a,b))) {
+        FILE_DISPOSITION_INFO disposition={TRUE};
+        return SetFileInformationByHandle(backup.value,FileDispositionInfo,&disposition,sizeof(disposition))!=0;
+    }
+    // Keep a better or incomparable old recording as an ordinary audio file.
+    // Bounded no-overwrite renames cannot destroy an occupied recovery name.
+    const auto dot=path.find_last_of(L'.');
+    const auto stem=dot==std::wstring::npos?path:path.substr(0,dot);
+    const auto extension=dot==std::wstring::npos?std::wstring():path.substr(dot);
+    for(unsigned attempt=0;attempt<32;++attempt) {
+        const auto target=stem+L" [recovered"+(attempt?L"-"+std::to_wstring(attempt):L"")+L"]"+extension;
+        if(RenameHandle(backup.value,target))return true;
+        const auto error=GetLastError();
+        if(error!=ERROR_ALREADY_EXISTS && error!=ERROR_FILE_EXISTS)return false;
+    }
+    return false;
+}
 Catalog CatalogFromTags(const Tags& tags) {
     auto field=[&](const char* name) { for(const auto& pair:tags.fields) if(pair.first==name) return pair.second; return std::string(); };
     auto wide=[](const std::string& value) {
@@ -100,7 +134,7 @@ FilePublication PublishBytes(const std::wstring& path,const Quality& quality,con
     bool upgrade=old.value!=INVALID_HANDLE_VALUE && SameFile(old.value,path) &&
         DecideSave(path,quality,catalog)==SaveDecision::Upgrade;
     auto backup=path+L".previous";
-    bool moved=upgrade && RenameHandle(old.value,backup);
+    bool moved=upgrade && PrepareBackupSlot(path,catalog) && RenameHandle(old.value,backup);
     if(moved) TestPhase(L"reserved",path);
     bool published=moved && MoveFileExW(WindowsPath(staging).c_str(),WindowsPath(path).c_str(),MOVEFILE_WRITE_THROUGH);
     if(published) {
