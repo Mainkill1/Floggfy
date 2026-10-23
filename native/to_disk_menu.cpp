@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include "to_disk_menu.h"
 #include "cef_menu_capability.h"
+#include "cef_menu_abi.h"
 #include "hook_init_state.h"
 #include "hook_startup_minhook.h"
 #include "history_settings.h"
@@ -20,10 +21,11 @@
 namespace {
 // Public CEF C API prefix. CEF appends methods and publishes each structure's
 // byte size, so runtime capability checks can accept newer compatible builds.
-struct Base { size_t size; void(*add_ref)(Base*); int(*release)(Base*);
-    int(*has_one_ref)(Base*); int(*has_at_least_one_ref)(Base*); };
-struct String { wchar_t* str; size_t length; void(*dtor)(wchar_t*); };
-struct Menu { Base base; void* methods[cef_menu::kHighestRequiredMenuSlot+1]; };
+using Base=cef_menu::abi::Base;
+using String=cef_menu::abi::String;
+using Menu=cef_menu::abi::Menu;
+using MenuMethods=cef_menu::abi::Methods;
+using MenuReference=cef_menu::abi::Reference;
 struct Delegate {
     Base base;
     void(*execute)(Delegate*,Menu*,int,int);
@@ -42,7 +44,7 @@ using Create=Menu*(*)(Delegate*);
 Create original_create;
 using SetString=int(*)(const wchar_t*,size_t,String*,int);
 SetString set_string=nullptr;
-using AddSubmenu=Menu*(*)(Menu*,int,const String*);
+using AddSubmenu=MenuMethods::AddSubmenuFunction;
 AddSubmenu original_add_submenu;
 hooks::InitController menu_init;
 hooks::CallbackCounter menu_callbacks;
@@ -55,11 +57,6 @@ constexpr int recent_id=28490,first_recent_id=28491;
 static_assert(root_id>=cef_menu::kUserCommandFirst &&
               first_recent_id+history::kRecentDownloadLimit-1<=cef_menu::kUserCommandLast,
               "Recent commands stay within the CEF user command range (26500..28500)");
-template<class R,class...A> R Call(Menu* m,unsigned slot,A...a) {
-    if(!m || m->base.size<cef_menu::kRequiredMenuBytes ||
-       slot>cef_menu::kHighestRequiredMenuSlot || !m->methods[slot]) return R{};
-    return reinterpret_cast<R(*)(Menu*,A...)>(m->methods[slot])(m,a...);
-}
 static String Text(const std::wstring& s) { return {const_cast<wchar_t*>(s.c_str()),s.size(),nullptr}; }
 static bool Executable(const void* address) {
     if(!address) return false;
@@ -102,10 +99,10 @@ struct MenuCapabilities {
     }
 };
 static bool Main(Menu* menu) {
-    if(Call<int>(menu,0)) return false;
-    const size_t count=Call<size_t>(menu,2); if(count<3 || count>30) return false;
+    if(MenuMethods::IsSubmenu(menu)) return false;
+    const size_t count=MenuMethods::Count(menu); if(count<3 || count>30) return false;
     int types[30]{};
-    for(size_t index=0;index<count;++index) types[index]=Call<int>(menu,23,index);
+    for(size_t index=0;index<count;++index) types[index]=MenuMethods::TypeAt(menu,index);
     return cef_menu::LooksLikeMainMenu(false,types,count);
 }
 static void UpdateQuality(Menu* menu,const history::PlaybackQualitySnapshot* song=nullptr,const std::wstring* folder=nullptr) {
@@ -113,23 +110,23 @@ static void UpdateQuality(Menu* menu,const history::PlaybackQualitySnapshot* son
     auto labels=history::PlaybackQualityLabels(snapshot);
     if(song) labels[0]=history::PlaybackQualityLabels(*song)[0];
     const bool flac=snapshot.format==history::PlaybackFormat::Flac;
-    if(Call<int>(menu,15,song_id)<0) Call<int>(menu,3);
+    if(MenuMethods::IndexOf(menu,song_id)<0) MenuMethods::AddSeparator(menu);
     for(unsigned i=0;i<labels.size();++i) {
         int id=song_id+int(i);auto text=Text(labels[i]);
-        if(Call<int>(menu,15,id)<0)Call<int>(menu,4,id,&text);
-        else Call<int>(menu,20,id,&text);
-        Call<int>(menu,36,id,int(i==0 && folder && !folder->empty()));
+        if(MenuMethods::IndexOf(menu,id)<0)MenuMethods::AddItem(menu,id,&text);
+        else MenuMethods::SetLabel(menu,id,&text);
+        MenuMethods::SetEnabled(menu,id,int(i==0 && folder && !folder->empty()));
         const bool visible=i==0 || (i==1 ? snapshot.level!=history::PlaybackLevel::Unknown :
                                      flac && (i==2 || snapshot.rate!=0));
-        Call<int>(menu,32,id,int(visible));
+        MenuMethods::SetVisible(menu,id,int(visible));
     }
 }
 static void Populate(Menu* menu) {
     static thread_local MenuCapabilities capability;
-    if(!capability.Check(menu) || Call<int>(menu,0)) return;
+    if(!capability.Check(menu) || MenuMethods::IsSubmenu(menu)) return;
     // Construction invokes us once for every submenu. Once our root exists,
     // do no structural scan, snapshot copy, child refresh or insertion work.
-    if(Call<int>(menu,15,root_id)>=0) return;
+    if(MenuMethods::IndexOf(menu,root_id)>=0) return;
     if(!Main(menu)) {
         static volatile LONG logged=0;
         if(InterlockedIncrement(&logged)<=3)
@@ -137,39 +134,39 @@ static void Populate(Menu* menu) {
         return;
     }
     auto state=history::GetSettings();
-    Menu* child=Call<Menu*>(menu,28,root_id);
+    Menu* child=MenuMethods::GetSubmenu(menu,root_id);
     bool inserted=false;
     if(!child) {
-        if(Call<int>(menu,15,root_id)>=0) return; // conflicting command id
+        if(MenuMethods::IndexOf(menu,root_id)>=0) return; // conflicting command id
         std::wstring label=L"To Disk"; auto text=Text(label);
-        child=Call<Menu*>(menu,7,root_id,&text); inserted=true;
+        child=MenuMethods::AddSubmenu(menu,root_id,&text); inserted=true;
     }
     if(!Capable(child)) { if(child && child->base.release) child->base.release(&child->base); return; }
-    if(inserted) Call<int>(child,1);
+    MenuReference child_reference(child);
+    if(inserted) MenuMethods::Clear(child);
     auto item=[child](int id,const std::wstring& label,bool checked,bool enabled) {
         auto text=Text(label);
-        if(Call<int>(child,15,id)<0) Call<int>(child,5,id,&text);
-        else Call<int>(child,20,id,&text);
-        Call<int>(child,40,id,int(checked)); Call<int>(child,36,id,int(enabled));
+        if(MenuMethods::IndexOf(child,id)<0) MenuMethods::AddCheckItem(child,id,&text);
+        else MenuMethods::SetLabel(child,id,&text);
+        MenuMethods::SetChecked(child,id,int(checked)); MenuMethods::SetEnabled(child,id,int(enabled));
     };
     item(downloads_id,state.downloads ? L"Downloads (Enabled)" : L"Downloads (Disabled)",state.downloads,true);
-    if(inserted) { std::wstring location=L"Save Location"; auto text=Text(location); Call<int>(child,4,location_id,&text); }
+    if(inserted) { std::wstring location=L"Save Location"; auto text=Text(location); MenuMethods::AddItem(child,location_id,&text); }
     if(inserted) {
-        std::wstring label=L"Latest Downloads >"; auto text=Text(label);
-        if(auto* recent=Call<Menu*>(child,7,recent_id,&text)) {
+        std::wstring label=L"Latest Downloads"; auto text=Text(label);
+        if(auto* recent=MenuMethods::AddSubmenu(child,recent_id,&text)) {
             std::wstring empty=L"No downloads yet"; auto placeholder=Text(empty);
-            Call<int>(recent,4,first_recent_id,&placeholder);
-            Call<int>(recent,36,first_recent_id,0);
+            MenuMethods::AddItem(recent,first_recent_id,&placeholder);
+            MenuMethods::SetEnabled(recent,first_recent_id,0);
             recent->base.release(&recent->base);
         }
-        Call<int>(child,36,recent_id,0);
-        Call<int>(child,32,recent_id,0);
+        MenuMethods::SetEnabled(child,recent_id,0);
+        MenuMethods::SetVisible(child,recent_id,0);
     }
     item(flac_id,state.flac ? L"FLAC (Enabled)" : L"FLAC (Disabled)",state.flac,true);
     item(ogg_id,state.ogg ? L"Ogg (Enabled)" : L"Ogg (Disabled)",state.ogg,true);
     item(lyrics_id,state.lyrics ? L"Lyrics (Enabled)" : L"Lyrics (Disabled)",state.lyrics,true);
     UpdateQuality(child);
-    child->base.release(&child->base);
     if(inserted) history::HistoryLog("To Disk inserted into Spotify main menu: Downloads, Save Location, FLAC, Ogg, Lyrics");
 }
 static Menu* AddSubmenuHook(Menu* menu,int id,const String* text) {
@@ -178,22 +175,33 @@ static Menu* AddSubmenuHook(Menu* menu,int id,const String* text) {
     // MenuWillShow occurs after CEF has built the visible menu. Insert while
     // Spotify constructs the model so the first opening contains our items.
     static thread_local bool populating=false;
-    if(!populating) { populating=true; Populate(menu); populating=false; }
+    if(!populating) {
+        struct Reset {bool& value;~Reset(){value=false;}} reset{populating};
+        populating=true;
+        try {Populate(menu);}catch(...) {/* Preserve the client model on allocation failure. */}
+    }
     return result;
 }
+struct MenuOpening {
+    enum class Phase {Preparing,Visible};
+    struct Snapshot {
+        history::PlaybackQualitySnapshot song{};
+        std::wstring song_file;
+        std::vector<history::RecentDownload> recent;
+        bool song_bound=false;
+    } snapshot;
+    Phase phase=Phase::Preparing;
+    bool Visible()const{return phase==Phase::Visible;}
+    void Show(){phase=Phase::Visible;}
+    void Close(){phase=Phase::Preparing;snapshot.song_bound=false;}
+};
 struct Wrapped {
     Delegate api;
     std::atomic<unsigned> refs{1};
     Delegate* original=nullptr;
     MenuCapabilities capability;
-    // The same transferred delegate serves the root and its child views.
-    // Keep command targets paired with the labels CEF built for this opening.
-    std::vector<history::RecentDownload> recent;
-    // Formatting can repeat for accessibility while the menu is displayed.
-    bool recent_open=false;
-    history::PlaybackQualitySnapshot song{};
-    std::wstring song_file;
-    bool song_bound=false;
+    // The shared delegate owns command targets, never a retained menu model.
+    MenuOpening opening;
     bool CapableCached(Menu* menu) { return capability.Check(menu); }
     void ClearValidation() { capability.ClearValidation(); }
     ~Wrapped() { ClearValidation(); if(original) original->base.release(&original->base); }
@@ -208,9 +216,9 @@ static void BindSong(Wrapped* wrapped) {
     const auto snapshot=history::ReadPlaybackQuality();
     std::wstring saved_file;
     history::ReadSongDestination(snapshot.identity,history::GetSettings().generation,saved_file);
-    wrapped->song_file.swap(saved_file);
-    wrapped->song=snapshot;
-    wrapped->song_bound=true;
+    wrapped->opening.snapshot.song_file.swap(saved_file);
+    wrapped->opening.snapshot.song=snapshot;
+    wrapped->opening.snapshot.song_bound=true;
 }
 static std::wstring RecentLabel(const std::wstring& title) {
     if(title.empty()) return L"Untitled download";
@@ -240,21 +248,20 @@ static void RefreshRecent(Wrapped* wrapped,Menu* child) {
     std::vector<std::wstring> labels;
     labels.reserve(next.size());
     for(const auto& entry:next) labels.push_back(RecentLabel(entry.title));
-    auto* recent=Call<Menu*>(child,28,recent_id);
-    if(!recent) return;
-    if(!wrapped->CapableCached(recent)) {ReleaseMenu(recent);return;}
-    if(!Call<int>(recent,1)) {ReleaseMenu(recent);return;}
-    wrapped->recent.swap(next);
-    if(wrapped->recent.empty()) {
+    auto* recent=MenuMethods::GetSubmenu(child,recent_id);
+    if(!recent)return;
+    MenuReference recent_reference(recent);
+    if(!wrapped->CapableCached(recent) || !MenuMethods::Clear(recent))return;
+    wrapped->opening.snapshot.recent.swap(next);
+    if(wrapped->opening.snapshot.recent.empty()) {
         wchar_t empty[]=L"No downloads yet";String text{empty,15,nullptr};
-        Call<int>(recent,4,first_recent_id,&text);
-        Call<int>(recent,36,first_recent_id,0);
-    } else for(size_t i=0;i<wrapped->recent.size();++i) {
-        auto text=Text(labels[i]);Call<int>(recent,4,first_recent_id+int(i),&text);
+        MenuMethods::AddItem(recent,first_recent_id,&text);
+        MenuMethods::SetEnabled(recent,first_recent_id,0);
+    } else for(size_t i=0;i<wrapped->opening.snapshot.recent.size();++i) {
+        auto text=Text(labels[i]);MenuMethods::AddItem(recent,first_recent_id+int(i),&text);
     }
-    Call<int>(child,36,recent_id,int(!wrapped->recent.empty()));
-    Call<int>(child,32,recent_id,int(!wrapped->recent.empty()));
-    ReleaseMenu(recent);
+    MenuMethods::SetEnabled(child,recent_id,!wrapped->opening.snapshot.recent.empty());
+    MenuMethods::SetVisible(child,recent_id,!wrapped->opening.snapshot.recent.empty());
 }
 static DWORD WINAPI RevealRecentWorker(void* argument) {
     std::unique_ptr<std::wstring> path(static_cast<std::wstring*>(argument));
@@ -270,7 +277,7 @@ static DWORD WINAPI RevealRecentWorker(void* argument) {
     if(FAILED(result)) MessageBoxW(nullptr,
         attributes==INVALID_FILE_ATTRIBUTES || (attributes&FILE_ATTRIBUTE_DIRECTORY) ?
         L"This download is no longer available at its saved location." :
-        L"Explorer could not show this download.",L"Latest Downloads >",MB_OK|MB_ICONINFORMATION);
+        L"Explorer could not show this download.",L"Latest Downloads",MB_OK|MB_ICONINFORMATION);
     if(SUCCEEDED(initialized)) CoUninitialize();
     return 0;
 }
@@ -280,7 +287,7 @@ static void RevealRecent(const std::wstring& path) {
     // Filesystem and shell work belongs to a click, away from CEF's UI thread.
     HANDLE worker=CreateThread(nullptr,0,RevealRecentWorker,copy,0,nullptr);
     if(worker) CloseHandle(worker);
-    else {delete copy;MessageBoxW(GetActiveWindow(),L"Explorer could not be started.",L"Latest Downloads >",MB_OK|MB_ICONINFORMATION);}
+    else {delete copy;MessageBoxW(GetActiveWindow(),L"Explorer could not be started.",L"Latest Downloads",MB_OK|MB_ICONINFORMATION);}
 }
 static DWORD WINAPI RevealSongWorker(void* argument) {
     std::unique_ptr<std::wstring> saved_file(static_cast<std::wstring*>(argument));
@@ -312,19 +319,21 @@ static void RevealSong(const std::wstring& saved_file) {
     else {delete copy;MessageBoxW(GetActiveWindow(),L"The song folder could not be opened.",L"Song folder",MB_OK|MB_ICONERROR);}
 }
 static void Execute(Delegate* self,Menu* menu,int command,int flags) {
+    MenuReference reference(menu);
+    try {
     if(command==song_id) {
-        try {if(!Self(self)->song_file.empty()) RevealSong(Self(self)->song_file);}
+        try {if(!Self(self)->opening.snapshot.song_file.empty()) RevealSong(Self(self)->opening.snapshot.song_file);}
         catch(...) {/* Keep allocation failures inside the CEF callback. */}
-        ReleaseMenu(menu);return;
+        return;
     }
     if(command>=first_recent_id && command<first_recent_id+int(history::kRecentDownloadLimit)) {
         const auto index=size_t(command-first_recent_id);
-        try {if(index<Self(self)->recent.size()) RevealRecent(Self(self)->recent[index].path);}
+        try {if(index<Self(self)->opening.snapshot.recent.size()) RevealRecent(Self(self)->opening.snapshot.recent[index].path);}
         catch(...) {/* CEF callbacks must not propagate allocation failures. */}
-        ReleaseMenu(menu);return;
+        return;
     }
-    if(command==recent_id) {ReleaseMenu(menu);return;}
-    if(command>=song_id && command<=last_quality_id) {ReleaseMenu(menu);return;}
+    if(command==recent_id) {return;}
+    if(command>=song_id && command<=last_quality_id) {return;}
     auto* w=Self(self); auto settings=history::GetSettings(); bool handled=true,ok=true;
     switch(command) {
         case downloads_id: ok=history::SetDownloads(!settings.downloads); break;
@@ -340,37 +349,44 @@ static void Execute(Delegate* self,Menu* menu,int command,int flags) {
             bool value=command==downloads_id ? updated.downloads : command==ogg_id ? updated.ogg : command==lyrics_id ? updated.lyrics : updated.flac;
             std::wstring label=command==downloads_id ? L"Downloads" : command==ogg_id ? L"Ogg" : command==lyrics_id ? L"Lyrics" : L"FLAC";
             label+=value ? L" (Enabled)" : L" (Disabled)"; auto text=Text(label);
-            Call<int>(menu,20,command,&text); Call<int>(menu,40,command,int(value));
+            MenuMethods::SetLabel(menu,command,&text); MenuMethods::SetChecked(menu,command,int(value));
             char line[160]; snprintf(line,sizeof(line),"To Disk command=%d accepted=%d enabled=%d",command,ok,value); history::HistoryLog(line);
         }
         if(!ok) MessageBoxW(GetActiveWindow(),L"The setting could not be saved.",L"To Disk",MB_OK|MB_ICONERROR);
-        ReleaseMenu(menu);
         return;
     }
-    if(w->original && w->original->execute) w->original->execute(w->original,menu,command,flags);
-    else ReleaseMenu(menu);
+    if(w->original && w->original->execute) w->original->execute(w->original,reference.Take(),command,flags);
+    }catch(...) {/* Do not unwind allocating settings/UI operations through CEF. */}
 }
 static void Outside(Delegate* self,Menu* menu,const void* point) { auto* o=Self(self)->original; if(o && o->outside) o->outside(o,menu,point); else ReleaseMenu(menu); }
 static void Open(Delegate* self,Menu* menu,int rtl) { auto* o=Self(self)->original; if(o && o->open) o->open(o,menu,rtl); else ReleaseMenu(menu); }
 static void Close(Delegate* self,Menu* menu,int rtl) { auto* o=Self(self)->original; if(o && o->close) o->close(o,menu,rtl); else ReleaseMenu(menu); }
 static void WillShow(Delegate* self,Menu* menu) {
-    if(Self(self)->CapableCached(menu) && Call<int>(menu,15,root_id)>=0) Self(self)->recent_open=true;
+    MenuReference reference(menu);
+    try {
+    if(Self(self)->CapableCached(menu) && MenuMethods::IndexOf(menu,root_id)>=0) Self(self)->opening.Show();
     auto* o=Self(self)->original;
     // CEF transfers one menu reference into every delegate callback. Retain
     // another across the original callback, which consumes its argument.
     if(o && o->will_show) { menu->base.add_ref(&menu->base); o->will_show(o,menu); }
-    if(Self(self)->CapableCached(menu) && Call<int>(menu,15,song_id)>=0) {
-        if(!Self(self)->song_bound) BindSong(Self(self));
-        UpdateQuality(menu,&Self(self)->song,&Self(self)->song_file);
+    if(Self(self)->CapableCached(menu) && MenuMethods::IndexOf(menu,song_id)>=0) {
+        if(!Self(self)->opening.snapshot.song_bound) BindSong(Self(self));
+        UpdateQuality(menu,&Self(self)->opening.snapshot.song,&Self(self)->opening.snapshot.song_file);
     }
     else Populate(menu);
-    ReleaseMenu(menu);
+    }catch(...) {/* Keep prior labels if allocation fails. */}
 }
 static void Closed(Delegate* self,Menu* menu) {
-    if(Self(self)->CapableCached(menu) && Call<int>(menu,15,root_id)>=0) Self(self)->recent_open=false;
-    Self(self)->ClearValidation(); auto* o=Self(self)->original; if(o && o->closed) o->closed(o,menu); else ReleaseMenu(menu); }
+    MenuReference reference(menu);
+    if(Self(self)->CapableCached(menu) && MenuMethods::IndexOf(menu,root_id)>=0) Self(self)->opening.Close();
+    Self(self)->ClearValidation();
+    auto* original=Self(self)->original;
+    if(original && original->closed)original->closed(original,reference.Take());
+}
 static int Format(Delegate* self,Menu* menu,String* label) {
+    MenuReference reference(menu);
     auto* o=Self(self)->original;int changed=0;
+    try {
     if(o && o->format) {
         menu->base.add_ref(&menu->base);
         changed=o->format(o,menu,label);
@@ -379,16 +395,16 @@ static int Format(Delegate* self,Menu* menu,String* label) {
     // the submenu's visible children. WillShow alone is too late for the first
     // opening after a codec change on a reused model.
     if(label && label->str && label->length==7 && !wmemcmp(label->str,L"To Disk",7) &&
-       Self(self)->CapableCached(menu) && Call<int>(menu,15,root_id)>=0) {
-        if(auto* child=Call<Menu*>(menu,28,root_id)) {
-            try { if(Self(self)->CapableCached(child) && Call<int>(child,15,song_id)>=0 &&
-                     Call<int>(child,15,downloads_id)>=0) {
-                         if(!Self(self)->recent_open) BindSong(Self(self));
-                         UpdateQuality(child,&Self(self)->song,&Self(self)->song_file);
-                         if(!Self(self)->recent_open) RefreshRecent(Self(self),child);
+       Self(self)->CapableCached(menu) && MenuMethods::IndexOf(menu,root_id)>=0) {
+        if(auto* child=MenuMethods::GetSubmenu(menu,root_id)) {
+            MenuReference child_reference(child);
+            try { if(Self(self)->CapableCached(child) && MenuMethods::IndexOf(child,song_id)>=0 &&
+                     MenuMethods::IndexOf(child,downloads_id)>=0) {
+                         if(!Self(self)->opening.Visible()) BindSong(Self(self));
+                         UpdateQuality(child,&Self(self)->opening.snapshot.song,&Self(self)->opening.snapshot.song_file);
+                         if(!Self(self)->opening.Visible()) RefreshRecent(Self(self),child);
                      } }
             catch(...) {/* Keep prior visibility on allocation failure. */}
-            ReleaseMenu(child);
         }
     }
     // CEF constructs visible labels before MenuWillShow. Its public label
@@ -400,18 +416,19 @@ static int Format(Delegate* self,Menu* menu,String* label) {
         for(unsigned i=0;i<4;++i) {
             const auto length=wcslen(prefixes[i]);
             if(label->length<length || wmemcmp(label->str,prefixes[i],length)) continue;
-            if(!Self(self)->CapableCached(menu) || Call<int>(menu,15,song_id)<0 ||
-               Call<int>(menu,15,downloads_id)<0) break;
+            if(!Self(self)->CapableCached(menu) || MenuMethods::IndexOf(menu,song_id)<0 ||
+               MenuMethods::IndexOf(menu,downloads_id)<0) break;
             try {
-                if(i==0 && (!Self(self)->recent_open || !Self(self)->song_bound)) BindSong(Self(self));
-                const auto rows=history::PlaybackQualityLabels(i==0 ? Self(self)->song : history::ReadPlaybackQuality());
-                if(i==0) Call<int>(menu,36,song_id,int(!Self(self)->song_file.empty()));
+                if(i==0 && !Self(self)->opening.snapshot.song_bound) BindSong(Self(self));
+                const auto rows=history::PlaybackQualityLabels(i==0 ? Self(self)->opening.snapshot.song : history::ReadPlaybackQuality());
+                if(i==0) MenuMethods::SetEnabled(menu,song_id,int(!Self(self)->opening.snapshot.song_file.empty()));
                 if(set_string(rows[i].data(),rows[i].size(),label,1))changed=1;
             }catch(...) {/* Keep the original CEF label on allocation failure. */}
             break;
         }
     }
-    ReleaseMenu(menu);return changed;
+    }catch(...) {/* Keep the last complete opening on allocation failure. */}
+    return changed;
 }
 static Menu* Hook(Delegate* delegate) {
     auto callback=menu_callbacks.Enter();
@@ -429,7 +446,7 @@ static Menu* Hook(Delegate* delegate) {
     w->original=delegate;
     Menu* result=original_create(&w->api);
     if(Capable(result) && submenu_init.TryBegin(GetTickCount64())) {
-        void* address=result->methods[7];
+        void* address=reinterpret_cast<void*>(MenuMethods::SubmenuImplementation(result));
         MH_STATUS status=address ? MH_CreateHook(address,reinterpret_cast<void*>(AddSubmenuHook),reinterpret_cast<void**>(&original_add_submenu)) : MH_ERROR_NOT_EXECUTABLE;
         bool created=status==MH_OK;
         if(status==MH_OK) status=MH_EnableHook(address);

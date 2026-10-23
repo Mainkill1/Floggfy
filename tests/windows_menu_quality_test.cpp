@@ -236,7 +236,7 @@ int main() {
   assert(root.child);
   auto &child = *root.child;
   assert(Index(&child.api,28490)==Index(&child.api,location_id)+1);
-  assert(child.entries[Index(&child.api,28490)].label==L"Latest Downloads >");
+  assert(child.entries[Index(&child.api,28490)].label==L"Latest Downloads");
   assert(!child.entries[Index(&child.api,recent_id)].visible);
   assert(child.child && child.child->refs==1);
   assert(!child.child->entries[0].enabled);
@@ -361,6 +361,16 @@ int main() {
   build_root();
   assert(child.entries[Index(&child.api,song_id)].visible && child.entries[Index(&child.api,song_id)].enabled);
   assert(folder_creations==0 && folder_opens==0);
+  // Parent formatting starts an opening snapshot. A renderer update between
+  // parent and Song formatting must not redirect that opening's label or target.
+  auto before_show=actual;before_show.identity+=77;before_show.title.fill(0);std::copy_n(L"Before show",11,before_show.title.begin());
+  history::PublishClientPlaybackQuality(before_show);history::PublishPlaybackQuality(before_show);
+  SetSongFile(before_show.identity,L"C:\\Changed-before-show\\song.flac");
+  old_label=L"Song: Unavailable";rendered=Text(old_label);
+  Retain(&child.api.base);Format(&wrapped.api,&child.api,&rendered);
+  assert(std::wstring(rendered.str,rendered.length)==L"Song: Next");rendered.dtor(rendered.str);
+  history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
+  SetSongFile(actual.identity,history::OutputPath(L"C:\\Saved",destination_catalog,L".flac",false));
   assert(!child.entries[Index(&child.api,recent_id)].visible);
   published_recent={{L"Newest song",L"C:\\Music\\newest.flac",42},
                     {L"Earlier song",L"C:\\Music\\earlier.ogg",17}};
@@ -371,14 +381,14 @@ int main() {
   assert(recent.entries[1].label==L"Earlier song" && recent.entries[1].id==first_recent_id+1);
   assert(recent.refs==1 && filesystem_calls==0 && shell_calls==0);
   Retain(&root.api.base);WillShow(&wrapped.api,&root.api);
-  assert(wrapped.recent_open && root.refs==1);
+  assert(wrapped.opening.Visible() && root.refs==1);
   const auto reads_while_open=recent_reads;
   published_recent={{L"Arrived while menu open",L"C:\\Music\\different.flac",8}};
   build_root();assert(recent_reads==reads_while_open && recent.entries[0].label==L"Newest song");
   Retain(&recent.api.base);Execute(&wrapped.api,&recent.api,first_recent_id,0);
   assert(selected_path==L"C:\\Music\\newest.flac" && shell_calls==1 && recent.refs==1);
   Retain(&root.api.base);Closed(&wrapped.api,&root.api);
-  assert(!wrapped.recent_open && root.refs==1);
+  assert(!wrapped.opening.Visible() && root.refs==1);
   recent_ready=false;build_root();
   assert(recent.entries.size()==2 && recent.entries[0].label==L"Newest song");
   Retain(&recent.api.base);Execute(&wrapped.api,&recent.api,first_recent_id+1,0);
@@ -414,9 +424,9 @@ int main() {
   assert(recent.entries[1].label==std::wstring(94,L'界')+L"\u2026");
   assert(recent.entries[2].label==intact_pair.substr(0,95)+L"\u2026");
   assert(recent.entries[3].label==std::wstring(190,L'&')+L"\u2026");
-  assert(recent.entries[4].label==L"Untitled download" && wrapped.recent[4].title.empty());
+  assert(recent.entries[4].label==L"Untitled download" && wrapped.opening.snapshot.recent[4].title.empty());
   assert(recent.entries[5].label==split_pair.substr(0,96));
-  assert(wrapped.recent[0].title==unsafe_title && wrapped.recent[1].title==split_pair);
+  assert(wrapped.opening.snapshot.recent[0].title==unsafe_title && wrapped.opening.snapshot.recent[1].title==split_pair);
   assert(filesystem_calls==fs_before_labels && shell_calls==4 && recent.refs==1);
   Retain(&recent.api.base);Execute(&wrapped.api,&recent.api,first_recent_id,0);
   assert(selected_path==L"C:\\Music\\escaped.flac" && shell_calls==5 && recent.refs==1);
