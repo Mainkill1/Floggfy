@@ -48,6 +48,11 @@ FLAC needs lossless playback in Spotify. Floggfy does not convert Ogg into FLAC.
 
 The bottom shows the current item and available quality details.
 
+Lyrics are collected automatically when Spotify provides them; the lyrics panel
+does not need to be open. Turn **Lyrics** off in **To Disk**, or set `Lyrics=0` in
+the INI, if a Spotify update causes compatibility problems. Album artwork and
+other available metadata continue to work. `Metadata=0` disables all extra metadata collection.
+
 <img width="338" height="362" alt="image" src="https://github.com/user-attachments/assets/b6294a3d-c09d-4dba-926a-72a1529d1db7" />
 
 

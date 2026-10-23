@@ -7,6 +7,8 @@
 #include "rich_metadata.h"
 #include "playback_quality.h"
 #include "cached_metadata.h"
+#include "album_artwork.h"
+#include "image_info.h"
 #include "history_settings.h"
 #include "vendor/minhook/include/MinHook.h"
 #include "../build/metadata_script.h"
@@ -103,6 +105,7 @@ static DWORD WINAPI MetadataWorker(LPVOID) {
   metadata.quality_time=m.time;
   try {EnrichStoredMetadata(metadata);}catch(...){HistoryLog("cached metadata unavailable; ordinary tags retained");}
   if(!GetSettings().lyrics)metadata.fields.erase("LYRICS");
+  if(!metadata.artwork_url.empty())try {CacheAlbumArtwork(metadata.uri,metadata.artwork_url);}catch(...){HistoryLog("album artwork unavailable; media thumbnail retained");}
   AcquireSRWLockExclusive(&cache_lock);cache.Put(metadata);ReleaseSRWLockExclusive(&cache_lock);
   HistoryLog(("metadata cached fields="+std::to_string(metadata.fields.size())+" date="+(metadata.fields.count("DATE")?metadata.fields.at("DATE"):std::string{})+" lyrics_bytes="+std::to_string((metadata.fields.count("LYRICS")?metadata.fields.at("LYRICS").size():0))).c_str());
  }
@@ -215,12 +218,20 @@ void EnrichTags(const Media& media,Tags& tags) {
  if(!settings.metadata)return;
  AcquireSRWLockShared(&cache_lock);
  auto m=cache.Find(Utf8(media.title),Utf8(media.artist),Utf8(media.album),media.duration);
+ const std::string artwork_uri=m ? m->uri : std::string{};
  if(m)for(const auto& field:m->fields) {
   if(field.first=="LYRICS"&&!settings.lyrics)continue;
   tags.fields.erase(std::remove_if(tags.fields.begin(),tags.fields.end(),[&](const auto& entry){return entry.first==field.first;}),tags.fields.end());
   tags.fields.push_back(field);
  }
  ReleaseSRWLockShared(&cache_lock);
+ if(!artwork_uri.empty()) {
+  std::vector<uint8_t> cover;std::string mime;ImageInfo original;
+  if(GetAlbumArtwork(artwork_uri,cover,mime)&&ReadImageInfo(cover,original)) {
+   tags.cover=std::move(cover);tags.mime=original.mime;
+   HistoryLog(("artwork source=album width="+std::to_string(original.width)+" height="+std::to_string(original.height)).c_str());
+  }
+ }
 }
 void StartMetadataCollector(HMODULE cef) {
  const auto now=static_cast<std::uint64_t>(GetTickCount64());

@@ -376,7 +376,13 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
         const bool spotify_notification = pending_spotify.Consume() != 0;
         (void)spotify_notification;
         HMODULE cef;
-        if(GetModuleHandleExW(0,L"libcef.dll",&cef)) { history::StartMetadataCollector(cef); StartToDiskMenu(cef); FreeLibrary(cef); }
+        if(GetModuleHandleExW(0,L"libcef.dll",&cef)) {
+            // Catch the one-time native menu construction before metadata hook
+            // setup suspends threads to install its additional callbacks.
+            StartToDiskMenu(cef);
+            history::StartMetadataCollector(cef);
+            FreeLibrary(cef);
+        }
         HMODULE module;
         if (GetModuleHandleExW(0, L"Spotify.dll", &module)) {
             StartConnectivityHook(module);

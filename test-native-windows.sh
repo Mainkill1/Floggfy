@@ -82,3 +82,9 @@ x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_settings_test.cpp -lole32 -l
 for scenario in new missing zero legacy-zero lyrics-zero; do
     "$floggfy_settings_test_root/windows-settings-test.exe" "$scenario"
 done
+
+x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_artwork_enrichment_test.cpp \
+ native/rich_metadata.cpp native/cached_metadata.cpp native/cached_metadata_windows.cpp native/history_settings.cpp native/async_log.cpp \
+ native/media_session.cpp native/image_info.cpp native/playback_quality_windows.cpp native/playback_quality.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/windows-tests/metadata-ogg.o build/windows-tests/minhook-*.o \
+ -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_test_root/windows-artwork-enrichment-test.exe"
+"$floggfy_test_root/windows-artwork-enrichment-test.exe"

@@ -15,12 +15,13 @@ persistence runs in a background worker.
 
 ```ini
 [To Disk]
-Downloads=0
+Downloads=1
 Menu=1
 Save Location=
 Flac=1
 Ogg=1
 Metadata=1
+Lyrics=1
 Log=1
 DebugLog=0
 
@@ -36,7 +37,11 @@ MaxBufferedMiB=500
   subfolder, including redirected Music folders. A custom directory is accepted.
 - **FLAC/Ogg:** select which original source formats to retain. Enabling FLAC does
   not convert Vorbis playback into lossless audio. Spotify must supply FLAC.
-- **Metadata:** optional existing client state/cache enrichment; no endpoint requests; set 0 and restart to disable its hooks.
+- **Metadata:** enriches tracks using existing client state, cached metadata, and Spotify's authenticated track/album services. Set 0 and restart to disable its hooks.
+- **Lyrics:** default on. Requests available lyrics automatically through Spotify's
+  existing client service, even with the lyrics panel closed. Set 0 in the INI or
+  use the menu toggle to stop lyric discovery, cancel pending lyric work, and
+  disable lyric enrichment while retaining other metadata and artwork.
 - **Log:** default on; started/failed/finished activity in the save root, capped at 5 MiB.
 - **DebugLog:** default off; opt-in diagnostic detail in the same bounded log.
 - **MaxBufferedMiB:** 8–512 MiB, default 500, limits compressed capture allocations.
@@ -101,7 +106,7 @@ pending compressed save buffers count against the configured allocation budget.
 ## Troubleshooting
 
 1. Quit Spotify and set **Metadata=0**, then restart. This isolates client metadata
-   cache discovery changes while retaining basic Windows media tags and artwork.
+   service/cache discovery changes while retaining basic Windows media tags and artwork.
 2. If menu integration crashes or disappears, set **Menu=0** and restart. Configure
    Downloads, FLAC and Ogg directly in the INI.
 3. Enable **Log=1** and, temporarily, **DebugLog=1**. Inspect `Floggfy.log` in the
@@ -139,3 +144,18 @@ duplicate skips, failed upgrades, atomic replacements and preference persistence
 The independent validators use Xiph libraries or the
 Xiph FLAC CLI only in the development environment; the DLL does not depend on them.
 Vendored MinHook, libogg and CEF declarations retain their upstream licenses.
+
+## Artwork and additional metadata
+
+The metadata worker prefers the largest available validated original Spotify
+album cover over the Windows media thumbnail, which may contain branding. Windows artwork
+remains the fallback if the original is unavailable. Image dimensions and depth
+are written into FLAC PICTURE metadata. Artwork downloads and metadata lookups
+run outside menu and playback-tracking callbacks.
+
+Available extra tags include artists, album artists, release date/year, track and
+disc numbers/totals, label, ISRC, language, copyright and lyrics. Missing fields
+are omitted. Requests use Spotify's existing client service and remain bounded;
+unsupported service shapes retain basic tags. Lyrics are not guaranteed for every
+track. Existing equal- or higher-quality files continue to be skipped; replaying
+a track does not automatically retag previously saved files.
