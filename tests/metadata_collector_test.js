@@ -144,4 +144,26 @@ async function disabledAndTimeout(){
  config.metadata=false;c.window.__floggfyPoll();assert(!messages.filter(x=>x.startsWith('FLOGGFY_METADATA_V1:')).at(-1).includes('LYRICS='));
  console.log('PASS: disabled startup, metadata-only mode, request timeout and live cancellation');
 }
-(async()=>{await automatic();await disabledAndTimeout();})().catch(e=>{console.error(e);process.exitCode=1;});
+async function physicalTransportBound(){
+ for(const supportsAbort of [false,true]){
+  let now=0;const sends=[],config={metadata:true,lyrics:true};
+  const local={item:{uri,metadata:{title:'Song',artist_name:'Artist',album_title:'Album',duration:'200000'}}};
+  const player={getState:()=>local,getEvents:()=>({})};
+  const builder={build(){const request={withHost(){return this},withPath(){return this},withQueryParameters(){return this},send(){return new Promise(resolve=>sends.push(resolve));}};if(supportsAbort)request.withAbortSignal=function(){return this;};return request;}};
+  const registry={_map:new Map([[Symbol('PlayerAPI'),{instance:player}],[Symbol('RequestBuilder'),{instance:builder}]])};
+  const main={__reactContainer$test:{memoizedProps:{registry}}};
+  const c={...context,window:{__floggfyConfig:config},document:{querySelector:()=>main},performance:{now:()=>now},console:{info:()=>{}},AbortController};
+  vm.runInNewContext(script,c);
+  for(let i=2;i<85;i++){
+   now+=13000;local.item.uri='spotify:track:'+String(i).padStart(22,'0');
+   config.metadata=false;c.window.__floggfyPoll();config.metadata=true;
+   config.lyrics=i%2===0;c.window.__floggfyPoll();
+  }
+  assert.equal(sends.length,4,'unsettled sends retain physical slots through timeouts, settings and cache evictions; abort support='+supportsAbort);
+  sends[0]({body:{lyrics:{lines:[{words:'stale reply'}]}}});for(let i=0;i<8;i++)await Promise.resolve();
+  c.window.__floggfyPoll();assert.equal(sends.length,5,'settled stale reply releases exactly one physical slot');
+  now+=13000;c.window.__floggfyPoll();assert.equal(sends.length,5,'new timeout cannot release a live physical slot');
+ }
+ console.log('PASS: physical request bound survives uncancellable/ignored-abort transports, eviction, toggles and stale completion');
+}
+(async()=>{await automatic();await disabledAndTimeout();await physicalTransportBound();})().catch(e=>{console.error(e);process.exitCode=1;});

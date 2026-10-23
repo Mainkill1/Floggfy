@@ -36,7 +36,9 @@
   for(const entry of serviceCache.values())for(const kind of ['metadata','album','lyrics']){
    const r=entry[kind];
    if(r.pending&&(now-r.started>=12000||config.metadata!==true||(kind==='lyrics'&&config.lyrics===false))){
-    r.pending=false;r.generation++;activeRequests--;if(r.controller)r.controller.abort();
+    // Expire only the logical operation. Abort may be unsupported or ignored;
+    // its physical slot belongs to send() until that promise settles.
+    r.pending=false;r.generation++;try{if(r.controller)r.controller.abort();}catch{}
     r.retryAt=now+5000;if(config.metadata!==true||(kind==='lyrics'&&config.lyrics===false))r.attempts=Math.max(0,r.attempts-1);
    }
   }
@@ -48,6 +50,10 @@
    const albumId=text(own(own(entry.metadata.data,'album'),'gid'));if(kind==='album'&&!/^[a-f0-9]{32}$/.test(albumId||''))continue;
    const hex=kind==='metadata'&&hexId(id);if(kind==='metadata'&&!hex)continue;
    r.pending=true;r.started=now;r.attempts++;r.generation=(r.generation||0)+1;const generation=r.generation;activeRequests++;
+   const settled=()=>{
+    activeRequests--;
+    if(r.generation===generation){r.pending=false;r.controller=undefined;}
+   };
    try{
     let request=method(builder,'build').call(builder);
     request=request.withHost('https://spclient.wg.spotify.com').withPath(kind==='metadata'?'/metadata/4/track/'+hex:kind==='album'?'/metadata/4/album/'+albumId:'/color-lyrics/v2/track/'+id).withQueryParameters({format:'json',vocalRemoval:false});
@@ -55,9 +61,7 @@
     Promise.resolve(request.send()).then(response=>{
      if(r.generation!==generation)return;
      const data=own(response,'body');if(object(data)){r.data=kind==='album'?{album:data}:data;r.done=true;}else r.retryAt=performance.now()+5000;
-    },error=>{if(r.generation!==generation)return;const status=own(error,'status');r.done=status===400||status===401||status===403||status===404;r.retryAt=performance.now()+5000;}).then(()=>{
-     if(r.generation===generation){r.pending=false;activeRequests--;r.controller=undefined;}
-    });
+    },error=>{if(r.generation!==generation)return;const status=own(error,'status');r.done=status===400||status===401||status===403||status===404;r.retryAt=performance.now()+5000;}).then(settled,settled);
    }catch{r.pending=false;activeRequests--;r.retryAt=now+5000;}
   }
  }
