@@ -10,6 +10,8 @@ struct RichMetadata {
  std::map<std::string,std::string> fields;
  std::string playback_quality;
  std::uint64_t quality_time=0;
+ // Native revision prevents delayed enrichment from replacing a newer client snapshot.
+ std::uint64_t revision=0;
  bool Matches(const std::string&,const std::string&,const std::string&,double) const;
 };
 bool ParseRichMetadata(const std::string&,RichMetadata&,std::string&);

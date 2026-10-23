@@ -11,6 +11,7 @@
 #include "album_artwork.h"
 #include "image_info.h"
 #include "history_settings.h"
+#include "srw_guard.h"
 #include "vendor/minhook/include/MinHook.h"
 #include "../build/metadata_script.h"
 #include <atomic>
@@ -64,14 +65,17 @@ static std::wstring CollectorOptions() {
  const auto settings=GetSettings();
  return std::wstring(L"window.__floggfyConfig={metadata:")+(settings.metadata?L"true":L"false")+L",lyrics:"+(settings.lyrics?L"true":L"false")+L"};";
 }
-static void PollExecute(Task*){
- Frame* f=nullptr;AcquireSRWLockShared(&frame_lock);f=polling_frame;if(f)f->base.add(&f->base);ReleaseSRWLockShared(&frame_lock);
- if(f&&reinterpret_cast<int(*)(Frame*)>(f->methods[0])(f)){
+static void PollExecute(Task*) {
+ Frame* frame=nullptr;
+ {SharedSrw guard(frame_lock);frame=polling_frame;if(frame)frame->base.add(&frame->base);}
+ struct Finish {Frame* frame;~Finish(){Release(frame);poll_pending=false;}} finish{frame};
+ try {
+  if(!frame || !reinterpret_cast<int(*)(Frame*)>(frame->methods[0])(frame))return;
   const auto code_text=CollectorOptions()+L"if(window.__floggfyPoll)window.__floggfyPoll();";
-  String code={const_cast<wchar_t*>(code_text.c_str()),code_text.size(),nullptr};const wchar_t name[]=L"floggfy-metadata.js";String source={const_cast<wchar_t*>(name),wcslen(name),nullptr};
-  reinterpret_cast<void(*)(Frame*,const String*,const String*,int)>(f->methods[14])(f,&code,&source,1);
- }
- Release(f);poll_pending=false;
+  String code={const_cast<wchar_t*>(code_text.c_str()),code_text.size(),nullptr};
+  const wchar_t name[]=L"floggfy-metadata.js";String source={const_cast<wchar_t*>(name),wcslen(name),nullptr};
+  reinterpret_cast<void(*)(Frame*,const String*,const String*,int)>(frame->methods[14])(frame,&code,&source,1);
+ }catch(...) {/* A failed renderer poll must allow the next heartbeat. */}
 }
 static void SchedulePoll(){
  if(!post_task||poll_pending.exchange(true))return;
@@ -100,19 +104,83 @@ static bool Enqueue(const String* value) {
   } ReleaseSRWLockExclusive(&message_lock);
  } return true;
 }
+// A single bounded storage lane owns cache scans and HTTPS artwork fetches.
+// The poll/message lane only parses and publishes current client data.
+struct EnrichmentJob {RichMetadata metadata;unsigned generation=0;};
+static SRWLOCK enrichment_lock=SRWLOCK_INIT;
+static std::array<EnrichmentJob,4> enrichment_jobs;
+static size_t enrichment_head=0,enrichment_count=0;
+static HANDLE enrichment_event=nullptr,enrichment_thread=nullptr;
+static std::atomic<bool> enrichment_running{false};
+static std::uint64_t next_revision=0;
+static DWORD WINAPI EnrichmentWorker(LPVOID) {
+ SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL);
+ while(enrichment_running.load(std::memory_order_acquire)) {
+  EnrichmentJob job;bool got=false;
+  {ExclusiveSrw guard(enrichment_lock);
+   if(enrichment_count){std::swap(job,enrichment_jobs[enrichment_head]);enrichment_head=(enrichment_head+1)%enrichment_jobs.size();--enrichment_count;got=true;}}
+  if(!got){WaitForSingleObject(enrichment_event,1000);continue;}
+  try {
+   auto& metadata=job.metadata;
+   auto preferences=GetSettings();
+   if(!preferences.metadata || preferences.generation!=job.generation)continue;
+   try {EnrichStoredMetadata(metadata);}catch(...){HistoryLog("cached metadata unavailable; ordinary tags retained");}
+   if(!metadata.artwork_url.empty()) {
+    try {CacheAlbumArtwork(metadata.uri,metadata.artwork_url);}catch(...){HistoryLog("album artwork unavailable; media thumbnail retained");}
+   }
+   preferences=GetSettings();
+   if(!preferences.metadata || preferences.generation!=job.generation)continue;
+   if(!preferences.lyrics)metadata.fields.erase("LYRICS");
+   {ExclusiveSrw guard(cache_lock);
+    const auto current=cache.Find(metadata.title,metadata.artist,metadata.album,metadata.duration);
+    if(current && current->uri==metadata.uri && current->revision==metadata.revision)cache.Put(metadata);}
+  }catch(...) {HistoryLog("metadata enrichment failed; current client metadata retained");}
+ }
+ return 0;
+}
+static bool StartEnrichmentWorker() {
+ // Initialization and all calls originate on the one poll/message worker.
+ // Resources live for the process, including conservative hook rollback paths.
+ if(enrichment_thread)return true;
+ enrichment_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);
+ if(!enrichment_event)return false;
+ enrichment_running=true;
+ enrichment_thread=CreateThread(nullptr,0,EnrichmentWorker,nullptr,0,nullptr);
+ if(!enrichment_thread){enrichment_running=false;CloseHandle(enrichment_event);enrichment_event=nullptr;return false;}
+ return true;
+}
+static void QueueEnrichment(const RichMetadata& metadata,unsigned generation) {
+ if(!enrichment_thread)return;
+ EnrichmentJob job{metadata,generation}; // Prepare allocating fields before locking.
+ {ExclusiveSrw guard(enrichment_lock);
+  // New data supersedes pending work for that exact URI.
+  for(size_t i=0;i<enrichment_count;++i) {
+   const auto index=(enrichment_head+i)%enrichment_jobs.size();
+   if(enrichment_jobs[index].metadata.uri==metadata.uri){std::swap(job,enrichment_jobs[index]);SetEvent(enrichment_event);return;}
+  }
+  if(enrichment_count==enrichment_jobs.size()){std::swap(job,enrichment_jobs[enrichment_head]);enrichment_head=(enrichment_head+1)%enrichment_jobs.size();}
+  else {std::swap(job,enrichment_jobs[(enrichment_head+enrichment_count)%enrichment_jobs.size()]);++enrichment_count;}}
+ SetEvent(enrichment_event);
+}
 static DWORD WINAPI MetadataWorker(LPVOID) {
  SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL);
- Message m;
- while(metadata_running.load(std::memory_order_acquire)){if(metadata_polling.load(std::memory_order_acquire))SchedulePoll();bool got=false;AcquireSRWLockExclusive(&message_lock);if(count){m=messages[head];head=(head+1)%messages.size();--count;got=true;}ReleaseSRWLockExclusive(&message_lock);
-  if(!got){WaitForSingleObject(message_event,1000);continue;}
-  if(!GetSettings().metadata)continue;
-  RichMetadata metadata;std::string error;if(!ParseRichMetadata(std::string(m.data,m.length),metadata,error))continue;
-  metadata.quality_time=m.time;
-  try {EnrichStoredMetadata(metadata);}catch(...){HistoryLog("cached metadata unavailable; ordinary tags retained");}
-  if(!GetSettings().lyrics)metadata.fields.erase("LYRICS");
-  if(!metadata.artwork_url.empty())try {CacheAlbumArtwork(metadata.uri,metadata.artwork_url);}catch(...){HistoryLog("album artwork unavailable; media thumbnail retained");}
-  AcquireSRWLockExclusive(&cache_lock);cache.Put(metadata);ReleaseSRWLockExclusive(&cache_lock);
-  HistoryLog(("metadata cached fields="+std::to_string(metadata.fields.size())+" date="+(metadata.fields.count("DATE")?metadata.fields.at("DATE"):std::string{})+" lyrics_bytes="+std::to_string((metadata.fields.count("LYRICS")?metadata.fields.at("LYRICS").size():0))).c_str());
+ StartEnrichmentWorker();
+ Message message;
+ while(metadata_running.load(std::memory_order_acquire)) {
+  if(metadata_polling.load(std::memory_order_acquire))SchedulePoll();
+  bool got=false;
+  {ExclusiveSrw guard(message_lock);
+   if(count){message=messages[head];head=(head+1)%messages.size();--count;got=true;}}
+  if(!got){WaitForSingleObject(message_event,500);continue;}
+  try {
+   const auto preferences=GetSettings();if(!preferences.metadata)continue;
+   RichMetadata metadata;std::string error;
+   if(!ParseRichMetadata(std::string(message.data,message.length),metadata,error))continue;
+   metadata.quality_time=message.time;metadata.revision=++next_revision;
+   if(!preferences.lyrics)metadata.fields.erase("LYRICS");
+   {ExclusiveSrw guard(cache_lock);cache.Put(metadata);}
+   QueueEnrichment(metadata,preferences.generation);
+  }catch(...) {HistoryLog("metadata message failed; next client snapshot will retry");}
  }
  return 0;
 }
@@ -163,7 +231,8 @@ static void Inject(Frame* frame) {
  if(!frame||frame->base.size!=sizeof(Frame))return;
  auto main=reinterpret_cast<int(*)(Frame*)>(frame->methods[15]);
  if(!main||!main(frame))return;
- frame->base.add(&frame->base);AcquireSRWLockExclusive(&frame_lock);auto old=polling_frame;polling_frame=frame;ReleaseSRWLockExclusive(&frame_lock);Release(old);
+ frame->base.add(&frame->base);Frame* old=nullptr;
+ {ExclusiveSrw guard(frame_lock);old=polling_frame;polling_frame=frame;}Release(old);
  const auto code_text=CollectorOptions()+metadata_script;
  String code={const_cast<wchar_t*>(code_text.c_str()),code_text.size(),nullptr};
  const wchar_t name[]=L"floggfy-metadata.js";String source={const_cast<wchar_t*>(name),wcslen(name),nullptr};
@@ -207,32 +276,49 @@ static int CreateHook(const void* win,Client* client,const String* url,const voi
 static Browser* SyncHook(const void* win,Client* client,const String* url,const void* settings,void* extra,void* context){auto callback=metadata_callbacks.Enter();return original_sync(win,ObserveClient(client),url,settings,extra,context);}
 static void* ViewHook(Client* client,const String* url,const void* settings,void* extra,void* context,void* delegate){auto callback=metadata_callbacks.Enter();return original_view(ObserveClient(client),url,settings,extra,context,delegate);}
 }
+static bool ReadCachedMetadata(const Media& media,RichMetadata& metadata) {
+ const auto title=Utf8(media.title),artist=Utf8(media.artist),album=Utf8(media.album);
+ SharedSrw guard(cache_lock);
+ const auto record=cache.Find(title,artist,album,media.duration);
+ if(!record)return false;
+ metadata=*record;
+ return true;
+}
 std::string ReadClientPlaybackQuality(const Media& media) {
  if(!GetSettings().metadata)return {};
+ const auto title=Utf8(media.title),artist=Utf8(media.artist),album=Utf8(media.album);
+ SharedSrw guard(cache_lock);
+ const auto record=cache.Find(title,artist,album,media.duration);
  const auto now=GetTickCount64();
- AcquireSRWLockShared(&cache_lock);
- auto m=cache.Find(Utf8(media.title),Utf8(media.artist),Utf8(media.album),media.duration);
- std::string level;
- if(m && m->quality_time && now>=m->quality_time && now-m->quality_time<=20000)
-  level=m->playback_quality;
- ReleaseSRWLockShared(&cache_lock);
- return level;
+ return record && record->quality_time && now>=record->quality_time && now-record->quality_time<=20000 ? record->playback_quality : std::string{};
+}
+void EnrichCatalog(const Media& media,Catalog& catalog) {
+ if(!GetSettings().metadata)return;
+ const auto title=Utf8(media.title),artist=Utf8(media.artist),album=Utf8(media.album);
+ std::string uri,disc;
+ {SharedSrw guard(cache_lock);
+  const auto record=cache.Find(title,artist,album,media.duration);
+  if(!record)return;
+  uri=record->uri;
+  const auto field=record->fields.find("DISCNUMBER");
+  if(field!=record->fields.end())disc=field->second;}
+ catalog.spotify_uri=std::move(uri);
+ unsigned number=0;
+ if(disc.empty()||disc.size()>6)return;
+ for(char digit:disc){if(digit<'0'||digit>'9')return;number=number*10+unsigned(digit-'0');}
+ if(number)catalog.disc=number;
 }
 void EnrichTags(const Media& media,Tags& tags) {
- const auto settings=GetSettings();
- if(!settings.metadata)return;
- AcquireSRWLockShared(&cache_lock);
- auto m=cache.Find(Utf8(media.title),Utf8(media.artist),Utf8(media.album),media.duration);
- const std::string artwork_uri=m ? m->uri : std::string{};
- if(m)for(const auto& field:m->fields) {
-  if(field.first=="LYRICS"&&!settings.lyrics)continue;
+ const auto preferences=GetSettings();if(!preferences.metadata)return;
+ RichMetadata metadata;if(!ReadCachedMetadata(media,metadata))return;
+ for(const auto& field:metadata.fields) {
+  if(field.first=="LYRICS"&&!preferences.lyrics)continue;
   tags.fields.erase(std::remove_if(tags.fields.begin(),tags.fields.end(),[&](const auto& entry){return entry.first==field.first;}),tags.fields.end());
   tags.fields.push_back(field);
  }
- ReleaseSRWLockShared(&cache_lock);
- if(!artwork_uri.empty()) {
+ if(!metadata.uri.empty()) {
   std::vector<uint8_t> cover;std::string mime;ImageInfo original;
-  if(GetAlbumArtwork(artwork_uri,cover,mime)&&ReadImageInfo(cover,original)) {
+  if(GetAlbumArtwork(metadata.uri,cover,mime)&&ReadImageInfo(cover,original)) {
    tags.cover=std::move(cover);tags.mime=original.mime;
    HistoryLog(("artwork source=album width="+std::to_string(original.width)+" height="+std::to_string(original.height)).c_str());
   }
