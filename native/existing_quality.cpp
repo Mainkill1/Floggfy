@@ -3,16 +3,14 @@
 #include "existing_quality.h"
 #include "history_settings.h"
 #include <cstring>
+#include <algorithm>
+#include <utility>
 #include <vector>
 namespace history {
 namespace {
 struct Handle {
     HANDLE value=INVALID_HANDLE_VALUE;
     ~Handle() { if(value!=INVALID_HANDLE_VALUE && value) CloseHandle(value); }
-};
-struct View {
-    const uint8_t* bytes=nullptr;
-    ~View() { if(bytes) UnmapViewOfFile(bytes); }
 };
 bool Missing(const std::wstring& path) {
     if(GetFileAttributesW(WindowsPath(path).c_str())!=INVALID_FILE_ATTRIBUTES) return false;
@@ -41,18 +39,32 @@ bool RestoreBackup(const std::wstring& backup,const std::wstring& destination,co
 }
 bool ReadRecording(const std::wstring& path,RecordingFile& out) {
     out={};
-    // Deny writes while inspecting. Mapping avoids another full recording-sized
-    // allocation while capture buffers are active; cap hostile/unrelated files.
-    Handle file{CreateFileW(WindowsPath(path).c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_DELETE,
-        nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
-    if(file.value==INVALID_HANDLE_VALUE) return false;
-    LARGE_INTEGER size={};
-    if(!GetFileSizeEx(file.value,&size) || size.QuadPart<4 || size.QuadPart>512LL*1024*1024) return false;
-    Handle mapping{CreateFileMappingW(file.value,nullptr,PAGE_READONLY,0,0,nullptr)};
-    if(!mapping.value) return false;
-    View view{static_cast<const uint8_t*>(MapViewOfFile(mapping.value,FILE_MAP_READ,0,0,0))};
-    if(!view.bytes) return false;
-    return InspectRecording(view.bytes,size_t(size.QuadPart),out);
+    try {
+        // Deny writes while inspecting. Checked reads avoid mapped-file page
+        // faults escaping C++ exception handling on unavailable storage. The
+        // owned buffer is bounded to 512 MiB and is never used on capture paths.
+        Handle file{CreateFileW(WindowsPath(path).c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_DELETE,
+            nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
+        if(file.value==INVALID_HANDLE_VALUE)return false;
+        LARGE_INTEGER size={};
+        if(!GetFileSizeEx(file.value,&size)||size.QuadPart<4||size.QuadPart>512LL*1024*1024)return false;
+        std::vector<uint8_t> bytes(size_t(size.QuadPart));
+        constexpr size_t chunk=1024*1024;
+        for(size_t offset=0;offset<bytes.size();) {
+            const DWORD wanted=DWORD(std::min(chunk,bytes.size()-offset));DWORD read=0;
+            if(!ReadFile(file.value,bytes.data()+offset,wanted,&read,nullptr)||read!=wanted)return false;
+            offset+=read;
+        }
+        LARGE_INTEGER after={};
+        if(!GetFileSizeEx(file.value,&after)||after.QuadPart!=size.QuadPart)return false;
+        RecordingFile inspected;
+        if(!InspectRecording(bytes.data(),bytes.size(),inspected))return false;
+        out=std::move(inspected);
+        return true;
+    }catch(...) {
+        // Allocation/parser failures leave no trusted quality or partial tags.
+        return false;
+    }
 }
 bool ReadQuality(const std::wstring& path,Quality& out) {
     RecordingFile file;
