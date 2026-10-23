@@ -74,3 +74,11 @@ PYFIXTURE
 
 x86_64-w64-mingw32-g++ "${common[@]}" tests/album_artwork_test.cpp native/album_artwork.cpp native/image_info.cpp -lwinhttp -o "$floggfy_test_root/album-artwork-test.exe"
 "$floggfy_test_root/album-artwork-test.exe"
+
+# Keep defaults fixtures separate from the other tests' explicit settings.
+floggfy_settings_test_root="$floggfy_test_root/settings-defaults"
+mkdir -p "$floggfy_settings_test_root"
+x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_settings_test.cpp -lole32 -luuid -lshell32 -o "$floggfy_settings_test_root/windows-settings-test.exe"
+for scenario in new missing zero legacy-zero lyrics-zero; do
+    "$floggfy_settings_test_root/windows-settings-test.exe" "$scenario"
+done

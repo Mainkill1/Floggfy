@@ -35,7 +35,7 @@ The launcher will automatically close and restart Spotify when ran. To return to
 
 ## Save music
 
-Open Spotify's top-left menu → **To Disk** → enable **Downloads**.
+Downloads starts enabled on a new installation. Use Spotify's top-left menu → **To Disk** to pause or resume saving. Existing saved preferences are preserved.
 Play a song from start to finish without skipping or seeking.
 
 Music saves under `Spotify/Artists/Artist/Album` in your Windows Music folder.
@@ -44,7 +44,7 @@ FLAC needs lossless playback in Spotify. Floggfy does not convert Ogg into FLAC.
 
 ## Settings
 
-**To Disk** includes **Downloads**, **Save Location**, **FLAC** and **Ogg** controls.
+**To Disk** includes **Downloads**, **Save Location**, **FLAC**, **Ogg** and **Lyrics** controls.
 
 The bottom shows the current item and available quality details.
 
