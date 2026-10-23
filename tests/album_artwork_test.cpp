@@ -40,8 +40,5 @@ int main(){
     while(!entered)std::this_thread::yield();
     check(!slow.Get("spotify:track:a",bytes,mime),"cached reads do not wait for in-flight fetch");
     release=true;worker.join();check(slow.Get("spotify:track:a",bytes,mime),"worker publishes completed image");
-    history::ThumbnailRefresh refresh;
-    check(refresh.Due("a",0),"first thumbnail attempt due");check(!refresh.Due("a",1000),"thumbnail fetch rate limited");
-    check(refresh.Due("a",30000),"same-track thumbnail refreshed");check(refresh.Due("b",30001),"new track refreshes immediately");
-    std::puts("PASS: artwork validation, cache and thumbnail refresh");
+    std::puts("PASS: Spotify artwork validation and bounded cache");
 }

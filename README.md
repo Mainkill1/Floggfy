@@ -73,7 +73,12 @@ synchronized lyrics and artwork; a cover changes only when the shared artwork
 policy approves a better incoming image.
 Turn **Lyrics** off in **To Disk**, or set `Lyrics=0` in
 the INI, if a Spotify update causes compatibility problems. Album artwork and
-other available metadata continue to work. `Metadata=0` disables all extra metadata collection.
+other available metadata continue to work. Spotify is the only active external
+artwork source; complete audio saves normally when artwork is unavailable.
+`Metadata=0` disables Spotify enrichment while basic Windows track/timeline data
+and recording safeguards remain active. New files may have no cover unless one
+is embedded in the captured source. Existing artwork still survives eligible
+audio quality upgrades, even with `Metadata=0`.
 
 <img width="338" height="362" alt="image" src="https://github.com/user-attachments/assets/b6294a3d-c09d-4dba-926a-72a1529d1db7" />
 

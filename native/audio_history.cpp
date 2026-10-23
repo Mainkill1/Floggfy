@@ -19,6 +19,7 @@
 #include "metadata_update_windows.h"
 #include "metadata_update_core.h"
 #include "media_session.h"
+#include "image_info.h"
 #include "spotify_hook_discovery.h"
 #include "vendor/minhook/include/MinHook.h"
 #include <algorithm>
@@ -249,15 +250,6 @@ static void ApplyCatalogIdentity(Tags& tags,const Catalog& catalog) {
     SetIdentityTag(tags,"DISCNUMBER",catalog.disc ? std::to_string(catalog.disc) : std::string{});
     SetIdentityTag(tags,"SPOTIFY_URI",catalog.spotify_uri);
 }
-static void FillThumbnailFallback(const Media& expected,Tags& tags) {
-    if(!tags.cover.empty())return;
-    std::wstring extension;
-    // The cache retains recently observed tracks. Publication must not ask the
-    // current Windows session for a song that may already have finished.
-    if(GetArtwork(expected,tags.cover,extension)) {
-        tags.mime=extension==L".png" ? "image/png" : "image/jpeg";
-    }
-}
 enum class Publication { Saved,Skipped,Failed };
 static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch) {
     const std::string identity=Utf8(heard.media.artist)+" - "+Utf8(heard.media.title);
@@ -285,7 +277,6 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
       {"HISTORY_SOURCE_BYTES",std::to_string(c.bytes)},
       {"HISTORY_ELAPSED_SECONDS",std::to_string(heard.finish-heard.start)},
       {"HISTORY_SAVED_UTC",Utf8(stamp)},{"HISTORY_CAPTURE",c.lossless ? "native compressed FLAC input" : "native compressed Ogg pages"}};
-    tags.cover=heard.media.cover; tags.mime=heard.media.cover_extension==L".png" ? "image/png" : "image/jpeg";
     if(!heard.media.genre.empty())tags.fields.push_back({"GENRE",Utf8(heard.media.genre)});
     EnrichTags(heard.media,tags);
     // Use the same RAM-only canonical catalog as Song probing. Enrichment may
@@ -307,9 +298,6 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
         if(settings.metadata && settings.update_existing_metadata && target_enabled && latest.generation==settings.generation &&
            latest.downloads && latest.metadata && latest.update_existing_metadata) {
             const auto& path=existing_lossless ? flac : destination;
-            // A verified existing cover needs no Windows thumbnail lookup.
-            if(inspected.owned && inspected.complete && !inspected.has_artwork)
-                FillThumbnailFallback(heard.media,tags);
             if(inspected.owned && inspected.complete && NeedsRecordingMetadata(inspected,tags)) {
                 const auto result=UpdateRecordingMetadata(path,tags,catalog,settings.generation);
                 if(result==FileMetadataUpdate::Updated) {
@@ -325,7 +313,6 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     }
     // Existing tags/art/lyrics are merged by PublishBytes while its exact old
     // object is locked. Do not take a separate stale preservation snapshot here.
-    FillThumbnailFallback(heard.media,tags);
     std::vector<uint8_t> tagged; std::string error;
     auto source=c.data.Flatten();
     bool tagged_ok=c.lossless ? TagFlac(source,tags,tagged,error) : TagOgg(source,tags,tagged,error);
@@ -360,8 +347,6 @@ static DWORD WINAPI SaveWorker(LPVOID) {
         if(!saves.Pop(job)){WaitForSingleObject(save_event,200);continue;}
         std::string identity=Utf8(job.heard.media.artist)+" - "+Utf8(job.heard.media.title);
         try {
-            // Thumbnail fallback is a nonblocking retained-cache lookup; its
-            // independent worker collected it while this recording was current.
             auto result=Publish(*job.capture,job.heard,job.epoch);
             if(result==Publication::Saved) {
                 auto settings=GetSettings();
@@ -567,7 +552,7 @@ static DWORD WINAPI Worker(LPVOID) {
             if(!enabled) {
                 if(now>=next_media) {
                     Media media;
-                    if(reader.Read(media,false)) {PublishCurrentDestination(media,GetSettings());quality.Media(media.Key(),media.title,media.position,media.duration,Now(),media.playing);client_quality=ReadClientPlaybackQuality(media);}
+                    if(reader.Read(media)) {PublishCurrentDestination(media,GetSettings());quality.Media(media.Key(),media.title,media.position,media.duration,Now(),media.playing);client_quality=ReadClientPlaybackQuality(media);}
                     else {PublishSongDestination(0,L"",{},false,0);quality.Media({},L"",0,0,Now());client_quality.clear();}
                     next_media=Now()+0.5;
                 }
@@ -576,16 +561,11 @@ static DWORD WINAPI Worker(LPVOID) {
             }
             if(now>=next_media) {
                 Media media;
-                if(reader.Read(media,false)) {
+                if(reader.Read(media)) {
                     PublishCurrentDestination(media,GetSettings());
                     quality.Media(media.Key(),media.title,media.position,media.duration,Now(),media.playing);
                     client_quality=ReadClientPlaybackQuality(media);
                     AssociateListen(std::move(media),listen,current,heard,buffers,Now());
-                    // Publish the identity before requesting its thumbnail so
-                    // the background stale-title guard sees this observation.
-                    // RequestArtwork only coalesces RAM state; no SMTC I/O.
-                    PublishPlaybackQuality(quality.Snapshot(client_quality));
-                    RequestArtwork(current);
                 } else { PublishSongDestination(0,L"",{},false,0);listen.eligible=false; quality.Media({},L"",0,0,Now()); Log("Spotify media snapshot unavailable; listen invalidated"); }
                 next_media=Now()+0.5;
             }

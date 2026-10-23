@@ -115,7 +115,7 @@ int main() {
     assert(PublishBytes(path,better,replacement.data(),replacement.size(),catalog)==FilePublication::Upgraded);
     RecordingFile inspected;assert(ReadRecording(path,inspected) && inspected.tags.cover==larger.cover);
     assert(Value(inspected.tags,"FLOGGFY_ARTWORK_SOURCE")=="spotify-client");
-    // No trust marker: a larger Windows/unknown image is not proof of better art.
+    // No trust marker: a larger untrusted image is not proof of better art.
     larger.fields.pop_back();Write(path,Tagged(16,small));const auto fallback=Tagged(24,larger);
     assert(PublishBytes(path,better,fallback.data(),fallback.size(),catalog)==FilePublication::Upgraded);
     assert(ReadRecording(path,inspected) && inspected.tags.cover==small.cover);

@@ -3,7 +3,7 @@
 set -euo pipefail
 cd -- "$(dirname -- "$0")"
 issue=${1:?Usage: bash test-pr11-corrections.sh ISSUE_NUMBER}
-case "$issue" in 1|2|3|4|5|6) ;; *) echo 'Issue must be 1 through 6' >&2; exit 2;; esac
+case "$issue" in 1|3|4|5|6) ;; *) echo 'Issue must be 1, 3, 4, 5 or 6 (issue 2 was retired)' >&2; exit 2;; esac
 mkdir -p build/pr11-corrections
 common=(-std=c++17 -O2 -Wall -Wextra -Werror)
 if [[ "$issue" == 4 ]]; then
@@ -36,10 +36,6 @@ case "$issue" in
         native/vorbis_headers.cpp native/library_layout.cpp native/playback_quality.cpp native/flac_history_core.cpp \
         native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp \
         build/pr11-corrections/vorbis-windows.o build/pr11-corrections/ogg-windows.o -o "$floggfy_correction_root/issue$issue.exe"
-    ;;
-2)
-    x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_thumbnail_cache_test.cpp native/thumbnail_cache.cpp native/image_info.cpp \
-        -o "$floggfy_correction_root/issue2.exe"
     ;;
 5)
     x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_settings_failure_test.cpp -lole32 -luuid -lshell32 \

@@ -134,7 +134,7 @@ static DWORD WINAPI EnrichmentWorker(LPVOID) {
    if(!preferences.metadata || preferences.generation!=job.generation)continue;
    try {EnrichStoredMetadata(metadata);}catch(...){HistoryLog("cached metadata unavailable; ordinary tags retained");}
    if(!metadata.artwork_url.empty()) {
-    try {CacheAlbumArtwork(metadata.uri,metadata.artwork_url);}catch(...){HistoryLog("album artwork unavailable; media thumbnail retained");}
+    try {CacheAlbumArtwork(metadata.uri,metadata.artwork_url);}catch(...){HistoryLog("Spotify artwork unavailable; audio publication remains enabled");}
    }
    preferences=GetSettings();
    if(!preferences.metadata || preferences.generation!=job.generation)continue;
@@ -359,7 +359,7 @@ void EnrichTags(const Media& media,Tags& tags) {
   if(GetAlbumArtwork(metadata.uri,cover,mime)&&ReadImageInfo(cover,original)) {
    tags.cover=std::move(cover);tags.mime=original.mime;
    // Provenance belongs to the validated client image actually selected above,
-   // never to a cached text record or an unchanged Windows thumbnail fallback.
+   // never to a cached text record or an unchanged embedded cover.
    tags.fields.erase(std::remove_if(tags.fields.begin(),tags.fields.end(),[](const auto& field){return field.first=="FLOGGFY_ARTWORK_SOURCE";}),tags.fields.end());
    tags.fields.push_back({"FLOGGFY_ARTWORK_SOURCE","spotify-client"});
    HistoryLog(("artwork source=album width="+std::to_string(original.width)+" height="+std::to_string(original.height)).c_str());

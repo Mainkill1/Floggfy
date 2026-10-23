@@ -163,7 +163,8 @@ capped at 512 MiB; storage errors reject the inspection without stalling capture
 ## Troubleshooting
 
 1. Quit Spotify and set **Metadata=0**, then restart. This isolates client metadata
-   service/cache discovery changes while retaining basic Windows media tags and artwork.
+   service/cache discovery changes while retaining basic Windows media tags and
+   timeline observations. Audio still saves without a cover.
 2. If menu integration crashes or disappears, set **Menu=0** and restart. Configure
    Downloads, FLAC and Ogg directly in the INI.
 3. Enable **Log=1** and, temporarily, **DebugLog=1**. Inspect `Floggfy.log` in the
@@ -213,18 +214,19 @@ remains a separate development check.
 
 ## Artwork and additional metadata
 
-The metadata worker prefers the largest available validated original Spotify
-album cover over the Windows media thumbnail, which may contain branding. Windows artwork
-remains the fallback if the original is unavailable. Image dimensions and depth
-are written into FLAC PICTURE metadata. Artwork downloads and metadata lookups
-run outside menu and playback-tracking callbacks. A separate bounded enrichment
-worker keeps slow artwork/cache requests from delaying the client polling heartbeat.
-Fresh basic snapshots retain already discovered fields for the same recording.
-An independent Windows-thumbnail worker requests artwork while a track is current
-and retains up to eight identities (at most 4 MiB each) for later publication.
-Identity is checked around retrieval; stale or mismatched results are rejected.
-Capture only coalesces requests and publication reads cached bytes, including
-with `Metadata=0`. Missing thumbnails still do not prevent saving complete audio.
+Spotify client/services provide the only active external album-artwork source.
+Validated covers are embedded with their image dimensions and depth. Artwork is
+optional: complete audio and available text tags are saved if no cover is ready.
+No Windows media-session thumbnails are fetched, and there is no thumbnail worker,
+queue or identity cache. Basic Windows track metadata and timeline observations
+remain available for capture, listen tracking and menu information.
+
+A separate bounded Spotify enrichment worker keeps slow artwork/cache requests
+from delaying the client polling heartbeat. Fresh basic snapshots retain already
+discovered fields for the same recording. `Metadata=0` disables this enrichment;
+new files may lack artwork unless suitable artwork is already embedded in the
+captured source. Recording-integrity checks and existing-cover preservation during
+eligible audio upgrades remain active regardless of this setting.
 
 Available extra tags include artists, album artists, release date/year, track and
 disc numbers/totals, label, ISRC, language, copyright and lyrics. Missing fields

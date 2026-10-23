@@ -1,4 +1,32 @@
-## PR #11 review corrections (after e8ae8f8)
+## Windows artwork fallback removal (after 96a2768)
+
+Windows thumbnail acquisition, its worker/cache, retry helper and artwork fields
+in media-session snapshots have been removed. Basic Windows track/timeline reads
+remain; Spotify is the only active external artwork source. New saves can be
+coverless. Existing artwork, synchronized lyrics and custom tags continue through
+eligible audio upgrades, even with `Metadata=0`. Metadata-only artwork fills and
+upgrades still honor `UpdateExistingMetadata=0` and preserve compressed audio.
+
+Validation for this change is limited to one targeted command:
+`bash test-artwork-policy.sh` — **PASS**, one execution, exit status 0.
+The vendor parser emitted two unsuppressed unused-function warnings; project
+C++ compiled with `-Werror`. No code changed after this execution.
+The focused Windows executable compiles/links the capture and media-session code,
+but exercises enrichment through an injected Spotify artwork-cache boundary.
+Its cases cover valid/invalid/unmatched client art, coverless FLAC/Ogg publication,
+missing/better artwork updates, opt-out and unchanged updates, and preservation
+of an existing cover, synced lyrics and custom fields in a 16-to-24-bit FLAC
+replacement without new artwork. No full suites or additional builds are run.
+
+Live Spotify capture, SMTC/WinRT track and timeline reads, real CDN fetching,
+menu behavior and interrupted-process recovery are not exercised by this test.
+Source review confirms the corresponding recording safeguards and Spotify artwork
+fetch implementation were retained; this is not a claim of live Windows coverage.
+
+All results below predate the fallback removal. The historical thumbnail-cache
+case and correction-runner issue 2 were retired with their implementation.
+
+## Historical PR #11 review corrections (through 96a2768)
 
 The original correction pass used exactly one targeted execution per issue.
 After its settings failure, a separately authorized follow-up compiled and ran

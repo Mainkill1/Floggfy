@@ -110,7 +110,7 @@ static void TestPublicationLogging() {
   assert(SetSaveLocation(std::wstring(temp)+L"Floggfy-publication-log-"+std::to_wstring(GetCurrentProcessId())));
   assert(SetDownloads(true)&&SetFlac(true)&&SetOgg(true)&&SetLyrics(false));
   Heard heard;heard.media.title=L"Log Track";heard.media.artist=L"Log Artist";heard.media.album=L"Log Album";heard.media.track=1;
-  heard.media.cover=artwork_fixture::png();heard.media.cover_extension=L".png";heard.media.duration=16.0/44100;
+  heard.media.duration=16.0/44100;
   const auto settings=GetSettings();const auto path=OutputPath(settings.root,CatalogFor(heard.media),L".flac",settings.music_folder);
   // A planned path stays disabled until actual saved audio exists.
   PublishCurrentDestination(heard.media,settings);
