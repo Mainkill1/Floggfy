@@ -2,13 +2,71 @@
 // required public prefix. No Spotify binaries or private media are needed.
 #include "../native/playback_quality_windows.cpp"
 #include <windows.h>
+#include <shlobj.h>
+#include <shellapi.h>
+#include <string>
+#include <vector>
+#include <cassert>
 static unsigned capability_queries=0;
 static SIZE_T CountQuery(LPCVOID p,PMEMORY_BASIC_INFORMATION m,SIZE_T n) {
   ++capability_queries;return VirtualQuery(p,m,n);
 }
+static unsigned filesystem_calls=0,shell_calls=0,message_calls=0,folder_creations=0,folder_opens=0;
+static bool folder_can_open=true,folder_shell_succeeds=true;
+static std::wstring opened_folder;
+static HINSTANCE WINAPI OpenFolder(HWND,LPCWSTR operation,LPCWSTR file,LPCWSTR,LPCWSTR,INT) {
+  assert(std::wstring(operation)==L"open");++folder_opens;opened_folder=file;return reinterpret_cast<HINSTANCE>(folder_shell_succeeds ? 33 : 5);
+}
+static bool saved_file_exists=true,launch_click_worker=true;
+static DWORD saved_file_attributes=FILE_ATTRIBUTE_NORMAL;
+static HRESULT parse_result=S_OK,shell_result=S_OK;
+static std::wstring last_message;
+static std::wstring selected_path,checked_path;
+static DWORD WINAPI FileAttributes(LPCWSTR path) {checked_path=path;++filesystem_calls;return saved_file_exists ? saved_file_attributes : INVALID_FILE_ATTRIBUTES;}
+static HRESULT WINAPI ParseItem(PCWSTR path,IBindCtx*,PIDLIST_ABSOLUTE* item,SFGAOF,SFGAOF*) {
+  if(FAILED(parse_result))return parse_result;
+  selected_path=path;*item=static_cast<PIDLIST_ABSOLUTE>(CoTaskMemAlloc(sizeof(ITEMIDLIST)));return S_OK;
+}
+static HRESULT WINAPI ShowItem(PCIDLIST_ABSOLUTE,UINT count,PCUITEMID_CHILD_ARRAY,DWORD) {
+  assert(count==0);++shell_calls;return shell_result;
+}
+static int WINAPI ShowMessage(HWND,LPCWSTR text,LPCWSTR,UINT) {
+  ++message_calls;last_message=text;return IDOK;
+}
+static HANDLE WINAPI RunClickWorker(LPSECURITY_ATTRIBUTES,SIZE_T,LPTHREAD_START_ROUTINE entry,LPVOID value,DWORD,LPDWORD) {
+  if(!launch_click_worker)return nullptr;
+  auto thread=CreateEventW(nullptr,FALSE,FALSE,nullptr);
+  if(thread)entry(value);
+  return thread;
+}
+#define GetFileAttributesW FileAttributes
+#define SHParseDisplayName ParseItem
+#define SHOpenFolderAndSelectItems ShowItem
+#define MessageBoxW ShowMessage
+#define CreateThread RunClickWorker
+#define ShellExecuteW OpenFolder
+#define EnsureDirectory EnsureSongDirectoryForMenuTest
+#define ReadRecentDownloads ReadRecentDownloadsForMenuTest
 #define VirtualQuery CountQuery
 #include "../native/to_disk_menu.cpp"
 #undef VirtualQuery
+#undef GetFileAttributesW
+#undef SHParseDisplayName
+#undef SHOpenFolderAndSelectItems
+#undef MessageBoxW
+#undef CreateThread
+#undef ShellExecuteW
+#undef EnsureDirectory
+#undef ReadRecentDownloads
+static bool recent_ready=true;
+static unsigned recent_reads=0;
+static std::vector<history::RecentDownload> published_recent;
+namespace history {
+bool EnsureSongDirectoryForMenuTest(const std::wstring&) {++folder_creations;return folder_can_open;}
+bool ReadRecentDownloadsForMenuTest(std::vector<RecentDownload>& out) {
+  ++recent_reads;if(!recent_ready)return false;out=published_recent;return true;
+}
+}
 #include <algorithm>
 #include <cassert>
 #include <memory>
@@ -16,7 +74,7 @@ static SIZE_T CountQuery(LPCVOID p,PMEMORY_BASIC_INFORMATION m,SIZE_T n) {
 struct Entry {
   int id = 0, type = 1;
   std::wstring label;
-  bool enabled = true, checked = false;
+  bool enabled = true, checked = false, visible = true;
 };
 struct Model {
   Menu api{};
@@ -73,6 +131,9 @@ static int Enable(Menu *m, int id, int value) {
   M(m).entries[size_t(i)].enabled = value;
   return 1;
 }
+static int Visible(Menu *m,int id,int value) {
+  int i=Index(m,id);assert(i>=0);M(m).entries[size_t(i)].visible=value!=0;return 1;
+}
 static int Check(Menu *m, int id, int value) {
   int i = Index(m, id);
   assert(i >= 0);
@@ -109,6 +170,7 @@ static void Init(Model &model) {
   f[20] = reinterpret_cast<void *>(Label);
   f[23] = reinterpret_cast<void *>(Type);
   f[28] = reinterpret_cast<void *>(Child);
+  f[32] = reinterpret_cast<void *>(Visible);
   f[36] = reinterpret_cast<void *>(Enable);
   f[40] = reinterpret_cast<void *>(Check);
 }
@@ -136,6 +198,7 @@ int main() {
   FinalizeToDiskMenu(false);
   assert(menu_init.State()==hooks::InitState::Unsupported);
   history::InitSettings(nullptr);
+  assert(history::SetLyrics(true));
   history::PlaybackQualitySnapshot initial;
   initial.rate = 44100;
   history::PublishPlaybackQuality(initial);
@@ -160,16 +223,23 @@ int main() {
   Populate(&root.api);
   assert(root.child);
   auto &child = *root.child;
+  assert(Index(&child.api,28490)==Index(&child.api,location_id)+1);
+  assert(child.entries[Index(&child.api,28490)].label==L"Latest Downloads >");
+  assert(!child.entries[Index(&child.api,recent_id)].visible);
+  assert(child.child && child.child->refs==1);
+  assert(!child.child->entries[0].enabled);
+  assert(filesystem_calls==0 && shell_calls==0 && recent_reads==0);
   assert(child.entries[Index(&child.api,lyrics_id)].checked);
-  assert(child.entries.size() == 10); // Five controls, separator, four quality rows.
-  for (size_t i = 6; i < 10; i++)
+  assert(child.entries.size() == 11); // Six controls, separator, four quality rows.
+  for (size_t i = 7; i < 11; i++)
     assert(child.entries[i].type == 1 && !child.entries[i].enabled && !child.entries[i].checked);
-  assert(child.entries[6].label.find(L"Example") != std::wstring::npos);
-  assert(child.entries[8].label.find(L"Ogg") != std::wstring::npos);
+  assert(child.entries[7].label.find(L"Example") != std::wstring::npos);
+  assert(child.entries[7].visible && child.entries[8].visible);
+  assert(!child.entries[9].visible && !child.entries[10].visible); // Non-FLAC details stay hidden, even after Ogg verification.
   type_calls=0;
   Populate(&root.api);
   assert(type_calls==0); // Existing insertion is not rescanned or repopulated.
-  assert(child.entries.size() == 10 && child.refs == 1);
+  assert(child.entries.size() == 11 && child.refs == 1);
   capability_queries=type_calls=index_calls=0;
   original_add_submenu=AddChild;
   Model unrelated;Init(unrelated);unrelated.submenu=true;
@@ -193,9 +263,9 @@ int main() {
     Populate(&translated.api);
     assert(translated.child && translated.entries.size()==4);
     assert(translated.entries.back().label==L"To Disk");
-    assert(translated.child->entries.size()==10 && translated.child->refs==1);
+    assert(translated.child->entries.size()==11 && translated.child->refs==1);
     Populate(&translated.api);
-    assert(translated.entries.size()==4 && translated.child->entries.size()==10);
+    assert(translated.entries.size()==4 && translated.child->entries.size()==11);
   }
   // The client changes first while SMTC still publishes the previous song.
   history::PlaybackQualitySnapshot actual;
@@ -252,7 +322,7 @@ int main() {
   Retain(&child.api.base);
   capability_queries=0;
   assert(Format(&wrapped.api,&child.api,&rendered)==0);
-  assert(capability_queries==0); // Unrelated labels do no capability probing.
+  assert(capability_queries==0 && recent_reads==0); // Unrelated labels do no capability probing or history reads.
   assert(rendered.str==untouched.data() && format_calls==2 && child.refs==1);
   auto setter=set_string;set_string=nullptr;
   old_label=L"Song: Unavailable";rendered=Text(old_label);
@@ -262,14 +332,164 @@ int main() {
   set_string=setter;
   Retain(&child.api.base);
   WillShow(&wrapped.api, &child.api);
-  assert(child.entries[8].label.find(L"FLAC") != std::wstring::npos &&
-         child.entries[9].label.find(L"96,000 Hz") != std::wstring::npos);
-  assert(child.entries[6].label==L"Song: Next");
+  assert(child.entries[9].label.find(L"FLAC") != std::wstring::npos &&
+         child.entries[10].label.find(L"96,000 Hz") != std::wstring::npos);
+  assert(child.entries[7].label==L"Song: Next");
+  assert(child.entries[9].visible && child.entries[10].visible); // Confirmed FLAC details remain.
+  // Refresh the submenu before CEF builds its visible children, even when
+  // changing codec while the same model is reused across menu openings.
+  auto build_root=[&]{std::wstring label=L"To Disk";auto text=Text(label);Retain(&root.api.base);Format(&wrapped.api,&root.api,&text);if(text.dtor)text.dtor(text.str);};
+  history::Catalog destination_catalog;destination_catalog.title=L"Next";destination_catalog.artist=L"Album Artist";destination_catalog.album=L"Album";
+  history::PublishSongDestination(actual.identity,L"C:\\Saved",destination_catalog,false,history::GetSettings().generation);
+  build_root();
+  assert(child.entries[Index(&child.api,song_id)].enabled);
+  assert(folder_creations==0 && folder_opens==0);
+  assert(!child.entries[Index(&child.api,recent_id)].visible);
+  published_recent={{L"Newest song",L"C:\\Music\\newest.flac",42},
+                    {L"Earlier song",L"C:\\Music\\earlier.ogg",17}};
+  build_root();
+  auto& recent=*child.child;
+  assert(child.entries[Index(&child.api,recent_id)].visible);
+  assert(recent.entries.size()==2 && recent.entries[0].label==L"Newest song");
+  assert(recent.entries[1].label==L"Earlier song" && recent.entries[1].id==first_recent_id+1);
+  assert(recent.refs==1 && filesystem_calls==0 && shell_calls==0);
+  Retain(&root.api.base);WillShow(&wrapped.api,&root.api);
+  assert(wrapped.recent_open && root.refs==1);
+  const auto reads_while_open=recent_reads;
+  published_recent={{L"Arrived while menu open",L"C:\\Music\\different.flac",8}};
+  build_root();assert(recent_reads==reads_while_open && recent.entries[0].label==L"Newest song");
+  Retain(&recent.api.base);Execute(&wrapped.api,&recent.api,first_recent_id,0);
+  assert(selected_path==L"C:\\Music\\newest.flac" && shell_calls==1 && recent.refs==1);
+  Retain(&root.api.base);Closed(&wrapped.api,&root.api);
+  assert(!wrapped.recent_open && root.refs==1);
+  recent_ready=false;build_root();
+  assert(recent.entries.size()==2 && recent.entries[0].label==L"Newest song");
+  Retain(&recent.api.base);Execute(&wrapped.api,&recent.api,first_recent_id+1,0);
+  assert(selected_path==L"C:\\Music\\earlier.ogg" && shell_calls==2 && recent.refs==1);
+  saved_file_exists=false;
+  Retain(&recent.api.base);Execute(&wrapped.api,&recent.api,first_recent_id,0);
+  assert(shell_calls==2 && message_calls==1 && original_commands==0 && recent.refs==1);
+  saved_file_exists=true;recent_ready=true;
+  build_root();assert(recent.entries.size()==1 && recent.entries[0].label==L"Arrived while menu open");
+  Retain(&recent.api.base);Execute(&wrapped.api,&recent.api,first_recent_id,0);
+  assert(selected_path==L"C:\\Music\\different.flac" && shell_calls==3);
+  published_recent.clear();
+  for(unsigned i=0;i<12;++i)published_recent.push_back({L"Song "+std::to_wstring(i),L"C:\\Music\\"+std::to_wstring(i)+L".flac",i});
+  build_root();assert(recent.entries.size()==10 && recent.entries.back().id==28500);
+  Retain(&recent.api.base);Execute(&wrapped.api,&recent.api,28500,0);
+  assert(selected_path==L"C:\\Music\\9.flac" && shell_calls==4);
+  published_recent.clear();build_root();
+  assert(!child.entries[Index(&child.api,recent_id)].visible && recent.entries.size()==1 && !recent.entries[0].enabled);
+  Retain(&recent.api.base);Execute(&wrapped.api,&recent.api,first_recent_id,0);
+  assert(shell_calls==4 && original_commands==0 && recent.refs==1);
+  const std::wstring unsafe_title=std::wstring(L"A&B\tLine\n")+wchar_t(0)+wchar_t(127)+wchar_t(0x85)+L"Tail";
+  const std::wstring split_pair=std::wstring(94,L'界')+wchar_t(0xd83d)+wchar_t(0xde00)+L"suffix";
+  const std::wstring intact_pair=std::wstring(93,L'界')+wchar_t(0xd83d)+wchar_t(0xde00)+L"suffix";
+  published_recent={{unsafe_title,L"C:\\Music\\escaped.flac",1},
+                    {split_pair,L"C:\\Music\\split.flac",2},
+                    {intact_pair,L"C:\\Music\\intact.flac",3},
+                    {std::wstring(100,L'&'),L"C:\\Music\\ampersands.flac",4},
+                    {L"",L"C:\\Music\\untitled.flac",5},
+                    {split_pair.substr(0,96),L"C:\\Music\\exact.flac",6}};
+  const auto fs_before_labels=filesystem_calls;
+  build_root();
+  assert(recent.entries[0].label==L"A&&B Line    Tail");
+  assert(recent.entries[1].label==std::wstring(94,L'界')+L"\u2026");
+  assert(recent.entries[2].label==intact_pair.substr(0,95)+L"\u2026");
+  assert(recent.entries[3].label==std::wstring(190,L'&')+L"\u2026");
+  assert(recent.entries[4].label==L"Untitled download" && wrapped.recent[4].title.empty());
+  assert(recent.entries[5].label==split_pair.substr(0,96));
+  assert(wrapped.recent[0].title==unsafe_title && wrapped.recent[1].title==split_pair);
+  assert(filesystem_calls==fs_before_labels && shell_calls==4 && recent.refs==1);
+  Retain(&recent.api.base);Execute(&wrapped.api,&recent.api,first_recent_id,0);
+  assert(selected_path==L"C:\\Music\\escaped.flac" && shell_calls==5 && recent.refs==1);
+  const auto long_path=L"C:\\Music\\"+std::wstring(280,L'a')+L".flac";
+  published_recent={{L"Long saved path",long_path,8}};build_root();
+  Retain(&recent.api.base);Execute(&wrapped.api,&recent.api,first_recent_id,0);
+  assert(checked_path==history::WindowsPath(long_path));
+  assert(selected_path==long_path && shell_calls==6);
+  // Deleted files/folders and shell failures never dispatch an unrelated path.
+  auto click_recent=[&]{Retain(&recent.api.base);Execute(&wrapped.api,&recent.api,first_recent_id,0);assert(recent.refs==1);};
+  const auto missing_notice=L"This download is no longer available at its saved location.";
+  saved_file_exists=false;click_recent();assert(last_message==missing_notice && shell_calls==6);
+  published_recent={{L"Deleted folder",L"C:\\Music\\Removed folder\\song.flac",8}};build_root();
+  click_recent();assert(last_message==missing_notice && shell_calls==6);
+  saved_file_exists=true;saved_file_attributes=FILE_ATTRIBUTE_DIRECTORY;click_recent();
+  assert(last_message==missing_notice && shell_calls==6);
+  saved_file_attributes=FILE_ATTRIBUTE_NORMAL;parse_result=E_FAIL;click_recent();
+  assert(last_message==L"Explorer could not show this download." && shell_calls==6);
+  parse_result=S_OK;shell_result=E_FAIL;click_recent();
+  assert(last_message==L"Explorer could not show this download." && shell_calls==7);
+  shell_result=S_OK;launch_click_worker=false;click_recent();
+  assert(last_message==L"Explorer could not be started." && shell_calls==7);
+  launch_click_worker=true;
+  const auto intended_folder=history::OutputPath(L"C:\\Saved",destination_catalog,L".flac",false);
+  const auto expected_folder=intended_folder.substr(0,intended_folder.find_last_of(L'\\'));
+  Retain(&root.api.base);WillShow(&wrapped.api,&root.api);
+  auto next_song=actual;next_song.identity=actual.identity+1;
+  next_song.title.fill(0);std::copy_n(L"Changed",7,next_song.title.begin());
+  history::PublishClientPlaybackQuality(next_song);history::PublishPlaybackQuality(next_song);
+  destination_catalog.album=L"New Album";
+  history::PublishSongDestination(next_song.identity,L"C:\\NewRoot",destination_catalog,false,history::GetSettings().generation);
+  build_root();
+  old_label=L"Song: Unavailable";rendered=Text(old_label);
+  Retain(&child.api.base);Format(&wrapped.api,&child.api,&rendered);
+  assert(std::wstring(rendered.str,rendered.length)==L"Song: Next");rendered.dtor(rendered.str);
+  assert(child.entries[Index(&child.api,song_id)].label==L"Song: Next");
+  Retain(&child.api.base);Execute(&wrapped.api,&child.api,song_id,0);
+  assert(folder_creations==1 && folder_opens==1 && opened_folder==expected_folder);
+  const auto messages_before_song_failure=message_calls;
+  folder_can_open=false;
+  Retain(&child.api.base);Execute(&wrapped.api,&child.api,song_id,0);
+  assert(folder_creations==2 && folder_opens==1 && message_calls==messages_before_song_failure+1 && last_message==L"This song's save folder could not be created or accessed.");folder_can_open=true;
+  folder_shell_succeeds=false;
+  Retain(&child.api.base);Execute(&wrapped.api,&child.api,song_id,0);
+  assert(folder_creations==3 && folder_opens==2 && last_message==L"Explorer could not open this song's folder.");
+  folder_shell_succeeds=true;launch_click_worker=false;
+  Retain(&child.api.base);Execute(&wrapped.api,&child.api,song_id,0);
+  assert(folder_creations==3 && folder_opens==2 && last_message==L"The song folder could not be opened.");
+  launch_click_worker=true;
+  Retain(&root.api.base);Closed(&wrapped.api,&root.api);
+  build_root();assert(child.entries[Index(&child.api,song_id)].label==L"Song: Changed");
+  const auto changed_file=history::OutputPath(L"C:\\NewRoot",destination_catalog,L".flac",false);
+  Retain(&child.api.base);Execute(&wrapped.api,&child.api,song_id,0);
+  assert(folder_creations==4 && folder_opens==3 && opened_folder==changed_file.substr(0,changed_file.find_last_of(L'\\')));
+  const auto original_save_root=history::GetSettings().root;
+  wchar_t destination_temp[2048];GetTempPathW(2048,destination_temp);
+  assert(history::SetSaveLocation(std::wstring(destination_temp)+L"Floggfy-song-location-change-"+std::to_wstring(GetCurrentProcessId())));
+  build_root();assert(!child.entries[Index(&child.api,song_id)].enabled);
+  const auto clicks_before_location_change=folder_creations;
+  Retain(&child.api.base);Execute(&wrapped.api,&child.api,song_id,0);
+  assert(folder_creations==clicks_before_location_change);
+  assert(history::SetSaveLocation(original_save_root));
+  history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
+  // An old or mismatched worker snapshot can never enable a new song's target.
+  build_root();assert(!child.entries[Index(&child.api,song_id)].enabled);
+  const auto clicks_before_unavailable=folder_creations;
+  Retain(&child.api.base);Execute(&wrapped.api,&child.api,song_id,0);
+  assert(folder_creations==clicks_before_unavailable && folder_opens==3);
+  q.format=history::PlaybackFormat::Ogg;q.level=history::PlaybackLevel::VeryHigh;q.bits=0;
+  actual.level=q.level;history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
+  build_root();assert(!child.entries[9].visible && !child.entries[10].visible);
+  q.format=history::PlaybackFormat::Flac;q.level=history::PlaybackLevel::Lossless;q.bits=16;
+  actual.level=q.level;history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
+  build_root();assert(child.entries[9].visible && child.entries[10].visible);
+  q.format=history::PlaybackFormat::Unknown;history::PublishPlaybackQuality(q);
+  build_root();assert(!child.entries[9].visible && !child.entries[10].visible);
+  assert(child.entries[7].visible && child.entries[8].visible);
+  assert(child.entries.size()==11 && child.refs==1 && root.refs==1);
+  actual.level=history::PlaybackLevel::Unknown;q.level=actual.level;
+  history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
+  build_root();assert(!child.entries[8].visible); // No Quality: Unavailable placeholder.
+  actual.level=history::PlaybackLevel::Lossless;q.level=actual.level;
+  q.format=history::PlaybackFormat::Flac;q.rate=0;
+  history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
+  build_root();assert(child.entries[8].visible && child.entries[9].visible && !child.entries[10].visible);
   history::client_updated=GetTickCount64()-4000;
   assert(history::ReadPlaybackQuality().identity==0); // Never regress to stale SMTC.
   history::PublishClientPlaybackQuality({});
   assert(history::ReadPlaybackQuality().title[0]==0); // No active cached song.
-  for (size_t i = 6; i < 10; i++) {
+  for (size_t i = 7; i < 11; i++) {
     Retain(&child.api.base);
     Execute(&wrapped.api, &child.api, child.entries[i].id, 0);
   }
@@ -300,7 +520,11 @@ int main() {
   menu_init.Retry(0); // Start a separate simulated failure case.
   assert(original_add_submenu&&menu_init.TryBegin(GetTickCount64()+1000));menu_prepared=true;
   FinalizeToDiskMenu(false);assert(menu_init.State()==hooks::InitState::Unsupported);
+  assert(child.child->refs==1 && child.refs==1 && root.refs==1);
+  std::puts("PASS: bounded recent labels escape mnemonics, sanitize controls, preserve Unicode pairs and full stored titles");
+  std::puts("PASS: session downloads hidden until populated; stable labels and shell targets, ten-item cap, busy snapshot retention, missing-file notice");
   std::puts("PASS: menu preparation can retry; failed activation preserves trampoline state");
-  std::puts("PASS: bottom read-only quality rows, independent codec display, duplicate-free "
+  std::puts("PASS: Song opens its bound saver folder only on click, creates missing folders, reports errors and ignores mismatched destinations");
+  std::puts("PASS: bottom technical quality rows, independent codec display, duplicate-free "
             "refresh and disabled-command ownership");
 }

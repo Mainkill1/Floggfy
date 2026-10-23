@@ -45,8 +45,16 @@ FLAC needs lossless playback in Spotify. Floggfy does not convert Ogg into FLAC.
 ## Settings
 
 **To Disk** includes **Downloads**, **Save Location**, **FLAC**, **Ogg** and **Lyrics** controls.
+After a successful download, **Latest Downloads >** appears directly below **Save Location**.
+It lists up to ten recently saved songs from this Spotify run; click one to open
+Explorer at its saved folder.
+Song remains visible, and Quality appears when known. Format and Sample rate
+appear only for confirmed FLAC playback; unavailable technical rows are hidden.
 
-The bottom shows the current item and available quality details.
+Click the current **Song** row to open its destination folder, including when
+the song already exists or is waiting to be saved. A missing folder is created
+when clicked; failures show an error message. Opening a folder does not count
+as a download.
 
 Lyrics are collected automatically when Spotify provides them; the lyrics panel
 does not need to be open. Timed lyrics are embedded as LRC text in the `LYRICS`
@@ -64,7 +72,9 @@ other available metadata continue to work. `Metadata=0` disables all extra metad
 
 `SpotifyHistory.ini` is created automatically. Keep your existing file when
 upgrading. Use it to disable the menu, extra song details or activity log. At the 5 MiB log limit, the oldest complete
-lines are removed as new entries arrive.
+lines are removed as new entries arrive. Completed saves include the audio quality
+and final file size. Skipped songs are logged with the reason, including an
+existing file of the same or better quality.
 
 ## Having trouble?
 

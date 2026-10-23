@@ -5,6 +5,7 @@
 #include <cstddef>
 
 int main() {
+    static_assert(28490>=cef_menu::kUserCommandFirst && 28500<=cef_menu::kUserCommandLast);
     assert(cef_menu::SupportsDelegate(cef_menu::kKnownDelegateBytes));
     assert(cef_menu::SupportsDelegate(cef_menu::kKnownDelegateBytes + 64));
     assert(!cef_menu::SupportsDelegate(cef_menu::kKnownDelegateBytes - 1));
@@ -18,6 +19,9 @@ int main() {
                                   methods.data(), methods.size()));
     assert(!cef_menu::SupportsMenu(cef_menu::kRequiredMenuBytes - 1,
                                    methods.data(), methods.size()));
+    auto visibility=methods[32];methods[32]=nullptr;
+    assert(!cef_menu::SupportsMenu(cef_menu::kRequiredMenuBytes,methods.data(),methods.size()));
+    methods[32]=visibility;
     methods[cef_menu::kRequiredMenuSlots[3]] = nullptr;
     assert(!cef_menu::SupportsMenu(cef_menu::kRequiredMenuBytes,
                                    methods.data(), methods.size()));

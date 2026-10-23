@@ -101,6 +101,27 @@ Menu integration checks its supported CEF version and structure sizes.
 Activity and opt-in diagnostics are in `Floggfy.log` in the selected save root.
 At 5 MiB, the log removes the oldest complete lines to make room for each new
 entry. Logging and INI persistence use separate workers.
+Completed saves log the captured audio format/quality and final tagged file size
+in MiB and bytes. Upgrade, lyric-only update, skipped-file, changed-setting and
+failure outcomes are distinct. Equal/better existing audio is identified only
+when the on-disk format is verified; incomparable or unverified files get an
+explicit retention reason.
+
+The last ten successful saved paths are held in memory for this Spotify run.
+**Latest Downloads >**, directly below **Save Location**, is hidden until the first
+successful download. Selecting a song opens its containing folder in Explorer.
+Skips, failed writes and lyric-only updates do not add history entries. Menu
+snapshots stay fixed while open so a new download cannot redirect an existing
+item's click target. A deleted file or folder produces an unavailable notice;
+Explorer failures produce an error notice. Menu construction performs no filesystem
+or shell work.
+
+The current **Song** row also opens its intended save folder, before a download
+or when an existing file is retained or upgraded. It uses the same destination
+rules as file publication. Clicking creates a missing destination folder and
+opens it in Explorer; failures show an error notice. Menu rendering performs no
+filesystem work, and folder clicks do not add download history entries.
+
 Tagging, quality checks and publication run in a bounded background worker;
 pending compressed save buffers count against the configured allocation budget.
 
