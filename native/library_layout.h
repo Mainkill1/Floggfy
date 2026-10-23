@@ -8,6 +8,7 @@ struct Catalog {
     std::wstring artist,album,title,author,series,book,show;
     unsigned track=0,episode_year=0,disc=0;
     std::string spotify_uri;
+    double duration=0;
 };
 std::wstring RelativePath(const Catalog& item,const std::wstring& extension);
 std::wstring OutputPath(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder=false);
