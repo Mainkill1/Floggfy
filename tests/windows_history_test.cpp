@@ -19,7 +19,7 @@ int main() {
     InitSettings(GetModuleHandleW(nullptr));
     check(GetFileAttributesW(ini.c_str())!=INVALID_FILE_ATTRIBUTES,"missing INI created beside DLL");
     auto defaults=GetSettings();
-    check(!defaults.downloads && defaults.menu && defaults.ogg && defaults.flac &&
+    check(defaults.downloads && defaults.lyrics && defaults.menu && defaults.ogg && defaults.flac &&
           defaults.metadata && defaults.log && !defaults.debug_log,
           "generated INI loads complete default switches");
     check(defaults.save_location.empty() && defaults.max_buffered_mib==500,

@@ -1,7 +1,14 @@
 // Exercise the production CEF menu boundary with a model implementing the
 // required public prefix. No Spotify binaries or private media are needed.
 #include "../native/playback_quality_windows.cpp"
+#include <windows.h>
+static unsigned capability_queries=0;
+static SIZE_T CountQuery(LPCVOID p,PMEMORY_BASIC_INFORMATION m,SIZE_T n) {
+  ++capability_queries;return VirtualQuery(p,m,n);
+}
+#define VirtualQuery CountQuery
 #include "../native/to_disk_menu.cpp"
+#undef VirtualQuery
 #include <algorithm>
 #include <cassert>
 #include <memory>
@@ -29,7 +36,9 @@ static int Clear(Menu *m) {
   return 1;
 }
 static size_t Count(Menu *m) { return M(m).entries.size(); }
+static unsigned type_calls=0,index_calls=0;
 static int Index(Menu *m, int id) {
+  ++index_calls;
   auto &list = M(m).entries;
   auto it = std::find_if(list.begin(), list.end(), [&](const auto &i) { return i.id == id; });
   return it == list.end() ? -1 : int(it - list.begin());
@@ -54,6 +63,7 @@ static int Label(Menu *m, int id, const String *s) {
   return 1;
 }
 static int Type(Menu *m, size_t index) {
+  ++type_calls;
   assert(index < M(m).entries.size());
   return M(m).entries[index].type;
 }
@@ -118,6 +128,7 @@ static int format_calls=0;
 static int OriginalFormat(Delegate*,Menu* menu,String*) {++format_calls;ReleaseMenu(menu);return 0;}
 static int ReleaseDelegate(Base *) { return 0; }
 int main() {
+  history::InitSettings(nullptr);
   history::PlaybackQualitySnapshot initial;
   initial.rate = 44100;
   history::PublishPlaybackQuality(initial);
@@ -142,13 +153,27 @@ int main() {
   Populate(&root.api);
   assert(root.child);
   auto &child = *root.child;
-  assert(child.entries.size() == 9); // Four controls, separator, four quality rows.
-  for (size_t i = 5; i < 9; i++)
+  assert(child.entries[Index(&child.api,lyrics_id)].checked);
+  assert(child.entries.size() == 10); // Five controls, separator, four quality rows.
+  for (size_t i = 6; i < 10; i++)
     assert(child.entries[i].type == 1 && !child.entries[i].enabled && !child.entries[i].checked);
-  assert(child.entries[5].label.find(L"Example") != std::wstring::npos);
-  assert(child.entries[7].label.find(L"Ogg") != std::wstring::npos);
+  assert(child.entries[6].label.find(L"Example") != std::wstring::npos);
+  assert(child.entries[8].label.find(L"Ogg") != std::wstring::npos);
+  type_calls=0;
   Populate(&root.api);
-  assert(child.entries.size() == 9 && child.refs == 1);
+  assert(type_calls==0); // Existing insertion is not rescanned or repopulated.
+  assert(child.entries.size() == 10 && child.refs == 1);
+  capability_queries=type_calls=index_calls=0;
+  original_add_submenu=AddChild;
+  Model unrelated;Init(unrelated);unrelated.submenu=true;
+  std::wstring sublabel=L"Other";auto subtext=Text(sublabel);
+  auto* added=AddSubmenuHook(&unrelated.api,91,&subtext);ReleaseMenu(added);
+  assert(type_calls==0 && index_calls==0 && capability_queries==0);
+  const auto construction_start=GetTickCount64();
+  for(unsigned i=0;i<10000;++i) Populate(&root.api);
+  assert(type_calls==0 && index_calls==10000 && capability_queries==0);
+  std::printf("BENCH: 10000 repeated construction callbacks %llu ms; type scans %u; probes %u\n",
+              GetTickCount64()-construction_start,type_calls,capability_queries);
   // Main-menu recognition uses types, never translated labels or mnemonics.
   const wchar_t* localized[][3]={
     {L"ファイル",L"編集",L"表示"},
@@ -161,9 +186,9 @@ int main() {
     Populate(&translated.api);
     assert(translated.child && translated.entries.size()==4);
     assert(translated.entries.back().label==L"To Disk");
-    assert(translated.child->entries.size()==9 && translated.child->refs==1);
+    assert(translated.child->entries.size()==10 && translated.child->refs==1);
     Populate(&translated.api);
-    assert(translated.entries.size()==4 && translated.child->entries.size()==9);
+    assert(translated.entries.size()==4 && translated.child->entries.size()==10);
   }
   // The client changes first while SMTC still publishes the previous song.
   history::PlaybackQualitySnapshot actual;
@@ -204,9 +229,23 @@ int main() {
   assert(std::wstring(rendered.str,rendered.length)==L"Song: Next");
   rendered.dtor(rendered.str);
   assert(format_calls==1 && child.refs==1);
+  capability_queries=0;
+  const auto format_start=GetTickCount64();
+  for(unsigned i=0;i<10000;++i) {
+    old_label=L"Song: Unavailable";rendered=Text(old_label);
+    Retain(&child.api.base);
+    assert(Format(&wrapped.api,&child.api,&rendered)==1);
+    rendered.dtor(rendered.str);
+  }
+  assert(capability_queries==0); // Validated function table reused without retaining the model.
+  std::printf("BENCH: 10000 quality callbacks %llu ms; capability probes %u\n",
+              GetTickCount64()-format_start,capability_queries);
+  format_calls=1;
   std::wstring untouched=L"Save Location";rendered=Text(untouched);
   Retain(&child.api.base);
+  capability_queries=0;
   assert(Format(&wrapped.api,&child.api,&rendered)==0);
+  assert(capability_queries==0); // Unrelated labels do no capability probing.
   assert(rendered.str==untouched.data() && format_calls==2 && child.refs==1);
   auto setter=set_string;set_string=nullptr;
   old_label=L"Song: Unavailable";rendered=Text(old_label);
@@ -216,18 +255,40 @@ int main() {
   set_string=setter;
   Retain(&child.api.base);
   WillShow(&wrapped.api, &child.api);
-  assert(child.entries[7].label.find(L"FLAC") != std::wstring::npos &&
-         child.entries[8].label.find(L"96,000 Hz") != std::wstring::npos);
-  assert(child.entries[5].label==L"Song: Next");
+  assert(child.entries[8].label.find(L"FLAC") != std::wstring::npos &&
+         child.entries[9].label.find(L"96,000 Hz") != std::wstring::npos);
+  assert(child.entries[6].label==L"Song: Next");
   history::client_updated=GetTickCount64()-4000;
   assert(history::ReadPlaybackQuality().identity==0); // Never regress to stale SMTC.
   history::PublishClientPlaybackQuality({});
   assert(history::ReadPlaybackQuality().title[0]==0); // No active cached song.
-  for (size_t i = 5; i < 9; i++) {
+  for (size_t i = 6; i < 10; i++) {
     Retain(&child.api.base);
     Execute(&wrapped.api, &child.api, child.entries[i].id, 0);
   }
   assert(original_commands == 0 && child.refs == 1);
+  Retain(&child.api.base);Execute(&wrapped.api,&child.api,lyrics_id,0);
+  assert(!history::GetSettings().lyrics);
+  assert(!child.entries[Index(&child.api,lyrics_id)].checked);
+  assert(child.entries[Index(&child.api,lyrics_id)].label==L"Lyrics (Disabled)");
+  Retain(&child.api.base);Execute(&wrapped.api,&child.api,lyrics_id,0);
+  assert(history::GetSettings().lyrics && history::FlushSettings(5000));
+  Retain(&child.api.base);
+  Closed(&wrapped.api,&child.api);
+  assert(child.refs==1 && !wrapped.capability.validated);
+  capability_queries=0;
+  old_label=L"Song: Unavailable";rendered=Text(old_label);
+  Retain(&child.api.base);Format(&wrapped.api,&child.api,&rendered);
+  if(rendered.dtor)rendered.dtor(rendered.str);
+  assert(capability_queries>0 && child.refs==1); // Revalidate after closing.
+  // Same address with a changed capability table must not hit the cache.
+  auto old_method=child.api.methods[0];child.api.methods[0]=nullptr;
+  old_label=L"Song: Unavailable";rendered=Text(old_label);
+  Retain(&child.api.base);
+  assert(Format(&wrapped.api,&child.api,&rendered)==0);
+  assert(rendered.str==old_label.data() && child.refs==1);
+  child.api.methods[0]=old_method;
+  wrapped.ClearValidation();assert(child.refs==1);
   std::puts("PASS: bottom read-only quality rows, independent codec display, duplicate-free "
             "refresh and disabled-command ownership");
 }

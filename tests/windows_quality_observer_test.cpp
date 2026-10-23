@@ -12,6 +12,8 @@ static int32_t Parser(void *, OggPage *) {
   return 58;
 }
 int main() {
+  InitSettings(nullptr);
+  assert(SetDownloads(false)); // Explicit fixture preference, independent of install defaults.
   assert(!GetSettings().downloads);
   queue =
       static_cast<Slot *>(HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(Slot) * capacity));
