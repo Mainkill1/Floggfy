@@ -119,3 +119,9 @@ x86_64-w64-mingw32-g++ "${common[@]}" -DFLOGGFY_PUBLICATION_TEST -I native/vendo
  tests/windows_metadata_update_test.cpp native/metadata_update_windows.cpp native/metadata_update_core.cpp native/recording_file.cpp native/existing_quality.cpp native/file_publication.cpp native/library_layout.cpp "${quality_sources[@]}" native/history_settings.cpp native/async_log.cpp \
  -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-metadata-update-test.exe"
 "$floggfy_test_root/windows-metadata-update-test.exe"
+
+# Storage failure returns an error without dereferencing a failed file mapping.
+x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include \
+ tests/windows_recording_read_test.cpp native/recording_file.cpp native/library_layout.cpp "${quality_sources[@]}" native/history_settings.cpp native/async_log.cpp \
+ -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-recording-read-test.exe"
+"$floggfy_test_root/windows-recording-read-test.exe"

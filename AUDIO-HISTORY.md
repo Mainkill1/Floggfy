@@ -139,6 +139,8 @@ download history entries.
 
 Tagging, quality checks and publication run in a bounded background worker;
 pending compressed save buffers count against the configured allocation budget.
+Existing-file inspection uses checked reads with a separate temporary buffer
+capped at 512 MiB; storage errors reject the inspection without stalling capture.
 
 ## Troubleshooting
 
@@ -208,4 +210,3 @@ lower-quality replay can enrich an existing FLAC without replacing its audio.
 `Lyrics=0` disables lyric enrichment while allowing other metadata fills;
 `Metadata=0` disables metadata-only updates. Updates are logged separately and do
 not add a Latest Downloads entry. There is no bulk library scan.
-
