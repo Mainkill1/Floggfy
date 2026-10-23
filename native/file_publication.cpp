@@ -89,6 +89,20 @@ bool PrepareBackupSlot(const std::wstring& path,const Catalog& catalog) {
     }
     return false;
 }
+FilePublication PromoteReplacement(const std::wstring& path,const std::wstring& staging,const Catalog& catalog,HANDLE old) {
+    auto backup=path+L".previous";
+    bool moved=PrepareBackupSlot(path,catalog) && RenameHandle(old,backup);
+    if(moved) TestPhase(L"reserved",path);
+    bool published=moved && MoveFileExW(WindowsPath(staging).c_str(),WindowsPath(path).c_str(),MOVEFILE_WRITE_THROUGH);
+    if(published) {
+        FILE_DISPOSITION_INFO disposition={TRUE};
+        SetFileInformationByHandle(old,FileDispositionInfo,&disposition,sizeof(disposition));
+    } else {
+        if(moved) RenameHandle(old,path); // no replacement; preserve any raced file
+        DeleteFileW(WindowsPath(staging).c_str());
+    }
+    return published?FilePublication::Upgraded:FilePublication::Failed;
+}
 Catalog CatalogFromTags(const Tags& tags) {
     auto field=[&](const char* name) { for(const auto& pair:tags.fields) if(pair.first==name) return pair.second; return std::string(); };
     auto wide=[](const std::string& value) {
@@ -133,18 +147,22 @@ FilePublication PublishBytes(const std::wstring& path,const Quality& quality,con
         nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
     bool upgrade=old.value!=INVALID_HANDLE_VALUE && SameFile(old.value,path) &&
         DecideSave(path,quality,catalog)==SaveDecision::Upgrade;
-    auto backup=path+L".previous";
-    bool moved=upgrade && PrepareBackupSlot(path,catalog) && RenameHandle(old.value,backup);
-    if(moved) TestPhase(L"reserved",path);
-    bool published=moved && MoveFileExW(WindowsPath(staging).c_str(),WindowsPath(path).c_str(),MOVEFILE_WRITE_THROUGH);
-    if(published) {
-        FILE_DISPOSITION_INFO disposition={TRUE};
-        SetFileInformationByHandle(old.value,FileDispositionInfo,&disposition,sizeof(disposition));
-    } else {
-        if(moved) RenameHandle(old.value,path); // no replacement; preserve any raced file
-        DeleteFileW(WindowsPath(staging).c_str());
-    }
-    return published?FilePublication::Upgraded:FilePublication::Failed;
+    if(!upgrade) {DeleteFileW(WindowsPath(staging).c_str());return FilePublication::Failed;}
+    return PromoteReplacement(path,staging,catalog,old.value);
+}
+FilePublication PublishMetadataBytes(const std::wstring& path,const void* bytes,size_t size,const Catalog& catalog,void* locked_file) {
+    RecordingFile incoming,current;
+    if(!locked_file || locked_file==INVALID_HANDLE_VALUE || !SameFile(locked_file,path) ||
+       !ReadRecording(path,current) || !current.complete || !current.owned || !MatchesRecording(current,catalog) ||
+       !InspectRecording(static_cast<const uint8_t*>(bytes),size,incoming) || !incoming.complete || !incoming.owned ||
+       !MatchesRecording(incoming,catalog)) return FilePublication::Failed;
+    const auto& a=current.quality;const auto& b=incoming.quality;
+    if(a.codec!=b.codec || a.rate!=b.rate || a.channels!=b.channels || a.bits!=b.bits || a.bitrate!=b.bitrate)
+        return FilePublication::Failed;
+    const auto staging=UniqueSibling(path,L".complete-lyrics-");
+    if(!WriteNew(staging,bytes,size))return FilePublication::Failed;
+    TestPhase(L"staged",path);
+    return PromoteReplacement(path,staging,catalog,locked_file);
 }
 FilePublication PublishBytes(const std::wstring& path,const Quality& quality,const void* bytes,size_t size) {
     RecordingFile incoming;
