@@ -5,6 +5,9 @@
 
 namespace cef_menu {
 
+// Public CEF menu_id_t range reserved for application commands.
+constexpr int kUserCommandFirst = 26500;
+constexpr int kUserCommandLast = 28500;
 constexpr std::size_t kBaseBytes = 40;
 constexpr std::size_t kKnownDelegateBytes = 96;
 constexpr std::size_t kHighestRequiredMenuSlot = 40;

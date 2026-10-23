@@ -5,6 +5,7 @@
 #include <cstddef>
 
 int main() {
+    static_assert(28490>=cef_menu::kUserCommandFirst && 28500<=cef_menu::kUserCommandLast);
     assert(cef_menu::SupportsDelegate(cef_menu::kKnownDelegateBytes));
     assert(cef_menu::SupportsDelegate(cef_menu::kKnownDelegateBytes + 64));
     assert(!cef_menu::SupportsDelegate(cef_menu::kKnownDelegateBytes - 1));

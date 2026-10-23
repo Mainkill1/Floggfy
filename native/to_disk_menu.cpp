@@ -5,6 +5,9 @@
 #include "hook_startup_minhook.h"
 #include "history_settings.h"
 #include "playback_quality.h"
+#include "recent_downloads.h"
+#include <shlobj.h>
+#include <memory>
 #include "vendor/minhook/include/MinHook.h"
 #include <atomic>
 #include <cstdio>
@@ -46,6 +49,10 @@ bool menu_prepared=false;
 hooks::InitController submenu_init;
 constexpr int root_id=28480,downloads_id=28481,location_id=28482,flac_id=28483,ogg_id=28484;
 constexpr int song_id=28485,last_quality_id=song_id+3,lyrics_id=28489;
+constexpr int recent_id=28490,first_recent_id=28491;
+static_assert(root_id>=cef_menu::kUserCommandFirst &&
+              first_recent_id+history::kRecentDownloadLimit-1<=cef_menu::kUserCommandLast,
+              "Recent commands stay within the CEF user command range (26500..28500)");
 template<class R,class...A> R Call(Menu* m,unsigned slot,A...a) {
     if(!m || m->base.size<cef_menu::kRequiredMenuBytes ||
        slot>cef_menu::kHighestRequiredMenuSlot || !m->methods[slot]) return R{};
@@ -144,6 +151,17 @@ static void Populate(Menu* menu) {
     };
     item(downloads_id,state.downloads ? L"Downloads (Enabled)" : L"Downloads (Disabled)",state.downloads,true);
     if(inserted) { std::wstring location=L"Save Location"; auto text=Text(location); Call<int>(child,4,location_id,&text); }
+    if(inserted) {
+        std::wstring label=L"View last DLs"; auto text=Text(label);
+        if(auto* recent=Call<Menu*>(child,7,recent_id,&text)) {
+            std::wstring empty=L"No downloads yet"; auto placeholder=Text(empty);
+            Call<int>(recent,4,first_recent_id,&placeholder);
+            Call<int>(recent,36,first_recent_id,0);
+            recent->base.release(&recent->base);
+        }
+        Call<int>(child,36,recent_id,0);
+        Call<int>(child,32,recent_id,0);
+    }
     item(flac_id,state.flac ? L"FLAC (Enabled)" : L"FLAC (Disabled)",state.flac,true);
     item(ogg_id,state.ogg ? L"Ogg (Enabled)" : L"Ogg (Disabled)",state.ogg,true);
     item(lyrics_id,state.lyrics ? L"Lyrics (Enabled)" : L"Lyrics (Disabled)",state.lyrics,true);
@@ -165,6 +183,11 @@ struct Wrapped {
     std::atomic<unsigned> refs{1};
     Delegate* original=nullptr;
     MenuCapabilities capability;
+    // The same transferred delegate serves the root and its child views.
+    // Keep command targets paired with the labels CEF built for this opening.
+    std::vector<history::RecentDownload> recent;
+    // Formatting can repeat for accessibility while the menu is displayed.
+    bool recent_open=false;
     bool CapableCached(Menu* menu) { return capability.Check(menu); }
     void ClearValidation() { capability.ClearValidation(); }
     ~Wrapped() { ClearValidation(); if(original) original->base.release(&original->base); }
@@ -175,7 +198,62 @@ static int Release(Base* p) { auto* w=Self(p); if(w->refs.fetch_sub(1,std::memor
 static int One(Base* p) { return Self(p)->refs.load()==1; }
 static int Any(Base* p) { return Self(p)->refs.load()!=0; }
 static void ReleaseMenu(Menu* menu) { if(menu && menu->base.release) menu->base.release(&menu->base); }
+static void RefreshRecent(Wrapped* wrapped,Menu* child) {
+    std::vector<history::RecentDownload> next;
+    if(!history::ReadRecentDownloads(next)) return; // Never block or erase a prior snapshot.
+    if(next.size()>history::kRecentDownloadLimit) next.resize(history::kRecentDownloadLimit);
+    for(auto& entry:next) if(entry.title.empty()) entry.title=L"Untitled download";
+    auto* recent=Call<Menu*>(child,28,recent_id);
+    if(!recent) return;
+    if(!wrapped->CapableCached(recent)) {ReleaseMenu(recent);return;}
+    if(!Call<int>(recent,1)) {ReleaseMenu(recent);return;}
+    wrapped->recent.swap(next);
+    if(wrapped->recent.empty()) {
+        wchar_t empty[]=L"No downloads yet";String text{empty,15,nullptr};
+        Call<int>(recent,4,first_recent_id,&text);
+        Call<int>(recent,36,first_recent_id,0);
+    } else for(size_t i=0;i<wrapped->recent.size();++i) {
+        const auto& entry=wrapped->recent[i];
+        auto text=Text(entry.title);Call<int>(recent,4,first_recent_id+int(i),&text);
+    }
+    Call<int>(child,36,recent_id,int(!wrapped->recent.empty()));
+    Call<int>(child,32,recent_id,int(!wrapped->recent.empty()));
+    ReleaseMenu(recent);
+}
+static DWORD WINAPI RevealRecentWorker(void* argument) {
+    std::unique_ptr<std::wstring> path(static_cast<std::wstring*>(argument));
+    const HRESULT initialized=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
+    const auto attributes=GetFileAttributesW(path->c_str());
+    HRESULT result=HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+    if(attributes!=INVALID_FILE_ATTRIBUTES && !(attributes&FILE_ATTRIBUTE_DIRECTORY)) {
+        PIDLIST_ABSOLUTE item=nullptr;
+        result=SHParseDisplayName(path->c_str(),nullptr,&item,0,nullptr);
+        if(SUCCEEDED(result)) result=SHOpenFolderAndSelectItems(item,0,nullptr,0);
+        CoTaskMemFree(item);
+    }
+    if(FAILED(result)) MessageBoxW(nullptr,
+        attributes==INVALID_FILE_ATTRIBUTES || (attributes&FILE_ATTRIBUTE_DIRECTORY) ?
+        L"This download is no longer available at its saved location." :
+        L"Explorer could not show this download.",L"View last DLs",MB_OK|MB_ICONINFORMATION);
+    if(SUCCEEDED(initialized)) CoUninitialize();
+    return 0;
+}
+static void RevealRecent(const std::wstring& path) {
+    auto* copy=new(std::nothrow) std::wstring(path);
+    if(!copy) return;
+    // Filesystem and shell work belongs to a click, away from CEF's UI thread.
+    HANDLE worker=CreateThread(nullptr,0,RevealRecentWorker,copy,0,nullptr);
+    if(worker) CloseHandle(worker);
+    else {delete copy;MessageBoxW(GetActiveWindow(),L"Explorer could not be started.",L"View last DLs",MB_OK|MB_ICONINFORMATION);}
+}
 static void Execute(Delegate* self,Menu* menu,int command,int flags) {
+    if(command>=first_recent_id && command<first_recent_id+int(history::kRecentDownloadLimit)) {
+        const auto index=size_t(command-first_recent_id);
+        try {if(index<Self(self)->recent.size()) RevealRecent(Self(self)->recent[index].path);}
+        catch(...) {/* CEF callbacks must not propagate allocation failures. */}
+        ReleaseMenu(menu);return;
+    }
+    if(command==recent_id) {ReleaseMenu(menu);return;}
     if(command>=song_id && command<=last_quality_id) {ReleaseMenu(menu);return;}
     auto* w=Self(self); auto settings=history::GetSettings(); bool handled=true,ok=true;
     switch(command) {
@@ -206,6 +284,7 @@ static void Outside(Delegate* self,Menu* menu,const void* point) { auto* o=Self(
 static void Open(Delegate* self,Menu* menu,int rtl) { auto* o=Self(self)->original; if(o && o->open) o->open(o,menu,rtl); else ReleaseMenu(menu); }
 static void Close(Delegate* self,Menu* menu,int rtl) { auto* o=Self(self)->original; if(o && o->close) o->close(o,menu,rtl); else ReleaseMenu(menu); }
 static void WillShow(Delegate* self,Menu* menu) {
+    if(Self(self)->CapableCached(menu) && Call<int>(menu,15,root_id)>=0) Self(self)->recent_open=true;
     auto* o=Self(self)->original;
     // CEF transfers one menu reference into every delegate callback. Retain
     // another across the original callback, which consumes its argument.
@@ -214,7 +293,9 @@ static void WillShow(Delegate* self,Menu* menu) {
     else Populate(menu);
     ReleaseMenu(menu);
 }
-static void Closed(Delegate* self,Menu* menu) { Self(self)->ClearValidation(); auto* o=Self(self)->original; if(o && o->closed) o->closed(o,menu); else ReleaseMenu(menu); }
+static void Closed(Delegate* self,Menu* menu) {
+    if(Self(self)->CapableCached(menu) && Call<int>(menu,15,root_id)>=0) Self(self)->recent_open=false;
+    Self(self)->ClearValidation(); auto* o=Self(self)->original; if(o && o->closed) o->closed(o,menu); else ReleaseMenu(menu); }
 static int Format(Delegate* self,Menu* menu,String* label) {
     auto* o=Self(self)->original;int changed=0;
     if(o && o->format) {
@@ -228,7 +309,10 @@ static int Format(Delegate* self,Menu* menu,String* label) {
        Self(self)->CapableCached(menu) && Call<int>(menu,15,root_id)>=0) {
         if(auto* child=Call<Menu*>(menu,28,root_id)) {
             try { if(Self(self)->CapableCached(child) && Call<int>(child,15,song_id)>=0 &&
-                     Call<int>(child,15,downloads_id)>=0)UpdateQuality(child); }
+                     Call<int>(child,15,downloads_id)>=0) {
+                         UpdateQuality(child);
+                         if(!Self(self)->recent_open) RefreshRecent(Self(self),child);
+                     } }
             catch(...) {/* Keep prior visibility on allocation failure. */}
             ReleaseMenu(child);
         }
