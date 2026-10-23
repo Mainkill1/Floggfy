@@ -95,5 +95,5 @@ x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/wind
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_recent_downloads_test.cpp native/recent_downloads.cpp -o "$floggfy_test_root/windows-recent-downloads-test.exe"
 "$floggfy_test_root/windows-recent-downloads-test.exe"
 
-x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_song_destination_test.cpp native/library_layout.cpp -o "$floggfy_test_root/windows-song-destination-test.exe"
+x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_song_destination_test.cpp native/library_layout.cpp native/history_settings.cpp native/async_log.cpp -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-song-destination-test.exe"
 "$floggfy_test_root/windows-song-destination-test.exe"

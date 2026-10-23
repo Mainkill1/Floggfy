@@ -12,7 +12,7 @@ static SIZE_T CountQuery(LPCVOID p,PMEMORY_BASIC_INFORMATION m,SIZE_T n) {
   ++capability_queries;return VirtualQuery(p,m,n);
 }
 static unsigned filesystem_calls=0,shell_calls=0,message_calls=0,folder_creations=0,folder_opens=0;
-static bool folder_can_open=true,folder_shell_succeeds=true;
+static bool folder_shell_succeeds=true,use_real_file_attributes=false;
 static std::wstring opened_folder;
 static HINSTANCE WINAPI OpenFolder(HWND,LPCWSTR operation,LPCWSTR file,LPCWSTR,LPCWSTR,INT) {
   assert(std::wstring(operation)==L"open");++folder_opens;opened_folder=file;return reinterpret_cast<HINSTANCE>(folder_shell_succeeds ? 33 : 5);
@@ -22,7 +22,7 @@ static DWORD saved_file_attributes=FILE_ATTRIBUTE_NORMAL;
 static HRESULT parse_result=S_OK,shell_result=S_OK;
 static std::wstring last_message;
 static std::wstring selected_path,checked_path;
-static DWORD WINAPI FileAttributes(LPCWSTR path) {checked_path=path;++filesystem_calls;return saved_file_exists ? saved_file_attributes : INVALID_FILE_ATTRIBUTES;}
+static DWORD WINAPI FileAttributes(LPCWSTR path) {checked_path=path;++filesystem_calls;return use_real_file_attributes ? GetFileAttributesW(path) : saved_file_exists ? saved_file_attributes : INVALID_FILE_ATTRIBUTES;}
 static HRESULT WINAPI ParseItem(PCWSTR path,IBindCtx*,PIDLIST_ABSOLUTE* item,SFGAOF,SFGAOF*) {
   if(FAILED(parse_result))return parse_result;
   selected_path=path;*item=static_cast<PIDLIST_ABSOLUTE>(CoTaskMemAlloc(sizeof(ITEMIDLIST)));return S_OK;
@@ -46,6 +46,7 @@ static HANDLE WINAPI RunClickWorker(LPSECURITY_ATTRIBUTES,SIZE_T,LPTHREAD_START_
 #define CreateThread RunClickWorker
 #define ShellExecuteW OpenFolder
 #define EnsureDirectory EnsureSongDirectoryForMenuTest
+#define ReadSongDestination ReadSongDestinationForMenuTest
 #define ReadRecentDownloads ReadRecentDownloadsForMenuTest
 #define VirtualQuery CountQuery
 #include "../native/to_disk_menu.cpp"
@@ -57,12 +58,23 @@ static HANDLE WINAPI RunClickWorker(LPSECURITY_ATTRIBUTES,SIZE_T,LPTHREAD_START_
 #undef CreateThread
 #undef ShellExecuteW
 #undef EnsureDirectory
+#undef ReadSongDestination
 #undef ReadRecentDownloads
 static bool recent_ready=true;
 static unsigned recent_reads=0;
 static std::vector<history::RecentDownload> published_recent;
+static std::uint64_t published_song_id=0;
+static unsigned published_song_generation=0;
+static std::wstring published_song_file;
+static void SetSongFile(std::uint64_t identity,const std::wstring& file) {
+  published_song_id=identity;published_song_file=file;published_song_generation=history::GetSettings().generation;
+}
 namespace history {
-bool EnsureSongDirectoryForMenuTest(const std::wstring&) {++folder_creations;return folder_can_open;}
+bool ReadSongDestinationForMenuTest(std::uint64_t identity,unsigned generation,std::wstring& file) {
+  if(identity!=published_song_id || generation!=published_song_generation || published_song_file.empty())return false;
+  file=published_song_file;return true;
+}
+bool EnsureSongDirectoryForMenuTest(const std::wstring&) {++folder_creations;return true;}
 bool ReadRecentDownloadsForMenuTest(std::vector<RecentDownload>& out) {
   ++recent_reads;if(!recent_ready)return false;out=published_recent;return true;
 }
@@ -340,9 +352,14 @@ int main() {
   // changing codec while the same model is reused across menu openings.
   auto build_root=[&]{std::wstring label=L"To Disk";auto text=Text(label);Retain(&root.api.base);Format(&wrapped.api,&root.api,&text);if(text.dtor)text.dtor(text.str);};
   history::Catalog destination_catalog;destination_catalog.title=L"Next";destination_catalog.artist=L"Album Artist";destination_catalog.album=L"Album";
-  history::PublishSongDestination(actual.identity,L"C:\\Saved",destination_catalog,false,history::GetSettings().generation);
   build_root();
-  assert(child.entries[Index(&child.api,song_id)].enabled);
+  assert(child.entries[Index(&child.api,song_id)].visible && !child.entries[Index(&child.api,song_id)].enabled);
+  const auto fs_before_disabled_click=filesystem_calls;
+  Retain(&child.api.base);Execute(&wrapped.api,&child.api,song_id,0);
+  assert(filesystem_calls==fs_before_disabled_click && folder_creations==0 && folder_opens==0);
+  SetSongFile(actual.identity,history::OutputPath(L"C:\\Saved",destination_catalog,L".flac",false));
+  build_root();
+  assert(child.entries[Index(&child.api,song_id)].visible && child.entries[Index(&child.api,song_id)].enabled);
   assert(folder_creations==0 && folder_opens==0);
   assert(!child.entries[Index(&child.api,recent_id)].visible);
   published_recent={{L"Newest song",L"C:\\Music\\newest.flac",42},
@@ -430,44 +447,71 @@ int main() {
   next_song.title.fill(0);std::copy_n(L"Changed",7,next_song.title.begin());
   history::PublishClientPlaybackQuality(next_song);history::PublishPlaybackQuality(next_song);
   destination_catalog.album=L"New Album";
-  history::PublishSongDestination(next_song.identity,L"C:\\NewRoot",destination_catalog,false,history::GetSettings().generation);
+  SetSongFile(next_song.identity,history::OutputPath(L"C:\\NewRoot",destination_catalog,L".ogg",false));
   build_root();
   old_label=L"Song: Unavailable";rendered=Text(old_label);
   Retain(&child.api.base);Format(&wrapped.api,&child.api,&rendered);
   assert(std::wstring(rendered.str,rendered.length)==L"Song: Next");rendered.dtor(rendered.str);
   assert(child.entries[Index(&child.api,song_id)].label==L"Song: Next");
   Retain(&child.api.base);Execute(&wrapped.api,&child.api,song_id,0);
-  assert(folder_creations==1 && folder_opens==1 && opened_folder==expected_folder);
+  assert(folder_creations==0 && folder_opens==1 && opened_folder==expected_folder);
+  assert(checked_path==history::WindowsPath(intended_folder));
   const auto messages_before_song_failure=message_calls;
-  folder_can_open=false;
+  saved_file_exists=false;
   Retain(&child.api.base);Execute(&wrapped.api,&child.api,song_id,0);
-  assert(folder_creations==2 && folder_opens==1 && message_calls==messages_before_song_failure+1 && last_message==L"This song's save folder could not be created or accessed.");folder_can_open=true;
-  folder_shell_succeeds=false;
+  const auto missing_song_notice=L"This song's saved audio is no longer available at its saved location.";
+  assert(folder_creations==0 && folder_opens==1 && message_calls==messages_before_song_failure+1 && last_message==missing_song_notice);
+  saved_file_exists=true;saved_file_attributes=FILE_ATTRIBUTE_DIRECTORY;
   Retain(&child.api.base);Execute(&wrapped.api,&child.api,song_id,0);
-  assert(folder_creations==3 && folder_opens==2 && last_message==L"Explorer could not open this song's folder.");
+  assert(folder_creations==0 && folder_opens==1 && last_message==missing_song_notice);
+  saved_file_attributes=FILE_ATTRIBUTE_NORMAL;folder_shell_succeeds=false;
+  Retain(&child.api.base);Execute(&wrapped.api,&child.api,song_id,0);
+  assert(folder_creations==0 && folder_opens==2 && last_message==L"Explorer could not open this song's folder.");
   folder_shell_succeeds=true;launch_click_worker=false;
   Retain(&child.api.base);Execute(&wrapped.api,&child.api,song_id,0);
-  assert(folder_creations==3 && folder_opens==2 && last_message==L"The song folder could not be opened.");
+  assert(folder_creations==0 && folder_opens==2 && last_message==L"The song folder could not be opened.");
   launch_click_worker=true;
   Retain(&root.api.base);Closed(&wrapped.api,&root.api);
   build_root();assert(child.entries[Index(&child.api,song_id)].label==L"Song: Changed");
-  const auto changed_file=history::OutputPath(L"C:\\NewRoot",destination_catalog,L".flac",false);
+  const auto changed_file=history::OutputPath(L"C:\\NewRoot",destination_catalog,L".ogg",false);
   Retain(&child.api.base);Execute(&wrapped.api,&child.api,song_id,0);
-  assert(folder_creations==4 && folder_opens==3 && opened_folder==changed_file.substr(0,changed_file.find_last_of(L'\\')));
+  assert(folder_creations==0 && folder_opens==3 && opened_folder==changed_file.substr(0,changed_file.find_last_of(L'\\')));
   const auto original_save_root=history::GetSettings().root;
   wchar_t destination_temp[2048];GetTempPathW(2048,destination_temp);
   assert(history::SetSaveLocation(std::wstring(destination_temp)+L"Floggfy-song-location-change-"+std::to_wstring(GetCurrentProcessId())));
-  build_root();assert(!child.entries[Index(&child.api,song_id)].enabled);
-  const auto clicks_before_location_change=folder_creations;
+  build_root();assert(child.entries[Index(&child.api,song_id)].visible && !child.entries[Index(&child.api,song_id)].enabled);
+  const auto clicks_before_location_change=filesystem_calls;
   Retain(&child.api.base);Execute(&wrapped.api,&child.api,song_id,0);
-  assert(folder_creations==clicks_before_location_change);
+  assert(filesystem_calls==clicks_before_location_change);
   assert(history::SetSaveLocation(original_save_root));
   history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
   // An old or mismatched worker snapshot can never enable a new song's target.
-  build_root();assert(!child.entries[Index(&child.api,song_id)].enabled);
-  const auto clicks_before_unavailable=folder_creations;
+  build_root();assert(child.entries[Index(&child.api,song_id)].visible && !child.entries[Index(&child.api,song_id)].enabled);
+  const auto clicks_before_unavailable=filesystem_calls;
   Retain(&child.api.base);Execute(&wrapped.api,&child.api,song_id,0);
-  assert(folder_creations==clicks_before_unavailable && folder_opens==3);
+  assert(filesystem_calls==clicks_before_unavailable && folder_opens==3);
+  // Exercise the click-time boundary against actual Windows files as well as
+  // mocks: deletion after binding must not open or recreate an empty folder.
+  const auto real_folder=std::wstring(destination_temp)+L"Floggfy-song-deleted-"+std::to_wstring(GetCurrentProcessId());
+  assert(CreateDirectoryW(real_folder.c_str(),nullptr));
+  const auto real_file=real_folder+L"\\Saved.ogg";
+  HANDLE real_audio=CreateFileW(real_file.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,0,nullptr);
+  assert(real_audio!=INVALID_HANDLE_VALUE);DWORD real_written=0;
+  assert(WriteFile(real_audio,"saved",5,&real_written,nullptr) && real_written==5);CloseHandle(real_audio);
+  SetSongFile(actual.identity,real_file);build_root();
+  assert(child.entries[Index(&child.api,song_id)].visible && child.entries[Index(&child.api,song_id)].enabled);
+  use_real_file_attributes=true;
+  const auto opens_before_real_file=folder_opens;
+  Retain(&child.api.base);Execute(&wrapped.api,&child.api,song_id,0);
+  assert(folder_opens==opens_before_real_file+1 && opened_folder==real_folder && folder_creations==0);
+  assert(DeleteFileW(real_file.c_str()));
+  Retain(&child.api.base);Execute(&wrapped.api,&child.api,song_id,0);
+  assert(folder_opens==opens_before_real_file+1 && last_message==missing_song_notice && folder_creations==0);
+  assert(RemoveDirectoryW(real_folder.c_str()));
+  Retain(&child.api.base);Execute(&wrapped.api,&child.api,song_id,0);
+  assert(folder_opens==opens_before_real_file+1 && GetFileAttributesW(real_folder.c_str())==INVALID_FILE_ATTRIBUTES && folder_creations==0);
+  use_real_file_attributes=false;SetSongFile(actual.identity,L"");build_root();
+  assert(child.entries[Index(&child.api,song_id)].visible && !child.entries[Index(&child.api,song_id)].enabled);
   q.format=history::PlaybackFormat::Ogg;q.level=history::PlaybackLevel::VeryHigh;q.bits=0;
   actual.level=q.level;history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
   build_root();assert(!child.entries[9].visible && !child.entries[10].visible);
@@ -524,7 +568,7 @@ int main() {
   std::puts("PASS: bounded recent labels escape mnemonics, sanitize controls, preserve Unicode pairs and full stored titles");
   std::puts("PASS: session downloads hidden until populated; stable labels and shell targets, ten-item cap, busy snapshot retention, missing-file notice");
   std::puts("PASS: menu preparation can retry; failed activation preserves trampoline state");
-  std::puts("PASS: Song opens its bound saver folder only on click, creates missing folders, reports errors and ignores mismatched destinations");
+  std::puts("PASS: Song requires saved audio, rechecks deleted files/folders on click, never creates folders and preserves frozen targets");
   std::puts("PASS: bottom technical quality rows, independent codec display, duplicate-free "
             "refresh and disabled-command ownership");
 }
