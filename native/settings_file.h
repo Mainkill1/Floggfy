@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 namespace history { namespace settings_file {
+inline constexpr size_t max_text_units=1024*1024;
 // Preserve the complete INI text, including unknown sections and comments.
 // A single flushed replacement publishes all preference changes together.
 struct Handle {
@@ -18,7 +19,7 @@ inline bool Read(const std::wstring& path,std::wstring& text,bool& unicode) {
     Handle file(CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr));
     if(file.value==INVALID_HANDLE_VALUE)return false;
     LARGE_INTEGER size{};
-    if(!GetFileSizeEx(file.value,&size)||size.QuadPart<0||size.QuadPart>1024*1024)return false;
+    if(!GetFileSizeEx(file.value,&size)||size.QuadPart<0||size.QuadPart>static_cast<LONGLONG>(2*max_text_units+2))return false;
     std::vector<unsigned char> bytes(size_t(size.QuadPart));DWORD got=0;
     if(!ReadFile(file.value,bytes.data(),DWORD(bytes.size()),&got,nullptr)||got!=bytes.size())return false;
     unicode=bytes.size()>=2&&bytes[0]==0xff&&bytes[1]==0xfe;
@@ -37,6 +38,7 @@ inline bool Read(const std::wstring& path,std::wstring& text,bool& unicode) {
         text.resize(size_t(length));
         if(MultiByteToWideChar(page,MB_ERR_INVALID_CHARS,source,count,text.data(),length)!=length)return false;
     }
+    if(text.size()>max_text_units)return false;
     // Embedded NULs and malformed UTF-16 cannot round-trip through the profile API.
     for(size_t i=0;i<text.size();++i) {
         const auto c=text[i];if(!c)return false;
@@ -51,6 +53,7 @@ inline std::vector<unsigned char> Encode(const std::wstring& text) {
     return bytes;
 }
 inline bool Write(const std::wstring& path,const std::wstring& text,bool create=false) {
+    if(text.size()>max_text_units)return false;
     const auto bytes=Encode(text);
     static volatile LONG sequence=0;
     const auto staged=path+L".settings-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(InterlockedIncrement(&sequence));

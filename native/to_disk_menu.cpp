@@ -155,10 +155,10 @@ static void Populate(Menu* menu) {
     if(inserted) {
         std::wstring label=L"Latest Downloads"; auto text=Text(label);
         if(auto* recent=MenuMethods::AddSubmenu(child,recent_id,&text)) {
+            MenuReference recent_reference(recent);
             std::wstring empty=L"No downloads yet"; auto placeholder=Text(empty);
             MenuMethods::AddItem(recent,first_recent_id,&placeholder);
             MenuMethods::SetEnabled(recent,first_recent_id,0);
-            recent->base.release(&recent->base);
         }
         MenuMethods::SetEnabled(child,recent_id,0);
         MenuMethods::SetVisible(child,recent_id,0);

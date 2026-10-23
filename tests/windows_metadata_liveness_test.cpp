@@ -10,7 +10,12 @@ void operator delete(void* p,std::size_t) noexcept {if(p)HeapFree(GetProcessHeap
 namespace {
 HANDLE blocked=nullptr,release_enrichment=nullptr,refresh_blocked=nullptr,release_refresh=nullptr;
 std::atomic<unsigned> polls{0},enrichments{0};
-int Post(int,history::Task* task){++polls;task->execute(task);task->base.release(&task->base);return 1;}
+int Post(int,history::Task* task){
+ ++polls;task->execute(task);task->base.release(&task->base);
+ // Simulate the renderer's bounded cached-state reply to each native poll.
+ wchar_t payload[]=L"FLOGGFY_PLAYBACK_V1:v=1&title=Song&artist=Artist&album=Album&duration=200&uri=spotify%3Atrack%3A0000000000000000000001&playback_quality=lossless";
+ history::String reply{payload,wcslen(payload),nullptr};assert(history::CurrentPlayback(&reply));return 1;
+}
 void Send(const wchar_t* year){
  std::wstring value=L"FLOGGFY_METADATA_V1:v=1&title=Song&artist=Artist&album=Album&duration=200&uri=spotify%3Atrack%3A0000000000000000000001&playback_quality=lossless&DISCNUMBER=2&TRACKNUMBER=7&ALBUMARTIST=Album%20Artist&DATE="+std::wstring(year);
  history::String text{value.data(),value.size(),nullptr};assert(history::Enqueue(&text));
@@ -33,7 +38,8 @@ int main(){
  history::metadata_running=true;history::metadata_polling=true;
  HANDLE worker=CreateThread(nullptr,0,history::MetadataWorker,nullptr,0,nullptr);assert(worker);
  Send(L"2025");assert(WaitForSingleObject(blocked,5000)==WAIT_OBJECT_0);
- const auto before=polls.load();Sleep(1200);assert(polls.load()>before); // Slow enrichment cannot consume the heartbeat.
+ const auto before=polls.load();Sleep(3400);assert(polls.load()>before); // Slow enrichment cannot consume the heartbeat.
+ assert(history::ReadPlaybackQuality().identity!=0); // Remains fresh beyond the footer's three-second expiry.
  history::Media media;media.title=L"Song";media.artist=L"Artist";media.album=L"Album";media.duration=200;
  assert(history::ReadClientPlaybackQuality(media)=="lossless");
  history::Catalog catalog;history::EnrichCatalog(media,catalog);assert(catalog.disc==2&&catalog.track==7&&catalog.artist==L"Album Artist"&&catalog.spotify_uri=="spotify:track:0000000000000000000001");

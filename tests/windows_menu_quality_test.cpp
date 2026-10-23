@@ -7,6 +7,12 @@
 #include <string>
 #include <vector>
 #include <cassert>
+#include <new>
+static thread_local bool fail_menu_allocation=false;
+static bool fail_recent_placeholder=false;
+void* operator new(std::size_t n){if(fail_menu_allocation){fail_menu_allocation=false;throw std::bad_alloc();}if(auto p=HeapAlloc(GetProcessHeap(),0,n?n:1))return p;throw std::bad_alloc();}
+void operator delete(void* p) noexcept {if(p)HeapFree(GetProcessHeap(),0,p);}
+void operator delete(void* p,std::size_t) noexcept {if(p)HeapFree(GetProcessHeap(),0,p);}
 static unsigned capability_queries=0;
 static SIZE_T CountQuery(LPCVOID p,PMEMORY_BASIC_INFORMATION m,SIZE_T n) {
   ++capability_queries;return VirtualQuery(p,m,n);
@@ -166,6 +172,7 @@ static Menu *AddChild(Menu *m, int id, const String *s) {
   Init(*M(m).child);
   M(m).child->submenu = true;
   Retain(&M(m).child->api.base);
+  if(id==recent_id&&fail_recent_placeholder){fail_recent_placeholder=false;fail_menu_allocation=true;}
   return &M(m).child->api;
 }
 static void Init(Model &model) {
@@ -222,6 +229,12 @@ int main() {
   ReleaseSRWLockExclusive(&history::snapshot_lock);
   history::updated = GetTickCount64() - 4000;
   assert(history::ReadPlaybackQuality().rate == 0); // Stale worker snapshots are not current.
+  Model failed_population;Init(failed_population);
+  failed_population.entries={{1,5,L"First"},{2,5,L"Second"},{3,5,L"Third"}};
+  fail_recent_placeholder=true;bool allocation_threw=false;
+  try {Populate(&failed_population.api);}catch(const std::bad_alloc&){allocation_threw=true;}
+  assert(allocation_threw&&failed_population.child&&failed_population.child->child);
+  assert(failed_population.child->refs==1&&failed_population.child->child->refs==1);
   Model root;
   Init(root);
   root.entries = {{1, 5, L"First"}, {2, 5, L"Second"}, {3, 5, L"Third"}};

@@ -22,7 +22,12 @@ int main(int argc,char** argv) {
   history::InitSettings(nullptr);
   auto s=history::GetSettings();
   assert(s.downloads==(scenario!="zero" && scenario!="legacy-zero"));
-  if(scenario=="new") assert(GetPrivateProfileIntW(L"To Disk",L"Downloads",9,path.c_str())==1);
+  if(scenario=="new") {
+    assert(GetPrivateProfileIntW(L"To Disk",L"Downloads",9,path.c_str())==1);
+    HANDLE file=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,0,nullptr);
+    assert(file!=INVALID_HANDLE_VALUE);unsigned char bom[2]{};DWORD count=0;
+    assert(ReadFile(file,bom,2,&count,nullptr)&&count==2&&bom[0]==0xff&&bom[1]==0xfe);CloseHandle(file);
+  }
   assert(s.lyrics==(scenario!="lyrics-zero"));
   const auto epoch=history::CaptureEpoch();
   assert(history::SetLyrics(false));
