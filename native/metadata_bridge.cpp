@@ -57,11 +57,15 @@ static void PollAdd(Base* b){++reinterpret_cast<PollTask*>(b)->refs;}
 static int PollDrop(Base* b){auto t=reinterpret_cast<PollTask*>(b);if(--t->refs)return 0;delete t;return 1;}
 static int PollOne(Base* b){return reinterpret_cast<PollTask*>(b)->refs==1;}
 static int PollAny(Base* b){return reinterpret_cast<PollTask*>(b)->refs>0;}
+static std::wstring CollectorOptions() {
+ const auto settings=GetSettings();
+ return std::wstring(L"window.__floggfyConfig={metadata:")+(settings.metadata?L"true":L"false")+L",lyrics:"+(settings.lyrics?L"true":L"false")+L"};";
+}
 static void PollExecute(Task*){
  Frame* f=nullptr;AcquireSRWLockShared(&frame_lock);f=polling_frame;if(f)f->base.add(&f->base);ReleaseSRWLockShared(&frame_lock);
  if(f&&reinterpret_cast<int(*)(Frame*)>(f->methods[0])(f)){
-  const wchar_t code_text[]=L"if(window.__floggfyPoll)window.__floggfyPoll();";
-  String code={const_cast<wchar_t*>(code_text),wcslen(code_text),nullptr};const wchar_t name[]=L"floggfy-metadata.js";String source={const_cast<wchar_t*>(name),wcslen(name),nullptr};
+  const auto code_text=CollectorOptions()+L"if(window.__floggfyPoll)window.__floggfyPoll();";
+  String code={const_cast<wchar_t*>(code_text.c_str()),code_text.size(),nullptr};const wchar_t name[]=L"floggfy-metadata.js";String source={const_cast<wchar_t*>(name),wcslen(name),nullptr};
   reinterpret_cast<void(*)(Frame*,const String*,const String*,int)>(f->methods[14])(f,&code,&source,1);
  }
  Release(f);poll_pending=false;
@@ -94,9 +98,11 @@ static DWORD WINAPI MetadataWorker(LPVOID) {
  Message m;
  while(metadata_running.load(std::memory_order_acquire)){if(metadata_polling.load(std::memory_order_acquire))SchedulePoll();bool got=false;AcquireSRWLockExclusive(&message_lock);if(count){m=messages[head];head=(head+1)%messages.size();--count;got=true;}ReleaseSRWLockExclusive(&message_lock);
   if(!got){WaitForSingleObject(message_event,1000);continue;}
+  if(!GetSettings().metadata)continue;
   RichMetadata metadata;std::string error;if(!ParseRichMetadata(std::string(m.data,m.length),metadata,error))continue;
   metadata.quality_time=m.time;
   try {EnrichStoredMetadata(metadata);}catch(...){HistoryLog("cached metadata unavailable; ordinary tags retained");}
+  if(!GetSettings().lyrics)metadata.fields.erase("LYRICS");
   AcquireSRWLockExclusive(&cache_lock);cache.Put(metadata);ReleaseSRWLockExclusive(&cache_lock);
   HistoryLog(("metadata cached fields="+std::to_string(metadata.fields.size())+" date="+(metadata.fields.count("DATE")?metadata.fields.at("DATE"):std::string{})+" lyrics_bytes="+std::to_string((metadata.fields.count("LYRICS")?metadata.fields.at("LYRICS").size():0))).c_str());
  }
@@ -150,7 +156,8 @@ static void Inject(Frame* frame) {
  auto main=reinterpret_cast<int(*)(Frame*)>(frame->methods[15]);
  if(!main||!main(frame))return;
  frame->base.add(&frame->base);AcquireSRWLockExclusive(&frame_lock);auto old=polling_frame;polling_frame=frame;ReleaseSRWLockExclusive(&frame_lock);Release(old);
- String code={const_cast<wchar_t*>(metadata_script),wcslen(metadata_script),nullptr};
+ const auto code_text=CollectorOptions()+metadata_script;
+ String code={const_cast<wchar_t*>(code_text.c_str()),code_text.size(),nullptr};
  const wchar_t name[]=L"floggfy-metadata.js";String source={const_cast<wchar_t*>(name),wcslen(name),nullptr};
  reinterpret_cast<void(*)(Frame*,const String*,const String*,int)>(frame->methods[14])(frame,&code,&source,1);
  HistoryLog("metadata script injected into main frame");
@@ -204,10 +211,12 @@ std::string ReadClientPlaybackQuality(const Media& media) {
  return level;
 }
 void EnrichTags(const Media& media,Tags& tags) {
- if(!GetSettings().metadata)return;
+ const auto settings=GetSettings();
+ if(!settings.metadata)return;
  AcquireSRWLockShared(&cache_lock);
  auto m=cache.Find(Utf8(media.title),Utf8(media.artist),Utf8(media.album),media.duration);
  if(m)for(const auto& field:m->fields) {
+  if(field.first=="LYRICS"&&!settings.lyrics)continue;
   tags.fields.erase(std::remove_if(tags.fields.begin(),tags.fields.end(),[&](const auto& entry){return entry.first==field.first;}),tags.fields.end());
   tags.fields.push_back(field);
  }

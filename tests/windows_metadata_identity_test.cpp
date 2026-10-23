@@ -38,6 +38,18 @@ history::Browser* ReceiveSyncClient(const void*,history::Client* client,const hi
 void* ReceiveViewClient(history::Client* client,const history::String*,const void*,void*,void*,void*){received_client=client;return &browser.api;}
 }
 int main(){
+    // Collector normalization produces this UTF-8 protocol for either raw or
+    // normalized lyric lines; native enrichment preserves it without an open UI.
+    history::RichMetadata lyric_record;std::string parse_error;
+    assert(history::ParseRichMetadata("v=1&title=Synthetic&artist=Artist&album=Album&duration=200&uri=spotify%3Atrack%3A0000000000000000000099&LYRICS=one%0Atwo%20%C3%A9%20%E9%9F%B3&artwork_url=https%3A%2F%2Fi.scdn.co%2Fimage%2Faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",lyric_record,parse_error));
+    history::cache.Put(lyric_record);
+    history::Media lyric_media;lyric_media.title=L"Synthetic";lyric_media.artist=L"Artist";lyric_media.album=L"Album";lyric_media.duration=200;
+    history::Tags lyric_tags;history::EnrichTags(lyric_media,lyric_tags);
+    const auto lyric=std::find_if(lyric_tags.fields.begin(),lyric_tags.fields.end(),[](const auto& p){return p.first=="LYRICS";});
+    assert(lyric!=lyric_tags.fields.end()&&lyric->second=="one\ntwo é 音");
+    assert(lyric_record.artwork_url=="https://i.scdn.co/image/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    const auto options=history::CollectorOptions();
+    assert(options==L"window.__floggfyConfig={metadata:true,lyrics:true};");
     // Current playback bypasses slow metadata enrichment and SMTC entirely.
     wchar_t current_message[]=L"FLOGGFY_PLAYBACK_V1:v=1&title=Next&artist=Artist&album=Album&uri=spotify:track:0000000000000000000001&duration=200&playback_quality=lossless";
     history::String current{current_message,wcslen(current_message),nullptr};

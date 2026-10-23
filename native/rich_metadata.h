@@ -5,7 +5,7 @@
 #include <deque>
 namespace history {
 struct RichMetadata {
- std::string title,artist,album,uri;
+ std::string title,artist,album,uri,artwork_url;
  double duration=0;
  std::map<std::string,std::string> fields;
  std::string playback_quality;

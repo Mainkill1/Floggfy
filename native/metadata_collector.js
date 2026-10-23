@@ -1,9 +1,11 @@
-// Reads existing client objects only. Never starts a request or resolves a service.
+// Reuses the current client request builder; never reads credentials or constructs services.
 (() => {
  'use strict';
  if(window.__floggfyMetadata)return;
  window.__floggfyMetadata=true;
  const prefix='FLOGGFY_METADATA_V1:',seenPayload=new Map(),records=[];
+ const serviceCache=new Map();
+ let builder,activeRequests=0;
  let reported=false,player,root,queue=[],seen=new Set(),walked=0,lastPlayback='',playbackTime=-Infinity;
  function playback(data){
   const payload=Object.entries(data).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&');
@@ -16,6 +18,49 @@
  const object=o=>o&&typeof o==='object';
  function remember(o){if(!records.includes(o)){if(records.length>=96)records.shift();records.push(o);}}
  function method(o,k){for(let i=0;object(o)&&i<4;i++,o=Object.getPrototypeOf(o)){const v=own(o,k);if(typeof v==='function')return v;}return undefined;}
+ function options(){return own(window,'__floggfyConfig')||{};}
+ function requestState(uri){
+  let entry=serviceCache.get(uri);
+  if(!entry){entry={metadata:{attempts:0},album:{attempts:0},lyrics:{attempts:0}};serviceCache.set(uri,entry);}
+  // Preserve in-flight entries so their bounds and cancellation remain observable.
+  if(serviceCache.size>64)for(const [key,value] of serviceCache){if(key!==uri&&!value.metadata.pending&&!value.album.pending&&!value.lyrics.pending){serviceCache.delete(key);break;}}
+  return entry;
+ }
+ function hexId(id){
+  const alphabet='0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ',bytes=Array(16).fill(0);
+  for(const c of id){let carry=alphabet.indexOf(c);for(let i=15;i>=0;i--){carry+=bytes[i]*62;bytes[i]=carry&255;carry>>=8;}if(carry)return;}
+  return bytes.map(x=>x.toString(16).padStart(2,'0')).join('');
+ }
+ function automatic(uri){
+  const config=options(),now=performance.now();
+  for(const entry of serviceCache.values())for(const kind of ['metadata','album','lyrics']){
+   const r=entry[kind];
+   if(r.pending&&(now-r.started>=12000||config.metadata!==true||(kind==='lyrics'&&config.lyrics===false))){
+    r.pending=false;r.generation++;activeRequests--;if(r.controller)r.controller.abort();
+    r.retryAt=now+5000;if(config.metadata!==true||(kind==='lyrics'&&config.lyrics===false))r.attempts=Math.max(0,r.attempts-1);
+   }
+  }
+  if(config.metadata!==true||!builder||!uri)return;
+  const entry=requestState(uri),id=uri.slice(14);
+  for(const kind of ['metadata','album','lyrics']){
+   const r=entry[kind];if(kind==='lyrics'&&config.lyrics===false)continue;
+   if(r.data||r.done||r.pending||r.attempts>=2||now<(r.retryAt||0)||activeRequests>=4)continue;
+   const albumId=text(own(own(entry.metadata.data,'album'),'gid'));if(kind==='album'&&!/^[a-f0-9]{32}$/.test(albumId||''))continue;
+   const hex=kind==='metadata'&&hexId(id);if(kind==='metadata'&&!hex)continue;
+   r.pending=true;r.started=now;r.attempts++;r.generation=(r.generation||0)+1;const generation=r.generation;activeRequests++;
+   try{
+    let request=method(builder,'build').call(builder);
+    request=request.withHost('https://spclient.wg.spotify.com').withPath(kind==='metadata'?'/metadata/4/track/'+hex:kind==='album'?'/metadata/4/album/'+albumId:'/color-lyrics/v2/track/'+id).withQueryParameters({format:'json',vocalRemoval:false});
+    if(typeof AbortController==='function'&&method(request,'withAbortSignal')){r.controller=new AbortController();request=request.withAbortSignal(r.controller.signal);}
+    Promise.resolve(request.send()).then(response=>{
+     if(r.generation!==generation)return;
+     const data=own(response,'body');if(object(data)){r.data=kind==='album'?{album:data}:data;r.done=true;}else r.retryAt=performance.now()+5000;
+    },error=>{if(r.generation!==generation)return;const status=own(error,'status');r.done=status===400||status===401||status===403||status===404;r.retryAt=performance.now()+5000;}).then(()=>{
+     if(r.generation===generation){r.pending=false;activeRequests--;r.controller=undefined;}
+    });
+   }catch{r.pending=false;activeRequests--;r.retryAt=now+5000;}
+  }
+ }
  function scan(){
   const sp=own(window,'Spicetify'),p=own(sp,'Player');if(method(p,'getState'))player=p;
   const main=document.querySelector('#main');
@@ -32,9 +77,15 @@
    if(snapshot&&method(o,'getEvents')){
     try{if(text(own(own(snapshot.call(o),'item'),'uri')))player=o;}catch{}
    }
+   const services=own(o,'_map');
+   try{let n=0;for(const [key,value] of Map.prototype.entries.call(services)){
+    if(++n>160)break;
+    if(String(key)==='Symbol(RequestBuilder)'){const candidate=own(value,'instance');if(method(candidate,'build'))builder=candidate;}
+    if(String(key)==='Symbol(PlayerAPI)'){const candidate=own(value,'instance');if(method(candidate,'getState'))player=candidate;}
+   }}catch{}
    if(own(o,'uri')||own(o,'trackUri')||own(o,'queryKey'))remember(o);
    try{let count=0;for(const v of Map.prototype.values.call(o)){if(++count>80||queue.length>=8192)break;if(object(v))queue.push(v);}}catch{}
-   const priority=['memoizedProps','value','platform','props','dependencies','firstContext','memoizedValue','child','sibling'];
+   const priority=['memoizedProps','value','registry','platform','props','dependencies','firstContext','memoizedValue','child','sibling'];
    const keys=Object.keys(o).slice(0,80).sort((a,b)=>{
     const x=priority.indexOf(a),y=priority.indexOf(b);return (x<0?99:x)-(y<0?99:y);
    });
@@ -61,21 +112,37 @@
   }
   if(!release)release=text(own(m,'year'));
   if(release&&/^\d{4}(?:-\d{2}(?:-\d{2})?)?$/.test(release)&&(!data.DATE||release.slice(0,4)!==data.DATE.slice(0,4)||release.length>=data.DATE.length)){data.DATE=release;data.YEAR=release.slice(0,4);}
-  const names=artists(own(source,'artists')||own(m,'artists'));
+  const names=artists(own(source,'artists')||own(m,'artists')||own(source,'artist'));
   putArtists(data,'ARTIST',names.length?names:indexed(m,'artist_name'));
-  const albumNames=artists(own(album,'artists'));
+  const albumNames=artists(own(album,'artists')||own(album,'artist'));
   putArtists(data,'ALBUMARTIST',albumNames.length?albumNames:indexed(m,'album_artist_name'));
   const label=text(own(m,'album_label')||own(m,'label')||own(source,'label')||own(album,'label'));
   if(label&&label.length<=4096){data.LABEL=label;data.ORGANIZATION=label;}
-  const genres=list(own(m,'genre')||own(m,'genres')||own(source,'genres')||own(album,'genres'));
+  const genres=list(own(m,'genre')||own(m,'genres')||own(source,'genres')||own(album,'genres')||own(album,'genre'));
   if(genres)data.GENRE=genres;
-  for(const [tag,key] of [['DISCNUMBER','album_disc_number'],['DISCTOTAL','album_disc_count'],['TRACKTOTAL','album_track_count'],['ISRC','isrc'],['PUBLISHER','publisher'],['LANGUAGE','language'],['COPYRIGHT','copyright']]){
+  for(const [tag,key] of [['TRACKNUMBER','number'],['TRACKNUMBER','album_track_number'],['DISCNUMBER','disc_number'],['DISCNUMBER','album_disc_number'],['DISCTOTAL','album_disc_count'],['TRACKTOTAL','album_track_count'],['ISRC','isrc'],['PUBLISHER','publisher'],['LANGUAGE','language'],['COPYRIGHT','copyright']]){
    const value=text(own(m,key)||own(source,key)||own(album,key));if(value&&value.length<=4096&&(!/NUMBER|TOTAL/.test(tag)||/^[1-9]\d{0,5}$/.test(value)))data[tag]=value;
   }
+  const discs=entries(own(album,'disc'),100);if(discs.length){data.DISCTOTAL=String(discs.length);const total=discs.reduce((sum,disc)=>sum+entries(own(disc,'track'),1000).length,0);if(total)data.TRACKTOTAL=String(total);}
+  const external=entries(own(source,'external_id'),32).find(x=>text(own(x,'type'))==='isrc');
+  const isrc=text(own(external,'id'));if(isrc)data.ISRC=isrc;
+  const language=list(own(source,'language_of_performance'));if(language)data.LANGUAGE=language;
+  for(const copyright of entries(own(album,'copyright'),32)){
+   const value=text(own(copyright,'text'));if(value&&value.length<=4096)data[own(copyright,'type')==='P'?'PHONOGRAMCOPYRIGHT':'COPYRIGHT']=value;
+  }
+  const urls=[];
+  for(const key of ['image_xlarge_url','image_large_url','image_url','image_small_url']){const url=text(own(m,key));if(url)urls.push({url,size:key.includes('xlarge')?1000:key.includes('large')?640:0});}
+  for(const image of [...entries(own(album,'images'),32),...entries(own(own(album,'cover_group'),'image'),32)]){
+   const file=text(own(image,'file_id')),url=text(own(image,'url'))||(file&&/^[a-f0-9]{40}$/.test(file)?'https://i.scdn.co/image/'+file:undefined);
+   if(url)urls.push({url,size:Number(own(image,'width'))||0});
+  }
+  const cover=urls.filter(x=>/^https:\/\/i\.scdn\.co\/image\/[a-f0-9]{40}$/.test(x.url)).sort((a,b)=>b.size-a.size)[0];
+  if(cover&&(!data.artwork_url||cover.size>(data.__coverSize||0))){data.artwork_url=cover.url;Object.defineProperty(data,'__coverSize',{value:cover.size,writable:true,configurable:true});}
+  if(options().lyrics===false)return;
   const lyric=own(source,'lyrics')||own(m,'lyrics');
   let words=text(lyric);
-  const lines=own(lyric,'lines');
-  if(Array.isArray(lines)&&lines.length<=2000)words=entries(lines,2000).map(l=>text(own(l,'words'))||'').join('\n');
+  const lines=Array.isArray(lyric)?lyric:own(lyric,'lines');
+  if(Array.isArray(lines)&&lines.length<=2000)words=entries(lines,2000).map(l=>text(own(l,'words'))||text(own(l,'text'))||'').join('\n');
   if(words&&words.length<=20000)data.LYRICS=words;
  }
  function cached(data,o){
@@ -93,7 +160,7 @@
  }
  function tick(){
   try{
-   scan();if(!player){playback({v:1});return;}
+   automatic();scan();if(!player){playback({v:1});return;}
    if(!reported){console.info('FLOGGFY_STATUS:cached player found');reported=true;}
    const state=method(player,'getState').call(player),item=own(state,'item'),m=own(item,'metadata')||{},uri=text(own(item,'uri'));
    if(!/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')){playback({v:1});return;}
@@ -114,8 +181,13 @@
    if(['low','normal','high','very_high','lossless','lossless_24','hifi'].includes(level))data.playback_quality=level;
    playback({v:1,title:data.title,artist:data.artist,album:data.album,uri,duration:data.duration,playback_quality:data.playback_quality});
    if(!track)return; // Episode footer does not enter music-tag enrichment.
+   automatic(uri);
+   if(options().metadata===false)return;
+   const fetched=serviceCache.get(uri);
+   if(fetched){merge(data,fetched.metadata.data);merge(data,fetched.album.data);if(options().lyrics!==false)merge(data,fetched.lyrics.data);}
    for(const record of records)cached(data,record);
    merge(data,item); // Current playback snapshot wins over older cached data.
+   if(options().lyrics===false)delete data.LYRICS;
    const encode=()=>Object.entries(data).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&');
    let payload=encode();if(payload.length>131072){delete data.LYRICS;payload=encode();}
    const last=seenPayload.get(uri),now=performance.now();
@@ -125,8 +197,7 @@
   }catch{/* Missing or changed caches leave ordinary tags intact. */}
  }
  window.__floggfyPoll=tick;
- console.info('FLOGGFY_STATUS:cache-only collector started');
+ console.info('FLOGGFY_STATUS:metadata collector started');
  tick();
- // Keep the lightweight current-track heartbeat independent of metadata disk work.
- setInterval(tick,1000);
+ // The native metadata worker owns the only heartbeat (and supplies settings).
 })();
