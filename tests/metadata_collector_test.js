@@ -89,9 +89,18 @@ console.log('PASS: cached metadata, exact track association, cache updates, miss
 const normalizedOut=[];
 const normalizedContext={...context,window:{Spicetify:{Player:player}},console:{info:x=>normalizedOut.push(x)}};
 Object.defineProperty(state,'item',{value:{uri,metadata:{title:'Song',artist_name:'Artist',album_title:'Album',duration:'200000'}},configurable:true,writable:true});
-value.query={trackUri:uri,data:{lyrics:[{start:0,end:10,text:'normalized one'},{start:10,end:20,text:'normalized two é 音'}]}};
+value.query={trackUri:uri,data:{syncType:'LINE_SYNCED',lyrics:[{start:0,end:12340,text:'normalized one'},{start:12340,end:20000,text:'normalized two é 音'}]}};
 vm.runInNewContext(script,normalizedContext);
-assert(normalizedOut.some(x=>x.includes('LYRICS=normalized%20one%0Anormalized%20two%20%C3%A9%20%E9%9F%B3')));
+assert(normalizedOut.some(x=>x.includes('LYRICS=%5B00%3A00.000%5Dnormalized%20one%0A%5B00%3A12.340%5Dnormalized%20two%20%C3%A9%20%E9%9F%B3')));
+
+// Invalid or explicitly unsynchronized timing stays readable plain text.
+for(const [syncType,starts] of [['UNSYNCED',[0,0]],['LINE_SYNCED',[1000,-1]],['LINE_SYNCED',[2000,1000]],['LINE_SYNCED',[0,NaN]],['LINE_SYNCED',[0,null]]]){
+ value.query.data={syncType,lyrics:starts.map((start,i)=>({start,text:'line '+i}))};normalizedContext.window.__floggfyPoll();
+ assert(normalizedOut.at(-1).includes('LYRICS=line%200%0Aline%201'));
+}
+value.query.data={lyrics:{syncType:'LINE_SYNCED',lines:[{startTimeMs:'1234',words:'raw one'},{startTimeMs:'62345',words:'raw two'}]}};
+normalizedOut.length=0;normalizedContext.window.__floggfyPoll();
+assert(normalizedOut.at(-1).includes('LYRICS=%5B00%3A01.234%5Draw%20one%0A%5B01%3A02.345%5Draw%20two'));
 
 async function automatic(){
  const calls=[],messages=[];let now=0,timers=0,pending=[];
@@ -106,12 +115,12 @@ async function automatic(){
  assert(calls.some(x=>x.endsWith('/metadata/4/track/00000000000000000000000000000001')));
  const flush=async()=>{for(let i=0;i<8;i++)await Promise.resolve();c.window.__floggfyPoll();};
  pending.find(x=>x.path.includes('metadata')).resolve({body:{artist:[{name:'Artist'},{name:'Guest'}],album:{gid:'c'.repeat(32),artist:[{name:'Album Artist'}],label:'Label',date:{year:2025,month:2,day:3},cover_group:{image:[{file_id:'a'.repeat(40),width:64,height:64},{file_id:'b'.repeat(40),width:640,height:640}]}},number:4,disc_number:2,external_id:[{type:'isrc',id:'TESTISRC'}],language_of_performance:['en']}});
- pending.find(x=>x.path.includes('color-lyrics')).resolve({body:{lyrics:{lines:[{words:'automatic one'},{words:'automatic two'}]}}});
+ pending.find(x=>x.path.includes('color-lyrics')).resolve({body:{lyrics:{syncType:'LINE_SYNCED',lines:[{startTimeMs:'1234',words:'automatic one'},{startTimeMs:'62345',words:'automatic two'}]}}});
  await flush();
  assert.equal(calls.length,3,'full album details fetched once');
  pending[2].resolve({body:{gid:'c'.repeat(32),disc:[{number:1,track:[{},{}]},{number:2,track:[{}]}],copyright:[{type:'C',text:'Synthetic Copyright'},{type:'P',text:'Synthetic Recording'}]}});await flush();
  let last=messages.filter(x=>x.startsWith('FLOGGFY_METADATA_V1:')).at(-1);
- for(const part of ['LYRICS=automatic%20one%0Aautomatic%20two','DATE=2025-02-03','ARTIST=Artist%3B%20Guest','ISRC=TESTISRC','TRACKNUMBER=4','DISCNUMBER=2','LANGUAGE=en','DISCTOTAL=2','TRACKTOTAL=3','COPYRIGHT=Synthetic%20Copyright','PHONOGRAMCOPYRIGHT=Synthetic%20Recording','artwork_url=https%3A%2F%2Fi.scdn.co%2Fimage%2F'+ 'b'.repeat(40)])assert(last.includes(part),part);
+ for(const part of ['LYRICS=%5B00%3A01.234%5Dautomatic%20one%0A%5B01%3A02.345%5Dautomatic%20two','DATE=2025-02-03','ARTIST=Artist%3B%20Guest','ISRC=TESTISRC','TRACKNUMBER=4','DISCNUMBER=2','LANGUAGE=en','DISCTOTAL=2','TRACKTOTAL=3','COPYRIGHT=Synthetic%20Copyright','PHONOGRAMCOPYRIGHT=Synthetic%20Recording','artwork_url=https%3A%2F%2Fi.scdn.co%2Fimage%2F'+ 'b'.repeat(40)])assert(last.includes(part),part);
  c.window.__floggfyConfig.lyrics=false;await flush();last=messages.filter(x=>x.startsWith('FLOGGFY_METADATA_V1:')).at(-1);assert(!last.includes('LYRICS='));
  c.window.__floggfyConfig.lyrics=true;await flush();assert.equal(calls.length,3,'reuse completed cache');
  // Switching tracks before replies must never attach old lyrics or art.

@@ -146,8 +146,21 @@
   const lyric=own(source,'lyrics')||own(m,'lyrics');
   let words=text(lyric);
   const lines=Array.isArray(lyric)?lyric:own(lyric,'lines');
-  if(Array.isArray(lines)&&lines.length<=2000)words=entries(lines,2000).map(l=>text(own(l,'words'))||text(own(l,'text'))||'').join('\n');
-  if(words&&words.length<=20000)data.LYRICS=words;
+  let synced=false;
+  if(Array.isArray(lines)&&lines.length<=2000){
+   const values=entries(lines,2000),syncType=own(lyric,'syncType')||own(source,'syncType');
+   const starts=values.map(l=>{const v=own(l,'startTimeMs')??own(l,'start');return typeof v==='number'?v:typeof v==='string'&&/^\d+$/.test(v)?Number(v):NaN;});
+   synced=(syncType==='LINE_SYNCED'||syncType==='WORD_SYNCED')&&values.length>0&&starts.every((n,i)=>Number.isSafeInteger(n)&&n>=0&&n<=86400000&&(!i||n>=starts[i-1]))&&(starts.length===1||starts.at(-1)>0);
+   words=values.map((l,i)=>{
+    const line=text(own(l,'words'))||text(own(l,'text'))||'';
+    if(!synced)return line;
+    const ms=starts[i],stamp='['+String(Math.floor(ms/60000)).padStart(2,'0')+':'+String(Math.floor(ms/1000)%60).padStart(2,'0')+'.'+String(ms%1000).padStart(3,'0')+']';
+    return line.split(/\r?\n/).map(part=>stamp+part).join('\n');
+   }).join('\n');
+  }
+  // A plain cached response must not replace a synchronized response obtained
+  // from another exact-track source during the same collection pass.
+  if(words&&words.length<=20000&&(synced||!/^\[\d{2,}:\d{2}\.\d{3}\]/.test(data.LYRICS||'')))data.LYRICS=words;
  }
  function cached(data,o){
   const uri=own(o,'uri')||own(o,'trackUri');

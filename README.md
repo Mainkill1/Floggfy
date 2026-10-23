@@ -49,7 +49,13 @@ FLAC needs lossless playback in Spotify. Floggfy does not convert Ogg into FLAC.
 The bottom shows the current item and available quality details.
 
 Lyrics are collected automatically when Spotify provides them; the lyrics panel
-does not need to be open. Turn **Lyrics** off in **To Disk**, or set `Lyrics=0` in
+does not need to be open. Timed lyrics are embedded as LRC text in the `LYRICS`
+tag; lyrics without timing use plain text. No separate `.lrc` file is created.
+After a complete replay, an existing FLAC can receive missing lyrics or upgrade
+plain lyrics to synchronized lyrics, even when the current playback quality is
+lower. Its audio, artwork and other tags stay intact. Already synchronized lyrics
+are retained, and audio quality upgrades keep existing lyrics if needed.
+Turn **Lyrics** off in **To Disk**, or set `Lyrics=0` in
 the INI, if a Spotify update causes compatibility problems. Album artwork and
 other available metadata continue to work. `Metadata=0` disables all extra metadata collection.
 
@@ -57,7 +63,8 @@ other available metadata continue to work. `Metadata=0` disables all extra metad
 
 
 `SpotifyHistory.ini` is created automatically. Keep your existing file when
-upgrading. Use it to disable the menu, extra song details or activity log.
+upgrading. Use it to disable the menu, extra song details or activity log. At the 5 MiB log limit, the oldest complete
+lines are removed as new entries arrive.
 
 ## Having trouble?
 

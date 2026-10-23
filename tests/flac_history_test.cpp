@@ -35,6 +35,43 @@ int main(int argc,char**argv) {
     while(p<start) { unsigned kind=out[p]&127; size_t n=(size_t(out[p+1])<<16)|(size_t(out[p+2])<<8)|out[p+3]; comments+=kind==4; pictures+=kind==6; p+=4+n; }
     check(comments==1 && pictures==1,"one native VORBIS_COMMENT and PICTURE block");
     auto duplicate=out; check(TagFlac(duplicate,tags,out,error),"retagging replaces metadata rather than stacking");
+    // Filling lyrics is a metadata-only upgrade; no cover is required and all
+    // pre-existing tags, picture blocks and original compressed frames survive.
+    Tags incoming;incoming.fields={{"TITLE","Track"},{"ARTIST","Artist"},{"ALBUM","Album"},{"LYRICS","第一行\nDeuxième ligne"}};
+    auto original=out;std::vector<uint8_t> filled;
+    check(FillFlacLyrics(original,incoming,filled,error)==LyricsUpdate::Updated,"missing Unicode lyrics added");
+    size_t filled_audio=0;check(ParseFlacMetadata(filled,tagged,filled_audio)==FlacParse::Valid,"filled metadata valid");
+    check(std::vector<uint8_t>(filled.begin()+filled_audio,filled.end())==std::vector<uint8_t>(original.begin()+start,original.end()),"lyric fill preserves audio bytes");
+    auto blocks=[](const std::vector<uint8_t>& f){std::vector<uint8_t> result;size_t p=4;bool last=false;while(!last){last=(f[p]&128)!=0;unsigned kind=f[p]&127;size_t n=(size_t(f[p+1])<<16)|(size_t(f[p+2])<<8)|f[p+3];if(kind!=4){result.push_back(uint8_t(kind));result.insert(result.end(),f.begin()+p+1,f.begin()+p+4+n);}p+=4+n;}return result;};
+    check(blocks(original)==blocks(filled),"all non-comment metadata including artwork unchanged");
+    Tags read;check(ReadFlacComments(filled,read,error),"read filled comments");
+    check(read.fields.back()==incoming.fields.back(),"Unicode lyrics retained exactly");
+    auto upgrade=incoming;upgrade.fields.pop_back();
+    check(CopyFlacLyrics(filled,upgrade) && upgrade.fields.back()==incoming.fields.back(),"quality upgrade retains existing lyrics when new response is missing");
+    auto different=upgrade;different.fields[0].second="Different";different.fields.pop_back();
+    check(!CopyFlacLyrics(filled,different),"lyrics never carried between different tracks");
+    auto existing=filled;check(FillFlacLyrics(existing,incoming,filled,error)==LyricsUpdate::Unchanged && filled.empty(),"existing lyrics never overwritten");
+    auto timed=incoming;timed.fields.back().second="[00:01.234]第一行\n[00:12.340]Deuxième ligne";
+    check(FillFlacLyrics(existing,timed,filled,error)==LyricsUpdate::Updated,"plain lyrics upgrade to synchronized LRC");
+    check(FillFlacLyrics(filled,incoming,out,error)==LyricsUpdate::Unchanged,"synchronized lyrics never downgraded to plain");
+    check(FillFlacLyrics(filled,timed,out,error)==LyricsUpdate::Unchanged,"synchronized lyrics never rewritten unnecessarily");
+    auto carry_plain=incoming;
+    check(CopyFlacLyrics(filled,carry_plain) && carry_plain.fields.back()==timed.fields.back(),"quality upgrade keeps old synchronization over a new plain response");
+    auto long_lyrics=incoming;long_lyrics.fields.back().second.clear();
+    for(unsigned i=0;i<7000;i++)long_lyrics.fields.back().second+="音";
+    check(FillFlacLyrics(original,long_lyrics,filled,error)==LyricsUpdate::Updated,"UTF-8 byte length above 20000 remains supported");
+    auto long_upgrade=tags;check(CopyFlacLyrics(filled,long_upgrade)&&long_upgrade.fields.back()==long_lyrics.fields.back(),"long Unicode lyrics preserved on audio upgrade");
+    auto uri_old=tags;uri_old.fields.push_back({"SPOTIFY_URI","spotify:track:0000000000000000000001"});
+    check(TagFlac(b,uri_old,out,error),"URI fixture tagged");
+    auto uri_new=incoming;uri_new.fields.push_back({"SPOTIFY_URI","spotify:track:0000000000000000000002"});
+    check(FillFlacLyrics(out,uri_new,filled,error)==LyricsUpdate::Unchanged,"conflicting Spotify URI rejected despite matching title");
+    out=original;
+    auto wrong=incoming;wrong.fields[0].second="Different track";
+    check(FillFlacLyrics(original,wrong,filled,error)==LyricsUpdate::Unchanged,"different track identity rejected");
+    auto empty=incoming;empty.fields.back().second=" \r\n\t";
+    check(FillFlacLyrics(original,empty,filled,error)==LyricsUpdate::Unchanged,"no empty lyric upgrade");
+    auto truncated=original;truncated.resize(44);
+    check(FillFlacLyrics(truncated,incoming,filled,error)==LyricsUpdate::Invalid && filled.empty(),"malformed file never overwritten");
     if(argc==4) {
         FILE* f=fopen(argv[1],"rb"); check(f,"real source opens"); fseek(f,0,SEEK_END); b.resize(ftell(f)); rewind(f); check(fread(b.data(),1,b.size(),f)==b.size(),"real source read"); fclose(f);
         f=fopen(argv[2],"rb"); check(f,"real artwork opens"); fseek(f,0,SEEK_END); tags.cover.resize(ftell(f)); rewind(f); fread(tags.cover.data(),1,tags.cover.size(),f); fclose(f);
