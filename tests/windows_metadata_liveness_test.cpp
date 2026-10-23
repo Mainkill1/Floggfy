@@ -8,23 +8,26 @@ void* operator new(std::size_t bytes){if(fail_allocation){fail_allocation=false;
 void operator delete(void* p) noexcept {if(p)HeapFree(GetProcessHeap(),0,p);}
 void operator delete(void* p,std::size_t) noexcept {if(p)HeapFree(GetProcessHeap(),0,p);}
 namespace {
-HANDLE blocked=nullptr,release_enrichment=nullptr;
+HANDLE blocked=nullptr,release_enrichment=nullptr,refresh_blocked=nullptr,release_refresh=nullptr;
 std::atomic<unsigned> polls{0},enrichments{0};
 int Post(int,history::Task* task){++polls;task->execute(task);task->base.release(&task->base);return 1;}
 void Send(const wchar_t* year){
- std::wstring value=L"FLOGGFY_METADATA_V1:v=1&title=Song&artist=Artist&album=Album&duration=200&uri=spotify%3Atrack%3A0000000000000000000001&playback_quality=lossless&DISCNUMBER=2&DATE="+std::wstring(year);
+ std::wstring value=L"FLOGGFY_METADATA_V1:v=1&title=Song&artist=Artist&album=Album&duration=200&uri=spotify%3Atrack%3A0000000000000000000001&playback_quality=lossless&DISCNUMBER=2&TRACKNUMBER=7&ALBUMARTIST=Album%20Artist&DATE="+std::wstring(year);
  history::String text{value.data(),value.size(),nullptr};assert(history::Enqueue(&text));
 }
 }
 namespace history {
 void EnrichStoredMetadata(RichMetadata& metadata){
- if(enrichments.fetch_add(1)==0){SetEvent(blocked);WaitForSingleObject(release_enrichment,10000);}
+ const auto pass=enrichments.fetch_add(1);
+ if(pass==0){SetEvent(blocked);WaitForSingleObject(release_enrichment,10000);}
+ if(pass==2){SetEvent(refresh_blocked);WaitForSingleObject(release_refresh,10000);}
  metadata.fields["COMMENT"]="slow enrichment";
 }
 void CacheAlbumArtwork(const std::string&,const std::string&){}
 bool GetAlbumArtwork(const std::string&,std::vector<uint8_t>&,std::string&){return false;}
 }
 int main(){
+ refresh_blocked=CreateEventW(nullptr,TRUE,FALSE,nullptr);release_refresh=CreateEventW(nullptr,TRUE,FALSE,nullptr);
  blocked=CreateEventW(nullptr,TRUE,FALSE,nullptr);release_enrichment=CreateEventW(nullptr,TRUE,FALSE,nullptr);assert(blocked&&release_enrichment);
  history::message_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);history::post_task=Post;
  history::metadata_running=true;history::metadata_polling=true;
@@ -33,7 +36,7 @@ int main(){
  const auto before=polls.load();Sleep(1200);assert(polls.load()>before); // Slow enrichment cannot consume the heartbeat.
  history::Media media;media.title=L"Song";media.artist=L"Artist";media.album=L"Album";media.duration=200;
  assert(history::ReadClientPlaybackQuality(media)=="lossless");
- history::Catalog catalog;history::EnrichCatalog(media,catalog);assert(catalog.disc==2&&catalog.spotify_uri=="spotify:track:0000000000000000000001");
+ history::Catalog catalog;history::EnrichCatalog(media,catalog);assert(catalog.disc==2&&catalog.track==7&&catalog.artist==L"Album Artist"&&catalog.spotify_uri=="spotify:track:0000000000000000000001");
  Send(L"2026");
  history::Tags current;
  const auto deadline=GetTickCount64()+5000;
@@ -41,8 +44,15 @@ int main(){
  auto date=std::find_if(current.fields.begin(),current.fields.end(),[](const auto& item){return item.first=="DATE";});assert(date!=current.fields.end()&&date->second=="2026");
  SetEvent(release_enrichment);while(enrichments.load()<2){assert(GetTickCount64()<deadline);Sleep(5);}
  current={};history::EnrichTags(media,current);date=std::find_if(current.fields.begin(),current.fields.end(),[](const auto& item){return item.first=="DATE";});assert(date!=current.fields.end()&&date->second=="2026");
+ // An unchanged client heartbeat must retain already obtained richer fields,
+ // even while its next enrichment is blocked again.
+ Send(L"2026");assert(WaitForSingleObject(refresh_blocked,5000)==WAIT_OBJECT_0);
+ current={};history::EnrichTags(media,current);
+ assert(std::find(current.fields.begin(),current.fields.end(),std::make_pair(std::string("COMMENT"),std::string("slow enrichment")))!=current.fields.end());
+ SetEvent(release_refresh);
+ history::metadata_running=false;SetEvent(history::message_event);assert(WaitForSingleObject(worker,5000)==WAIT_OBJECT_0);CloseHandle(worker);
+ history::enrichment_running=false;SetEvent(history::enrichment_event);assert(WaitForSingleObject(history::enrichment_thread,5000)==WAIT_OBJECT_0);
  fail_allocation=true;bool threw=false;try{history::Tags tags;history::EnrichTags(media,tags);}catch(const std::bad_alloc&){threw=true;}
  assert(threw&&TryAcquireSRWLockExclusive(&history::cache_lock));ReleaseSRWLockExclusive(&history::cache_lock);
- history::metadata_running=false;SetEvent(history::message_event);assert(WaitForSingleObject(worker,5000)==WAIT_OBJECT_0);CloseHandle(worker);
  puts("PASS: heartbeat and basic metadata survive blocked enrichment, stale enrichment never replaces newer data and allocation failures release cache locks");
 }

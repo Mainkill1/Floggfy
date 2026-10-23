@@ -112,7 +112,15 @@ static std::array<EnrichmentJob,4> enrichment_jobs;
 static size_t enrichment_head=0,enrichment_count=0;
 static HANDLE enrichment_event=nullptr,enrichment_thread=nullptr;
 static std::atomic<bool> enrichment_running{false};
-static std::uint64_t next_revision=0;
+static void MergeAvailableFields(const RichMetadata& available,RichMetadata& live) {
+ CachedTrackMetadata cached;
+ cached.uri=available.uri;cached.title=available.title;cached.album=available.album;
+ cached.duration=available.duration;cached.fields=available.fields;
+ // Uses the established missing-field/richer-date rules: current live values
+ // win, while unchanged messages retain already obtained enrichment.
+ MergeCachedMetadata(cached,live);
+}
+
 static DWORD WINAPI EnrichmentWorker(LPVOID) {
  SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL);
  while(enrichment_running.load(std::memory_order_acquire)) {
@@ -133,7 +141,11 @@ static DWORD WINAPI EnrichmentWorker(LPVOID) {
    if(!preferences.lyrics)metadata.fields.erase("LYRICS");
    {ExclusiveSrw guard(cache_lock);
     const auto current=cache.Find(metadata.title,metadata.artist,metadata.album,metadata.duration);
-    if(current && current->uri==metadata.uri && current->revision==metadata.revision)cache.Put(metadata);}
+    if(current && current->uri==metadata.uri) {
+     auto merged=*current;MergeAvailableFields(metadata,merged);
+     if(!preferences.lyrics)merged.fields.erase("LYRICS");
+     cache.Put(merged);
+    }}
   }catch(...) {HistoryLog("metadata enrichment failed; current client metadata retained");}
  }
  return 0;
@@ -176,9 +188,12 @@ static DWORD WINAPI MetadataWorker(LPVOID) {
    const auto preferences=GetSettings();if(!preferences.metadata)continue;
    RichMetadata metadata;std::string error;
    if(!ParseRichMetadata(std::string(message.data,message.length),metadata,error))continue;
-   metadata.quality_time=message.time;metadata.revision=++next_revision;
-   if(!preferences.lyrics)metadata.fields.erase("LYRICS");
-   {ExclusiveSrw guard(cache_lock);cache.Put(metadata);}
+   metadata.quality_time=message.time;
+   {ExclusiveSrw guard(cache_lock);
+    const auto previous=cache.Find(metadata.title,metadata.artist,metadata.album,metadata.duration);
+    if(previous && previous->uri==metadata.uri)MergeAvailableFields(*previous,metadata);
+    if(!preferences.lyrics)metadata.fields.erase("LYRICS");
+    cache.Put(metadata);}
    QueueEnrichment(metadata,preferences.generation);
   }catch(...) {HistoryLog("metadata message failed; next client snapshot will retry");}
  }
@@ -292,21 +307,43 @@ std::string ReadClientPlaybackQuality(const Media& media) {
  const auto now=GetTickCount64();
  return record && record->quality_time && now>=record->quality_time && now-record->quality_time<=20000 ? record->playback_quality : std::string{};
 }
+static std::wstring MetadataWide(const std::string& text) {
+ if(text.empty()||text.size()>4096)return {};
+ const auto length=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,text.data(),int(text.size()),nullptr,0);
+ if(!length)return {};
+ std::wstring result(size_t(length),L'\0');
+ if(MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,text.data(),int(text.size()),result.data(),length)!=length)return {};
+ return result;
+}
+static unsigned MetadataNumber(const std::string& text) {
+ if(text.empty()||text.size()>6)return 0;
+ unsigned number=0;
+ for(char digit:text){if(digit<'0'||digit>'9')return 0;number=number*10+unsigned(digit-'0');}
+ return number;
+}
 void EnrichCatalog(const Media& media,Catalog& catalog) {
  if(!GetSettings().metadata)return;
  const auto title=Utf8(media.title),artist=Utf8(media.artist),album=Utf8(media.album);
- std::string uri,disc;
+ const char* keys[]={"TITLE","ALBUM","ALBUMARTIST","ARTIST","TRACKNUMBER","DISCNUMBER"};
+ std::array<std::string,6> fields;std::string uri;
  {SharedSrw guard(cache_lock);
   const auto record=cache.Find(title,artist,album,media.duration);
   if(!record)return;
   uri=record->uri;
-  const auto field=record->fields.find("DISCNUMBER");
-  if(field!=record->fields.end())disc=field->second;}
- catalog.spotify_uri=std::move(uri);
- unsigned number=0;
- if(disc.empty()||disc.size()>6)return;
- for(char digit:disc){if(digit<'0'||digit>'9')return;number=number*10+unsigned(digit-'0');}
- if(number)catalog.disc=number;
+  for(size_t i=0;i<fields.size();++i){const auto value=record->fields.find(keys[i]);if(value!=record->fields.end())fields[i]=value->second;}}
+ // Decode and allocate the complete replacement outside the cache lock. Keep
+ // publication tags and the Song probe on the same canonical directory identity.
+ auto next=catalog;next.spotify_uri=std::move(uri);
+ auto replace=[](std::wstring& target,const std::string& value){auto wide=MetadataWide(value);if(!wide.empty())target.swap(wide);};
+ replace(next.title,fields[0]);replace(next.album,fields[1]);
+ if(!fields[2].empty())replace(next.artist,fields[2]);
+ else if(media.album_artist.empty())replace(next.artist,fields[3]);
+ const auto track=MetadataNumber(fields[4]),disc=MetadataNumber(fields[5]);
+ if(track)next.track=track;
+ if(disc)next.disc=disc;
+ if(next.kind==MediaKind::Music||next.kind==MediaKind::VariousArtists)
+  next.kind=_wcsicmp(next.artist.c_str(),L"Various Artists")==0 ? MediaKind::VariousArtists : MediaKind::Music;
+ catalog=std::move(next);
 }
 void EnrichTags(const Media& media,Tags& tags) {
  const auto preferences=GetSettings();if(!preferences.metadata)return;
