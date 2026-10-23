@@ -3,6 +3,7 @@
 #include "lyrics_update.h"
 #include "flac_history_core.h"
 #include "history_settings.h"
+#include "file_publication.h"
 #include <memory>
 namespace history {
 namespace {
@@ -10,36 +11,41 @@ struct CloseFile {void operator()(void* h)const{if(h&&h!=INVALID_HANDLE_VALUE)Cl
 using File=std::unique_ptr<void,CloseFile>;
 }
 
-void PreserveFlacLyrics(const std::wstring& path,Tags& incoming) {
-    File file(CreateFileW(WindowsPath(path).c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr));
-    if(file.get()==INVALID_HANDLE_VALUE)return;
-    LARGE_INTEGER size{};std::vector<uint8_t> source;
-    if(GetFileSizeEx(file.get(),&size)&&size.QuadPart>0&&size.QuadPart<=500LL*1024*1024){source.resize(size_t(size.QuadPart));DWORD n=0;if(!ReadFile(file.get(),source.data(),DWORD(source.size()),&n,nullptr)||n!=source.size())source.clear();}
-    file.reset();if(!source.empty())CopyFlacLyrics(source,incoming);
+namespace {
+bool CompleteOwnedFlac(const std::wstring& path,const Catalog& catalog) {
+    RecordingFile recording;
+    return ReadRecording(path,recording)&&recording.complete&&recording.owned&&
+           recording.quality.codec==Codec::Flac&&MatchesRecording(recording,catalog);
 }
-FileLyricsUpdate UpdateFlacLyrics(const std::wstring& path,const Tags& incoming) {
-    bool lyrics=false;for(const auto& field:incoming.fields)if(field.first=="LYRICS" && field.second.find_first_not_of(" \t\r\n")!=std::string::npos)lyrics=true;
+bool ReadSource(HANDLE file,std::vector<uint8_t>& source) {
+    LARGE_INTEGER size{};
+    if(!GetFileSizeEx(file,&size)||size.QuadPart<=0||size.QuadPart>500LL*1024*1024)return false;
+    source.resize(size_t(size.QuadPart));DWORD read=0;
+    return ReadFile(file,source.data(),DWORD(source.size()),&read,nullptr)&&read==source.size();
+}
+}
+void PreserveFlacLyrics(const std::wstring& path,Tags& incoming,const Catalog& catalog) {
+    File file(CreateFileW(WindowsPath(path).c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr));
+    if(file.get()==INVALID_HANDLE_VALUE||!CompleteOwnedFlac(path,catalog))return;
+    std::vector<uint8_t> source;
+    if(ReadSource(file.get(),source))CopyFlacLyrics(source,incoming);
+}
+FileLyricsUpdate UpdateFlacLyrics(const std::wstring& path,const Tags& incoming,const Catalog& catalog) {
+    bool lyrics=false;
+    for(const auto& field:incoming.fields)
+        if(field.first=="LYRICS"&&field.second.find_first_not_of(" \t\r\n")!=std::string::npos)lyrics=true;
     if(!lyrics)return FileLyricsUpdate::Skipped;
-    const auto name=WindowsPath(path);
-    // Deny writes/deletes while reading and staging so a concurrent writer
-    // cannot change the snapshot used to build the metadata-only replacement.
-    File file(CreateFileW(name.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr));
-    if(file.get()==INVALID_HANDLE_VALUE)return FileLyricsUpdate::Failed;
-    LARGE_INTEGER size{};bool ok=GetFileSizeEx(file.get(),&size)&&size.QuadPart>0&&size.QuadPart<=500LL*1024*1024;
-    std::vector<uint8_t> source;if(ok){source.resize(size_t(size.QuadPart));DWORD read=0;ok=ReadFile(file.get(),source.data(),DWORD(source.size()),&read,nullptr)&&read==source.size();}
+    // This exact-object handle remains alive through guarded promotion. Other
+    // processes cannot write/delete the snapshot or replace its original path.
+    File file(CreateFileW(WindowsPath(path).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr));
+    if(file.get()==INVALID_HANDLE_VALUE||!CompleteOwnedFlac(path,catalog))return FileLyricsUpdate::Failed;
+    std::vector<uint8_t> source;
+    if(!ReadSource(file.get(),source))return FileLyricsUpdate::Failed;
     std::vector<uint8_t> patched;std::string error;
-    const auto result=ok?FillFlacLyrics(source,incoming,patched,error):LyricsUpdate::Invalid;
-    if(result!=LyricsUpdate::Updated){file.reset();return result==LyricsUpdate::Unchanged?FileLyricsUpdate::Skipped:FileLyricsUpdate::Failed;}
-    static volatile LONG sequence=0;
-    const auto staging=WindowsPath(path+L".complete-lyrics-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(InterlockedIncrement(&sequence)));
-    File out(CreateFileW(staging.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr));
-    if(out.get()==INVALID_HANDLE_VALUE){file.reset();return FileLyricsUpdate::Failed;}
-    DWORD written=0;ok=patched.size()<=MAXDWORD&&WriteFile(out.get(),patched.data(),DWORD(patched.size()),&written,nullptr)&&written==patched.size()&&FlushFileBuffers(out.get());
-    out.reset();file.reset();
-    // ReplaceFile preserves the destination's ACLs and attributes and requires
-    // an existing destination; it never silently creates a missing song.
-    if(ok)ok=ReplaceFileW(name.c_str(),staging.c_str(),nullptr,0,nullptr,nullptr)!=0;
-    if(!ok)DeleteFileW(staging.c_str());
-    return ok?FileLyricsUpdate::Updated:FileLyricsUpdate::Failed;
+    const auto result=FillFlacLyrics(source,incoming,patched,error);
+    if(result!=LyricsUpdate::Updated)
+        return result==LyricsUpdate::Unchanged?FileLyricsUpdate::Skipped:FileLyricsUpdate::Failed;
+    const auto publication=PublishMetadataBytes(path,patched.data(),patched.size(),catalog,file.get());
+    return publication==FilePublication::Upgraded?FileLyricsUpdate::Updated:FileLyricsUpdate::Failed;
 }
 }
