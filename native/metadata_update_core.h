@@ -10,4 +10,9 @@ bool NeedsRecordingMetadata(const RecordingFile& existing,const Tags& incoming);
 // Unchanged/Invalid clear output; source audio and populated metadata are kept.
 MetadataUpdate FillRecordingMetadata(const std::vector<uint8_t>& source,const Tags& incoming,
     const Catalog& catalog,std::vector<uint8_t>& output,std::string& error);
+// Audio replacement policy: old populated/custom fields and artwork survive;
+// missing fields/lyrics/better covers use the same plan as metadata-only fills.
+// HISTORY_* describes the incoming audio. Caller locks the old file throughout.
+bool PreserveUpgradeMetadata(const std::vector<uint8_t>& existing,const std::vector<uint8_t>& incoming,
+    const Catalog& catalog,std::vector<uint8_t>& output,std::string& error);
 }

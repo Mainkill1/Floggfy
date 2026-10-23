@@ -59,7 +59,7 @@ static bool Comments(const ogg_packet& packet,const Tags& tags,std::vector<uint8
     for(uint32_t i=0;i<count;i++) {
         std::string field; if(!read(field)) return false;
         std::string key=Upper(field.substr(0,field.find('=')));
-        bool replace=has_picture && key=="METADATA_BLOCK_PICTURE";
+        bool replace=tags.replace_fields || (has_picture && key=="METADATA_BLOCK_PICTURE");
         for(const auto& item:tags.fields) if(key==Upper(item.first)) replace=true;
         if(!replace) fields.push_back(std::move(field));
     }

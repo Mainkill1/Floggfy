@@ -68,7 +68,9 @@ when lower-quality playback enriches a saved FLAC. Metadata-only updates are log
 separately and do not appear in Latest Downloads. Set `UpdateExistingMetadata=0`
 in the INI to leave existing-file metadata and artwork unchanged. The default is
 `1`. Files needing no metadata or artwork changes are not rewritten. Already synchronized lyrics
-are retained, and audio quality upgrades keep existing lyrics if needed.
+are retained. Audio quality upgrades also preserve existing populated tags,
+synchronized lyrics and artwork; a cover changes only when the shared artwork
+policy approves a better incoming image.
 Turn **Lyrics** off in **To Disk**, or set `Lyrics=0` in
 the INI, if a Spotify update causes compatibility problems. Album artwork and
 other available metadata continue to work. `Metadata=0` disables all extra metadata collection.

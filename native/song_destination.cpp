@@ -10,7 +10,15 @@
 namespace history {
 namespace {
 struct DestinationRequest {
+    // identity: playback identity supplied by the observer, used to pair the
+    // menu label with a saved-song result. intent: full catalog/path/settings
+    // hash, so a title match cannot reuse a result for an old save location.
+    // serial: orders coalesced requests; a slow older probe cannot publish over
+    // a later intent. revision: invalidates verified-file cache after a save,
+    // even if track identity, path and settings have not otherwise changed.
     std::uint64_t identity=0,serial=0,intent=0,revision=0;
+    // Settings generation binds each result to the exact configuration that
+    // selected its destination; it is independent of the capture epoch.
     unsigned generation=0;
     Catalog catalog;
     std::wstring flac,ogg;
@@ -23,6 +31,8 @@ std::optional<DestinationRequest> latest_request,pending_request;
 std::atomic<std::uint64_t> request_serial{0},intent_key{0},cache_revision{0};
 std::uint64_t result_serial=0,result_intent=0,active_serial=0;
 std::uint64_t destination_identity=0;
+// Published result generation/serial/intent must all match the current reader's
+// request. They describe the result, not merely the last queued work item.
 unsigned destination_generation=0;
 ULONGLONG destination_updated=0;
 std::wstring destination_file;

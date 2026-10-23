@@ -13,12 +13,13 @@ for source in buffer hook trampoline hde/hde64; do
 done
 x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include \
     -c native/vendor/libogg/src/framing.c -o build/ogg-framing.o
+x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vorbis_headers_stb.c -o build/vorbis-headers-stb.o
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -shared \
     -static-libgcc -static-libstdc++ \
     -Wl,--no-insert-timestamp,--dynamicbase,--nxcompat \
     native/version_proxy.cpp native/pe_imports.cpp native/spotify_hook_discovery.cpp native/audio_history.cpp native/playback_quality.cpp native/playback_quality_windows.cpp native/ogg_history_core.cpp \
-    native/media_session.cpp native/image_info.cpp native/album_artwork.cpp native/ogg_tags.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/history_settings.cpp native/library_layout.cpp \
-    native/recording_file.cpp native/existing_quality.cpp native/file_publication.cpp native/lyrics_update.cpp native/metadata_update_core.cpp native/metadata_update_windows.cpp native/recent_downloads.cpp native/song_destination.cpp native/to_disk_menu.cpp native/rich_metadata.cpp native/cached_metadata.cpp native/cached_metadata_windows.cpp native/metadata_bridge.cpp native/async_log.cpp native/version_exports.S native/version.def \
+    native/media_session.cpp native/thumbnail_cache.cpp native/image_info.cpp native/album_artwork.cpp native/ogg_tags.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/history_settings.cpp native/library_layout.cpp \
+    native/recording_file.cpp native/vorbis_headers.cpp build/vorbis-headers-stb.o native/existing_quality.cpp native/file_publication.cpp native/lyrics_update.cpp native/metadata_update_core.cpp native/metadata_update_windows.cpp native/recent_downloads.cpp native/song_destination.cpp native/to_disk_menu.cpp native/rich_metadata.cpp native/cached_metadata.cpp native/cached_metadata_windows.cpp native/metadata_bridge.cpp native/async_log.cpp native/version_exports.S native/version.def \
     build/minhook-*.o build/ogg-framing.o -I native/vendor/libogg/include \
     -o build/version.dll -lole32 -luuid -liphlpapi -lws2_32 -lruntimeobject -lshell32 -lwinhttp
 # PE rewriting by strip otherwise inserts the current time even though the

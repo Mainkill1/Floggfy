@@ -76,6 +76,11 @@ without it, the full textual identity, disc/track numbers and duration must agre
 Sanitized or shortened names that collide use a deterministic suffix. Unrelated
 or unverified files are preserved. A verified complete FLAC suppresses a Vorbis
 counterpart only for the same recording.
+The resolver checks existing deterministic names before allocating a vacant one,
+so deleting the ordinary filename does not hide a previously suffixed recording.
+It also checks the text-identity suffix used before URI enrichment. Searches are
+bounded to 65 names without scanning directories; inaccessible possible matches
+defer a new save instead of risking a duplicate.
 
 A Vorbis upgrade requires higher known nominal bitrate and no sample-rate
 reduction. FLAC upgrades require matching channel count, no bit-depth/sample-rate
@@ -85,6 +90,12 @@ target. Upgrades reserve the verified old file before promotion; an interruption
 can briefly leave the usual path absent, but keeps the old recording recoverable.
 The next publication attempt recovers the retained recording without overwriting
 a conflicting target. No track fragments are staged during playback.
+Before an audio upgrade is staged, the old file is locked against modification
+and its metadata is merged into the replacement. Populated and repeated user
+fields, synchronized lyrics and existing artwork survive. Missing fields and
+better validated covers follow the same policy as metadata-only updates;
+`HISTORY_*` fields describe the new audio. Opaque artwork is retained rather than
+replaced speculatively. The new compressed audio is not re-encoded.
 
 Choosing a custom `Media` root retains the requested `Music\Artists` branch.
 The default Music/Spotify root uses `Artists` directly to avoid another Music
@@ -109,7 +120,10 @@ queue overflow and memory limits prevent publication. Capture begins with source
 headers and a listen observed near position zero. Streams without a known FLAC
 total sample count are currently rejected. Natural same-track repeats establish
 a new listen generation after a bounded timeline/title confirmation interval;
-seeks, pauses and excessive observation gaps do not count as completed listens. Metadata fields absent from the public Windows session
+the original two-second title window remains available after provisional repeat
+confirmation. A continuous delayed title relabels that generation without
+duplicating the previous completion. Seeks and excessive observation gaps remain
+conservative rejection cases. Metadata fields absent from the public Windows session
 are not invented. Audio targets are discovered from invariant decoder instructions
 and Windows x64 function metadata; missing or ambiguous matches disable capture.
 Menu integration checks its supported CEF version and structure sizes.
@@ -188,7 +202,14 @@ Additional Windows regressions cover interrupted publication, conflicting target
 slow destination probes, Unicode settings reloads and blocked metadata enrichment.
 The independent validators use Xiph libraries or the
 Xiph FLAC CLI only in the development environment; the DLL does not depend on them.
-Vendored MinHook, libogg and CEF declarations retain their upstream licenses.
+Vendored MinHook, libogg, stb_vorbis and CEF declarations retain their upstream licenses.
+Existing Ogg inspection checks CRCs, packet/sequence/EOS coverage and supported
+Vorbis identification/setup headers. A bounded stb_vorbis adapter parses those
+headers; it does not independently decode the audio packets. Setup inspection
+uses an 8 MiB arena, a 1 MiB setup-packet limit, at most eight channels and bounded
+codebooks. Unsupported headers are preserved as unverified files, never treated
+as incomplete owned audio that permits replacement. Full decoder validation
+remains a separate development check.
 
 ## Artwork and additional metadata
 
@@ -199,6 +220,11 @@ are written into FLAC PICTURE metadata. Artwork downloads and metadata lookups
 run outside menu and playback-tracking callbacks. A separate bounded enrichment
 worker keeps slow artwork/cache requests from delaying the client polling heartbeat.
 Fresh basic snapshots retain already discovered fields for the same recording.
+An independent Windows-thumbnail worker requests artwork while a track is current
+and retains up to eight identities (at most 4 MiB each) for later publication.
+Identity is checked around retrieval; stale or mismatched results are rejected.
+Capture only coalesces requests and publication reads cached bytes, including
+with `Metadata=0`. Missing thumbnails still do not prevent saving complete audio.
 
 Available extra tags include artists, album artists, release date/year, track and
 disc numbers/totals, label, ISRC, language, copyright and lyrics. Missing fields

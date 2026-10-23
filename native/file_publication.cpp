@@ -2,6 +2,8 @@
 #include <windows.h>
 #include "file_publication.h"
 #include "history_settings.h"
+#include "metadata_update_core.h"
+#include <algorithm>
 #include <cstring>
 #include <vector>
 namespace history {
@@ -20,6 +22,22 @@ struct Handle {
     HANDLE value=INVALID_HANDLE_VALUE;
     ~Handle() { if(value!=INVALID_HANDLE_VALUE) CloseHandle(value); }
 };
+struct StagingFile {
+    std::wstring windows_path;
+    ~StagingFile() { DeleteFileW(windows_path.c_str()); }
+};
+bool ReadLockedRecording(HANDLE file,std::vector<uint8_t>& bytes) {
+    LARGE_INTEGER size{};
+    if(!GetFileSizeEx(file,&size) || size.QuadPart<4 || size.QuadPart>512LL*1024*1024)return false;
+    bytes.resize(size_t(size.QuadPart));
+    for(size_t offset=0;offset<bytes.size();) {
+        const DWORD wanted=DWORD(std::min<size_t>(1024*1024,bytes.size()-offset));
+        DWORD read=0;
+        if(!ReadFile(file,bytes.data()+offset,wanted,&read,nullptr) || read!=wanted)return false;
+        offset+=read;
+    }
+    return true;
+}
 std::wstring UniqueSibling(const std::wstring& path,const wchar_t* label) {
     static volatile LONG sequence=0;
     return path+label+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(InterlockedIncrement(&sequence));
@@ -121,7 +139,9 @@ Catalog CatalogFromTags(const Tags& tags) {
     return catalog;
 }
 }
-FilePublication PublishBytes(const std::wstring& path,const Quality& quality,const void* bytes,size_t size,const Catalog& catalog) {
+FilePublication PublishBytes(const std::wstring& path,const Quality& quality,const void* bytes,size_t size,const Catalog& catalog,
+                             size_t* published_bytes) {
+    if(published_bytes)*published_bytes=0;
     RecordingFile incoming;
     if(path.empty() || !InspectRecording(static_cast<const uint8_t*>(bytes),size,incoming) ||
        !incoming.complete || !MatchesRecording(incoming,catalog)) return FilePublication::Failed;
@@ -130,25 +150,44 @@ FilePublication PublishBytes(const std::wstring& path,const Quality& quality,con
     RecoverRecording(path,catalog);
     auto decision=DecideSave(path,quality,catalog);
     if(decision==SaveDecision::Skip) return FilePublication::Skipped;
+    Handle old;
+    std::vector<uint8_t> preserved;
+    if(decision==SaveDecision::Upgrade) {
+        // Freeze the exact existing object BEFORE composing replacement tags.
+        // The same handle protects this snapshot through reservation/promotion.
+        old.value=CreateFileW(WindowsPath(path).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,
+            nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+        RecordingFile current;
+        if(old.value==INVALID_HANDLE_VALUE || !SameFile(old.value,path) ||
+           DecideSave(path,quality,catalog,&current)!=SaveDecision::Upgrade)return FilePublication::Failed;
+        if(current.complete) {
+            std::vector<uint8_t> existing;
+            if(!ReadLockedRecording(old.value,existing))return FilePublication::Failed;
+            const auto first=static_cast<const uint8_t*>(bytes);
+            const std::vector<uint8_t> replacement(first,first+size);
+            std::string error;
+            if(!PreserveUpgradeMetadata(existing,replacement,catalog,preserved,error))return FilePublication::Failed;
+            bytes=preserved.data();size=preserved.size();
+        }
+        // Proven incomplete owned files are repaired from the new complete
+        // capture; their unverified metadata cannot authorize preservation.
+    }
     auto staging=UniqueSibling(path,L".complete-");
+    StagingFile cleanup{WindowsPath(staging)};
     if(!WriteNew(staging,bytes,size)) return FilePublication::Failed;
     TestPhase(L"staged",path);
     if(decision==SaveDecision::NewFile) {
         // No replace flag: a destination created during staging belongs to the
         // other writer, even when its quality happens to be lower.
         bool ok=MoveFileExW(WindowsPath(staging).c_str(),WindowsPath(path).c_str(),MOVEFILE_WRITE_THROUGH)!=0;
-        if(!ok) DeleteFileW(WindowsPath(staging).c_str());
+        if(ok && published_bytes)*published_bytes=size;
         return ok?FilePublication::Saved:FilePublication::Failed;
     }
-    // Lock the exact old object against writes/deletes, recheck its identity and
-    // move that object aside through its handle. Promotion never overwrites a
-    // raced pathname. A crash leaves the old recording in a deterministic .previous sibling, recovered by the next resolver/publication.
-    Handle old{CreateFileW(WindowsPath(path).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,
-        nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
-    bool upgrade=old.value!=INVALID_HANDLE_VALUE && SameFile(old.value,path) &&
-        DecideSave(path,quality,catalog)==SaveDecision::Upgrade;
-    if(!upgrade) {DeleteFileW(WindowsPath(staging).c_str());return FilePublication::Failed;}
-    return PromoteReplacement(path,staging,catalog,old.value);
+    // Promotion never overwrites a raced pathname. An interruption retains
+    // the old object in .previous for the next resolver/publication to recover.
+    const auto result=PromoteReplacement(path,staging,catalog,old.value);
+    if(result==FilePublication::Upgraded && published_bytes)*published_bytes=size;
+    return result;
 }
 FilePublication PublishMetadataBytes(const std::wstring& path,const void* bytes,size_t size,const Catalog& catalog,void* locked_file) {
     RecordingFile incoming,current;
@@ -160,6 +199,7 @@ FilePublication PublishMetadataBytes(const std::wstring& path,const void* bytes,
     if(a.codec!=b.codec || a.rate!=b.rate || a.channels!=b.channels || a.bits!=b.bits || a.bitrate!=b.bitrate)
         return FilePublication::Failed;
     const auto staging=UniqueSibling(path,L".complete-lyrics-");
+    StagingFile cleanup{WindowsPath(staging)};
     if(!WriteNew(staging,bytes,size))return FilePublication::Failed;
     TestPhase(L"staged",path);
     return PromoteReplacement(path,staging,catalog,locked_file);

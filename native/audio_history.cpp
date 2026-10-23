@@ -16,7 +16,6 @@
 #include "file_publication.h"
 #include "recent_downloads.h"
 #include "song_destination.h"
-#include "lyrics_update.h"
 #include "metadata_update_windows.h"
 #include "metadata_update_core.h"
 #include "media_session.h"
@@ -250,16 +249,17 @@ static void ApplyCatalogIdentity(Tags& tags,const Catalog& catalog) {
     SetIdentityTag(tags,"DISCNUMBER",catalog.disc ? std::to_string(catalog.disc) : std::string{});
     SetIdentityTag(tags,"SPOTIFY_URI",catalog.spotify_uri);
 }
-static void FillThumbnailFallback(MediaReader* reader,const Media& expected,Tags& tags) {
-    if(!reader || !tags.cover.empty())return;
-    Media current;
-    if(reader->Read(current,true) && current.Key()==expected.Key()) {
-        tags.cover=std::move(current.cover);
-        tags.mime=current.cover_extension==L".png" ? "image/png" : "image/jpeg";
+static void FillThumbnailFallback(const Media& expected,Tags& tags) {
+    if(!tags.cover.empty())return;
+    std::wstring extension;
+    // The cache retains recently observed tracks. Publication must not ask the
+    // current Windows session for a song that may already have finished.
+    if(GetArtwork(expected,tags.cover,extension)) {
+        tags.mime=extension==L".png" ? "image/png" : "image/jpeg";
     }
 }
 enum class Publication { Saved,Skipped,Failed };
-static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch,MediaReader* fallback_artwork=nullptr) {
+static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch) {
     const std::string identity=Utf8(heard.media.artist)+" - "+Utf8(heard.media.title);
     auto finish=[&](Publication status,const char* event,const std::string& detail) {
         // Put outcome facts first so a long title cannot truncate quality/size.
@@ -309,7 +309,7 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
             const auto& path=existing_lossless ? flac : destination;
             // A verified existing cover needs no Windows thumbnail lookup.
             if(inspected.owned && inspected.complete && !inspected.has_artwork)
-                FillThumbnailFallback(fallback_artwork,heard.media,tags);
+                FillThumbnailFallback(heard.media,tags);
             if(inspected.owned && inspected.complete && NeedsRecordingMetadata(inspected,tags)) {
                 const auto result=UpdateRecordingMetadata(path,tags,catalog,settings.generation);
                 if(result==FileMetadataUpdate::Updated) {
@@ -323,9 +323,9 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
         Log(("SKIP existing equal, higher or unverified quality "+Utf8(existing_lossless ? flac : destination)).c_str());
         return finish(Publication::Skipped,"skipped",ExistingSkipReason(existing_lossless ? flac : destination,quality,catalog,&inspected));
     }
-    if(c.lossless && decision==SaveDecision::Upgrade && settings.metadata && settings.lyrics)
-        PreserveFlacLyrics(destination,tags,catalog);
-    FillThumbnailFallback(fallback_artwork,heard.media,tags);
+    // Existing tags/art/lyrics are merged by PublishBytes while its exact old
+    // object is locked. Do not take a separate stale preservation snapshot here.
+    FillThumbnailFallback(heard.media,tags);
     std::vector<uint8_t> tagged; std::string error;
     auto source=c.data.Flatten();
     bool tagged_ok=c.lossless ? TagFlac(source,tags,tagged,error) : TagOgg(source,tags,tagged,error);
@@ -335,15 +335,17 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     if(!Directories(destination.substr(0,destination.find_last_of(L'\\')))) return finish(Publication::Failed,"failed","could not create save directory");
     // Only complete tagged audio reaches the bounded save worker's staged,
     // flushed publication protocol. Recording identity authorizes replacement.
-    auto publication=PublishBytes(destination,quality,tagged.data(),tagged.size(),catalog);
+    size_t published_bytes=0;
+    auto publication=PublishBytes(destination,quality,tagged.data(),tagged.size(),catalog,&published_bytes);
     if(publication==FilePublication::Skipped)return finish(Publication::Skipped,"skipped",ExistingSkipReason(destination,quality,catalog));
     if(publication==FilePublication::Failed)return finish(Publication::Failed,"failed","file publication failed; existing file retained");
     RefreshSongDestination();
     ImageInfo artwork;
-    if(!ReadImageInfo(tags.cover,artwork))LogActivity("metadata","artwork unavailable; audio and text tags saved | "+identity);
-    RecordRecentDownload(heard.media.artist+L" - "+heard.media.title,destination,tagged.size());
+    if(!ReadImageInfo(tags.cover,artwork) && !(publication==FilePublication::Upgraded && inspected.has_artwork))
+        LogActivity("metadata","artwork unavailable; audio and text tags saved | "+identity);
+    RecordRecentDownload(heard.media.artist+L" - "+heard.media.title,destination,published_bytes);
     std::string line=(publication==FilePublication::Upgraded ? "UPGRADED " : "SAVED ")+Utf8(destination); Log(line.c_str());
-    return finish(Publication::Saved,publication==FilePublication::Upgraded ? "upgraded" : "finished",SavedAudioDetails(quality,tagged.size()));
+    return finish(Publication::Saved,publication==FilePublication::Upgraded ? "upgraded" : "finished",SavedAudioDetails(quality,published_bytes));
 }
 struct SaveJob {std::unique_ptr<Capture> capture;Heard heard;unsigned epoch=0;size_t reserved=0;};
 static BoundedQueue<SaveJob,2> saves;
@@ -353,15 +355,14 @@ static std::atomic<unsigned> saved_count{0};
 static std::atomic<bool> workers_running{false};
 static hooks::InitController audio_init;
 static DWORD WINAPI SaveWorker(LPVOID) {
-    MediaReader fallback_artwork;
     while(workers_running.load(std::memory_order_acquire)) {
         SaveJob job;
         if(!saves.Pop(job)){WaitForSingleObject(save_event,200);continue;}
         std::string identity=Utf8(job.heard.media.artist)+" - "+Utf8(job.heard.media.title);
         try {
-            // Optional thumbnail reads happen only when publication needs one,
-            // on this storage worker, never while capturing or skipping a no-op.
-            auto result=Publish(*job.capture,job.heard,job.epoch,&fallback_artwork);
+            // Thumbnail fallback is a nonblocking retained-cache lookup; its
+            // independent worker collected it while this recording was current.
+            auto result=Publish(*job.capture,job.heard,job.epoch);
             if(result==Publication::Saved) {
                 auto settings=GetSettings();
                 if(settings.capture_epoch==job.epoch) ++saved_count;
@@ -580,6 +581,11 @@ static DWORD WINAPI Worker(LPVOID) {
                     quality.Media(media.Key(),media.title,media.position,media.duration,Now(),media.playing);
                     client_quality=ReadClientPlaybackQuality(media);
                     AssociateListen(std::move(media),listen,current,heard,buffers,Now());
+                    // Publish the identity before requesting its thumbnail so
+                    // the background stale-title guard sees this observation.
+                    // RequestArtwork only coalesces RAM state; no SMTC I/O.
+                    PublishPlaybackQuality(quality.Snapshot(client_quality));
+                    RequestArtwork(current);
                 } else { PublishSongDestination(0,L"",{},false,0);listen.eligible=false; quality.Media({},L"",0,0,Now()); Log("Spotify media snapshot unavailable; listen invalidated"); }
                 next_media=Now()+0.5;
             }

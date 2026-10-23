@@ -162,6 +162,47 @@ bool FillFlac(const std::vector<uint8_t>& source,const Tags& delta,const std::ve
 bool SameQuality(const Quality& a,const Quality& b) {
     return a.codec==b.codec && a.rate==b.rate && a.channels==b.channels && a.bits==b.bits && a.bitrate==b.bitrate;
 }
+// Copy opaque FLAC PICTURE payloads, including booklets or images beyond our
+// inspection budget. Failure to assess an old image never authorizes its loss.
+bool FlacPictures(const std::vector<uint8_t>& source,std::vector<std::vector<uint8_t>>& pictures) {
+    FlacInfo info;
+    size_t audio=0;
+    if(ParseFlacMetadata(source,info,audio)!=FlacParse::Valid)return false;
+    for(size_t at=4;at<audio;) {
+        const unsigned type=source[at]&127;
+        const size_t length=(size_t(source[at+1])<<16)|(size_t(source[at+2])<<8)|source[at+3];
+        at+=4;
+        if(type==6)pictures.emplace_back(source.begin()+at,source.begin()+at+length);
+        at+=length;
+    }
+    return true;
+}
+bool ReplaceFlacPictures(const std::vector<uint8_t>& incoming,
+                         const std::vector<std::vector<uint8_t>>& pictures,std::vector<uint8_t>& source) {
+    FlacInfo info;
+    size_t audio=0;
+    if(ParseFlacMetadata(incoming,info,audio)!=FlacParse::Valid)return false;
+    source.assign(incoming.begin(),incoming.begin()+4);
+    size_t last=0;
+    for(size_t at=4;at<audio;) {
+        const unsigned type=incoming[at]&127;
+        const size_t length=(size_t(incoming[at+1])<<16)|(size_t(incoming[at+2])<<8)|incoming[at+3];
+        if(type!=6) {
+            last=source.size();
+            source.insert(source.end(),incoming.begin()+at,incoming.begin()+at+4+length);
+            source[last]&=127;
+        }
+        at+=4+length;
+    }
+    for(const auto& picture:pictures) {
+        last=source.size();
+        Block(source,6,picture);
+    }
+    if(!last)return false;
+    source[last]|=128;
+    source.insert(source.end(),incoming.begin()+audio,incoming.end());
+    return true;
+}
 }
 bool NeedsRecordingMetadata(const RecordingFile& existing,const Tags& incoming) {return PlanMetadata(existing,incoming).Needed();}
 MetadataUpdate FillRecordingMetadata(const std::vector<uint8_t>& source,const Tags& incoming,
@@ -185,5 +226,72 @@ MetadataUpdate FillRecordingMetadata(const std::vector<uint8_t>& source,const Ta
         output.clear();return MetadataUpdate::Invalid;
     }
     return MetadataUpdate::Updated;
+}
+bool PreserveUpgradeMetadata(const std::vector<uint8_t>& source,const std::vector<uint8_t>& incoming,
+    const Catalog& catalog,std::vector<uint8_t>& output,std::string& error) {
+    output.clear();error.clear();
+    RecordingFile old,next;
+    if(!InspectRecording(source.data(),source.size(),old) || !old.complete || !old.owned ||
+       !MatchesRecording(old,catalog) || !InspectRecording(incoming.data(),incoming.size(),next) ||
+       !next.complete || !next.owned || !MatchesRecording(next,catalog) || old.quality.codec!=next.quality.codec) {
+        error="upgrade metadata requires complete owned matching recordings";
+        return false;
+    }
+    const auto plan=PlanMetadata(old,next.tags);
+    Tags merged;
+    merged.replace_fields=true;
+    // Preserve populated user fields (including repeats). The shared delta
+    // fills blanks, keeps synchronized lyrics and resolves DATE/YEAR conflicts.
+    std::set<std::string> changed;
+    for(const auto& field:plan.delta.fields)changed.insert(Upper(field.first));
+    for(const auto& field:old.tags.fields) {
+        const auto key=Upper(field.first);
+        if(key.rfind("HISTORY_",0)!=0 && key!="METADATA_BLOCK_PICTURE" && !changed.count(key))
+            merged.fields.push_back(field);
+    }
+    merged.fields.insert(merged.fields.end(),plan.delta.fields.begin(),plan.delta.fields.end());
+    for(const auto& field:next.tags.fields)
+        if(Upper(field.first).rfind("HISTORY_",0)==0)merged.fields.push_back(field);
+
+    // Legacy picture comments are retained too; they can be opaque or use a
+    // format we cannot compare. A valid new front cover only replaces them
+    // when the shared artwork policy explicitly authorizes that replacement.
+    if(!plan.picture)for(const auto& picture:old.picture_comments)
+        merged.fields.emplace_back("METADATA_BLOCK_PICTURE",picture);
+
+    // Already-approved incoming metadata needs no second retagging pass. Keep
+    // vendor text/packet layout intact as well when neither file has artwork.
+    if(!old.has_artwork && !next.has_artwork && merged.fields==next.tags.fields) {
+        output=incoming;
+        return true;
+    }
+
+    bool tagged=false;
+    if(next.quality.codec==Codec::Flac) {
+        std::vector<std::vector<uint8_t>> pictures;
+        if(plan.picture) {
+            std::vector<uint8_t> picture;
+            if(!BuildPicture(next.tags,picture))return false;
+            pictures.push_back(std::move(picture));
+        } else if(!FlacPictures(source,pictures))return false;
+        std::vector<uint8_t> prepared;
+        if(!ReplaceFlacPictures(incoming,pictures,prepared))return false;
+        tagged=TagFlac(prepared,merged,output,error);
+    } else {
+        if(plan.picture) {
+            merged.cover=next.tags.cover;
+            merged.mime=next.tags.mime;
+        }
+        // replace_fields drops unapproved incoming art even when the old song
+        // had none. Optional artwork must not prevent a valid audio upgrade.
+        tagged=TagOgg(incoming,merged,output,error);
+    }
+    RecordingFile result;
+    if(!tagged || !InspectRecording(output.data(),output.size(),result) || !result.complete ||
+       !result.owned || !MatchesRecording(result,catalog) || !SameQuality(result.quality,next.quality)) {
+        if(error.empty())error="preserved upgrade validation failed";
+        output.clear();return false;
+    }
+    return true;
 }
 }

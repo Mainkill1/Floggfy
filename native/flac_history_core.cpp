@@ -59,7 +59,7 @@ static bool Fields(const uint8_t* b,size_t n,const Tags& tags,std::string& vendo
     if(count>100000 || count>(n-p)/4) return false;
     for(uint32_t i=0;i<count;i++) {
         std::string s; if(!read(s)) return false; auto key=Upper(s.substr(0,s.find('=')));
-        bool replace=key=="METADATA_BLOCK_PICTURE";
+        bool replace=tags.replace_fields || key=="METADATA_BLOCK_PICTURE";
         for(const auto& tag:tags.fields) if(key==Upper(tag.first)) replace=true;
         if(!replace) fields.push_back(std::move(s));
     }

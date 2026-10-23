@@ -1,4 +1,55 @@
-## Recording integrity and metadata-update candidate
+## PR #11 review corrections (after e8ae8f8)
+
+Exactly one targeted execution was used for each of the six review issues.
+There were no exploratory runs, reruns, full-suite runs, fuzz/stress runs or live
+Spotify checks in this pass. Implementation and regression cases received static
+review before these executions.
+
+| Issue | Command | Executions | Result |
+| --- | --- | --- | --- |
+| 1: artwork/tag preservation during upgrades | `bash test-pr11-corrections.sh 1` | 1 | Pass (Windows) |
+| 2: asynchronous thumbnail retention | `bash test-pr11-corrections.sh 2` | 1 | Pass (Windows, injected media provider) |
+| 3: collision destination reuse | `bash test-pr11-corrections.sh 3` | 1 | Pass (Windows) |
+| 4: delayed-title/repeat reconciliation | `bash test-pr11-corrections.sh 4` | 1 | Pass (portable) |
+| 5: settings persistence failures | `bash test-pr11-corrections.sh 5` | 1 | Fail at final staging-file cleanup assertion; correction not rerun |
+| 6: Vorbis setup-header validation | `bash test-pr11-corrections.sh 6` | 1 | Pass (portable) |
+
+Issue 5 reached its final cleanup assertion after the exception, denied-write,
+read-failure, retry, Unicode and unknown-section assertions succeeded. Inspection
+found that a pending notification could redundantly persist a generation already
+acknowledged by `FlushSettings`, exposing a staging file after the flush returned.
+No leftover staging file remained on later read-only inspection. The worker now
+skips already-persisted generations while retaining retries for failed generations.
+This final correction was reviewed statically but **was not compiled or executed
+again**; issue 5 is not reported as passing.
+
+One standalone `bash build-native.sh` invocation built the DLL and launcher
+successfully before the targeted tests and final settings correction. The vendor
+parser emitted two unsuppressed unused-function warnings. This build therefore
+does not verify the final settings edit. Project C++ checks retain `-Werror`;
+no warnings were suppressed to pass a test.
+
+Coverage includes missing/invalid/inferior/better artwork; repeated custom tags
+and synchronized lyrics; unchanged incoming compressed audio, identity checks and
+locked publication; retained A artwork after B/C transitions, bounded coalescing,
+stale identities and `Metadata=0`; deletion of an ordinary collision occupant and
+reuse of its higher-quality suffix; equal/different-duration delayed titles,
+repeated cycles, seeks and observation gaps; malformed/truncated Vorbis setup,
+unsupported headers, CRC corruption and missing EOS.
+
+Windows media-session/WinRT thumbnail retrieval was not exercised against Spotify
+in this pass. Cache tests inject the provider and use actual Windows threads.
+Real SMB outages and interruption during publication were not retested. Vorbis
+validation checks supported headers separately from structural Ogg CRC/framing/EOS;
+it does not independently decode every audio packet. Unsupported headers are
+rejected conservatively and cannot authorize replacement. Audio upgrades retain
+bounded temporary old/new metadata buffers; the 512 MiB file-read limit is not
+a total process-memory limit.
+
+## Historical recording integrity and metadata-update candidate (e8ae8f8)
+
+The following results predate these corrections and were not rerun on the updated
+candidate.
 
 The unchanged `bash test-native.sh` and `bash test-native-windows.sh` commands
 pass on the combined candidate. The Windows suite also builds and tests the DLL

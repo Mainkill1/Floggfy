@@ -50,12 +50,19 @@ static bool CreateDefaultIni(const std::wstring& path) {
     std::wstring text;for(const char* p=default_ini;*p;++p)text+=wchar_t(*p);
     return settings_file::Write(path,text,true);
 }
+static bool ReachedGeneration(volatile LONG& progress,unsigned expected) {
+    return static_cast<LONG>(unsigned(InterlockedCompareExchange(&progress,0,0))-expected)>=0;
+}
 static DWORD WINAPI PersistSettings(LPVOID) {
     for(;;) {
         WaitForSingleObject(settings_signal,INFINITE);
         unsigned generation=0;bool ok=false,snapshot_captured=false;
         try {
             const auto snapshot=GetSettings();generation=snapshot.generation;snapshot_captured=true;
+            // A notification can remain signaled while the previous write already
+            // includes its change. Do not open another staging file after Flush
+            // has acknowledged this generation. Failed generations still retry.
+            if(ReachedGeneration(persisted_generation,generation))continue;
             std::wstring text;bool unicode=false;
             ok=settings_file::Read(ini,text,unicode);
             if(ok) {
@@ -76,9 +83,6 @@ static DWORD WINAPI PersistSettings(LPVOID) {
         SetEvent(persist_done);
         if(!ok)try{LogActivity("failed","settings persistence");}catch(...) {/* A logging allocation must not kill persistence retries. */}
     }
-}
-static bool ReachedGeneration(volatile LONG& progress,unsigned expected) {
-    return static_cast<LONG>(unsigned(InterlockedCompareExchange(&progress,0,0))-expected)>=0;
 }
 bool FlushSettings(unsigned timeout_ms) {
     const auto expected=GetSettings().generation;const auto end=GetTickCount64()+timeout_ms;

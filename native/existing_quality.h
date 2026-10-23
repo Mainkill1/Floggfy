@@ -3,8 +3,13 @@
 #include "recording_file.h"
 #include <string>
 namespace history {
-// Complete container validation; a header alone never counts as a saved song.
+// Complete container and supported codec-header validation, not independent
+// audio decoding. A header alone never counts as a saved song.
 bool ReadQuality(const std::wstring& file,Quality& out);
+enum class RecordingRead { ValidComplete, Incomplete, InvalidContainer, ReadError };
+// Separates a parsed but incomplete recording from an unreadable object. All
+// error outcomes clear out; identity is checked separately by the caller.
+RecordingRead InspectRecordingFile(const std::wstring& file,RecordingFile& out);
 bool ReadRecording(const std::wstring& file,RecordingFile& out);
 bool ExistingRecording(const std::wstring& file,const Catalog& catalog,Quality& out);
 // Empty means no safe destination could be established. No directories created.

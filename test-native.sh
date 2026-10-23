@@ -2,6 +2,7 @@
 set -euo pipefail
 cd -- "$(dirname -- "$0")"
 mkdir -p build
+gcc -std=c11 -O2 -Wall -Wextra -c native/vorbis_headers_stb.c -o build/vorbis-headers-stb-test.o
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/hook_init_state_test.cpp -o build/hook-init-state-test
 build/hook-init-state-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/hook_installation_test.cpp -o build/hook-installation-test
@@ -52,9 +53,9 @@ build/album-artwork-test
 
 # Existing files must contain complete audio and match the recording identity.
 g++ -std=c++17 -O2 -Wall -Wextra -Werror -I native/vendor/libogg/include \
-    tests/recording_file_test.cpp native/recording_file.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/ogg-framing-test.o -o build/recording-file-test
+    tests/recording_file_test.cpp native/recording_file.cpp native/vorbis_headers.cpp build/vorbis-headers-stb-test.o native/flac_history_core.cpp native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/ogg-framing-test.o -o build/recording-file-test
 build/recording-file-test
 
 g++ -std=c++17 -O2 -Wall -Wextra -Werror -I native/vendor/libogg/include \
- tests/metadata_update_test.cpp native/metadata_update_core.cpp native/recording_file.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/ogg-framing-test.o -o build/metadata-update-test
+ tests/metadata_update_test.cpp native/metadata_update_core.cpp native/recording_file.cpp native/vorbis_headers.cpp build/vorbis-headers-stb-test.o native/flac_history_core.cpp native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/ogg-framing-test.o -o build/metadata-update-test
 build/metadata-update-test
