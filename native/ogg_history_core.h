@@ -21,11 +21,17 @@ struct Stream {
     double Duration() const { return rate && samples > 0 ? double(samples) / rate : 0; }
 };
 // Media positions must be extrapolated from the public timeline timestamp.
-// Completed identity is returned only on a natural transition at the end.
+// Completed identity is returned only after continuous coverage and a natural
+// transition. Same-title repeats have distinct generations.
+enum class ListenPhase { Tracking, AwaitingIdentity };
 struct Listen {
     std::string identity;
     double start_time = 0, last_time = 0, last_position = 0, duration = 0;
     double identity_time = 0;
+    std::uint64_t generation = 0, completed_generation = 0;
+    double completed_start = 0, completed_time = 0;
+    ListenPhase phase = ListenPhase::Tracking;
+    double wrap_time = 0, wrap_start = 0, wrap_position = 0, wrap_length = 0;
     bool eligible = false, playing = false, transient = false, pending_start = false;
     std::string Observe(const std::string& key, double position, double length,
                         bool is_playing, double time);

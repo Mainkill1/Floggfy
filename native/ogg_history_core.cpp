@@ -56,36 +56,86 @@ Result Stream::Push(const uint8_t* b, size_t n) {
     }
     return Result::Append;
 }
-std::string Listen::Observe(const std::string& key, double pos, double length,
-                            bool is_playing, double time) {
-    std::string done;
-    transient=false;
-    double elapsed=time-last_time;
-    if(key!=identity) {
-        if(eligible && playing && duration>0 && elapsed>=0 && elapsed<=3
-           && last_position>=duration-1.0 && last_position+elapsed>=duration-0.1) done=identity;
-        identity=key; start_time=time-pos; duration=length;
-        eligible=!key.empty() && pos>=0 && pos<=1.5 && length>0;
-        identity_time=time; pending_start=!eligible && !key.empty();
-    } else if(!key.empty()) {
-        // SMTC title and timeline are separate snapshots. At a natural end,
-        // the next timeline can arrive before its title. Keep the old end
-        // position briefly, so that an inconsistent snapshot cannot erase
-        // already observed coverage or replace the previous track's metadata.
-        if(eligible && playing && last_position>=duration-1.0 && pos<=1.5 &&
-           elapsed>=0 && elapsed<=3) { transient=true; return {}; }
-        if(pending_start && time-identity_time<=2 && pos>=0 && pos<=1.5 && length>0) {
-            start_time=time-pos; duration=length; eligible=true; pending_start=false;
-            last_time=time; last_position=pos; playing=is_playing; return {};
-        }
-        double expected=last_position+(playing ? elapsed : 0);
-        if(elapsed<0 || elapsed>3 || pos<last_position-1.5 || pos>expected+1.5
-           || std::fabs(length-duration)>1.0) eligible=false;
-        if(eligible && playing && !is_playing && pos>=duration && expected>=duration-0.1) {
-            done=identity; eligible=false; pending_start=false;
-        }
+namespace {
+static void BeginListen(Listen& listen,const std::string& key,double position,double length,
+                        bool playing,double time,double start) {
+    listen.identity=key;listen.start_time=start;listen.duration=length;
+    listen.eligible=!key.empty() && position>=0 && position<=1.5 && length>0;
+    listen.identity_time=time;listen.pending_start=!listen.eligible && !key.empty();
+    listen.phase=ListenPhase::Tracking;
+    listen.last_time=time;listen.last_position=position;listen.playing=playing;
+    if(!key.empty()) ++listen.generation;
+}
+static std::string CompleteListen(Listen& listen,double finish) {
+    listen.completed_generation=listen.generation;
+    listen.completed_start=listen.start_time;listen.completed_time=finish;
+    listen.eligible=false;listen.pending_start=false;
+    return listen.identity;
+}
+static bool NaturalEnd(const Listen& listen,double elapsed) {
+    return listen.eligible && listen.playing && listen.duration>0 && elapsed>=0 && elapsed<=3 &&
+           listen.last_position>=listen.duration-1.0 &&
+           listen.last_position+elapsed>=listen.duration-0.1;
+}
+}
+std::string Listen::Observe(const std::string& key,double pos,double length,
+                            bool is_playing,double time) {
+    transient=false;std::string done;
+    const double elapsed=time-last_time;
+    if(!std::isfinite(pos) || !std::isfinite(length) || !std::isfinite(time) || pos<0 || length<=0) {
+        eligible=false;pending_start=false;phase=ListenPhase::Tracking;
+        last_time=time;last_position=pos;playing=is_playing;return {};
     }
-    last_time=time; last_position=pos; playing=is_playing;
+    if(key!=identity) {
+        const bool pending=phase==ListenPhase::AwaitingIdentity && time>=wrap_time && time-wrap_time<=2;
+        const bool observed_start=pending && is_playing && std::fabs(length-wrap_length)<=1.0 &&
+            pos>=wrap_position-0.1 && pos<=wrap_position+(time-wrap_time)+1.5;
+        const double next_start=observed_start ? wrap_start : time-pos;
+        if(NaturalEnd(*this,pending ? wrap_time-last_time : elapsed) &&
+           (phase!=ListenPhase::AwaitingIdentity || pending))
+            done=CompleteListen(*this,pending ? wrap_start : last_time+duration-last_position);
+        BeginListen(*this,key,observed_start ? 0 : pos,length,is_playing,time,next_start);
+        last_position=pos;return done;
+    }
+    if(key.empty()) {eligible=false;playing=is_playing;last_time=time;return {};}
+    if(phase==ListenPhase::AwaitingIdentity) {
+        const double waiting=time-wrap_time;
+        const double expected=wrap_position+(time-wrap_time);
+        // A title update gets a short bounded window. If the same identity
+        // continues on a valid new timeline, this is a new repeat instance.
+        if(waiting<0 || waiting>2 || !is_playing ||
+           pos<wrap_position-0.1 || pos>expected+1.5) {
+            eligible=false;phase=ListenPhase::Tracking;pending_start=false;
+            last_time=time;last_position=pos;playing=is_playing;return {};
+        } else if(waiting>=1.0) {
+            if(std::fabs(length-duration)<=1.0 && std::fabs(length-wrap_length)<=1.0) {
+                done=CompleteListen(*this,wrap_start);
+                const double start=wrap_start;
+                BeginListen(*this,key,0,length,is_playing,time,start);
+                last_position=pos;return done;
+            }
+            if(waiting<2) {transient=true;return {};}
+            eligible=false;phase=ListenPhase::Tracking;pending_start=false;
+            last_time=time;last_position=pos;playing=is_playing;return {};
+        } else {transient=true;return {};}
+    } else if(NaturalEnd(*this,elapsed) && is_playing && pos<=1.5) {
+        phase=ListenPhase::AwaitingIdentity;wrap_time=time;wrap_start=time-pos;
+        wrap_position=pos;wrap_length=length;transient=true;return {};
+    }
+    if(pos<=1.5 && pos<last_position-1.5) {
+        // A seek/reset starts new coverage but can never finish the old listen.
+        BeginListen(*this,key,pos,length,is_playing,time,time-pos);return {};
+    }
+    if(pending_start && time-identity_time<=2 && pos<=1.5) {
+        start_time=time-pos;duration=length;eligible=true;pending_start=false;
+        last_time=time;last_position=pos;playing=is_playing;return {};
+    }
+    const double expected=last_position+(playing ? elapsed : 0);
+    if(elapsed<0 || elapsed>3 || pos<last_position-1.5 || pos>expected+1.5 ||
+       std::fabs(length-duration)>1.0) eligible=false;
+    if(eligible && playing && !is_playing && pos>=duration && expected>=duration-0.1)
+        done=CompleteListen(*this,last_time+duration-last_position);
+    last_time=time;last_position=pos;playing=is_playing;
     return done;
 }
 }

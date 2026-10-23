@@ -67,5 +67,55 @@ int main() {
     Listen ended; ended.Observe("one",0,10,true,0);
     for(int i=1;i<10;i++) ended.Observe("one",i,10,true,i);
     check(ended.Observe("one",10,10,false,10)=="one","last track completes without next song");
+    Listen repeat;repeat.Observe("same",0,10,true,0);
+    for(int i=1;i<10;++i)repeat.Observe("same",i,10,true,i);
+    repeat.Observe("same",0.1,10,true,10.1);
+    check(repeat.transient,"repeat waits briefly for delayed title");
+    check(repeat.Observe("same",1.2,10,true,11.2)=="same","repeat-one completes first playback instance");
+    check(repeat.generation==2 && repeat.completed_generation==1 && repeat.completed_start==0 && repeat.completed_time==10,
+          "repeat completion retains old instance boundaries");
+    for(int i=12;i<20;++i)repeat.Observe("same",i-10,10,true,i);
+    repeat.Observe("same",0.1,10,true,20.1);
+    check(repeat.Observe("same",1.2,10,true,21.2)=="same","repeat-one completes successive instances");
+    check(repeat.generation==3 && repeat.completed_generation==2 && repeat.completed_start==10,
+          "successive repeat generations stay distinct");
+    Listen restart;restart.Observe("one",0,10,true,0);
+    for(int i=1;i<=5;++i)restart.Observe("one",i,10,true,i);
+    check(restart.Observe("one",0,10,true,5.2).empty() && restart.generation==2,
+          "seek to start discards old coverage and begins a separate instance");
+    for(int i=1;i<10;++i)restart.Observe("one",i,10,true,5.2+i);
+    check(restart.Observe("two",0,10,true,15.2)=="one" && restart.completed_generation==2,
+          "a full listen after seeking can complete only the new instance");
+    Listen seek_tail;seek_tail.Observe("one",0,10,true,0);
+    for(int i=1;i<10;++i)seek_tail.Observe("one",i,10,true,i);
+    seek_tail.Observe("one",9.3,10,true,9.3);
+    check(seek_tail.Observe("one",0,10,true,9.4).empty() && seek_tail.completed_generation==0,
+          "seeking the tail to zero never credits a natural repeat");
+    Listen gap_repeat;gap_repeat.Observe("one",0,10,true,0);
+    for(int i=1;i<10;++i)gap_repeat.Observe("one",i,10,true,i);
+    check(gap_repeat.Observe("one",0,10,true,20).empty() && gap_repeat.completed_generation==0,
+          "an unobserved gap cannot complete a repeat");
+    Listen paused;paused.Observe("one",0,10,true,0);
+    for(int i=1;i<10;++i)paused.Observe("one",i,10,true,i);
+    paused.Observe("one",9.5,10,false,9.5);paused.Observe("one",9.5,10,false,11);
+    check(paused.Observe("one",0,10,true,11.2).empty() && paused.completed_generation==0,
+          "pause then seek to start is not a completed repeat");
+    Listen ambiguous;ambiguous.Observe("one",0,10,true,0);
+    for(int i=1;i<10;++i)ambiguous.Observe("one",i,10,true,i);
+    ambiguous.Observe("one",0.2,20,true,10.2);
+    check(ambiguous.Observe("one",2.3,20,true,12.3).empty() && !ambiguous.eligible && !ambiguous.transient,
+          "unresolved different-duration title ambiguity is bounded");
+    Listen late_title;late_title.Observe("one",0,10,true,0);
+    for(int i=1;i<10;++i)late_title.Observe("one",i,10,true,i);
+    late_title.Observe("one",0.2,20,true,10.2);
+    check(late_title.Observe("two",1.8,20,true,11.8)=="one" && late_title.eligible && late_title.start_time==10,
+          "delayed title uses already observed next-instance start without losing coverage");
+    Listen pause_end;pause_end.Observe("one",0,10,true,0);
+    for(int i=1;i<=5;++i)pause_end.Observe("one",i,10,true,i);
+    pause_end.Observe("one",5,10,false,5);pause_end.Observe("one",5,10,false,7);
+    pause_end.Observe("one",5,10,true,7);
+    for(int i=6;i<10;++i)pause_end.Observe("one",i,10,true,7+i-5);
+    check(pause_end.Observe("two",0,10,true,12)=="one" && pause_end.completed_time==12,
+          "pause duration cannot shift completed boundary to an earlier or new instance");
     std::puts("PASS: Ogg integrity and complete-listen cases");
 }

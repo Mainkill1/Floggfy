@@ -4,14 +4,43 @@
 #include <cassert>
 #include <sstream>
 #include "artwork_fixture.h"
+#include "recording_fixture.h"
 namespace history {
 std::string ReadClientPlaybackQuality(const Media&) {return {};}
+void EnrichCatalog(const Media&,Catalog&) {}
 void EnrichTags(const Media &, Tags & tags) { if(GetSettings().lyrics)tags.fields.push_back({"LYRICS","automatic lyric fill"}); }
 } // namespace history
 static int parser_calls = 0;
 static int32_t Parser(void *, OggPage *) {
   ++parser_calls;
   return 58;
+}
+static void TestRepeatScheduling() {
+  CaptureBuffers buffers;Listen listen;Media current;std::vector<Heard> heard;
+  Media media;media.title=L"Repeated";media.artist=L"Artist";media.album=L"Album";media.duration=10;media.playing=true;
+  auto sample=[&](double position,double time) {media.position=position;AssociateListen(media,listen,current,heard,buffers,time);};
+  auto capture=[&](double born) {auto value=std::make_unique<Capture>();value->lossless=true;value->flac.rate=1;value->coverage.samples=10;value->born=born;return value;};
+  sample(0,0);buffers.ready.push_back(capture(0));buffers.ready.push_back(capture(10));
+  for(int i=1;i<10;++i)sample(i,i);
+  sample(.1,10.1);sample(1.2,11.2);
+  assert(heard.size()==1 && heard[0].generation==1 && heard[0].start==0 && heard[0].finish==10 && listen.generation==2);
+  assert(CaptureMatchesListen(*buffers.ready[0],heard[0]) && !CaptureMatchesListen(*buffers.ready[1],heard[0]));
+  save_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(save_event);
+  SchedulePublications(heard,buffers,7,11.2);
+  SaveJob first;assert(saves.Pop(first) && first.epoch==7 && first.heard.generation==1 && first.capture->listen_generation==1 && first.capture->born==0);
+  for(int i=12;i<20;++i)sample(i-10,i);
+  sample(.1,20.1);sample(1.2,21.2);
+  assert(heard.size()==1 && heard[0].generation==2 && heard[0].start==10 && heard[0].finish==20 && listen.generation==3);
+  assert(!CaptureMatchesListen(*first.capture,heard[0])); // A prior instance cannot be reused.
+  SchedulePublications(heard,buffers,7,21.2);
+  SaveJob second;assert(saves.Pop(second) && second.heard.generation==2 && second.capture->born==10 && buffers.ready.empty());
+  CloseHandle(save_event);save_event=nullptr;
+  Slot event_slot{};event_slot.kind=AudioEventKind::FlacBegin;event_slot.capture=true;event_slot.epoch=3;event_slot.context=42;
+  PlaybackQualityTracker quality;
+  ProcessCaptureEvent(event_slot,buffers,quality,false,true,4);assert(buffers.active.empty());
+  ProcessCaptureEvent(event_slot,buffers,quality,false,true,3);assert(buffers.active.size()==1);
+  event_slot.kind=AudioEventKind::FlacError;ProcessCaptureEvent(event_slot,buffers,quality,false,true,3);assert(buffers.active.empty());
+  std::puts("PASS: named codec events honor capture epochs; same-title repeat jobs retain distinct completed generations and old boundaries");
 }
 static void TestLyricsPublication() {
   wchar_t temp[2048];GetTempPathW(2048,temp);
@@ -20,14 +49,12 @@ static void TestLyricsPublication() {
   Heard heard;heard.media.title=L"Track";heard.media.artist=L"Artist";heard.media.album=L"Album";heard.media.track=1;
   auto settings=GetSettings();auto path=OutputPath(settings.root,CatalogFor(heard.media),L".flac",settings.music_folder);
   assert(EnsureDirectory(path.substr(0,path.find_last_of(L'\\'))));
-  std::vector<uint8_t> source={'f','L','a','C',128,0,0,34};source.resize(42);source[8]=source[10]=16;
-  uint64_t packed=(uint64_t(44100)<<44)|(uint64_t(1)<<41)|(uint64_t(23)<<36)|8192;
-  for(unsigned i=0;i<8;i++)source[18+i]=uint8_t(packed>>(56-8*i));
-  source.insert(source.end(),{255,248,1,2,3,4});
-  Tags tags;tags.fields={{"TITLE","Track"},{"ARTIST","Artist"},{"ALBUM","Album"}};tags.cover=artwork_fixture::png();tags.mime="image/png";
+  auto source=recording_fixture::fixture(44100,24);
+  heard.media.duration=16.0/44100;
+  Tags tags;tags.fields={{"TITLE","Track"},{"ARTIST","Artist"},{"ALBUM","Album"},{"TRACKNUMBER","1"},{"HISTORY_MEDIA_DURATION",std::to_string(heard.media.duration)},{"HISTORY_COMPLETE_LISTEN","1"},{"HISTORY_CAPTURE","native compressed FLAC input"}};tags.cover=artwork_fixture::png();tags.mime="image/png";
   std::vector<uint8_t> existing;std::string error;assert(TagFlac(source,tags,existing,error));
   auto write=[&]{DeleteFileW(path.c_str());HANDLE f=CreateFileW(path.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,0,nullptr);assert(f!=INVALID_HANDLE_VALUE);DWORD n;assert(WriteFile(f,existing.data(),DWORD(existing.size()),&n,nullptr));CloseHandle(f);};
-  Capture capture;capture.lossless=true;capture.flac={44100,2,16,4096,4096,8192};
+  Capture capture;capture.lossless=true;capture.flac={44100,2,16,16,16,16};
   write();assert(Publish(capture,heard,CaptureEpoch())==Publication::Saved);
   assert(Publish(capture,heard,CaptureEpoch())==Publication::Skipped);
   Quality q;assert(ReadQuality(path,q)&&q.bits==24);
@@ -58,23 +85,22 @@ static void TestPublicationLogging() {
   assert(SetSaveLocation(std::wstring(temp)+L"Floggfy-publication-log-"+std::to_wstring(GetCurrentProcessId())));
   assert(SetDownloads(true)&&SetFlac(true)&&SetOgg(true)&&SetLyrics(false));
   Heard heard;heard.media.title=L"Log Track";heard.media.artist=L"Log Artist";heard.media.album=L"Log Album";heard.media.track=1;
-  heard.media.cover=artwork_fixture::png();heard.media.cover_extension=L".png";
+  heard.media.cover=artwork_fixture::png();heard.media.cover_extension=L".png";heard.media.duration=16.0/44100;
   const auto settings=GetSettings();const auto path=OutputPath(settings.root,CatalogFor(heard.media),L".flac",settings.music_folder);
   // A planned path stays disabled until actual saved audio exists.
   PublishCurrentDestination(heard.media,settings);
   std::wstring song_file;
   assert(!ReadSongDestination(PlaybackIdentity(heard.media.Key()),settings.generation,song_file));
   auto make=[](unsigned rate,unsigned bits){
-    auto c=std::make_unique<Capture>();c->lossless=true;c->flac={rate,2,bits,4096,4096,8192};c->coverage.samples=8192;c->coverage.frames=2;
-    std::vector<uint8_t> bytes={'f','L','a','C',128,0,0,34};bytes.resize(42);bytes[8]=bytes[10]=16;
-    const uint64_t packed=(uint64_t(rate)<<44)|(uint64_t(1)<<41)|(uint64_t(bits-1)<<36)|8192;
-    for(unsigned i=0;i<8;i++)bytes[18+i]=uint8_t(packed>>(56-8*i));
-    bytes.insert(bytes.end(),{255,248,1,2,3,4});
+    auto c=std::make_unique<Capture>();c->lossless=true;c->flac={rate,2,bits,16,16,16};c->coverage.samples=16;c->coverage.frames=1;
+    auto bytes=recording_fixture::fixture(rate,bits);
     c->bytes=bytes.size();assert(c->data.Append(bytes.data(),bytes.size(),65536));return c;
   };
   auto capture=make(44100,16);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Saved);
   PublishCurrentDestination(heard.media,GetSettings());
-  assert(ReadSongDestination(PlaybackIdentity(heard.media.Key()),GetSettings().generation,song_file) && song_file==path);
+  const auto song_deadline=GetTickCount64()+5000;
+  while(!ReadSongDestination(PlaybackIdentity(heard.media.Key()),GetSettings().generation,song_file) && GetTickCount64()<song_deadline)Sleep(1);
+  assert(song_file==path);
   WIN32_FILE_ATTRIBUTE_DATA attributes{};assert(GetFileAttributesExW(path.c_str(),GetFileExInfoStandard,&attributes));
   auto size=std::to_string((uint64_t(attributes.nFileSizeHigh)<<32)|attributes.nFileSizeLow);
   WaitLog("finished FLAC 16-bit, 44,100 Hz", "("+size+" bytes) | Log Artist - Log Track");
@@ -93,15 +119,18 @@ static void TestPublicationLogging() {
   assert(EnsureDirectory(path.substr(0,path.find_last_of(L'\\'))));
   HANDLE f=CreateFileW(path.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,0,nullptr);DWORD n;
   assert(f!=INVALID_HANDLE_VALUE&&WriteFile(f,"unknown",7,&n,nullptr));CloseHandle(f);
-  capture=make(44100,24);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped);
-  WaitLog("skipped existing file quality could not be verified; retained", "Log Artist - Log Track");
-  assert(DeleteFileW(path.c_str()));
+  const auto alternate=ResolveRecordingPath(path,CatalogFor(heard.media));assert(alternate!=path && !alternate.empty());
+  capture=make(44100,24);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Saved);
+  Quality alternate_quality;assert(ExistingRecording(alternate,CatalogFor(heard.media),alternate_quality));
+  f=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr);char preserved[7]{};
+  assert(f!=INVALID_HANDLE_VALUE && ReadFile(f,preserved,7,&n,nullptr) && n==7 && !memcmp(preserved,"unknown",7));CloseHandle(f);
+  assert(DeleteFileW(path.c_str()) && DeleteFileW(alternate.c_str()));
   assert(SetDownloads(false));assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped);
   WaitLog("skipped capture settings changed or downloads/format disabled", "Log Artist - Log Track");
   assert(SetDownloads(true));capture=make(44100,24);capture->data.Flatten();
   assert(Publish(*capture,heard,CaptureEpoch())==Publication::Failed);
   WaitLog("failed tagging failed:","Log Artist - Log Track");
-  assert(ReadRecentDownloads(recent)&&recent.size()==1); // Failures/settings/skips never add entries.
+  assert(ReadRecentDownloads(recent)&&recent.size()==2); // Only the two actual publication paths add entries.
   assert(SetDownloads(false));
   std::puts("PASS: normal publication logs contain final quality/size and accurate same/better/unverified/settings skip reasons");
 }
@@ -110,6 +139,8 @@ int main() {
   assert(WritePrivateProfileStringW(L"To Disk",L"Log",L"1",ini.c_str()));
   assert(WritePrivateProfileStringW(L"To Disk",L"DebugLog",L"0",ini.c_str()));
   InitSettings(nullptr);
+  TestRepeatScheduling();
+  StartSongDestinationWorker(true);
   std::vector<RecentDownload> recent;assert(ReadRecentDownloads(recent)&&recent.empty());
   TestLyricsPublication();
   assert(ReadRecentDownloads(recent)&&recent.empty()); // Lyrics-only updates and skips are not downloads.
@@ -123,7 +154,7 @@ int main() {
   assert(event);
   quality_enabled = true;
   std::vector<uint8_t> data(70000);
-  FlacEvent(reinterpret_cast<void *>(2), 3, data.data(), data.size());
+  FlacEvent(reinterpret_cast<void *>(2), AudioEventKind::FlacBytes, data.data(), data.size());
   Slot first, second;
   assert(Pop(first) && Pop(second) && !Pop(first));
   assert(!first.capture && !second.capture && first.length == 42 && second.length == 42);
@@ -133,9 +164,9 @@ int main() {
   original = Parser;
   assert(Hook(reinterpret_cast<void *>(1), &page) == 58 && parser_calls == 1);
   Slot observed;
-  assert(Pop(observed) && observed.kind == 0 && !observed.capture && observed.length == 58);
+  assert(Pop(observed) && observed.kind == AudioEventKind::OggPage && !observed.capture && observed.length == 58);
   quality_enabled = false;
-  FlacEvent(reinterpret_cast<void *>(2), 3, data.data(), data.size());
+  FlacEvent(reinterpret_cast<void *>(2), AudioEventKind::FlacBytes, data.data(), data.size());
   assert(Hook(reinterpret_cast<void *>(1), &page) == 58 && parser_calls == 2 && !Pop(observed));
   CloseHandle(event);
   event = nullptr;
