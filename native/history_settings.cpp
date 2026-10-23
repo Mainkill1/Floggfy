@@ -20,7 +20,8 @@ static bool IsMusic(std::wstring root) {
 }
 static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,capture_epoch=0,log_enabled=1,debug_enabled=0;
 static HANDLE settings_signal=nullptr,persist_done=nullptr;
-static volatile LONG persisted_generation=-1,persist_failed=0;
+// A failed attempt is observable without acknowledging bytes never committed.
+static volatile LONG persisted_generation=-1,failed_generation=-1,persist_failed=0;
 static constexpr char default_ini[]=
     "[To Disk]\r\n"
     "; Settings also appear in the To Disk menu.\r\n"
@@ -52,9 +53,9 @@ static bool CreateDefaultIni(const std::wstring& path) {
 static DWORD WINAPI PersistSettings(LPVOID) {
     for(;;) {
         WaitForSingleObject(settings_signal,INFINITE);
-        unsigned generation=0;bool ok=false;
+        unsigned generation=0;bool ok=false,snapshot_captured=false;
         try {
-            const auto snapshot=GetSettings();generation=snapshot.generation;
+            const auto snapshot=GetSettings();generation=snapshot.generation;snapshot_captured=true;
             std::wstring text;bool unicode=false;
             ok=settings_file::Read(ini,text,unicode);
             if(ok) {
@@ -64,17 +65,30 @@ static DWORD WINAPI PersistSettings(LPVOID) {
                 settings_file::Set(text,L"Save Location",snapshot.save_location);
                 ok=settings_file::Write(ini,text);
             }
-        } catch(...) {SharedSrw guard(lock);generation=settings.generation;}
-        InterlockedExchange(&persist_failed,!ok);InterlockedExchange(&persisted_generation,LONG(generation));
-        SetEvent(persist_done);if(!ok)LogActivity("failed","settings persistence");
+        } catch(...) {
+            ok=false;
+            if(!snapshot_captured){SharedSrw guard(lock);generation=settings.generation;}
+        }
+        // Publish status before its generation acknowledgement boundary.
+        InterlockedExchange(&persist_failed,!ok);
+        if(ok)InterlockedExchange(&persisted_generation,LONG(generation));
+        else InterlockedExchange(&failed_generation,LONG(generation));
+        SetEvent(persist_done);
+        if(!ok)try{LogActivity("failed","settings persistence");}catch(...) {/* A logging allocation must not kill persistence retries. */}
     }
 }
+static bool ReachedGeneration(volatile LONG& progress,unsigned expected) {
+    return static_cast<LONG>(unsigned(InterlockedCompareExchange(&progress,0,0))-expected)>=0;
+}
 bool FlushSettings(unsigned timeout_ms) {
-    unsigned expected=GetSettings().generation;ULONGLONG end=GetTickCount64()+timeout_ms;
-    while(static_cast<LONG>(unsigned(InterlockedCompareExchange(&persisted_generation,0,0))-expected)<0) {
-        if(GetTickCount64()>=end)return false;
+    const auto expected=GetSettings().generation;const auto end=GetTickCount64()+timeout_ms;
+    for(;;) {
+        if(ReachedGeneration(persisted_generation,expected))return true;
+        if(ReachedGeneration(failed_generation,expected))
+            return ReachedGeneration(persisted_generation,expected); // A concurrent retry may just have succeeded.
+        if(!persist_done||GetTickCount64()>=end)return false;
         WaitForSingleObject(persist_done,10);
-    }return !persist_failed;
+    }
 }
 std::wstring WindowsPath(const std::wstring& p) {
     if(p.rfind(L"\\\\?\\",0)==0) return p;

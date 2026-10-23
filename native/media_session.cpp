@@ -1,4 +1,8 @@
 #include "media_session.h"
+#include "thumbnail_cache.h"
+#include "playback_quality.h"
+#include <atomic>
+#include <new>
 #include <roapi.h>
 #include <winstring.h>
 #include <algorithm>
@@ -42,10 +46,14 @@ static bool Await(void* operation, Com& result, unsigned results_slot=8) {
         Sleep(5);
     }
 }
-static std::wstring String(void* object, unsigned slot) {
-    HSTRING text=nullptr; if(FAILED(Call(object,slot,&text))) return {};
-    UINT32 n=0; const wchar_t* data=WindowsGetStringRawBuffer(text,&n);
-    std::wstring result(data,n); WindowsDeleteString(text); return result;
+struct OwnedString {
+    HSTRING value=nullptr;
+    ~OwnedString(){WindowsDeleteString(value);}
+};
+static std::wstring String(void* object,unsigned slot) {
+    OwnedString text;if(FAILED(Call(object,slot,&text.value)))return {};
+    UINT32 size=0;const auto data=WindowsGetStringRawBuffer(text.value,&size);
+    return std::wstring(data,size);
 }
 std::string Utf8(const std::wstring& s) {
     if(s.empty()) return {};
@@ -93,7 +101,7 @@ static bool Artwork(void* properties, Media& out) {
 MediaReader::~MediaReader() {
     Release(manager_); if(initialized_) RoUninitialize();
 }
-bool MediaReader::Read(Media& out,bool include_artwork) {
+bool MediaReader::ReadSnapshot(Media& out,bool include_artwork,const Media* expected) {
     if(!initialized_) {
         HRESULT hr=RoInitialize(RO_INIT_MULTITHREADED);
         if(FAILED(hr)) return false;
@@ -129,11 +137,10 @@ bool MediaReader::Read(Media& out,bool include_artwork) {
     if(SUCCEEDED(Call(properties.p,12,genres.out())) && genres.p) {
         unsigned n=0;
         if(SUCCEEDED(Call(genres.p,7,&n)) && n<=20) for(unsigned i=0;i<n;i++) {
-            HSTRING value=nullptr;
-            if(SUCCEEDED(Call(genres.p,6,i,&value))) {
-                UINT32 length=0;const wchar_t* text=WindowsGetStringRawBuffer(value,&length);
+            OwnedString value;
+            if(SUCCEEDED(Call(genres.p,6,i,&value.value))) {
+                UINT32 length=0;const wchar_t* text=WindowsGetStringRawBuffer(value.value,&length);
                 if(length && length<=512){if(!media.genre.empty())media.genre+=L"; ";media.genre.append(text,length);}
-                WindowsDeleteString(value);
             }
         }
     }
@@ -151,14 +158,54 @@ bool MediaReader::Read(Media& out,bool include_artwork) {
     media.position=std::max(0.0,std::min(media.position,media.duration));
     if(media.title.empty() || media.duration<=0) return false;
     if(include_artwork) {
-        if(media.Key()==cached_.Key() && !cached_.cover.empty()) {
-            media.cover=cached_.cover; media.cover_extension=cached_.cover_extension;
-        }
-        // Read runs on the history worker; failed refreshes retain the last cover.
-        if(artwork_refresh_.Due(media.Key(),GetTickCount64())) Artwork(properties.p,media);
+        if(expected&&!SameArtworkIdentity(*expected,media))return false;
+        if(!Artwork(properties.p,media))return false;
     }
-    // Metadata-only reads must not discard artwork or restart its refresh policy.
-    if(include_artwork) cached_=media;
     out=std::move(media); return true;
 }
+bool MediaReader::Read(Media& out,bool include_artwork) {
+    if(!include_artwork)return ReadSnapshot(out,false,nullptr);
+    Media expected;
+    return ReadSnapshot(expected,false,nullptr)&&ReadArtwork(expected,out);
+}
+bool MediaReader::ReadArtwork(const Media& expected,Media& out) {
+    Media fetched,after;
+    if(!ReadSnapshot(fetched,true,&expected)||!ReadSnapshot(after,false,nullptr)||!SameArtworkIdentity(expected,after))return false;
+    out=std::move(fetched);return true;
+}
+namespace {
+bool FetchThumbnail(const Media& expected,Media& result,void* context) {
+    return static_cast<MediaReader*>(context)->ReadArtwork(expected,result);
+}
+bool CurrentThumbnailTrack(const Media& expected,void*) {
+    const auto current=ReadPlaybackQuality();
+    // A fresh client identity wins over lagging SMTC titles when available.
+    // Unknown/contended snapshots are conservative misses, retried off capture.
+    return current.identity&&current.identity==PlaybackIdentity(expected.Key());
+}
+struct ArtworkRuntime {
+    MediaReader reader;
+    WindowsThumbnailCache cache{FetchThumbnail,&reader,CurrentThumbnailTrack};
+};
+std::atomic<ArtworkRuntime*> artwork_runtime{nullptr};
+}
+void RequestArtwork(const Media& media) noexcept {
+    try {
+        auto* runtime=artwork_runtime.load(std::memory_order_acquire);
+        if(!runtime) {
+            auto* candidate=new(std::nothrow) ArtworkRuntime;
+            if(!candidate)return;
+            if(!artwork_runtime.compare_exchange_strong(runtime,candidate,std::memory_order_acq_rel,std::memory_order_acquire))delete candidate;
+            else runtime=candidate;
+        }
+        runtime->cache.Request(media);
+    }catch(...) {/* Optional artwork must not stop capture. */}
+}
+bool GetArtwork(const Media& media,std::vector<uint8_t>& bytes,std::wstring& extension) noexcept {
+    const auto runtime=artwork_runtime.load(std::memory_order_acquire);
+    return runtime&&runtime->cache.Get(media,bytes,extension);
+}
+// The one runtime/reader lives for the process, matching the capture hooks. It
+// never joins a WinRT worker under DLL detach's loader lock.
+
 }
