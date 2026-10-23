@@ -116,11 +116,12 @@ item's click target. A deleted file or folder produces an unavailable notice;
 Explorer failures produce an error notice. Menu construction performs no filesystem
 or shell work.
 
-The current **Song** row also opens its intended save folder, before a download
-or when an existing file is retained or upgraded. It uses the same destination
-rules as file publication. Clicking creates a missing destination folder and
-opens it in Explorer; failures show an error notice. Menu rendering performs no
-filesystem work, and folder clicks do not add download history entries.
+The current **Song** row opens the containing folder only when a matching saved
+FLAC or Ogg file exists. The audio worker checks the same paths used for file
+publication, while menu rendering only reads its snapshot. The click rechecks
+the file so deletion produces an unavailable notice instead of opening an
+empty folder. Only audio saves create directories. Folder clicks do not add
+download history entries.
 
 Tagging, quality checks and publication run in a bounded background worker;
 pending compressed save buffers count against the configured allocation budget.
