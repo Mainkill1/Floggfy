@@ -99,7 +99,8 @@ and Windows x64 function metadata; missing or ambiguous matches disable capture.
 Menu integration checks its supported CEF version and structure sizes.
 
 Activity and opt-in diagnostics are in `Floggfy.log` in the selected save root.
-The single log resets at 5 MiB. Logging and INI persistence use separate workers.
+At 5 MiB, the log removes the oldest complete lines to make room for each new
+entry. Logging and INI persistence use separate workers.
 Tagging, quality checks and publication run in a bounded background worker;
 pending compressed save buffers count against the configured allocation budget.
 
@@ -157,5 +158,11 @@ Available extra tags include artists, album artists, release date/year, track an
 disc numbers/totals, label, ISRC, language, copyright and lyrics. Missing fields
 are omitted. Requests use Spotify's existing client service and remain bounded;
 unsupported service shapes retain basic tags. Lyrics are not guaranteed for every
-track. Existing equal- or higher-quality files continue to be skipped; replaying
-a track does not automatically retag previously saved files.
+track. Synchronized lyrics are embedded as millisecond LRC text in `LYRICS`,
+with plain text used when timing is unavailable or invalid. No sidecars are created.
+After a complete replay, existing FLAC files can receive missing lyrics or upgrade
+plain lyrics to synchronized lyrics while retaining their compressed audio,
+artwork and other metadata. This also works when the replay uses lower-quality
+audio. Already synchronized lyrics are retained. Audio-quality upgrades preserve
+available existing lyrics when lyric metadata is enabled. Other equal- or
+higher-quality audio is skipped; there is no bulk library scan.

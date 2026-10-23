@@ -11,7 +11,7 @@ Save the music you play in Spotify on Windows.
 
 - Saves fully played tracks as Ogg or FLAC, with cover art and available song details.
 - Sorts music by artist and album.
-- Skips songs you already have, unless a better-quality version is available.
+- Skips existing audio unless a better-quality version is available; existing FLAC files can also receive lyric upgrades.
 
 ### Disable Automix under Edit -> Preferences -> Playback as it trims songs and will fail downloads.
 
@@ -72,7 +72,7 @@ lines are removed as new entries arrive.
 - **Spotify crashes:** quit it, set `Metadata=0` in `SpotifyHistory.ini`, and restart. If needed, try `Menu=0` too.
 - **Menu missing:** quit Spotify and set `Downloads=1` in the INI to save without it.
 
-Tested with Windows x64 Spotify **1.3.3.264**. Updates may need a new Floggfy release. [Report a problem](https://github.com/Mainkill1/Floggfy/issues).
+Tested with Windows x64 Spotify **1.2.93.667** and **1.3.6.1921**. Updates may need a new Floggfy release. [Report a problem](https://github.com/Mainkill1/Floggfy/issues).
 
 To uninstall, quit Spotify and remove the Floggfy files you installed.
 
