@@ -9,6 +9,8 @@ int main() {
           "artist album layout without year or filename timestamp");
     check(OutputPath(L"C:\\Users\\TestUser\\Music",c,L".ogg",true)==L"C:\\Users\\TestUser\\Music\\Artists\\Test-Artist\\Test Album\\01 - Test Track.ogg","default Music folder avoids duplicate Music directory");
     check(OutputPath(L"D:\\Media\\",c,L".ogg")==L"D:\\Media\\Music\\Artists\\Test-Artist\\Test Album\\01 - Test Track.ogg","custom Media root retains hierarchy");
+    auto first_disc=RelativePath(c,L".flac"); c.disc=2;
+    check(RelativePath(c,L".flac")!=first_disc,"different discs have different paths"); c.disc=0;
     c.kind=MediaKind::Compilation;
     check(RelativePath(c,L".ogg")==L"Music\\Compilations\\Test Album\\01 - Test Track.ogg","compilation routing");
     c.kind=MediaKind::Soundtrack;

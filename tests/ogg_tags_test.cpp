@@ -38,6 +38,10 @@ int main(int argc,char** argv) {
     check(pictureBlock[24]==1 && pictureBlock[28]==1 && pictureBlock[32]==32,
           "FLAC picture records width height and bit depth");
     std::vector<uint8_t> output; std::string error;
+    auto no_art=tags; no_art.cover.clear(); no_art.mime.clear();
+    check(history::TagOgg(source,no_art,output,error),"Ogg audio saves without optional artwork");
+    no_art.cover={1,2,3};
+    check(history::TagOgg(source,no_art,output,error),"Ogg audio saves with invalid optional artwork");
     check(history::TagOgg(source,tags,output,error),"native tagger accepts complete stream");
     check(output.size()>source.size()+100000,"embedded picture spans multiple Ogg pages");
     ogg_sync_state sync; ogg_sync_init(&sync);

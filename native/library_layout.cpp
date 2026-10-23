@@ -35,6 +35,7 @@ std::wstring RelativePath(const Catalog& c,const std::wstring& extension) {
     }
     std::wstring out;
     for(const auto& part:parts) { out+=part; out+=L'\\'; }
+    if(c.disc>1) out+=L"Disc "+std::to_wstring(c.disc)+L" - ";
     if(c.track) { wchar_t number[20]; swprintf(number,20,L"%02u - ",c.track); out+=number; }
     return out+Safe(c.title,L"Untitled")+extension;
 }

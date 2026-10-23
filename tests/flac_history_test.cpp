@@ -27,6 +27,10 @@ int main(int argc,char**argv) {
     Tags tags; tags.fields={{"TITLE","Track"},{"ARTIST","Artist"},{"ALBUM","Album"}};
     tags.cover=artwork_fixture::png(); tags.mime="image/png";
     std::vector<uint8_t> out; std::string error;
+    Tags no_art=tags; no_art.cover.clear(); no_art.mime.clear();
+    check(TagFlac(b,no_art,out,error),"complete audio saves without optional artwork");
+    no_art.cover={1,2,3}; no_art.mime="image/png";
+    check(TagFlac(b,no_art,out,error),"invalid optional artwork does not discard audio");
     check(TagFlac(b,tags,out,error),"native FLAC tag/picture construction");
     FlacInfo tagged; size_t start;
     check(ParseFlacMetadata(out,tagged,start)==FlacParse::Valid && tagged.total_samples==info.total_samples,"STREAMINFO samples preserved");
@@ -74,7 +78,7 @@ int main(int argc,char**argv) {
     check(FillFlacLyrics(truncated,incoming,filled,error)==LyricsUpdate::Invalid && filled.empty(),"malformed file never overwritten");
     if(argc==4) {
         FILE* f=fopen(argv[1],"rb"); check(f,"real source opens"); fseek(f,0,SEEK_END); b.resize(ftell(f)); rewind(f); check(fread(b.data(),1,b.size(),f)==b.size(),"real source read"); fclose(f);
-        f=fopen(argv[2],"rb"); check(f,"real artwork opens"); fseek(f,0,SEEK_END); tags.cover.resize(ftell(f)); rewind(f); fread(tags.cover.data(),1,tags.cover.size(),f); fclose(f);
+        f=fopen(argv[2],"rb"); check(f,"real artwork opens"); fseek(f,0,SEEK_END); tags.cover.resize(ftell(f)); rewind(f); check(fread(tags.cover.data(),1,tags.cover.size(),f)==tags.cover.size(),"real artwork read"); fclose(f);
         ImageInfo image;check(ReadImageInfo(tags.cover,image),"real artwork validated");tags.mime=image.mime;
         check(TagFlac(b,tags,out,error),"real source native tagging"); f=fopen(argv[3],"wb"); check(f,"output opens"); check(fwrite(out.data(),1,out.size(),f)==out.size(),"output write"); fclose(f);
     }

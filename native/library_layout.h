@@ -6,7 +6,8 @@ enum class MediaKind { Music, Compilation, Soundtrack, VariousArtists, Audiobook
 struct Catalog {
     MediaKind kind=MediaKind::Music;
     std::wstring artist,album,title,author,series,book,show;
-    unsigned track=0,episode_year=0;
+    unsigned track=0,episode_year=0,disc=0;
+    std::string spotify_uri;
 };
 std::wstring RelativePath(const Catalog& item,const std::wstring& extension);
 std::wstring OutputPath(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder=false);
