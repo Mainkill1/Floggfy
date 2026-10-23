@@ -22,8 +22,11 @@ struct Stream {
 };
 // Media positions must be extrapolated from the public timeline timestamp.
 // Completed identity is returned only after continuous coverage and a natural
-// transition. Same-title repeats have distinct generations.
-enum class ListenPhase { Tracking, AwaitingIdentity };
+// transition. Same-title repeats have distinct generations. A provisional
+// repeat emits the prior completion once; its new generation may be relabeled
+// once within the original two-second title window without resetting coverage.
+// Expiring that label window does not invalidate a genuine repeat's coverage.
+enum class ListenPhase { Tracking, AwaitingIdentity, ProvisionalRepeat };
 struct Listen {
     std::string identity;
     double start_time = 0, last_time = 0, last_position = 0, duration = 0;
@@ -31,6 +34,8 @@ struct Listen {
     std::uint64_t generation = 0, completed_generation = 0;
     double completed_start = 0, completed_time = 0;
     ListenPhase phase = ListenPhase::Tracking;
+    // These describe the observed wrap. They are active only in AwaitingIdentity
+    // or ProvisionalRepeat; confirmation must never extend wrap_time's deadline.
     double wrap_time = 0, wrap_start = 0, wrap_position = 0, wrap_length = 0;
     bool eligible = false, playing = false, transient = false, pending_start = false;
     std::string Observe(const std::string& key, double position, double length,
