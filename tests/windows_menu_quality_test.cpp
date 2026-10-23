@@ -360,6 +360,27 @@ int main() {
   assert(!child.entries[Index(&child.api,recent_id)].visible && recent.entries.size()==1 && !recent.entries[0].enabled);
   Retain(&recent.api.base);Execute(&wrapped.api,&recent.api,first_recent_id,0);
   assert(shell_calls==4 && original_commands==0 && recent.refs==1);
+  const std::wstring unsafe_title=std::wstring(L"A&B\tLine\n")+wchar_t(0)+wchar_t(127)+wchar_t(0x85)+L"Tail";
+  const std::wstring split_pair=std::wstring(94,L'界')+wchar_t(0xd83d)+wchar_t(0xde00)+L"suffix";
+  const std::wstring intact_pair=std::wstring(93,L'界')+wchar_t(0xd83d)+wchar_t(0xde00)+L"suffix";
+  published_recent={{unsafe_title,L"C:\\Music\\escaped.flac",1},
+                    {split_pair,L"C:\\Music\\split.flac",2},
+                    {intact_pair,L"C:\\Music\\intact.flac",3},
+                    {std::wstring(100,L'&'),L"C:\\Music\\ampersands.flac",4},
+                    {L"",L"C:\\Music\\untitled.flac",5},
+                    {split_pair.substr(0,96),L"C:\\Music\\exact.flac",6}};
+  const auto fs_before_labels=filesystem_calls;
+  build_root();
+  assert(recent.entries[0].label==L"A&&B Line    Tail");
+  assert(recent.entries[1].label==std::wstring(94,L'界')+L"\u2026");
+  assert(recent.entries[2].label==intact_pair.substr(0,95)+L"\u2026");
+  assert(recent.entries[3].label==std::wstring(190,L'&')+L"\u2026");
+  assert(recent.entries[4].label==L"Untitled download" && wrapped.recent[4].title.empty());
+  assert(recent.entries[5].label==split_pair.substr(0,96));
+  assert(wrapped.recent[0].title==unsafe_title && wrapped.recent[1].title==split_pair);
+  assert(filesystem_calls==fs_before_labels && shell_calls==4 && recent.refs==1);
+  Retain(&recent.api.base);Execute(&wrapped.api,&recent.api,first_recent_id,0);
+  assert(selected_path==L"C:\\Music\\escaped.flac" && shell_calls==5 && recent.refs==1);
   q.format=history::PlaybackFormat::Ogg;q.level=history::PlaybackLevel::VeryHigh;q.bits=0;
   actual.level=q.level;history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
   build_root();assert(!child.entries[9].visible && !child.entries[10].visible);
@@ -413,6 +434,7 @@ int main() {
   assert(original_add_submenu&&menu_init.TryBegin(GetTickCount64()+1000));menu_prepared=true;
   FinalizeToDiskMenu(false);assert(menu_init.State()==hooks::InitState::Unsupported);
   assert(child.child->refs==1 && child.refs==1 && root.refs==1);
+  std::puts("PASS: bounded recent labels escape mnemonics, sanitize controls, preserve Unicode pairs and full stored titles");
   std::puts("PASS: session downloads hidden until populated; stable labels and shell targets, ten-item cap, busy snapshot retention, missing-file notice");
   std::puts("PASS: menu preparation can retry; failed activation preserves trampoline state");
   std::puts("PASS: bottom read-only quality rows, independent codec display, duplicate-free "

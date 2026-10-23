@@ -198,11 +198,34 @@ static int Release(Base* p) { auto* w=Self(p); if(w->refs.fetch_sub(1,std::memor
 static int One(Base* p) { return Self(p)->refs.load()==1; }
 static int Any(Base* p) { return Self(p)->refs.load()!=0; }
 static void ReleaseMenu(Menu* menu) { if(menu && menu->base.release) menu->base.release(&menu->base); }
+static std::wstring RecentLabel(const std::wstring& title) {
+    if(title.empty()) return L"Untitled download";
+    // Bound displayed UTF-16 before escaping CEF mnemonic markers. Match the
+    // Song row's 96-unit limit without leaving half a surrogate pair behind.
+    const bool truncated=title.size()>96;
+    std::wstring bounded=title.substr(0,truncated ? 95 : title.size());
+    if(truncated) {
+        if(bounded.back()>=0xd800 && bounded.back()<=0xdbff) bounded.pop_back();
+        bounded+=L'\u2026';
+    }
+    std::wstring label;
+    label.reserve(bounded.size()*2);
+    for(wchar_t c:bounded) {
+        if(c<L' ' || (c>=0x7f && c<=0x9f)) c=L' ';
+        label+=c;
+        if(c==L'&') label+=c;
+    }
+    return label;
+}
 static void RefreshRecent(Wrapped* wrapped,Menu* child) {
     std::vector<history::RecentDownload> next;
     if(!history::ReadRecentDownloads(next)) return; // Never block or erase a prior snapshot.
     if(next.size()>history::kRecentDownloadLimit) next.resize(history::kRecentDownloadLimit);
-    for(auto& entry:next) if(entry.title.empty()) entry.title=L"Untitled download";
+    // Complete allocations before retaining or changing CEF models. The stored
+    // snapshot keeps full titles and paths; only labels receive display hygiene.
+    std::vector<std::wstring> labels;
+    labels.reserve(next.size());
+    for(const auto& entry:next) labels.push_back(RecentLabel(entry.title));
     auto* recent=Call<Menu*>(child,28,recent_id);
     if(!recent) return;
     if(!wrapped->CapableCached(recent)) {ReleaseMenu(recent);return;}
@@ -213,8 +236,7 @@ static void RefreshRecent(Wrapped* wrapped,Menu* child) {
         Call<int>(recent,4,first_recent_id,&text);
         Call<int>(recent,36,first_recent_id,0);
     } else for(size_t i=0;i<wrapped->recent.size();++i) {
-        const auto& entry=wrapped->recent[i];
-        auto text=Text(entry.title);Call<int>(recent,4,first_recent_id+int(i),&text);
+        auto text=Text(labels[i]);Call<int>(recent,4,first_recent_id+int(i),&text);
     }
     Call<int>(child,36,recent_id,int(!wrapped->recent.empty()));
     Call<int>(child,32,recent_id,int(!wrapped->recent.empty()));
