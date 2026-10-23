@@ -51,7 +51,10 @@ Explorer at its saved folder.
 Song remains visible, and Quality appears when known. Format and Sample rate
 appear only for confirmed FLAC playback; unavailable technical rows are hidden.
 
-The bottom shows the current item and available quality details.
+Click the current **Song** row to open its destination folder, including when
+the song already exists or is waiting to be saved. A missing folder is created
+when clicked; failures show an error message. Opening a folder does not count
+as a download.
 
 Lyrics are collected automatically when Spotify provides them; the lyrics panel
 does not need to be open. Timed lyrics are embedded as LRC text in the `LYRICS`
