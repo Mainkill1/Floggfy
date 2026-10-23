@@ -25,7 +25,7 @@ for source in buffer hook trampoline hde/hde64; do
 done
 common=(-std=c++17 -O2 -Wall -Wextra -Werror -static-libgcc -static-libstdc++)
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_history_test.cpp \
- native/existing_quality.cpp native/file_publication.cpp native/history_settings.cpp \
+ native/recording_file.cpp native/existing_quality.cpp native/file_publication.cpp native/history_settings.cpp \
  native/async_log.cpp native/library_layout.cpp native/ogg_history_core.cpp \
  -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-history-test.exe"
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_log_test.cpp native/async_log.cpp \
@@ -51,7 +51,7 @@ x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/play
 x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_menu_quality_test.cpp native/song_destination.cpp native/library_layout.cpp "${quality_sources[@]}" native/history_settings.cpp native/async_log.cpp build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-menu-quality-test.exe"
 "$floggfy_test_root/windows-menu-quality-test.exe"
 
-x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_quality_observer_test.cpp native/playback_quality_windows.cpp "${quality_sources[@]}" native/media_session.cpp native/library_layout.cpp native/existing_quality.cpp native/file_publication.cpp native/lyrics_update.cpp native/recent_downloads.cpp native/song_destination.cpp native/spotify_hook_discovery.cpp native/history_settings.cpp native/async_log.cpp build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_test_root/windows-quality-observer-test.exe"
+x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_quality_observer_test.cpp native/playback_quality_windows.cpp "${quality_sources[@]}" native/media_session.cpp native/library_layout.cpp native/recording_file.cpp native/existing_quality.cpp native/file_publication.cpp native/lyrics_update.cpp native/recent_downloads.cpp native/song_destination.cpp native/spotify_hook_discovery.cpp native/history_settings.cpp native/async_log.cpp build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_test_root/windows-quality-observer-test.exe"
 "$floggfy_test_root/windows-quality-observer-test.exe"
 
 x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_lyrics_update_test.cpp native/lyrics_update.cpp "${quality_sources[@]}" native/history_settings.cpp native/async_log.cpp -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-lyrics-update-test.exe"
@@ -97,3 +97,19 @@ x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_recent_downloads_test.cpp na
 
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_song_destination_test.cpp native/library_layout.cpp native/history_settings.cpp native/async_log.cpp -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-song-destination-test.exe"
 "$floggfy_test_root/windows-song-destination-test.exe"
+
+# Unicode persistence is checked in a fresh child process, including migration.
+x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_settings_unicode_test.cpp -lole32 -luuid -lshell32 -o "$floggfy_settings_test_root/windows-settings-unicode-test.exe"
+"$floggfy_settings_test_root/windows-settings-unicode-test.exe"
+
+# Deliberately blocked enrichment must not delay the metadata heartbeat.
+x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_metadata_liveness_test.cpp \
+ native/rich_metadata.cpp native/cached_metadata.cpp native/history_settings.cpp native/async_log.cpp \
+ native/media_session.cpp native/image_info.cpp native/playback_quality_windows.cpp native/playback_quality.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/windows-tests/metadata-ogg.o build/windows-tests/minhook-*.o \
+ -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_test_root/windows-metadata-liveness-test.exe"
+"$floggfy_test_root/windows-metadata-liveness-test.exe"
+
+# Publication tests include real process termination and conflicting path races.
+x86_64-w64-mingw32-g++ "${common[@]}" -municode -DFLOGGFY_PUBLICATION_TEST -I native/vendor/libogg/include \
+ tests/windows_publication_test.cpp native/recording_file.cpp native/existing_quality.cpp native/file_publication.cpp "${quality_sources[@]}" -o "$floggfy_test_root/windows-publication-test.exe"
+"$floggfy_test_root/windows-publication-test.exe"

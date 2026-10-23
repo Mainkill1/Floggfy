@@ -49,3 +49,8 @@ build/playback-quality-test
 
 g++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread tests/album_artwork_test.cpp native/album_artwork.cpp native/image_info.cpp -o build/album-artwork-test
 build/album-artwork-test
+
+# Existing files must contain complete audio and match the recording identity.
+g++ -std=c++17 -O2 -Wall -Wextra -Werror -I native/vendor/libogg/include \
+    tests/recording_file_test.cpp native/recording_file.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/ogg-framing-test.o -o build/recording-file-test
+build/recording-file-test
