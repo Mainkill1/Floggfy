@@ -111,7 +111,7 @@ x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/wind
 
 # Publication tests include real process termination and conflicting path races.
 x86_64-w64-mingw32-g++ "${common[@]}" -municode -DFLOGGFY_PUBLICATION_TEST -I native/vendor/libogg/include \
- tests/windows_publication_test.cpp native/recording_file.cpp native/existing_quality.cpp native/file_publication.cpp "${quality_sources[@]}" -o "$floggfy_test_root/windows-publication-test.exe"
+ tests/windows_publication_test.cpp native/recording_file.cpp native/existing_quality.cpp native/file_publication.cpp native/library_layout.cpp "${quality_sources[@]}" -o "$floggfy_test_root/windows-publication-test.exe"
 "$floggfy_test_root/windows-publication-test.exe"
 
 # Metadata fills work for existing FLAC and Ogg without publishing new audio.
