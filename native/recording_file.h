@@ -6,7 +6,8 @@
 #include <array>
 namespace history {
 // Inspection never decodes or changes compressed audio. It checks container
-// boundaries, checksums and complete sample/page coverage before trusting quality.
+// boundaries, checksums, sample/page coverage and supported Vorbis headers.
+// Header/container validation is not a full Vorbis audio-packet decode.
 struct RecordingArtwork {
     bool valid=false;
     uint32_t width=0,height=0;
@@ -26,6 +27,10 @@ struct RecordingFile {
     bool artwork_edit_safe=true;
     RecordingArtwork artwork;
     std::vector<RecordingArtwork> artworks;
+    // Exact original picture comment values, including opaque/uninspectable
+    // base64, for preserving embedded artwork during compressed-audio upgrades.
+    // The existing 16 MiB aggregate comment limit bounds retained values.
+    std::vector<std::string> picture_comments;
 };
 bool InspectRecording(const uint8_t* bytes,size_t size,RecordingFile& out);
 bool MatchesRecording(const RecordingFile& file,const Catalog& catalog);

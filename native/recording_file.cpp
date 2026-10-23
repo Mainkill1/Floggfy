@@ -1,6 +1,7 @@
 #include "recording_file.h"
 #include "ogg_history_core.h"
 #include "image_info.h"
+#include "vorbis_headers.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -37,11 +38,15 @@ void Picture(const uint8_t* bytes,size_t size,RecordingFile& record) {
     // mistake an inspection limit for permission to replace a good cover.
     if((png && (length<8 || memcmp(bytes+at,"\x89PNG\r\n\x1a\n",8))) ||
        (jpeg && (length<2 || bytes[at]!=0xff || bytes[at+1]!=0xd8)))return;
-    RecordingArtwork image;
-    if(!ReadRecordingArtwork(std::vector<uint8_t>(bytes+at,bytes+at+length),image)){record.artwork_edit_safe=false;return;}
+    RecordingArtwork image;std::vector<uint8_t> encoded(bytes+at,bytes+at+length);
+    if(!ReadRecordingArtwork(encoded,image)){record.artwork_edit_safe=false;return;}
     record.artworks.push_back(image);
-    if(!record.artwork.valid || uint64_t(image.width)*image.height>uint64_t(record.artwork.width)*record.artwork.height)
+    if(!record.artwork.valid || uint64_t(image.width)*image.height>uint64_t(record.artwork.width)*record.artwork.height) {
+        // Keep the best validated image (at most 4 MiB) for the shared upgrade
+        // planner; raw opaque pictures are preserved independently by callers.
+        record.tags.cover=std::move(encoded);record.tags.mime=image.mime;
         record.artwork=std::move(image);
+    }
 }
 bool Base64Picture(const std::string& text,std::vector<uint8_t>& output) {
     if(text.size()>metadata_limit)return false;
@@ -92,6 +97,7 @@ bool Comments(const uint8_t* b,size_t size,RecordingFile& record,bool vorbis) {
         for(char& c:key) if(c>='a'&&c<='z') c=char(c-'a'+'A');
         // Artwork can dwarf all textual metadata and is irrelevant to identity.
         if(key=="METADATA_BLOCK_PICTURE") {
+            record.picture_comments.emplace_back(value.substr(equals+1));
             if(equals+1<value.size()) {
                 record.has_artwork=true;std::vector<uint8_t> picture;
                 if(Base64Picture(value.substr(equals+1),picture))Picture(picture.data(),picture.size(),record);
@@ -250,7 +256,7 @@ bool Flac(const uint8_t* b,size_t size,RecordingFile& out) {
 }
 bool Ogg(const uint8_t* b,size_t size,RecordingFile& out) {
     Stream stream; size_t p=0; unsigned packets=0;
-    std::vector<uint8_t> packet; bool packet_open=false;
+    std::vector<uint8_t> packet,identification; bool packet_open=false,headers_valid=false;
     while(p<size) {
         if(size-p<27) return false;
         size_t header=27+b[p+26]; if(header>size-p) return false;
@@ -265,21 +271,30 @@ bool Ogg(const uint8_t* b,size_t size,RecordingFile& out) {
         for(size_t i=p+27;i<p+header;i++) {
             unsigned length=b[i];
             if(packets<3) {
-                if(packet.size()+length>metadata_limit) return false;
+                const size_t limit=packets==0?30:packets==2?1024*1024:metadata_limit;
+                if(packet.size()+length>limit) return false;
                 packet.insert(packet.end(),b+at,b+at+length);
             }
             at+=length; packet_open=length==255;
             if(packet_open) continue;
             if(packets<3) {
                 const unsigned kind[]={1,3,5};
-                if(packet.size()<7 || packet[0]!=kind[packets] || std::memcmp(packet.data()+1,"vorbis",6)) return true;
+                if(packet.size()<7 || packet[0]!=kind[packets] || std::memcmp(packet.data()+1,"vorbis",6)) return false;
+                if(packets==0)identification=packet;
                 if(packets==1 && !Comments(packet.data()+7,packet.size()-7,out,true)) return false;
+                if(packets==2) {
+                    // Unsupported or invalid headers must not confer ownership: an
+                    // existing recording outside these limits is not repairable.
+                    const auto result=ValidateVorbisHeaders(identification,packet);
+                    if(result!=VorbisHeadersResult::Valid)return false;
+                    headers_valid=true;
+                }
             }
             ++packets; packet.clear();
         }
         p+=header+body;
     }
-    out.complete=stream.complete && packets>=4 && !packet_open && stream.samples>0;
+    out.complete=headers_valid && stream.complete && packets>=4 && !packet_open && stream.samples>0;
     return true;
 }
 std::string Utf8(const std::wstring& value) {
