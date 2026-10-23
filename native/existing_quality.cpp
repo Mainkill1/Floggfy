@@ -2,36 +2,108 @@
 #include <windows.h>
 #include "existing_quality.h"
 #include "history_settings.h"
-#include "ogg_history_core.h"
 #include <cstring>
+#include <vector>
 namespace history {
-bool ReadQuality(const std::wstring& path,Quality& out) {
-    auto name=WindowsPath(path);
-    HANDLE file=CreateFileW(name.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
-        nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
-    if(file==INVALID_HANDLE_VALUE) return false;
-    unsigned char b[65307]; DWORD n=0;
-    bool ok=ReadFile(file,b,sizeof(b),&n,nullptr)!=0; CloseHandle(file);
-    if(!ok || n<27) return false;
-    if(!std::memcmp(b,"OggS",4)) {
-        size_t header=27+b[26]; if(header>n) return false;
-        size_t body=0; for(size_t i=27;i<header;i++) body+=b[i];
-        if(header+body>n) return false;
-        Page p; if(!ParsePage(b,header+body,p) || !p.vorbis_start) return false;
-        out={Codec::Vorbis,p.rate,p.channels,0,p.bitrate}; return true;
-    }
-    if(n>=42 && !std::memcmp(b,"fLaC",4) && (b[4]&127)==0 && b[5]==0 && b[6]==0 && b[7]==34) {
-        uint64_t packed=0; for(unsigned i=18;i<26;i++) packed=(packed<<8)|b[i];
-        out={Codec::Flac,unsigned(packed>>44),unsigned((packed>>41)&7)+1,unsigned((packed>>36)&31)+1,0};
-        return out.rate>0;
-    }
-    return false;
+namespace {
+struct Handle {
+    HANDLE value=INVALID_HANDLE_VALUE;
+    ~Handle() { if(value!=INVALID_HANDLE_VALUE && value) CloseHandle(value); }
+};
+struct View {
+    const uint8_t* bytes=nullptr;
+    ~View() { if(bytes) UnmapViewOfFile(bytes); }
+};
+bool Missing(const std::wstring& path) {
+    if(GetFileAttributesW(WindowsPath(path).c_str())!=INVALID_FILE_ATTRIBUTES) return false;
+    DWORD error=GetLastError();
+    return error==ERROR_FILE_NOT_FOUND || error==ERROR_PATH_NOT_FOUND;
 }
-SaveDecision DecideSave(const std::wstring& path,const Quality& incoming) {
-    auto name=WindowsPath(path); DWORD a=GetFileAttributesW(name.c_str());
-    if(a==INVALID_FILE_ATTRIBUTES) return GetLastError()==ERROR_FILE_NOT_FOUND || GetLastError()==ERROR_PATH_NOT_FOUND ? SaveDecision::NewFile : SaveDecision::Skip;
-    Quality existing;
-    if((a&FILE_ATTRIBUTE_DIRECTORY) || !ReadQuality(path,existing)) return SaveDecision::Skip;
-    return HigherQuality(incoming,existing) ? SaveDecision::Upgrade : SaveDecision::Skip;
+bool Reusable(const std::wstring& path,const Catalog& catalog) {
+    RecordingFile existing;
+    return ReadRecording(path,existing) && MatchesRecording(existing,catalog) && (existing.complete || existing.owned);
+}
+bool RestoreBackup(const std::wstring& backup,const std::wstring& destination,const Catalog& catalog) {
+    // Bind recovery to the verified object, so another process cannot replace
+    // the backup between inspection and rename.
+    Handle file{CreateFileW(WindowsPath(backup).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,
+        nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
+    RecordingFile old;
+    if(file.value==INVALID_HANDLE_VALUE || !ReadRecording(backup,old) || !old.owned || !MatchesRecording(old,catalog)) return false;
+    auto path=WindowsPath(destination);
+    size_t bytes=offsetof(FILE_RENAME_INFO,FileName)+(path.size()+1)*sizeof(wchar_t);
+    std::vector<uint8_t> buffer(bytes,0);
+    auto info=reinterpret_cast<FILE_RENAME_INFO*>(buffer.data());
+    info->FileNameLength=DWORD(path.size()*sizeof(wchar_t));
+    std::memcpy(info->FileName,path.data(),info->FileNameLength);
+    return SetFileInformationByHandle(file.value,FileRenameInfo,info,DWORD(bytes))!=0;
+}
+}
+bool ReadRecording(const std::wstring& path,RecordingFile& out) {
+    out={};
+    // Deny writes while inspecting. Mapping avoids another full recording-sized
+    // allocation while capture buffers are active; cap hostile/unrelated files.
+    Handle file{CreateFileW(WindowsPath(path).c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_DELETE,
+        nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
+    if(file.value==INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER size={};
+    if(!GetFileSizeEx(file.value,&size) || size.QuadPart<4 || size.QuadPart>512LL*1024*1024) return false;
+    Handle mapping{CreateFileMappingW(file.value,nullptr,PAGE_READONLY,0,0,nullptr)};
+    if(!mapping.value) return false;
+    View view{static_cast<const uint8_t*>(MapViewOfFile(mapping.value,FILE_MAP_READ,0,0,0))};
+    if(!view.bytes) return false;
+    return InspectRecording(view.bytes,size_t(size.QuadPart),out);
+}
+bool ReadQuality(const std::wstring& path,Quality& out) {
+    RecordingFile file;
+    if(!ReadRecording(path,file) || !file.complete) return false;
+    out=file.quality; return true;
+}
+bool ExistingRecording(const std::wstring& path,const Catalog& catalog,Quality& out) {
+    RecordingFile file;
+    if(!ReadRecording(path,file) || !file.complete || !MatchesRecording(file,catalog)) return false;
+    out=file.quality; return true;
+}
+bool RecoverRecording(const std::wstring& path,const Catalog& catalog) {
+    if(!Missing(path)) return false;
+    return RestoreBackup(path+L".previous",path,catalog);
+}
+std::wstring ResolveRecordingPath(const std::wstring& base,const Catalog& catalog) {
+    if(base.empty()) return {};
+    RecoverRecording(base,catalog);
+    if(Missing(base) || Reusable(base,catalog)) return base;
+    auto slash=base.find_last_of(L"\\/"),dot=base.find_last_of(L'.');
+    if(dot==std::wstring::npos || (slash!=std::wstring::npos && dot<slash)) dot=base.size();
+    auto stem=base.substr(0,dot)+RecordingSuffix(catalog),extension=base.substr(dot);
+    RecordingFile reserved;
+    const auto backup=base+L".previous";
+    bool restore_reserved=ReadRecording(backup,reserved) && reserved.owned && MatchesRecording(reserved,catalog);
+    // Hash collisions and manually occupied suffixes still cannot authorize an
+    // overwrite. This is a bounded probe, never a directory/library scan.
+    for(unsigned attempt=0;attempt<32;attempt++) {
+        auto path=stem+(attempt?L"-"+std::to_wstring(attempt):L"")+extension;
+        RecoverRecording(path,catalog);
+        if(Missing(path)) {
+            if(restore_reserved) {
+                if(RestoreBackup(backup,path,catalog)) return path;
+                if(!Missing(path) && !Reusable(path,catalog)) continue;
+            }
+            return path;
+        }
+        if(Reusable(path,catalog)) return path;
+    }
+    return {};
+}
+SaveDecision DecideSave(const std::wstring& path,const Quality&) {
+    // Callers without a recording identity may create, but cannot replace.
+    return Missing(path)?SaveDecision::NewFile:SaveDecision::Skip;
+}
+SaveDecision DecideSave(const std::wstring& path,const Quality& incoming,const Catalog& catalog) {
+    if(Missing(path)) return SaveDecision::NewFile;
+    RecordingFile existing;
+    if(!ReadRecording(path,existing) || !MatchesRecording(existing,catalog)) return SaveDecision::Skip;
+    if(!existing.owned) return SaveDecision::Skip;
+    if(!existing.complete || HigherQuality(incoming,existing.quality)) return SaveDecision::Upgrade;
+    return SaveDecision::Skip;
 }
 }
