@@ -100,13 +100,18 @@ static bool Main(Menu* menu) {
     return cef_menu::LooksLikeMainMenu(false,types,count);
 }
 static void UpdateQuality(Menu* menu) {
-    const auto labels=history::PlaybackQualityLabels(history::ReadPlaybackQuality());
+    const auto snapshot=history::ReadPlaybackQuality();
+    const auto labels=history::PlaybackQualityLabels(snapshot);
+    const bool flac=snapshot.format==history::PlaybackFormat::Flac;
     if(Call<int>(menu,15,song_id)<0) Call<int>(menu,3);
     for(unsigned i=0;i<labels.size();++i) {
         int id=song_id+int(i);auto text=Text(labels[i]);
         if(Call<int>(menu,15,id)<0)Call<int>(menu,4,id,&text);
         else Call<int>(menu,20,id,&text);
         Call<int>(menu,36,id,0);
+        const bool visible=i==0 || (i==1 ? snapshot.level!=history::PlaybackLevel::Unknown :
+                                     flac && (i==2 || snapshot.rate!=0));
+        Call<int>(menu,32,id,int(visible));
     }
 }
 static void Populate(Menu* menu) {
@@ -215,6 +220,18 @@ static int Format(Delegate* self,Menu* menu,String* label) {
     if(o && o->format) {
         menu->base.add_ref(&menu->base);
         changed=o->format(o,menu,label);
+    }
+    // Refresh visibility while CEF formats the parent label, before it builds
+    // the submenu's visible children. WillShow alone is too late for the first
+    // opening after a codec change on a reused model.
+    if(label && label->str && label->length==7 && !wmemcmp(label->str,L"To Disk",7) &&
+       Self(self)->CapableCached(menu) && Call<int>(menu,15,root_id)>=0) {
+        if(auto* child=Call<Menu*>(menu,28,root_id)) {
+            try { if(Self(self)->CapableCached(child) && Call<int>(child,15,song_id)>=0 &&
+                     Call<int>(child,15,downloads_id)>=0)UpdateQuality(child); }
+            catch(...) {/* Keep prior visibility on allocation failure. */}
+            ReleaseMenu(child);
+        }
     }
     // CEF constructs visible labels before MenuWillShow. Its public label
     // formatter supplies fresh text during construction, on the UI thread.

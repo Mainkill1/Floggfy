@@ -16,7 +16,7 @@ static SIZE_T CountQuery(LPCVOID p,PMEMORY_BASIC_INFORMATION m,SIZE_T n) {
 struct Entry {
   int id = 0, type = 1;
   std::wstring label;
-  bool enabled = true, checked = false;
+  bool enabled = true, checked = false, visible = true;
 };
 struct Model {
   Menu api{};
@@ -73,6 +73,9 @@ static int Enable(Menu *m, int id, int value) {
   M(m).entries[size_t(i)].enabled = value;
   return 1;
 }
+static int Visible(Menu *m,int id,int value) {
+  int i=Index(m,id);assert(i>=0);M(m).entries[size_t(i)].visible=value!=0;return 1;
+}
 static int Check(Menu *m, int id, int value) {
   int i = Index(m, id);
   assert(i >= 0);
@@ -109,6 +112,7 @@ static void Init(Model &model) {
   f[20] = reinterpret_cast<void *>(Label);
   f[23] = reinterpret_cast<void *>(Type);
   f[28] = reinterpret_cast<void *>(Child);
+  f[32] = reinterpret_cast<void *>(Visible);
   f[36] = reinterpret_cast<void *>(Enable);
   f[40] = reinterpret_cast<void *>(Check);
 }
@@ -165,7 +169,8 @@ int main() {
   for (size_t i = 6; i < 10; i++)
     assert(child.entries[i].type == 1 && !child.entries[i].enabled && !child.entries[i].checked);
   assert(child.entries[6].label.find(L"Example") != std::wstring::npos);
-  assert(child.entries[8].label.find(L"Ogg") != std::wstring::npos);
+  assert(child.entries[6].visible && child.entries[7].visible);
+  assert(!child.entries[8].visible && !child.entries[9].visible); // Non-FLAC details stay hidden, even after Ogg verification.
   type_calls=0;
   Populate(&root.api);
   assert(type_calls==0); // Existing insertion is not rescanned or repopulated.
@@ -265,6 +270,27 @@ int main() {
   assert(child.entries[8].label.find(L"FLAC") != std::wstring::npos &&
          child.entries[9].label.find(L"96,000 Hz") != std::wstring::npos);
   assert(child.entries[6].label==L"Song: Next");
+  assert(child.entries[8].visible && child.entries[9].visible); // Confirmed FLAC details remain.
+  // Refresh the submenu before CEF builds its visible children, even when
+  // changing codec while the same model is reused across menu openings.
+  auto build_root=[&]{std::wstring label=L"To Disk";auto text=Text(label);Retain(&root.api.base);Format(&wrapped.api,&root.api,&text);if(text.dtor)text.dtor(text.str);};
+  q.format=history::PlaybackFormat::Ogg;q.level=history::PlaybackLevel::VeryHigh;q.bits=0;
+  actual.level=q.level;history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
+  build_root();assert(!child.entries[8].visible && !child.entries[9].visible);
+  q.format=history::PlaybackFormat::Flac;q.level=history::PlaybackLevel::Lossless;q.bits=16;
+  actual.level=q.level;history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
+  build_root();assert(child.entries[8].visible && child.entries[9].visible);
+  q.format=history::PlaybackFormat::Unknown;history::PublishPlaybackQuality(q);
+  build_root();assert(!child.entries[8].visible && !child.entries[9].visible);
+  assert(child.entries[6].visible && child.entries[7].visible);
+  assert(child.entries.size()==10 && child.refs==1 && root.refs==1);
+  actual.level=history::PlaybackLevel::Unknown;q.level=actual.level;
+  history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
+  build_root();assert(!child.entries[7].visible); // No Quality: Unavailable placeholder.
+  actual.level=history::PlaybackLevel::Lossless;q.level=actual.level;
+  q.format=history::PlaybackFormat::Flac;q.rate=0;
+  history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
+  build_root();assert(child.entries[7].visible && child.entries[8].visible && !child.entries[9].visible);
   history::client_updated=GetTickCount64()-4000;
   assert(history::ReadPlaybackQuality().identity==0); // Never regress to stale SMTC.
   history::PublishClientPlaybackQuality({});

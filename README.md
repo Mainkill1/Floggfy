@@ -45,6 +45,8 @@ FLAC needs lossless playback in Spotify. Floggfy does not convert Ogg into FLAC.
 ## Settings
 
 **To Disk** includes **Downloads**, **Save Location**, **FLAC**, **Ogg** and **Lyrics** controls.
+Song remains visible, and Quality appears when known. Format and Sample rate
+appear only for confirmed FLAC playback; unavailable technical rows are hidden.
 
 The bottom shows the current item and available quality details.
 
