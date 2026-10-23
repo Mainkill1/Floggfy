@@ -22,7 +22,7 @@ int main(){
     check(!history::ReadImageInfo(bad,info),"valid CRC cannot conceal oversized image dimensions");
     const std::string url="https://i.scdn.co/image/ab67616d0000b2730123456789abcdef01234567";
     check(history::IsAlbumArtworkUrl(url),"Spotify CDN accepted");
-    for(const auto& u:{"http://i.scdn.co/image/abc","https://i.scdn.co.evil/image/abc","https://i.scdn.co@evil/image/abc","https://i.scdn.co/image/abc?token=secret","https://127.0.0.1/image/abc"})check(!history::IsAlbumArtworkUrl(u),"non-public or unexpected CDN URL rejected");
+    for(const auto& u:{"http://i.scdn.co/image/abc","https://i.scdn.co.example.invalid/image/abc","https://i.scdn.co@example.invalid/image/abc","https://i.scdn.co/image/abc?variant=example","https://example.invalid/image/abc"})check(!history::IsAlbumArtworkUrl(u),"non-public or unexpected CDN URL rejected");
     int calls=0;bool fail=false;history::AlbumArtworkCache cache([&](const std::string&,std::vector<uint8_t>& out){++calls;out=fail?std::vector<uint8_t>{1,2,3}:png;return true;});
     std::vector<uint8_t> bytes;std::string mime;
     cache.Cache("spotify:track:a",url);check(cache.Get("spotify:track:a",bytes,mime)&&bytes==png&&mime=="image/png","validated art cached by track");
