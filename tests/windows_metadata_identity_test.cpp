@@ -37,7 +37,36 @@ int ReceiveBrowserClient(const void*,history::Client* client,const history::Stri
 history::Browser* ReceiveSyncClient(const void*,history::Client* client,const history::String*,const void*,void*,void*){received_client=client;return &browser.api;}
 void* ReceiveViewClient(history::Client* client,const history::String*,const void*,void*,void*,void*){received_client=client;return &browser.api;}
 }
+// Test resource ownership at the real finalization boundary, independent of
+// fake hook backend ordering tests. No browser/client is running here.
+static HANDLE PrepareWorkerForFinalization() {
+    history::message_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(history::message_event);
+    history::metadata_running=true;history::metadata_polling=false;
+    history::metadata_preparation_thread=CreateThread(nullptr,0,history::MetadataWorker,nullptr,0,nullptr);assert(history::metadata_preparation_thread);
+    HANDLE retained=nullptr;
+    assert(DuplicateHandle(GetCurrentProcess(),history::metadata_preparation_thread,GetCurrentProcess(),&retained,0,FALSE,DUPLICATE_SAME_ACCESS));
+    history::metadata_prepared=true;return retained;
+}
 int main(){
+    assert(history::metadata_init.TryBegin(GetTickCount64()));
+    auto clean_worker=PrepareWorkerForFinalization();
+    history::FinishMetadataStartup(false,false);
+    assert(history::metadata_init.State()==hooks::InitState::RetryableFailure);
+    assert(!history::metadata_running&&!history::message_event&&!history::metadata_preparation_thread);
+    assert(WaitForSingleObject(clean_worker,0)==WAIT_OBJECT_0);CloseHandle(clean_worker);
+
+    // Zero callback counters do not prove no thread is entering a detour.
+    history::metadata_init.Retry(0);assert(history::metadata_init.TryBegin(GetTickCount64()));
+    auto activation_worker=PrepareWorkerForFinalization();
+    const auto activation_event=history::message_event;
+    history::FinalizeMetadataCollector(false);
+    assert(history::metadata_init.State()==hooks::InitState::Unsupported);
+    assert(history::metadata_running&&history::message_event==activation_event);
+    assert(WaitForSingleObject(activation_worker,0)==WAIT_TIMEOUT);
+    history::metadata_running=false;SetEvent(activation_event);
+    assert(WaitForSingleObject(activation_worker,5000)==WAIT_OBJECT_0);CloseHandle(activation_worker);
+    CloseHandle(activation_event);history::message_event=nullptr;
+
     // Collector normalization produces this UTF-8 protocol for either raw or
     // normalized lyric lines; native enrichment preserves it without an open UI.
     history::RichMetadata lyric_record;std::string parse_error;
@@ -125,6 +154,20 @@ int main(){
     assert(memcmp(&original_load,&load.api,sizeof(original_load))==0);
     assert(storage.type==0x434546434c49454eULL&&storage.object==&storage&&storage.wrapper==&storage);
     assert(history::ObserveClient(nullptr)==nullptr);
+    // Persistent display/load hooks installed above must keep the worker/event
+    // alive on a failed root activation, even when root rollback is clean.
+    history::metadata_init.Retry(0); // Start a separate simulated failure case.
+    assert(history::metadata_init.TryBegin(GetTickCount64()+1000));
+    auto preserved_worker=PrepareWorkerForFinalization();const auto preserved_event=history::message_event;
+    history::FinalizeMetadataCollector(false);
+    assert(history::metadata_init.State()==hooks::InitState::Unsupported);
+    assert(history::metadata_running&&history::message_event==preserved_event&&!history::metadata_preparation_thread);
+    assert(WaitForSingleObject(preserved_worker,0)==WAIT_TIMEOUT);
     assert(MH_Uninitialize()==MH_OK);
+    // All test callbacks are now removed; explicitly drain the retained worker.
+    history::metadata_running=false;SetEvent(history::message_event);
+    assert(WaitForSingleObject(preserved_worker,5000)==WAIT_OBJECT_0);CloseHandle(preserved_worker);
+    CloseHandle(history::message_event);history::message_event=nullptr;
+    std::puts("PASS: metadata preparation can retry; failed activation preserves trampoline and worker resources");
     std::puts("metadata client/handler identity and original callback ownership preserved");
 }

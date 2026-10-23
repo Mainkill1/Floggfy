@@ -128,6 +128,13 @@ static int format_calls=0;
 static int OriginalFormat(Delegate*,Menu* menu,String*) {++format_calls;ReleaseMenu(menu);return 0;}
 static int ReleaseDelegate(Base *) { return 0; }
 int main() {
+  assert(menu_init.TryBegin(GetTickCount64()));menu_prepared=true;
+  FinishMenuStartup(false,false);
+  assert(menu_init.State()==hooks::InitState::RetryableFailure);
+  // A failed application can race a detour entry before its callback counter.
+  menu_init.Retry(0);assert(menu_init.TryBegin(GetTickCount64()));menu_prepared=true;
+  FinalizeToDiskMenu(false);
+  assert(menu_init.State()==hooks::InitState::Unsupported);
   history::InitSettings(nullptr);
   history::PlaybackQualitySnapshot initial;
   initial.rate = 44100;
@@ -289,6 +296,11 @@ int main() {
   assert(rendered.str==old_label.data() && child.refs==1);
   child.api.methods[0]=old_method;
   wrapped.ClearValidation();assert(child.refs==1);
+  // A previously installed submenu trampoline remains owned on startup failure.
+  menu_init.Retry(0); // Start a separate simulated failure case.
+  assert(original_add_submenu&&menu_init.TryBegin(GetTickCount64()+1000));menu_prepared=true;
+  FinalizeToDiskMenu(false);assert(menu_init.State()==hooks::InitState::Unsupported);
+  std::puts("PASS: menu preparation can retry; failed activation preserves trampoline state");
   std::puts("PASS: bottom read-only quality rows, independent codec display, duplicate-free "
             "refresh and disabled-command ownership");
 }

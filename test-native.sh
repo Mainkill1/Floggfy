@@ -7,6 +7,8 @@ build/hook-init-state-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/hook_installation_test.cpp -o build/hook-installation-test
 build/hook-installation-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/hook_rollback_test.cpp -o build/hook-rollback-test
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/hook_startup_batch_test.cpp -o build/hook-startup-batch-test
+build/hook-startup-batch-test
 build/hook-rollback-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/cef_identity_test.cpp -o build/cef-identity-test
 build/cef-identity-test

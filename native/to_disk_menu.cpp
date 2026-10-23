@@ -2,6 +2,7 @@
 #include "to_disk_menu.h"
 #include "cef_menu_capability.h"
 #include "hook_init_state.h"
+#include "hook_startup_minhook.h"
 #include "history_settings.h"
 #include "playback_quality.h"
 #include "vendor/minhook/include/MinHook.h"
@@ -39,6 +40,9 @@ SetString set_string=nullptr;
 using AddSubmenu=Menu*(*)(Menu*,int,const String*);
 AddSubmenu original_add_submenu;
 hooks::InitController menu_init;
+hooks::CallbackCounter menu_callbacks;
+hooks::QueuedHookSet<1> menu_startup_hooks;
+bool menu_prepared=false;
 hooks::InitController submenu_init;
 constexpr int root_id=28480,downloads_id=28481,location_id=28482,flac_id=28483,ogg_id=28484;
 constexpr int song_id=28485,last_quality_id=song_id+3,lyrics_id=28489;
@@ -143,6 +147,7 @@ static void Populate(Menu* menu) {
     if(inserted) history::HistoryLog("To Disk inserted into Spotify main menu: Downloads, Save Location, FLAC, Ogg, Lyrics");
 }
 static Menu* AddSubmenuHook(Menu* menu,int id,const String* text) {
+    auto callback=menu_callbacks.Enter();
     Menu* result=original_add_submenu(menu,id,text);
     // MenuWillShow occurs after CEF has built the visible menu. Insert while
     // Spotify constructs the model so the first opening contains our items.
@@ -232,6 +237,7 @@ static int Format(Delegate* self,Menu* menu,String* label) {
     ReleaseMenu(menu);return changed;
 }
 static Menu* Hook(Delegate* delegate) {
+    auto callback=menu_callbacks.Enter();
     if(!delegate || !cef_menu::SupportsDelegate(delegate->base.size) ||
        !Executable(reinterpret_cast<const void*>(delegate->base.add_ref)) ||
        !Executable(reinterpret_cast<const void*>(delegate->base.release)))
@@ -265,22 +271,46 @@ static Menu* Hook(Delegate* delegate) {
     return result;
 }
 }
-void StartToDiskMenu(HMODULE cef) {
+static void FinishMenuStartup(bool applied,bool activation_attempted) {
+    if(!menu_prepared)return;
+    menu_prepared=false;
+    if(applied){menu_init.Activate();history::HistoryLog("runtime-capability CEF main-menu integration: MH_OK (shared startup activation)");return;}
+    const auto rollback=hooks::RollbackStartupHooks(menu_startup_hooks,[]{
+        for(unsigned waited=0;menu_callbacks.Active()&&waited<5000;++waited)Sleep(1);
+        return menu_callbacks.Active()==0;
+    },!activation_attempted);
+    // A thread can be entering a detour before its callback counter increments.
+    // After any activation attempt retain all trampolines, even with no submenu.
+    // A partially applied root may already have installed the submenu hook.
+    // Its callback/delegate state must survive even if root cleanup succeeded.
+    if(!activation_attempted&&rollback.CanRelease()&&!original_add_submenu){
+        menu_init.Retry(GetTickCount64());history::HistoryLog("To Disk startup activation failed; rollback complete; retry scheduled");
+    } else {
+        menu_init.MarkUnsupported();history::HistoryLog("To Disk startup activation failed or rollback unsafe; trampoline state preserved and retries disabled");
+    }
+}
+void FinalizeToDiskMenu(bool applied) {FinishMenuStartup(applied,true);}
+bool PrepareToDiskMenu(HMODULE cef) {
     const auto now=static_cast<std::uint64_t>(GetTickCount64());
-    if(!menu_init.TryBegin(now)) return;
-    if(!history::GetSettings().menu) { history::HistoryLog("To Disk menu disabled by INI Menu=0"); menu_init.MarkUnsupported(); return; }
+    if(!menu_init.TryBegin(now)) return false;
+    if(!history::GetSettings().menu) { history::HistoryLog("To Disk menu disabled by INI Menu=0"); menu_init.MarkUnsupported(); return false; }
     auto string_set=GetProcAddress(cef,"cef_string_utf16_set");
     memcpy(&set_string,&string_set,sizeof(set_string));
     if(!set_string)history::HistoryLog("To Disk live labels unavailable: cef_string_utf16_set missing");
     auto create=GetProcAddress(cef,"cef_menu_model_create");
     if(!create || !Executable(reinterpret_cast<const void*>(create))) {
-        history::HistoryLog("To Disk menu unavailable: cef_menu_model_create capability missing"); menu_init.MarkUnsupported(); return;
+        history::HistoryLog("To Disk menu unavailable: cef_menu_model_create capability missing"); menu_init.MarkUnsupported(); return false;
     }
+    menu_prepared=true;
     MH_STATUS status=MH_Initialize(); if(status==MH_ERROR_ALREADY_INITIALIZED) status=MH_OK;
     if(status==MH_OK) status=MH_CreateHook(reinterpret_cast<void*>(create),reinterpret_cast<void*>(Hook),reinterpret_cast<void**>(&original_create));
-    bool created=status==MH_OK;
-    if(status==MH_OK) status=MH_EnableHook(reinterpret_cast<void*>(create));
-    if(status==MH_OK) menu_init.Activate();
-    else {if(created)MH_RemoveHook(reinterpret_cast<void*>(create));menu_init.Retry(now);}
-    char line[220]; snprintf(line,sizeof(line),"runtime-capability CEF main-menu integration: %s%s",MH_StatusToString(status),status==MH_OK?"":"; retry scheduled"); history::HistoryLog(line);
+    if(status==MH_OK)menu_startup_hooks.Add(reinterpret_cast<void*>(create));
+    if(status!=MH_OK||!hooks::QueueStartupHooks(menu_startup_hooks)){
+        char line[180];snprintf(line,sizeof(line),"To Disk startup hook preparation failed: %s",MH_StatusToString(status));history::HistoryLog(line);
+        FinishMenuStartup(false,false);return false;
+    }
+    return true;
+}
+void StartToDiskMenu(HMODULE cef) {
+    if(PrepareToDiskMenu(cef))FinalizeToDiskMenu(MH_ApplyQueued()==MH_OK);
 }

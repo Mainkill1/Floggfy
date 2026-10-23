@@ -1,4 +1,5 @@
 #include "artwork_fixture.h"
+#include "../native/image_info.h"
 #include "../native/flac_history_core.h"
 #include <cstdio>
 #include <cstdlib>
@@ -37,6 +38,7 @@ int main(int argc,char**argv) {
     if(argc==4) {
         FILE* f=fopen(argv[1],"rb"); check(f,"real source opens"); fseek(f,0,SEEK_END); b.resize(ftell(f)); rewind(f); check(fread(b.data(),1,b.size(),f)==b.size(),"real source read"); fclose(f);
         f=fopen(argv[2],"rb"); check(f,"real artwork opens"); fseek(f,0,SEEK_END); tags.cover.resize(ftell(f)); rewind(f); fread(tags.cover.data(),1,tags.cover.size(),f); fclose(f);
+        ImageInfo image;check(ReadImageInfo(tags.cover,image),"real artwork validated");tags.mime=image.mime;
         check(TagFlac(b,tags,out,error),"real source native tagging"); f=fopen(argv[3],"wb"); check(f,"output opens"); check(fwrite(out.data(),1,out.size(),f)==out.size(),"output write"); fclose(f);
     }
     puts("PASS: FLAC metadata, contiguous decoded-frame coverage, native embedded art/tags and original frame preservation");
