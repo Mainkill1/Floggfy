@@ -11,19 +11,24 @@ static SIZE_T CountQuery(LPCVOID p,PMEMORY_BASIC_INFORMATION m,SIZE_T n) {
   ++capability_queries;return VirtualQuery(p,m,n);
 }
 static unsigned filesystem_calls=0,shell_calls=0,message_calls=0;
-static bool saved_file_exists=true;
+static bool saved_file_exists=true,launch_click_worker=true;
+static DWORD saved_file_attributes=FILE_ATTRIBUTE_NORMAL;
+static HRESULT parse_result=S_OK,shell_result=S_OK;
+static std::wstring last_message;
 static std::wstring selected_path,checked_path;
-static DWORD WINAPI FileAttributes(LPCWSTR path) {checked_path=path;++filesystem_calls;return saved_file_exists ? FILE_ATTRIBUTE_NORMAL : INVALID_FILE_ATTRIBUTES;}
+static DWORD WINAPI FileAttributes(LPCWSTR path) {checked_path=path;++filesystem_calls;return saved_file_exists ? saved_file_attributes : INVALID_FILE_ATTRIBUTES;}
 static HRESULT WINAPI ParseItem(PCWSTR path,IBindCtx*,PIDLIST_ABSOLUTE* item,SFGAOF,SFGAOF*) {
+  if(FAILED(parse_result))return parse_result;
   selected_path=path;*item=static_cast<PIDLIST_ABSOLUTE>(CoTaskMemAlloc(sizeof(ITEMIDLIST)));return S_OK;
 }
 static HRESULT WINAPI ShowItem(PCIDLIST_ABSOLUTE,UINT count,PCUITEMID_CHILD_ARRAY,DWORD) {
-  assert(count==0);++shell_calls;return S_OK;
+  assert(count==0);++shell_calls;return shell_result;
 }
 static int WINAPI ShowMessage(HWND,LPCWSTR text,LPCWSTR,UINT) {
-  ++message_calls;assert(std::wstring(text).find(L"no longer available")!=std::wstring::npos);return IDOK;
+  ++message_calls;last_message=text;return IDOK;
 }
 static HANDLE WINAPI RunClickWorker(LPSECURITY_ATTRIBUTES,SIZE_T,LPTHREAD_START_ROUTINE entry,LPVOID value,DWORD,LPDWORD) {
+  if(!launch_click_worker)return nullptr;
   auto thread=CreateEventW(nullptr,FALSE,FALSE,nullptr);
   if(thread)entry(value);
   return thread;
@@ -388,6 +393,21 @@ int main() {
   Retain(&recent.api.base);Execute(&wrapped.api,&recent.api,first_recent_id,0);
   assert(checked_path==history::WindowsPath(long_path));
   assert(selected_path==long_path && shell_calls==6);
+  // Deleted files/folders and shell failures never dispatch an unrelated path.
+  auto click_recent=[&]{Retain(&recent.api.base);Execute(&wrapped.api,&recent.api,first_recent_id,0);assert(recent.refs==1);};
+  const auto missing_notice=L"This download is no longer available at its saved location.";
+  saved_file_exists=false;click_recent();assert(last_message==missing_notice && shell_calls==6);
+  published_recent={{L"Deleted folder",L"C:\\Music\\Removed folder\\song.flac",8}};build_root();
+  click_recent();assert(last_message==missing_notice && shell_calls==6);
+  saved_file_exists=true;saved_file_attributes=FILE_ATTRIBUTE_DIRECTORY;click_recent();
+  assert(last_message==missing_notice && shell_calls==6);
+  saved_file_attributes=FILE_ATTRIBUTE_NORMAL;parse_result=E_FAIL;click_recent();
+  assert(last_message==L"Explorer could not show this download." && shell_calls==6);
+  parse_result=S_OK;shell_result=E_FAIL;click_recent();
+  assert(last_message==L"Explorer could not show this download." && shell_calls==7);
+  shell_result=S_OK;launch_click_worker=false;click_recent();
+  assert(last_message==L"Explorer could not be started." && shell_calls==7);
+  launch_click_worker=true;
   q.format=history::PlaybackFormat::Ogg;q.level=history::PlaybackLevel::VeryHigh;q.bits=0;
   actual.level=q.level;history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
   build_root();assert(!child.entries[9].visible && !child.entries[10].visible);

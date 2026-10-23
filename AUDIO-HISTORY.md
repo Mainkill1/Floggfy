@@ -109,10 +109,12 @@ explicit retention reason.
 
 The last ten successful saved paths are held in memory for this Spotify run.
 **Latest Downloads >**, directly below **Save Location**, is hidden until the first
-successful download. Selecting a song opens Explorer with that file selected.
+successful download. Selecting a song opens its containing folder in Explorer.
 Skips, failed writes and lyric-only updates do not add history entries. Menu
 snapshots stay fixed while open so a new download cannot redirect an existing
-item's click target. Menu construction performs no filesystem or shell work.
+item's click target. A deleted file or folder produces an unavailable notice;
+Explorer failures produce an error notice. Menu construction performs no filesystem
+or shell work.
 
 Tagging, quality checks and publication run in a bounded background worker;
 pending compressed save buffers count against the configured allocation budget.
