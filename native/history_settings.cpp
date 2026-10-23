@@ -7,6 +7,8 @@
 #include <cwchar>
 #include <cstring>
 #include "async_log.h"
+#include "srw_guard.h"
+#include "settings_file.h"
 namespace history {
 static SRWLOCK lock=SRWLOCK_INIT;
 static Settings settings;
@@ -42,28 +44,31 @@ static constexpr char default_ini[]=
     "; Maximum compressed audio held in RAM for one track.\r\n"
     "MaxBufferedMiB=500\r\n";
 static bool CreateDefaultIni(const std::wstring& path) {
-    HANDLE file=CreateFileW(path.c_str(),GENERIC_WRITE,FILE_SHARE_READ,nullptr,
-        CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
-    if(file==INVALID_HANDLE_VALUE) return GetLastError()==ERROR_FILE_EXISTS || GetLastError()==ERROR_ALREADY_EXISTS;
-    DWORD written=0;const DWORD size=DWORD(sizeof(default_ini)-1);
-    bool ok=WriteFile(file,default_ini,size,&written,nullptr) && written==size;
-    CloseHandle(file);if(!ok)DeleteFileW(path.c_str());return ok;
+    std::wstring text;for(const char* p=default_ini;*p;++p)text+=wchar_t(*p);
+    return settings_file::Write(path,text,true);
 }
 static DWORD WINAPI PersistSettings(LPVOID) {
     for(;;) {
         WaitForSingleObject(settings_signal,INFINITE);
-        auto snapshot=GetSettings();
-        bool ok=true;
-        auto flag=[&](const wchar_t* key,bool value) { if(!WritePrivateProfileStringW(L"To Disk",key,value?L"1":L"0",ini.c_str()))ok=false; };
-        flag(L"Downloads",snapshot.downloads);flag(L"Ogg",snapshot.ogg);flag(L"FLAC",snapshot.flac);flag(L"Lyrics",snapshot.lyrics);
-        if(!WritePrivateProfileStringW(L"To Disk",L"Save Location",snapshot.save_location.c_str(),ini.c_str()))ok=false;
-        InterlockedExchange(&persist_failed,!ok);InterlockedExchange(&persisted_generation,LONG(snapshot.generation));
+        unsigned generation=0;bool ok=false;
+        try {
+            const auto snapshot=GetSettings();generation=snapshot.generation;
+            std::wstring text;bool unicode=false;
+            ok=settings_file::Read(ini,text,unicode);
+            if(ok) {
+                auto flag=[&](const wchar_t* key,bool value){settings_file::Set(text,key,value?L"1":L"0");};
+                flag(L"Downloads",snapshot.downloads);flag(L"Ogg",snapshot.ogg);flag(L"FLAC",snapshot.flac);flag(L"Lyrics",snapshot.lyrics);
+                settings_file::Set(text,L"Save Location",snapshot.save_location);
+                ok=settings_file::Write(ini,text);
+            }
+        } catch(...) {SharedSrw guard(lock);generation=settings.generation;}
+        InterlockedExchange(&persist_failed,!ok);InterlockedExchange(&persisted_generation,LONG(generation));
         SetEvent(persist_done);if(!ok)LogActivity("failed","settings persistence");
     }
 }
 bool FlushSettings(unsigned timeout_ms) {
     unsigned expected=GetSettings().generation;ULONGLONG end=GetTickCount64()+timeout_ms;
-    while(unsigned(InterlockedCompareExchange(&persisted_generation,0,0))!=expected) {
+    while(static_cast<LONG>(unsigned(InterlockedCompareExchange(&persisted_generation,0,0))-expected)<0) {
         if(GetTickCount64()>=end)return false;
         WaitForSingleObject(persist_done,10);
     }return !persist_failed;
@@ -99,6 +104,7 @@ void InitSettings(HMODULE proxy) {
        (GetLastError()==ERROR_FILE_NOT_FOUND || GetLastError()==ERROR_PATH_NOT_FOUND) &&
        !CreateDefaultIni(ini))
         QueueDiagnostic("failed to create default SpotifyHistory.ini; using built-in settings");
+    if(!settings_file::Unicode(ini))QueueDiagnostic("failed to migrate settings; original file retained");
     settings.downloads=GetPrivateProfileIntW(L"To Disk",L"Downloads",GetPrivateProfileIntW(L"History",L"Enabled",1,ini.c_str()),ini.c_str())!=0;
     settings.menu=GetPrivateProfileIntW(L"To Disk",L"Menu",1,ini.c_str())!=0;
     settings.ogg=GetPrivateProfileIntW(L"To Disk",L"Ogg",1,ini.c_str())!=0;
@@ -132,7 +138,7 @@ void InitSettings(HMODULE proxy) {
     persisted_generation=LONG(settings.generation);StartLogger();
 }
 Settings GetSettings() {
-    AcquireSRWLockShared(&lock); auto copy=settings; ReleaseSRWLockShared(&lock); return copy;
+    SharedSrw guard(lock);return settings;
 }
 bool LoggingEnabled() { return log_enabled!=0; }
 bool DebugLoggingEnabled() { return debug_enabled!=0; }
@@ -140,14 +146,18 @@ bool OggEnabled() { return downloads_enabled && ogg_enabled; }
 bool FlacEnabled() { return downloads_enabled && flac_enabled; }
 unsigned CaptureEpoch() { return unsigned(InterlockedCompareExchange(&capture_epoch,0,0)); }
 static bool Set(const wchar_t* key,bool value,bool& field,volatile LONG* fast,bool affects_capture=true) {
-    AcquireSRWLockExclusive(&lock);
-    bool ok=settings_signal!=nullptr;
+    bool ok=false;
+    {
+    ExclusiveSrw guard(lock);
+    ok=settings_signal!=nullptr;
     (void)key;
     if(ok) {
         if(affects_capture && field!=value) { ++settings.capture_epoch; InterlockedExchange(&capture_epoch,LONG(settings.capture_epoch)); }
         field=value; if(fast) InterlockedExchange(fast,value); ++settings.generation;
     }
-    ReleaseSRWLockExclusive(&lock); if(ok)SetEvent(settings_signal); return ok;
+    }
+    if(ok)SetEvent(settings_signal);
+    return ok;
 }
 bool SetDownloads(bool v) { return Set(L"Downloads",v,settings.downloads,&downloads_enabled); }
 bool SetOgg(bool v) { return Set(L"Ogg",v,settings.ogg,&ogg_enabled); }
@@ -158,10 +168,12 @@ bool SetSaveLocation(const std::wstring& root) {
     DWORD attributes=GetFileAttributesW(WindowsPath(root).c_str());
     if(attributes!=INVALID_FILE_ATTRIBUTES && !(attributes&FILE_ATTRIBUTE_DIRECTORY)) return false;
     if(attributes==INVALID_FILE_ATTRIBUTES && GetLastError()!=ERROR_FILE_NOT_FOUND && GetLastError()!=ERROR_PATH_NOT_FOUND) return false;
-    AcquireSRWLockExclusive(&lock);
-    bool ok=settings_signal!=nullptr;
-    if(ok) { settings.root=root; settings.save_location=root; settings.music_folder=IsMusic(root); ++settings.generation; }
-    ReleaseSRWLockExclusive(&lock); if(ok)SetEvent(settings_signal); return ok;
+    auto next_root=root,next_location=root;const bool music=IsMusic(root);
+    bool ok=false;
+    {ExclusiveSrw guard(lock);ok=settings_signal!=nullptr;
+     if(ok) {settings.root.swap(next_root);settings.save_location.swap(next_location);settings.music_folder=music;++settings.generation;}}
+    if(ok)SetEvent(settings_signal);
+    return ok;
 }
 static DWORD WINAPI Picker(LPVOID argument) {
     HWND owner=static_cast<HWND>(argument);
