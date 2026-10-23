@@ -70,7 +70,7 @@ lines are removed as new entries arrive.
 
 ## Having trouble?
 
-- **Floggfy doesn't load:** try the launcher option. If the DLL appears loaded but the menu or INI is missing, run `tools/diagnose-startup.ps1` from a source checkout in 64-bit PowerShell. It reports main/helper loading and bootstrap readiness without changing Spotify or including full paths or command lines.
+- **Floggfy doesn't load:** try the launcher option.
 - **Spotify crashes:** quit it, set `Metadata=0` in `SpotifyHistory.ini`, and restart. If needed, try `Menu=0` too.
 - **Menu missing:** quit Spotify and set `Downloads=1` in the INI to save without it.
 

@@ -166,22 +166,3 @@ artwork and other metadata. This also works when the replay uses lower-quality
 audio. Already synchronized lyrics are retained. Audio-quality upgrades preserve
 available existing lyrics when lyric metadata is enabled. Other equal- or
 higher-quality audio is skipped; there is no bulk library scan.
-
-## Diagnosing a loaded but inactive DLL
-
-`tools/diagnose-startup.ps1` is a read-only Windows PowerShell report. It records
-which Spotify processes have the adjacent proxy and System32 version library
-loaded, whether each process is a main/helper process, whether its bootstrap
-readiness event is signaled, and whether the adjacent INI exists. Full paths and
-command lines are omitted. Inspection failures remain unknown rather than being
-reported as an absent DLL. Readiness in a different Windows session remains
-unknown because startup events use the session-local namespace.
-
-A helper can hold the proxy loaded while deliberately skipping capture startup.
-A main-process proxy with `BootstrapReady=false` has not signaled readiness yet;
-it may still be starting. `BootstrapReady=true` confirms the initial monitor and
-settings stage, not successful attachment of every audio/menu/metadata hook.
-System32 and the proxy can coexist. The startup regression host verifies that a
-full-path proxy load after System32 initializes before any proxy export is called,
-then forwards the Windows version APIs correctly while bare-name requests still
-resolve to the original System32 module.
