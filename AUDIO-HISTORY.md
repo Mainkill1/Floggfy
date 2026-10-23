@@ -116,8 +116,8 @@ item's click target. A deleted file or folder produces an unavailable notice;
 Explorer failures produce an error notice. Menu construction performs no filesystem
 or shell work.
 
-The current **Song** row opens the containing folder only when a matching saved
-FLAC or Ogg file exists. The audio worker checks the same paths used for file
+The current **Song** row stays visible but greyed out unless a matching saved
+FLAC or Ogg file exists. When enabled, it opens the containing folder. The audio worker checks the same paths used for file
 publication, while menu rendering only reads its snapshot. The click rechecks
 the file so deletion produces an unavailable notice instead of opening an
 empty folder. Only audio saves create directories. Folder clicks do not add

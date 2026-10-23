@@ -51,8 +51,8 @@ Explorer at its saved folder.
 Song remains visible, and Quality appears when known. Format and Sample rate
 appear only for confirmed FLAC playback; unavailable technical rows are hidden.
 
-The current **Song** row is clickable only when a matching saved FLAC or Ogg
-file exists. Click it to open the containing folder. If the file was removed,
+The current **Song** row stays visible but greyed out until a matching saved
+FLAC or Ogg file exists. Click it to open the containing folder. If the file was removed,
 an unavailable notice is shown. Folders are created only when saving audio;
 opening a folder does not count as a download.
 
