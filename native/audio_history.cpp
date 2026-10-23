@@ -14,6 +14,7 @@
 #include "library_layout.h"
 #include "existing_quality.h"
 #include "file_publication.h"
+#include "recent_downloads.h"
 #include "lyrics_update.h"
 #include "media_session.h"
 #include "spotify_hook_discovery.h"
@@ -284,6 +285,7 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     auto publication=PublishBytes(destination,quality,tagged.data(),tagged.size());
     if(publication==FilePublication::Skipped)return finish(Publication::Skipped,"skipped",ExistingSkipReason(destination,quality));
     if(publication==FilePublication::Failed)return finish(Publication::Failed,"failed","file publication failed; existing file retained");
+    RecordRecentDownload(heard.media.artist+L" - "+heard.media.title,destination,tagged.size());
     std::string line=(publication==FilePublication::Upgraded ? "UPGRADED " : "SAVED ")+Utf8(destination); Log(line.c_str());
     return finish(Publication::Saved,publication==FilePublication::Upgraded ? "upgraded" : "finished",SavedAudioDetails(quality,tagged.size()));
 }

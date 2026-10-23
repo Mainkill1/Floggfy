@@ -75,6 +75,8 @@ static void TestPublicationLogging() {
   capture=make(44100,24);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Saved);
   assert(GetFileAttributesExW(path.c_str(),GetFileExInfoStandard,&attributes));size=std::to_string((uint64_t(attributes.nFileSizeHigh)<<32)|attributes.nFileSizeLow);
   WaitLog("upgraded FLAC 24-bit, 44,100 Hz", "("+size+" bytes) | Log Artist - Log Track");
+  std::vector<RecentDownload> recent;assert(ReadRecentDownloads(recent)&&recent.size()==1);
+  assert(recent[0].path==path && recent[0].title==L"Log Artist - Log Track" && recent[0].bytes==std::stoull(size));
   capture=make(44100,24);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped);
   WaitLog("skipped same quality already exists on disk", "Log Artist - Log Track");
   capture=make(44100,16);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped);
@@ -93,6 +95,7 @@ static void TestPublicationLogging() {
   assert(SetDownloads(true));capture=make(44100,24);capture->data.Flatten();
   assert(Publish(*capture,heard,CaptureEpoch())==Publication::Failed);
   WaitLog("failed tagging failed:","Log Artist - Log Track");
+  assert(ReadRecentDownloads(recent)&&recent.size()==1); // Failures/settings/skips never add entries.
   assert(SetDownloads(false));
   std::puts("PASS: normal publication logs contain final quality/size and accurate same/better/unverified/settings skip reasons");
 }
@@ -101,7 +104,9 @@ int main() {
   assert(WritePrivateProfileStringW(L"To Disk",L"Log",L"1",ini.c_str()));
   assert(WritePrivateProfileStringW(L"To Disk",L"DebugLog",L"0",ini.c_str()));
   InitSettings(nullptr);
+  std::vector<RecentDownload> recent;assert(ReadRecentDownloads(recent)&&recent.empty());
   TestLyricsPublication();
+  assert(ReadRecentDownloads(recent)&&recent.empty()); // Lyrics-only updates and skips are not downloads.
   TestPublicationLogging();
   assert(SetDownloads(false)); // Explicit fixture preference, independent of install defaults.
   assert(!GetSettings().downloads);
