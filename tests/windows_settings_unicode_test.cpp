@@ -30,6 +30,7 @@ int main(int argc,char** argv) {
  if(argc==2 && std::string(argv[1])=="reload") {
   history::InitSettings(nullptr);const auto s=history::GetSettings();
   assert(s.root==destination && s.save_location==destination);
+  assert(s.aac&&!history::AACEnabled()); // Explicit opt-in survives reload; Downloads=0 still gates capture.
   assert(!s.downloads&&!s.ogg&&!s.flac&&!s.lyrics&&!s.menu&&!s.metadata&&!s.update_existing_metadata);
   wchar_t value[100];GetPrivateProfileStringW(L"Unknown",L"Keep",L"",value,100,file.c_str());assert(std::wstring(value)==L"original");return 0;
  }
@@ -46,7 +47,7 @@ int main(int argc,char** argv) {
  }
  Spawn(L"large");
  DeleteFileW(file.c_str());
- const std::string legacy="; preserve this comment\r\n[To Disk]\r\nDownloads=0\r\nOgg=0\r\nFlac=0\r\nLyrics=0\r\nMenu=0\r\nMetadata=0\r\nUpdateExistingMetadata=0\r\n[Unknown]\r\nKeep=original\r\n";
+ const std::string legacy="; preserve this comment\r\n[To Disk]\r\nDownloads=0\r\nOgg=0\r\nFlac=0\r\nAAC=1\r\nLyrics=0\r\nMenu=0\r\nMetadata=0\r\nUpdateExistingMetadata=0\r\n[Unknown]\r\nKeep=original\r\n";
  HANDLE h=CreateFileW(file.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,0,nullptr);assert(h!=INVALID_HANDLE_VALUE);DWORD written=0;assert(WriteFile(h,legacy.data(),DWORD(legacy.size()),&written,nullptr)&&written==legacy.size());CloseHandle(h);
  Spawn(L"locked");
  history::InitSettings(nullptr);

@@ -3,7 +3,7 @@
 #include <string>
 namespace history {
 struct Settings {
-    bool downloads=true,ogg=true,flac=true,menu=true,music_folder=false;
+    bool downloads=true,ogg=true,flac=true,aac=false,menu=true,music_folder=false;
     bool metadata=true,lyrics=true,update_existing_metadata=true,log=true,debug_log=false;
     unsigned max_buffered_mib=500,generation=0,capture_epoch=0;
     std::wstring root,save_location;
@@ -19,6 +19,7 @@ bool SetUpdateExistingMetadata(bool enabled);
 bool SetSaveLocation(const std::wstring& root);
 bool OggEnabled();
 bool FlacEnabled();
+bool AACEnabled();
 unsigned CaptureEpoch();
 bool EnsureDirectory(const std::wstring& path);
 std::wstring WindowsPath(const std::wstring& path);

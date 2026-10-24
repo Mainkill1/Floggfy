@@ -18,7 +18,7 @@ static bool IsMusic(std::wstring root) {
     return !music_path.empty() && (_wcsicmp(root.c_str(),music_path.c_str())==0 ||
         _wcsicmp(root.c_str(),(music_path+L"\\Spotify").c_str())==0);
 }
-static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,capture_epoch=0,log_enabled=1,debug_enabled=0;
+static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,aac_enabled=0,capture_epoch=0,log_enabled=1,debug_enabled=0;
 static HANDLE settings_signal=nullptr,persist_done=nullptr;
 // A failed attempt is observable without acknowledging bytes never committed.
 static volatile LONG persisted_generation=-1,failed_generation=-1,persist_failed=0;
@@ -33,6 +33,8 @@ static constexpr char default_ini[]=
     "Ogg=1\r\n"
     "; Captures native FLAC when Spotify supplies lossless audio.\r\n"
     "Flac=1\r\n"
+    "; AAC is usually a low-quality source; opt in explicitly.\r\n"
+    "AAC=0\r\n"
     "; Enables metadata enrichment using the local Spotify client.\r\n"
     "Metadata=1\r\n"
     "; Automatically obtains lyrics; Metadata=0 disables all enrichment.\r\n"
@@ -67,7 +69,7 @@ static DWORD WINAPI PersistSettings(LPVOID) {
             ok=settings_file::Read(ini,text,unicode);
             if(ok) {
                 auto flag=[&](const wchar_t* key,bool value){settings_file::Set(text,key,value?L"1":L"0");};
-                flag(L"Downloads",snapshot.downloads);flag(L"Ogg",snapshot.ogg);flag(L"FLAC",snapshot.flac);flag(L"Lyrics",snapshot.lyrics);
+                flag(L"Downloads",snapshot.downloads);flag(L"Ogg",snapshot.ogg);flag(L"FLAC",snapshot.flac);flag(L"AAC",snapshot.aac);flag(L"Lyrics",snapshot.lyrics);
                 flag(L"UpdateExistingMetadata",snapshot.update_existing_metadata);
                 settings_file::Set(text,L"Save Location",snapshot.save_location);
                 ok=settings_file::Write(ini,text);
@@ -130,6 +132,7 @@ void InitSettings(HMODULE proxy) {
     settings.menu=GetPrivateProfileIntW(L"To Disk",L"Menu",1,ini.c_str())!=0;
     settings.ogg=GetPrivateProfileIntW(L"To Disk",L"Ogg",1,ini.c_str())!=0;
     settings.flac=GetPrivateProfileIntW(L"To Disk",L"FLAC",1,ini.c_str())!=0;
+    settings.aac=GetPrivateProfileIntW(L"To Disk",L"AAC",0,ini.c_str())!=0;
     settings.metadata=GetPrivateProfileIntW(L"To Disk",L"Metadata",1,ini.c_str())!=0;
     settings.lyrics=GetPrivateProfileIntW(L"To Disk",L"Lyrics",1,ini.c_str())!=0;
     settings.update_existing_metadata=GetPrivateProfileIntW(L"To Disk",L"UpdateExistingMetadata",1,ini.c_str())!=0;
@@ -146,7 +149,7 @@ void InitSettings(HMODULE proxy) {
     DWORD length=ExpandEnvironmentStringsW(raw,expanded,4096);
     if(raw[0] && length && length<=4096) {settings.root=expanded;settings.save_location=raw;}
     settings.music_folder=IsMusic(settings.root);
-    downloads_enabled=settings.downloads; ogg_enabled=settings.ogg; flac_enabled=settings.flac;
+    downloads_enabled=settings.downloads; ogg_enabled=settings.ogg; flac_enabled=settings.flac; aac_enabled=settings.aac;
     log_enabled=settings.log;debug_enabled=settings.debug_log;
     settings_signal=CreateEventW(nullptr,FALSE,FALSE,nullptr);
     persist_done=CreateEventW(nullptr,FALSE,FALSE,nullptr);
@@ -166,6 +169,7 @@ bool LoggingEnabled() { return log_enabled!=0; }
 bool DebugLoggingEnabled() { return debug_enabled!=0; }
 bool OggEnabled() { return downloads_enabled && ogg_enabled; }
 bool FlacEnabled() { return downloads_enabled && flac_enabled; }
+bool AACEnabled() { return downloads_enabled && aac_enabled; }
 unsigned CaptureEpoch() { return unsigned(InterlockedCompareExchange(&capture_epoch,0,0)); }
 static bool Set(const wchar_t* key,bool value,bool& field,volatile LONG* fast,bool affects_capture=true) {
     bool ok=false;
