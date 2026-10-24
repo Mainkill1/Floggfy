@@ -1,3 +1,62 @@
+## Fourth review: media I/O, preferred recordings and AAC memory
+
+Source revision `55c2be2` (documentation-only changes may follow). A dedicated
+basic-media observer owns Windows COM/WinRT calls and waits. Capture consumes
+sequenced RAM snapshots with original observation times; it never calls the
+blocking media reader. Session/timeline changes retry without publishing a false
+failure. Missing usable observations for more than three seconds still invalidate
+coverage; the change prevents a stalled observer from blocking decoder events,
+not from making unavailable coverage trustworthy. No Windows artwork provider was
+reintroduced.
+
+Preferred-format lookup now distinguishes a vacancy, a verified matching
+recording and an unsafe/blocked result. Locked FLAC/Ogg candidates and ordinary or
+suffixed `.previous` backups defer AAC publication instead of permitting a duplicate.
+The bounded resolver returns its existing-file snapshot for skip/metadata planning,
+so publication does not immediately reread the same file. Replacement still locks
+and revalidates the actual object; those safety reads are intentional. Every
+occupied deterministic collision candidate still needs inspection. There is no
+unbounded scan or new filesystem cache.
+
+SpAC extraction and M4A construction each enforce a conservative 512 MiB operation
+peak estimate before large allocations. Extraction reserves the known packet count
+and checks source, restored bytes and object overhead. Publication releases flattened
+source before muxing. Construction budgets retained capacities, the full 128 MiB
+vendor allowance, one reserved media output and metadata/table scratch, then rewrites
+only the terminal movie metadata in place. External metadata tagging keeps its
+source and budgets its required second buffer. Resource failures are distinct from
+invalid/unsupported inputs. This is an operation bound, not measured process-wide
+peak memory or an independent audio decode.
+
+Targeted command: `bash test-aac.sh <complete-spac-file> <spotify-dll>` — **PASS**,
+exit 0, **one execution total**, shared by all three review findings. No finding
+exceeded one test execution. The Windows executable covered:
+
+- A provider blocked for over 3.1 seconds while RAM-only capture-style polling
+  continued; one-time sequence consumption, stale rejection, new identities,
+  failure publication and nonblocking stop/restart lifetime.
+- Actual Windows sharing locks on FLAC, Ogg, collision suffixes and recovery
+  backups; no new M4A while uncertain, retained bytes and recovery after unlock.
+- Allocation-free peak arithmetic at the boundary and beyond it, overflow/count
+  rejection, actual resource-failure classification, preserved metadata/artwork,
+  exact compressed media/configuration/timing and unchanged no-op behavior.
+- The real HE-AACv2 source: 4,063 access units, 566,143 media bytes, 599,576-byte
+  M4A. Every output media packet matched its input byte for byte. Optional hook
+  discovery was checked against the supplied Spotify client without invoking it.
+
+Project C++ compiled with `-Werror`; existing vendor warnings were unsuppressed.
+One standalone `bash build-native.sh` execution also passed (exit 0), producing
+the production DLL and launcher. These corrections have not been installed into
+the running Spotify instance.
+No test rerun, full suite, fuzzing, independent decoder invocation or live Spotify
+playback was performed for these corrections. The media provider test uses an
+injected callback, not SMTC: real Windows session/timeline coherence and live
+transitions remain unverified on this revision. Slow storage can still occupy the
+publication worker and exhaust its bounded queue. The lookup change removes
+redundant planning reads; it does not promise cancellation of stalled file I/O.
+Earlier VLC decoding/live captures below are historical evidence for their stated
+revisions, including the documented VLC trimming variance.
+
 ## Optional SpAC AAC capture
 
 `AAC=0` is the new default and the option is INI-only. Supported full SpAC AAC
