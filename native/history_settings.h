@@ -6,6 +6,7 @@ struct Settings {
     bool downloads=true,ogg=true,flac=true,aac=false,menu=true,music_folder=false;
     bool metadata=true,lyrics=true,update_existing_metadata=true,log=true,debug_log=false;
     bool track_number_in_filename=false,convert_numbered_filenames=false;
+    bool network_patch=false; // INI-only startup opt-in; requires a full restart.
     unsigned max_buffered_mib=500,generation=0,capture_epoch=0;
     std::wstring root,save_location;
 };

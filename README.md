@@ -50,6 +50,14 @@ Artist folders use the album artist; guest/contributing credits remain in the `A
 The INI also has `TrackNumberInFilename` for numbered versus title-only new names,
 and `ConvertNumberedFilenames` to remove verified old prefixes when playback starts.
 Both default to `0`. Enabling numbering disables conversion. Restart after INI edits.
+
+The legacy network compatibility patch is optional and disabled by default:
+`NetworkPatch=0` under `[To Disk]`. Missing keys also mean off, including on
+existing installations. Set `NetworkPatch=1` only when you want the compatibility
+patch, then quit Spotify completely and restart. Audio capture, metadata and
+To Disk work independently of this option. The cause of reported playback pauses
+remains unconfirmed.
+
 After a successful download, **Latest Downloads** appears directly below **Save Location**.
 It lists up to ten recently saved songs from this Spotify run; click one to open
 Explorer at its saved folder.

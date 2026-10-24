@@ -335,7 +335,10 @@ static VOID CALLBACK DllNotification(ULONG reason, const NotificationData* data,
         pending_spotify.Publish(reinterpret_cast<std::uintptr_t>(data->base));
 }
 
-static void StartConnectivityHook(HMODULE module) {
+static void StartConnectivityHook(HMODULE module,bool enabled) {
+    // Restart-only: disabled startup performs no import discovery, IAT/vtable
+    // writes or retry work. Never try to detach live COM hooks during playback.
+    if(!enabled)return;
     // Delay-import resolution can replace an IAT slot after our first patch.
     // Keep verifying the live slots from this normal worker context; an
     // already-patched slot is a no-op and does not emit another log record.
@@ -376,6 +379,9 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
     if (register_notification) register_notification(0, DllNotification, nullptr, &notification_cookie);
 
     history::InitSettings(proxy_module);
+    const bool network_patch_enabled=history::GetSettings().network_patch;
+    Log(network_patch_enabled?"NetworkPatch=1; legacy network compatibility patch enabled":
+        "NetworkPatch=0; network compatibility hooks disabled");
     Log("version.dll proxy loaded; no Windows settings or signed files changed");
     // Polling also covers clients that loaded Spotify.dll before notification
     // registration. Stay alive at low frequency so late loads and temporary
@@ -398,7 +404,7 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
         }
         HMODULE module;
         if (GetModuleHandleExW(0, L"Spotify.dll", &module)) {
-            StartConnectivityHook(module);
+            StartConnectivityHook(module,network_patch_enabled);
             if (i >= 80) StartAudioHistory(module, proxy_module);
             FreeLibrary(module);
         }

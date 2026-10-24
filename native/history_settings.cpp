@@ -28,6 +28,8 @@ static constexpr char default_ini[]=
     "Downloads=1\r\n"
     "; Set Menu=0 before starting Spotify to disable native menu integration.\r\n"
     "Menu=1\r\n"
+    "; Optional legacy network compatibility patch; restart Spotify after changing.\r\n"
+    "NetworkPatch=0\r\n"
     "; Empty uses the Windows Music folder plus \\Spotify.\r\n"
     "Save Location=\r\n"
     "; Prefix new filenames with the track number when known.\r\n"
@@ -77,6 +79,14 @@ static bool ReadFilenameOptions(Settings& target,const std::wstring& path) {
     }
     return needs_persist;
 }
+// Old installations without the key also default off. Queue an atomic write
+// to make the opt-in discoverable without replacing unrelated INI preferences.
+static bool ReadNetworkPatchOption(Settings& target,const std::wstring& path) {
+    wchar_t value[2]{};
+    const bool present=GetPrivateProfileStringW(L"To Disk",L"NetworkPatch",L"",value,2,path.c_str())!=0;
+    target.network_patch=GetPrivateProfileIntW(L"To Disk",L"NetworkPatch",0,path.c_str())!=0;
+    return !present;
+}
 static bool ReachedGeneration(volatile LONG& progress,unsigned expected) {
     return static_cast<LONG>(unsigned(InterlockedCompareExchange(&progress,0,0))-expected)>=0;
 }
@@ -96,6 +106,7 @@ static DWORD WINAPI PersistSettings(LPVOID) {
                 auto flag=[&](const wchar_t* key,bool value){settings_file::Set(text,key,value?L"1":L"0");};
                 flag(L"Downloads",snapshot.downloads);flag(L"Ogg",snapshot.ogg);flag(L"FLAC",snapshot.flac);flag(L"AAC",snapshot.aac);flag(L"Lyrics",snapshot.lyrics);
                 flag(L"UpdateExistingMetadata",snapshot.update_existing_metadata);
+                flag(L"NetworkPatch",snapshot.network_patch);
                 flag(L"TrackNumberInFilename",snapshot.track_number_in_filename);
                 flag(L"ConvertNumberedFilenames",snapshot.convert_numbered_filenames && !snapshot.track_number_in_filename);
                 settings_file::Set(text,L"Save Location",snapshot.save_location);
@@ -160,6 +171,8 @@ void InitSettings(HMODULE proxy) {
     settings.ogg=GetPrivateProfileIntW(L"To Disk",L"Ogg",1,ini.c_str())!=0;
     settings.flac=GetPrivateProfileIntW(L"To Disk",L"FLAC",1,ini.c_str())!=0;
     const bool filename_options_pending=ReadFilenameOptions(settings,ini);
+    const bool network_option_pending=ReadNetworkPatchOption(settings,ini);
+    const bool startup_options_pending=filename_options_pending || network_option_pending;
     settings.aac=GetPrivateProfileIntW(L"To Disk",L"AAC",0,ini.c_str())!=0;
     settings.metadata=GetPrivateProfileIntW(L"To Disk",L"Metadata",1,ini.c_str())!=0;
     settings.lyrics=GetPrivateProfileIntW(L"To Disk",L"Lyrics",1,ini.c_str())!=0;
@@ -189,8 +202,8 @@ void InitSettings(HMODULE proxy) {
         settings_signal=nullptr;persist_done=nullptr;
     }
     // Missing options/conflict normalization are pending until Write succeeds.
-    InterlockedExchange(&persisted_generation,filename_options_pending?-1:LONG(settings.generation));
-    if(filename_options_pending && settings_signal)SetEvent(settings_signal);
+    InterlockedExchange(&persisted_generation,startup_options_pending?-1:LONG(settings.generation));
+    if(startup_options_pending && settings_signal)SetEvent(settings_signal);
     StartLogger();
 }
 Settings GetSettings() {

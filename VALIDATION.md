@@ -861,3 +861,24 @@ The subsequent `bash build-native.sh` production DLL/launcher build passed.
 The Windows media-service provider and NLM interception require live validation;
 synthetic callbacks cannot establish the cause of issue #12 or prove the absence
 of hook interference. No corrected DLL has yet been installed for live playback.
+
+
+## Default-off network compatibility patch
+
+`NetworkPatch=0` disables the legacy NLM patch at process startup, including when
+an older INI omits the key. Opting in with `1` requires a full Spotify restart.
+The disabled path returns before import inspection, IAT writes or initialization
+retry state; normal audio, menu and metadata startup remain separate. The
+existing atomic settings writer adds missing keys and preserves explicit choices,
+Unicode and unrelated sections. No live hook-detachment path was added.
+
+The focused `bash test-network-patch.sh` gate passed in one execution. It verified
+default/missing/explicit INI values, startup migration and Unicode/unknown-section
+preservation, disabled invalid-pointer/import bypass, normal/delay import opt-in
+and active delay-slot repair. It uses synthetic import tables and an isolated
+Unicode INI; it does not launch Spotify or contact a network service. No previous
+test gate or full suite was rerun for this follow-up. The subsequent
+`bash build-native.sh` production DLL/launcher build passed with existing vendor
+warnings visible. The current Windows release's compatibility with the enabled
+patch and the cause of issue #12 remain unverified. This build has not been
+installed into the running Spotify process.

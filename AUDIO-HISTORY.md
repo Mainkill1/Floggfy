@@ -1,7 +1,7 @@
 # To Disk audio history
 
-The native `version.dll` combines the connectivity repair with complete-listen
-history for the Windows x64 Spotify client. It copies the compressed
+The native `version.dll` provides complete-listen history and an optional legacy
+connectivity repair for the Windows x64 Spotify client. It copies the compressed
 Vorbis or FLAC bytes that Spotify already reads for playback. It does not request
 tracks, run FFmpeg, transcode audio, or require an external runtime helper.
 
@@ -17,6 +17,7 @@ persistence runs in a background worker.
 [To Disk]
 Downloads=1
 Menu=1
+NetworkPatch=0
 Save Location=
 Flac=1
 Ogg=1
@@ -32,8 +33,15 @@ MaxBufferedMiB=500
 
 - **Downloads:** master switch. Start the next track from its beginning after
   enabling capture; enabling halfway through a track cannot recover earlier audio.
-- **Menu:** set `0` and restart Spotify to disable menu integration. The connectivity
-  repair and configured capture continue to operate without this menu hook.
+- **Menu:** set `0` and restart Spotify to disable menu integration. Configured
+  capture and any explicitly enabled network patch operate independently.
+- **NetworkPatch:** INI-only, default `0`; missing keys also disable the patch.
+  Set `1` and fully restart Spotify to enable the legacy NLM compatibility hooks.
+  Disabled startup skips import discovery, IAT/vtable changes and hook retries;
+  audio capture, metadata and menu startup remain independent. The option is
+  loaded once at startup; no live detachment of COM hooks is attempted. Missing
+  keys are added through the existing atomic settings writer, preserving other
+  INI content.
 - **Save Location:** empty defaults to the Windows Music known folder's `Spotify`
   subfolder, including redirected Music folders. A custom directory is accepted.
 - **FLAC/Ogg:** select which original source formats to retain. Enabling FLAC does
@@ -194,8 +202,9 @@ concurrency. Paused playback has no periodic timing/status heartbeat, while new
 errors and state changes remain visible.
 
 Network context is only the last result of an already intercepted Windows NLM
-query, with its age, HRESULT and original/effective connectivity flags. It does
-not perform another network request or establish that Spotify's audio service
+query, with its age, HRESULT and original/effective connectivity flags. This
+observation is normally unknown with `NetworkPatch=0`, since the NLM hook is not
+installed. It does not perform another network request or establish that Spotify's audio service
 is reachable. A pause observation does not identify its initiator; neither a
 coverage rejection nor a client flag proves corrupted audio, a remote command,
 a service outage or a process crash. These diagnostics add no playback controls,
