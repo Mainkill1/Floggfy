@@ -371,17 +371,40 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     // arrive while a completed listen waits for publication; make final tags
     // and path planning agree before inspecting any existing recording.
     catalog=CatalogFor(heard.media);ApplyCatalogIdentity(tags,catalog);
-    const auto destination=ResolveRecordingPath(OutputPath(settings.root,catalog,c.Extension(),settings.music_folder),catalog);
-    if(destination.empty())return finish(Publication::Failed,"failed","no safe recording destination; existing files retained");
-    const auto flac=c.lossless ? destination : ResolveRecordingPath(OutputPath(settings.root,catalog,L".flac",settings.music_folder),catalog);
-    RecordingFile inspected;
-    const bool existing_lossless=!c.lossless && !flac.empty() && ReadRecording(flac,inspected) &&
-        inspected.complete && MatchesRecording(inspected,catalog) && inspected.quality.codec==Codec::Flac;
-    const auto ogg=c.aac&&!existing_lossless?ResolveRecordingPath(OutputPath(settings.root,catalog,L".ogg",settings.music_folder),catalog):std::wstring{};
-    const bool existing_vorbis=c.aac&&!existing_lossless&&!ogg.empty()&&ReadRecording(ogg,inspected)&&
-        inspected.complete&&MatchesRecording(inspected,catalog)&&inspected.quality.codec==Codec::Vorbis;
-    const auto existing_path=existing_lossless?flac:existing_vorbis?ogg:destination;
-    const auto decision=existing_lossless||existing_vorbis ? SaveDecision::Skip : DecideSave(destination,quality,catalog,&inspected);
+    // Search preferred formats first. Blocked is I/O uncertainty, never proof
+    // that a recording is absent. The resolver returns its verified snapshot
+    // so skip/metadata planning does not read the entire file again.
+    RecordingDestination resolved;
+    bool existing_lossless=false,existing_vorbis=false;
+    for(const auto codec:{Codec::Flac,Codec::Vorbis}) {
+        if(c.lossless || (codec==Codec::Vorbis && !c.aac)) break;
+        const auto extension=codec==Codec::Flac?L".flac":L".ogg";
+        auto preferred=ResolveRecordingDestination(
+            OutputPath(settings.root,catalog,extension,settings.music_folder),catalog);
+        if(preferred.state==RecordingDestinationState::Blocked)
+            return finish(Publication::Failed,"failed","preferred recording could not be inspected; publication deferred");
+        if(preferred.state==RecordingDestinationState::Existing && preferred.recording.complete &&
+           preferred.recording.quality.codec==codec) {
+            existing_lossless=codec==Codec::Flac;
+            existing_vorbis=codec==Codec::Vorbis;
+            resolved=std::move(preferred);
+            break;
+        }
+    }
+    const bool preferred=existing_lossless||existing_vorbis;
+    if(!preferred) resolved=ResolveRecordingDestination(
+        OutputPath(settings.root,catalog,c.Extension(),settings.music_folder),catalog);
+    if(resolved.state==RecordingDestinationState::Blocked)
+        return finish(Publication::Failed,"failed","no safe recording destination; existing files retained");
+    const auto& destination=resolved.path;
+    const auto& existing_path=resolved.path;
+    const auto& inspected=resolved.recording;
+    // These are planning decisions, not write authorization. PublishBytes
+    // revalidates under its existing handle reservation before any replacement.
+    const auto decision=preferred?SaveDecision::Skip:
+        resolved.state==RecordingDestinationState::Vacant?SaveDecision::NewFile:
+        inspected.owned && (!inspected.complete || HigherQuality(quality,inspected.quality))
+            ?SaveDecision::Upgrade:SaveDecision::Skip;
     if(decision==SaveDecision::Skip) {
         // An audio duplicate may still have missing metadata. Update only a
         // verified matching recording; this never adds a Latest Downloads entry.
@@ -405,12 +428,26 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     }
     // Existing tags/art/lyrics are merged by PublishBytes while its exact old
     // object is locked. Do not take a separate stale preservation snapshot here.
+    const bool had_artwork=inspected.has_artwork;
+    resolved.recording={}; // No planning metadata retained across construction.
     std::vector<uint8_t> tagged; std::string error;
+    if(c.aac) {
+        const auto& info=c.spac.info;
+        const auto count=info.samples_per_packet?
+            (uint64_t(info.total_samples)+info.priming+info.samples_per_packet-1)/info.samples_per_packet:0;
+        if(!AacExtractionFitsBudget(c.data.capacity(),c.data.size(),size_t(count)))
+            return finish(Publication::Failed,"failed","AAC extraction memory budget exceeded; no file published");
+    }
     auto source=c.data.Flatten();
     bool tagged_ok=false;
     if(c.aac) {
         AacInfo info;std::vector<std::vector<uint8_t>> packets;
-        tagged_ok=ReadSpac(source,info,packets,error)&&MakeAacM4a(info,packets,tags,tagged,error);
+        tagged_ok=ReadSpac(source,info,packets,error);
+        // Extraction has its own peak bound. Release flattened source bytes
+        // before the muxer reserves output; compressed capture blocks were
+        // already released by Flatten(). Only one publication runs at a time.
+        std::vector<uint8_t>().swap(source);
+        if(tagged_ok)tagged_ok=MakeAacM4a(info,packets,tags,tagged,error);
     } else tagged_ok=c.lossless ? TagFlac(source,tags,tagged,error) : TagOgg(source,tags,tagged,error);
     if(!tagged_ok)return finish(Publication::Failed,"failed","tagging failed: "+error);
     auto latest=GetSettings();
@@ -424,7 +461,7 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     if(publication==FilePublication::Failed)return finish(Publication::Failed,"failed","file publication failed; existing file retained");
     RefreshSongDestination();
     ImageInfo artwork;
-    if(!ReadImageInfo(tags.cover,artwork) && !(publication==FilePublication::Upgraded && inspected.has_artwork))
+    if(!ReadImageInfo(tags.cover,artwork) && !(publication==FilePublication::Upgraded && had_artwork))
         LogActivity("metadata","artwork unavailable; audio and text tags saved | "+identity);
     RecordRecentDownload(heard.media.artist+L" - "+heard.media.title,destination,published_bytes);
     std::string line=(publication==FilePublication::Upgraded ? "UPGRADED " : "SAVED ")+Utf8(destination); Log(line.c_str());

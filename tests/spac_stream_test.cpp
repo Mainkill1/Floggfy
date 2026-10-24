@@ -10,6 +10,11 @@ static void rejected(const std::vector<uint8_t>& bytes,const char* message) {
     check(!ReadSpac(bytes,info,packets,error)&&!error.empty()&&info.rate==123&&packets==std::vector<std::vector<uint8_t>>{{9}},message);
 }
 int RunSpacStreamTests() {
+    check(AacExtractionFitsBudget(1024,1024,10),"small extraction fits peak budget");
+    check(!AacExtractionFitsBudget(size_t(-1),1024,10),"oversized capacity rejected without overflow or allocation");
+    check(!AacExtractionFitsBudget(1024,2048,10),"inconsistent source size rejected");
+    check(!AacExtractionFitsBudget(1024,1024,(size_t{1}<<20)+1),"packet object overhead bounded before allocation");
+    check(!AacExtractionFitsBudget(300u*1024u*1024u,300u*1024u*1024u,10),"source plus extracted payload must fit peak budget");
     for(unsigned object:{2u,5u,29u})for(bool shared:{false,true}) {
         const auto bytes=spac_fixture::stream(object,shared);
         SpacStream fragmented;

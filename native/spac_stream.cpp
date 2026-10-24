@@ -184,10 +184,34 @@ AacParse SpacStream::Push(const uint8_t* bytes,size_t size) {
     if(complete_)std::vector<uint8_t>().swap(pending_);
     return complete_?AacParse::Complete:AacParse::NeedMore;
 }
+bool AacExtractionFitsBudget(size_t source_capacity,size_t source_size,size_t packet_count) {
+    if(source_size>source_capacity || source_capacity>AacConstructionMemoryLimit ||
+       !packet_count || packet_count>frame_limit) return false;
+    // Original source + restored packets + exact reserved vector slots. A shared
+    // prefix adds at most one byte per packet; allow 32 allocator bytes each.
+    const uint64_t packet_objects=uint64_t(packet_count)*(sizeof(std::vector<uint8_t>)+33);
+    const uint64_t required=uint64_t(source_capacity)+source_size+packet_objects+page_limit+config_limit;
+    return required<=AacConstructionMemoryLimit;
+}
 bool ReadSpac(const std::vector<uint8_t>& source,AacInfo& info,std::vector<std::vector<uint8_t>>& packets,std::string& error) {
     // Capture already has a tighter global memory budget; this publication API
     // independently rejects oversized callers before allocating access units.
     if(source.empty()||source.size()>audio_limit){error="SpAC source exceeds bounds or is empty";return false;}
+    if(info.config.capacity()>AacConstructionMemoryLimit ||
+       packets.capacity()>AacConstructionMemoryLimit/sizeof(std::vector<uint8_t>)) {
+        error="SpAC extraction memory budget exceeded";return false;
+    }
+    uint64_t retained=info.config.capacity()+uint64_t(packets.capacity())*sizeof(std::vector<uint8_t>);
+    for(const auto& packet:packets) {
+        if(retained>AacConstructionMemoryLimit || packet.capacity()>AacConstructionMemoryLimit-retained ||
+           AacConstructionMemoryLimit-retained-packet.capacity()<32) {
+            error="SpAC extraction memory budget exceeded";return false;
+        }
+        retained+=packet.capacity()+uint64_t{32};
+    }
+    if(source.capacity()>AacConstructionMemoryLimit || retained>AacConstructionMemoryLimit-source.capacity()) {
+        error="SpAC extraction memory budget exceeded";return false;
+    }
     SpacStream stream;std::vector<std::vector<uint8_t>> extracted;
     size_t cursor=0;
     while(cursor<source.size()) {
@@ -196,6 +220,14 @@ bool ReadSpac(const std::vector<uint8_t>& source,AacInfo& info,std::vector<std::
         if(measured!=AacParse::Complete){error="invalid, truncated or unsupported SpAC page";return false;}
         const auto result=stream.ParsePage(source.data()+cursor,layout.total,&extracted);
         if(result==AacParse::Invalid||result==AacParse::Unsupported){error="SpAC checksum, codec or frame continuity rejected";return false;}
+        if(layout.setup) {
+            const auto& config=stream.info;
+            const auto expected=(uint64_t(config.total_samples)+config.priming+config.samples_per_packet-1)/config.samples_per_packet;
+            if(!AacExtractionFitsBudget(size_t(source.capacity()+retained),source.size(),size_t(expected))) {
+                error="SpAC extraction memory budget exceeded";return false;
+            }
+            extracted.reserve(size_t(expected));
+        }
         cursor+=layout.total;
         if(stream.complete_&&cursor!=source.size()){error="SpAC has data after its final access unit";return false;}
     }

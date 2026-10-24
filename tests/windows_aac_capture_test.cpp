@@ -80,8 +80,49 @@ void TestPipeline(const std::wstring& root) {
     Tags tags;tags.fields={{"TITLE","Native AAC"},{"ARTIST","Artist"},{"ALBUM","Album"},{"SPOTIFY_URI",catalog.spotify_uri},
         {"HISTORY_COMPLETE_LISTEN","1"},{"HISTORY_CAPTURE","native compressed FLAC input"}};
     std::vector<uint8_t> high;std::string error;assert(TagFlac(recording_fixture::fixture(),tags,high,error));Write(flac,high);
+    const auto resolved=ResolveRecordingDestination(flac,catalog);
+    assert(resolved.state==RecordingDestinationState::Existing && resolved.path==flac &&
+        resolved.recording.complete && resolved.recording.quality.codec==Codec::Flac);
+    // A sharing violation is unknown, never evidence that the preferred file
+    // is absent. Do not create an AAC counterpart while this file is locked.
+    HANDLE locked=CreateFileW(flac.c_str(),GENERIC_READ,0,nullptr,OPEN_EXISTING,0,nullptr);
+    assert(locked!=INVALID_HANDLE_VALUE);
+    assert(ResolveRecordingDestination(flac,catalog).state==RecordingDestinationState::Blocked);
+    assert(Publish(*capture,heard,CaptureEpoch())==Publication::Failed &&
+        GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES);
+    CloseHandle(locked);
     assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped&&Read(flac)==high&&GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES);
-    assert(DeleteFileW(flac.c_str())&&SetUpdateExistingMetadata(true));
+    assert(DeleteFileW(flac.c_str()));
+    auto unrelated_tags=tags;
+    for(auto& field:unrelated_tags.fields)if(field.first=="SPOTIFY_URI")field.second="spotify:track:other";
+    std::vector<uint8_t> other_flac;assert(TagFlac(recording_fixture::fixture(),unrelated_tags,other_flac,error));
+    Write(flac,other_flac);
+    const auto flac_suffix=ResolveRecordingDestination(flac,catalog);
+    assert(flac_suffix.state==RecordingDestinationState::Vacant && flac_suffix.path!=flac);
+    Write(flac_suffix.path,high);assert(DeleteFileW(flac.c_str()));
+    locked=CreateFileW(flac_suffix.path.c_str(),GENERIC_READ,0,nullptr,OPEN_EXISTING,0,nullptr);
+    assert(locked!=INVALID_HANDLE_VALUE);
+    assert(Publish(*capture,heard,CaptureEpoch())==Publication::Failed &&
+        GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES);
+    CloseHandle(locked);
+    const auto reused=ResolveRecordingDestination(flac,catalog);
+    assert(reused.state==RecordingDestinationState::Existing && reused.path==flac_suffix.path && reused.recording.complete);
+    assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped && Read(flac_suffix.path)==high &&
+        GetFileAttributesW(flac.c_str())==INVALID_FILE_ATTRIBUTES && GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES);
+    assert(DeleteFileW(flac_suffix.path.c_str())&&SetUpdateExistingMetadata(true));
+    // Apply the same fail-closed rule to a locked Vorbis candidate even when
+    // there is no FLAC, and reuse the verified collision suffix after deletion.
+    const auto ogg=OutputPath(root,catalog,L".ogg",false);
+    tags.fields.back()={"HISTORY_CAPTURE","native compressed Ogg pages"};
+    std::vector<uint8_t> vorbis;
+    assert(TagOgg(recording_fixture::ogg(),tags,vorbis,error));Write(ogg,vorbis);
+    locked=CreateFileW(ogg.c_str(),GENERIC_READ,0,nullptr,OPEN_EXISTING,0,nullptr);
+    assert(locked!=INVALID_HANDLE_VALUE);
+    assert(Publish(*capture,heard,CaptureEpoch())==Publication::Failed &&
+        GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES);
+    CloseHandle(locked);
+    assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped && Read(ogg)==vorbis);
+    assert(DeleteFileW(ogg.c_str()));
     // Recording identity still disambiguates AAC filename collisions.
     AacInfo info;std::vector<std::vector<uint8_t>> packets;
     assert(ReadSpac(source,info,packets,error));

@@ -165,6 +165,11 @@ codec callback. It must still pass completeness, duration and unique-association
 checks before publication. Retention ends when the listen is handled or expires.
 Existing-file inspection uses checked reads with a separate temporary buffer
 capped at 512 MiB; storage errors reject the inspection without stalling capture.
+Destination resolution returns a verified matching-file snapshot or an explicit
+vacant/blocked outcome. Publication reuses that snapshot for quality and missing
+metadata decisions; replacement still revalidates the locked object. The bounded
+collision search still examines occupied deterministic names to retain the best
+matching recording, rather than scanning directories or maintaining another cache.
 
 ## Troubleshooting
 
@@ -278,6 +283,8 @@ M4A files embed available tags, synchronized lyrics and validated Spotify artwor
 Art remains optional. Metadata-only changes preserve compressed media and unknown
 metadata, honor `UpdateExistingMetadata=0`, and do not add Latest Downloads rows.
 A verified matching FLAC or Ogg suppresses a new low-quality AAC counterpart.
+An unreadable preferred-format candidate defers publication until a later complete
+listen; it does not count as an absent file or permit an extra M4A beside it.
 Existing AAC renditions are retained: variable bitrate/file size does not prove a
 quality upgrade. Collision naming, identity verification and atomic publication
 use the same safeguards as other recordings. The Song shortcut also finds M4A.

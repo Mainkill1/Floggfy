@@ -85,7 +85,7 @@ bool RecoverRecording(const std::wstring& path,const Catalog& catalog) {
     if(!Missing(path)) return false;
     return RestoreBackup(path+L".previous",path,catalog);
 }
-std::wstring ResolveRecordingPath(const std::wstring& base,const Catalog& catalog) {
+RecordingDestination ResolveRecordingDestination(const std::wstring& base,const Catalog& catalog) {
     if(base.empty()) return {};
     auto slash=base.find_last_of(L"\\/"),dot=base.find_last_of(L'.');
     if(dot==std::wstring::npos || (slash!=std::wstring::npos && dot<slash)) dot=base.size();
@@ -114,6 +114,7 @@ std::wstring ResolveRecordingPath(const std::wstring& base,const Catalog& catalo
     std::wstring vacant,repairable,matching;
     bool unreadable=false;
     Quality best;
+    RecordingFile best_recording,repairable_recording;
     for(const auto& path:candidates) {
         if(Missing(path)) {
             if(vacant.empty()) vacant=path;
@@ -132,12 +133,14 @@ std::wstring ResolveRecordingPath(const std::wstring& base,const Catalog& catalo
             if(matching.empty() || HigherQuality(existing.quality,best)) {
                 matching=path;
                 best=existing.quality;
+                best_recording=std::move(existing);
             }
         } else if(existing.owned && repairable.empty()) {
             repairable=path;
+            repairable_recording=std::move(existing);
         }
     }
-    if(!matching.empty()) return matching;
+    if(!matching.empty()) return {RecordingDestinationState::Existing,std::move(matching),std::move(best_recording)};
     // An inaccessible candidate may be the already-saved recording. Retry on
     // a later listen rather than allocating a possible duplicate beside it.
     if(unreadable) return {};
@@ -147,11 +150,11 @@ std::wstring ResolveRecordingPath(const std::wstring& base,const Catalog& catalo
         if(!RecoverRecording(path,catalog))continue;
         RecordingFile restored;
         if(ReadRecording(path,restored) && MatchesRecording(restored,catalog)) {
-            if(restored.complete)return path;
-            if(restored.owned && repairable.empty())repairable=path;
+            if(restored.complete)return {RecordingDestinationState::Existing,path,std::move(restored)};
+            if(restored.owned && repairable.empty()) {repairable=path;repairable_recording=std::move(restored);}
         }
     }
-    if(!repairable.empty()) return repairable;
+    if(!repairable.empty()) return {RecordingDestinationState::Existing,std::move(repairable),std::move(repairable_recording)};
 
     RecordingFile reserved;
     const auto backup=base+L".previous";
@@ -161,12 +164,20 @@ std::wstring ResolveRecordingPath(const std::wstring& base,const Catalog& catalo
         // .previous. Recover beside the raced file without overwriting it.
         for(const auto& path:candidates) {
             if(!Missing(path)) continue;
-            if(RestoreBackup(backup,path,catalog)) return path;
-            if(Reusable(path,catalog)) return path;
+            if(RestoreBackup(backup,path,catalog) || Reusable(path,catalog)) {
+                RecordingFile restored;
+                if(ReadRecording(path,restored) && MatchesRecording(restored,catalog))
+                    return {RecordingDestinationState::Existing,path,std::move(restored)};
+                return {};
+            }
         }
         return {}; // Do not bypass an existing recording whose recovery failed.
     }
-    return vacant;
+    if(vacant.empty()) return {};
+    return {RecordingDestinationState::Vacant,std::move(vacant),{}};
+}
+std::wstring ResolveRecordingPath(const std::wstring& base,const Catalog& catalog) {
+    return ResolveRecordingDestination(base,catalog).path;
 }
 SaveDecision DecideSave(const std::wstring& path,const Quality&) {
     // Callers without a recording identity may create, but cannot replace.

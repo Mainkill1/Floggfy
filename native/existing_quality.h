@@ -15,6 +15,17 @@ bool ExistingRecording(const std::wstring& file,const Catalog& catalog,Quality& 
 // Empty means no safe destination could be established. No directories created.
 // Recover only a verified same-recording backup left by an interrupted upgrade.
 bool RecoverRecording(const std::wstring& path,const Catalog& catalog);
+enum class RecordingDestinationState { Vacant, Existing, Blocked };
+struct RecordingDestination {
+    RecordingDestinationState state=RecordingDestinationState::Blocked;
+    std::wstring path;
+    // Verified matching snapshot from the bounded search, not a reservation.
+    // Publication must still lock/revalidate the exact object before writes.
+    RecordingFile recording;
+};
+// Blocked distinguishes I/O uncertainty from a verified vacancy. Callers must
+// not interpret it as absence when searching a preferred recording format.
+RecordingDestination ResolveRecordingDestination(const std::wstring& base,const Catalog& catalog);
 std::wstring ResolveRecordingPath(const std::wstring& base,const Catalog& catalog);
 enum class SaveDecision { NewFile, Upgrade, Skip };
 SaveDecision DecideSave(const std::wstring& path,const Quality& incoming);
