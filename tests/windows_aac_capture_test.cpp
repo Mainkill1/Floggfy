@@ -9,6 +9,7 @@
 #include <fstream>
 int RunSpacStreamTests();
 int RunAacContainerTests();
+int RunMediaSnapshotTests();
 namespace {
 bool extra_metadata=false;
 unsigned native_push_calls=0;
@@ -175,7 +176,7 @@ void EnrichTags(const Media&,Tags& tags) {
 }
 }
 int wmain(int argc,wchar_t** argv) {
-    assert(RunSpacStreamTests()==0&&RunAacContainerTests()==0);
+    assert(RunSpacStreamTests()==0&&RunAacContainerTests()==0&&RunMediaSnapshotTests()==0);
     original_aac_initialize=NativeInitialize;original_aac_push=NativePush;original_aac_destroy=NativeDestroy;
     assert(!Settings{}.aac&&!AACEnabled());uint64_t status[2]={9,9};
     assert(AacPushHook(nullptr,status,nullptr)==status&&native_push_calls==1&&count==0); // Disabled: no input read or event.

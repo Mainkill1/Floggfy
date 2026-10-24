@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One Windows executable for optional AAC capture, container and publication.
+# One Windows executable for AAC capture/publication and the media I/O boundary.
 # Optional arguments: a complete inspection SpAC file and the Spotify DLL to map
 # for static capability discovery. Neither input is bundled with the project.
 set -euo pipefail
@@ -18,7 +18,7 @@ x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vorbis_headers_stb.c
 x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/aac-tests/ogg.o
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -DFLOGGFY_COMBINED_TEST -municode \
     -static-libgcc -static-libstdc++ -I native/vendor/libogg/include \
-    tests/windows_aac_capture_test.cpp tests/spac_stream_test.cpp tests/aac_container_test.cpp \
+    tests/windows_aac_capture_test.cpp tests/spac_stream_test.cpp tests/aac_container_test.cpp tests/windows_media_boundary_test.cpp \
     native/spac_stream.cpp native/aac_container.cpp native/playback_quality_windows.cpp native/playback_quality.cpp native/media_session.cpp \
     native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp native/ogg_history_core.cpp native/image_info.cpp \
     native/library_layout.cpp native/recording_file.cpp native/vorbis_headers.cpp native/existing_quality.cpp native/file_publication.cpp \

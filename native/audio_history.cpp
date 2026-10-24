@@ -737,8 +737,10 @@ static DWORD WINAPI Worker(LPVOID) {
     LONG overflow=0;
     CaptureBuffers buffers;auto& active=buffers.active;auto& ready=buffers.ready;
     std::vector<Heard> heard;
-    Listen listen; MediaReader reader; Media current; PlaybackQualityTracker quality; std::string client_quality;
-    double next_media=0,next_log=0;
+    Listen listen; MediaSnapshotReader reader; Media current; PlaybackQualityTracker quality; std::string client_quality;
+    uint64_t media_sequence=0;
+    double last_media=Now(),minimum_media_time=last_media,next_log=0;
+    bool observer_started=false,media_unavailable=false;
     unsigned generation=~0u,epoch=~0u; bool enabled=false;
     try {
         while(workers_running.load(std::memory_order_acquire)) {
@@ -750,7 +752,8 @@ static DWORD WINAPI Worker(LPVOID) {
                 output=preferences.root; memory_limit=size_t(preferences.max_buffered_mib)*1024*1024;
                 bool capture=preferences.downloads && (preferences.ogg || preferences.flac || preferences.aac);
                 if(capture!=enabled || initial || preferences.capture_epoch!=epoch) {
-                    active.clear(); ready.clear(); heard.clear(); listen={}; current={}; next_media=0;
+                    active.clear(); ready.clear(); heard.clear(); listen={}; current={};
+                    last_media=minimum_media_time=now;media_unavailable=false;
                     if(!enabled && capture) saved_count=0;
                     enabled=capture;
                     Log(enabled ? "To Disk capture enabled" : "To Disk capture disabled");
@@ -758,6 +761,7 @@ static DWORD WINAPI Worker(LPVOID) {
                 epoch=preferences.capture_epoch;
             }
             if(!enabled && !quality_enabled.load(std::memory_order_relaxed)) {
+                reader.Stop();observer_started=false;
                 PublishPlaybackQuality({});
                 PublishSongDestination(0,L"",{},false,0);
                 Slot discard; while(Pop(discard)) {}
@@ -769,28 +773,35 @@ static DWORD WINAPI Worker(LPVOID) {
             }
             Slot s;
             while(Pop(s)) ProcessCaptureEvent(s,buffers,quality,quality_enabled.load(std::memory_order_relaxed),enabled,epoch);
+            // Start only the basic media observer. All COM/WinRT work stays on
+            // its thread; this consumer only try-locks a bounded RAM snapshot.
+            // A still-stopping observer must finish before another can start.
+            if(!observer_started) observer_started=reader.Start();
+            Media media;double observed_at=0;
+            auto observation=observer_started?reader.TryRead(media,observed_at,media_sequence):MediaRead::Pending;
+            if(observation!=MediaRead::Pending && observed_at<minimum_media_time)
+                observation=MediaRead::Pending; // Never reuse an earlier capture epoch.
+            if(observation==MediaRead::Ready) {
+                last_media=observed_at;media_unavailable=false;
+                PublishCurrentDestination(media,preferences);
+                quality.Media(media.Key(),media.title,media.position,media.duration,observed_at,media.playing);
+                client_quality=ReadClientPlaybackQuality(media);
+                if(enabled)AssociateListen(std::move(media),listen,current,heard,buffers,observed_at);
+            } else if(observation==MediaRead::Failed || Now()-last_media>3) {
+                // A stalled provider cannot stall decoder events, but missing
+                // observations still cannot establish continuous listening.
+                PublishSongDestination(0,L"",{},false,0);
+                listen.eligible=false;quality.Media({},L"",0,0,Now());client_quality.clear();
+                if(!media_unavailable)Log("Spotify media snapshot unavailable or stale; listen invalidated");
+                media_unavailable=true;
+            }
             if(!enabled) {
-                if(now>=next_media) {
-                    Media media;
-                    if(reader.Read(media)) {PublishCurrentDestination(media,GetSettings());quality.Media(media.Key(),media.title,media.position,media.duration,Now(),media.playing);client_quality=ReadClientPlaybackQuality(media);}
-                    else {PublishSongDestination(0,L"",{},false,0);quality.Media({},L"",0,0,Now());client_quality.clear();}
-                    next_media=Now()+0.5;
-                }
                 PublishPlaybackQuality(quality.Snapshot(client_quality));
                 WaitForSingleObject(event,50);continue;
             }
-            if(now>=next_media) {
-                Media media;
-                if(reader.Read(media)) {
-                    PublishCurrentDestination(media,GetSettings());
-                    quality.Media(media.Key(),media.title,media.position,media.duration,Now(),media.playing);
-                    client_quality=ReadClientPlaybackQuality(media);
-                    AssociateListen(std::move(media),listen,current,heard,buffers,Now());
-                } else { PublishSongDestination(0,L"",{},false,0);listen.eligible=false; quality.Media({},L"",0,0,Now()); Log("Spotify media snapshot unavailable; listen invalidated"); }
-                next_media=Now()+0.5;
-            }
+            now=Now();
             PublishPlaybackQuality(quality.Snapshot(client_quality));
-            // A media-session read may block while the menu changes settings.
+            // Menu settings may change concurrently with snapshot processing.
             // Apply that generation before considering any publication.
             if(GetSettings().generation!=generation) continue;
             SchedulePublications(heard,buffers,epoch,now);
@@ -808,6 +819,7 @@ static DWORD WINAPI Worker(LPVOID) {
             WaitForSingleObject(event,50);
         }
     } catch(...) { Log("history worker stopped after an exception; playback remains with original parser"); }
+    reader.Stop(); // Nonblocking even if Windows is still servicing a COM call.
     PublishPlaybackQuality({});
     PublishSongDestination(0,L"",{},false,0);
     workers_running.store(false,std::memory_order_release);
