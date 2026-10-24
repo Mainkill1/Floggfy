@@ -860,7 +860,8 @@ The subsequent `bash build-native.sh` production DLL/launcher build passed.
 
 The Windows media-service provider and NLM interception require live validation;
 synthetic callbacks cannot establish the cause of issue #12 or prove the absence
-of hook interference. No corrected DLL has yet been installed for live playback.
+of hook interference. At that initial gate the new DLL had not been installed;
+the subsequent release-candidate installation is documented below.
 
 
 ## Default-off network compatibility patch
@@ -880,5 +881,28 @@ Unicode INI; it does not launch Spotify or contact a network service. No previou
 test gate or full suite was rerun for this follow-up. The subsequent
 `bash build-native.sh` production DLL/launcher build passed with existing vendor
 warnings visible. The current Windows release's compatibility with the enabled
-patch and the cause of issue #12 remain unverified. This build has not been
-installed into the running Spotify process.
+patch and the cause of issue #12 remain unverified. Subsequent startup
+installation evidence is documented below.
+
+
+## 1.2.5-RC1 prerelease
+
+The candidate's native code matches the test build from `63d5eb6`. A production
+DLL/launcher build after the final INI explanation change passed. On installed
+Spotify 1.3.6.1921, Launcher mode loaded the exact candidate DLL, exposed its
+startup-ready signal and a visible window. With `NetworkPatch=1`, `Log=1` and
+`DebugLog=1`, startup logs confirmed the delay-import patch and NetworkListManager
+hook installation. Other saved preferences were preserved.
+
+This is installation/startup evidence. Sustained playback reliability, the cause
+of the reported pauses and compatibility across Windows versions remain
+unverified. The published sample INI keeps `NetworkPatch=0`; opt-in requires a
+full Spotify restart. The two earlier targeted gates each passed once, and no
+test gate or broad regression suite was repeated for prerelease packaging.
+
+Prerelease artifact checks verified that the standalone DLL and Launcher ZIP's
+DLL exactly match the installed native build. The ZIP's 12-entry allowlist,
+CRC checks, binary hashes, default INI, six vendor licenses and both checksum
+manifests were verified. The package includes no personal INI, music, logs or
+private deployment scripts. These packaging checks do not extend playback or
+codec validation coverage.

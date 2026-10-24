@@ -7,10 +7,10 @@ from pathlib import Path
 import zipfile
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--version', default='1.2.4')
+parser.add_argument('--version', default='1.2.5-RC1')
 version = parser.parse_args().version
-if not version or any(c not in '0123456789abcdefghijklmnopqrstuvwxyz.-' for c in version):
-    parser.error('version must contain only lowercase letters, digits, dots and hyphens')
+if not version or any(c not in '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.-' for c in version):
+    parser.error('version must contain only ASCII letters, digits, dots and hyphens')
 root = Path(__file__).resolve().parent
 out = root / 'dist'
 out.mkdir(exist_ok=True)
