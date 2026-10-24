@@ -63,7 +63,10 @@ static int PollOne(Base* b){return reinterpret_cast<PollTask*>(b)->refs==1;}
 static int PollAny(Base* b){return reinterpret_cast<PollTask*>(b)->refs>0;}
 static std::wstring CollectorOptions() {
  const auto settings=GetSettings();
- return std::wstring(L"window.__floggfyConfig={metadata:")+(settings.metadata?L"true":L"false")+L",lyrics:"+(settings.lyrics?L"true":L"false")+L",debug:"+(settings.debug_log?L"true":L"false")+L"};";
+ return std::wstring(L"window.__floggfyConfig={metadata:")+(settings.metadata?L"true":L"false")+
+  L",lyrics:"+(settings.lyrics?L"true":L"false")+
+  L",debug:"+(settings.debug_log?L"true":L"false")+
+  L",connect:"+(settings.debug_connect&&settings.log?L"true":L"false")+L"};";
 }
 static void PollExecute(Task*) {
  Frame* frame=nullptr;

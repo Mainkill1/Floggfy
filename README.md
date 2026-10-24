@@ -58,6 +58,14 @@ patch, then quit Spotify completely and restart. Audio capture, metadata and
 To Disk work independently of this option. The cause of reported playback pauses
 remains unconfirmed.
 
+For playback troubleshooting, `Log=1` and `DebugLog=1` enable diagnostic logging.
+`DebugConnect=1` additionally records cached playback-device changes and local
+client control requests; set it to `0` to disable those observations. Device names
+and IDs are omitted. Playback on this PC can still be controlled by a phone:
+`target=local` describes where audio plays, while an unavailable command sender
+remains `initiator=unknown`. This does not identify a remote Pause sender.
+These client observations require `Metadata=1`; restart after INI edits.
+
 After a successful download, **Latest Downloads** appears directly below **Save Location**.
 It lists up to ten recently saved songs from this Spotify run; click one to open
 Explorer at its saved folder.

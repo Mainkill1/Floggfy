@@ -26,6 +26,7 @@ Lyrics=1
 UpdateExistingMetadata=1
 Log=1
 DebugLog=0
+DebugConnect=1
 
 [History]
 MaxBufferedMiB=500
@@ -58,6 +59,10 @@ MaxBufferedMiB=500
   disable lyric enrichment while retaining other metadata and artwork.
 - **Log:** default on; started/failed/finished activity in the save root, capped at 5 MiB.
 - **DebugLog:** default off; opt-in diagnostic detail in the same bounded log.
+- **DebugConnect:** default `1`, active only with `Log=1`, `DebugLog=1` and
+  `Metadata=1`. Set `0` and restart to disable cached Connect target observations
+  and the passive local client action observer. No device discovery, playback
+  transfer or additional network request is performed.
 - **MaxBufferedMiB:** 8–512 MiB, default 500, limits compressed capture allocations.
   There is also an approximately 8 MiB event queue, artwork, and a temporary
   completed-file buffer during native tagging. Oversized tracks are discarded.
@@ -200,6 +205,22 @@ hooks record only counters and existing bounded events, and the worker formats
 these summaries. Counters/maxima are approximate interval observations under
 concurrency. Paused playback has no periodic timing/status heartbeat, while new
 errors and state changes remain visible.
+
+Connect diagnostics read the already-created `ConnectDevicesAPI` snapshot and
+report `target=local`, `remote` or `unknown`, plus connection state and a device
+change flag. Device names and IDs are never printed. `not_connected` is the
+client's remote-playback link state, not evidence that the PC lacks Internet.
+Local PlayerAPI action requests are recorded separately as `source=local-client`;
+requests may be cancelled or fail, so they are not proof of a completed action.
+A passive listener queues at most 16 allowlisted observations per poll, reports
+omitted observations and leaves dispatch/prevention untouched. Opt-out removes
+the listener; an API cleanup failure leaves at most one inert binding.
+
+The current PlayerAPI snapshot does not expose an incoming command's sender.
+A phone controlling playback on this PC is distinct from playback on the phone.
+Neither a remote target nor absence of a local action proves who sent Pause:
+controller/initiator stays `unknown`. Repeated unchanged paused snapshots stay
+silent. Missing or changed optional APIs leave normal metadata collection intact.
 
 Network context is only the last result of an already intercepted Windows NLM
 query, with its age, HRESULT and original/effective connectivity flags. This

@@ -906,3 +906,26 @@ CRC checks, binary hashes, default INI, six vendor licenses and both checksum
 manifests were verified. The package includes no personal INI, music, logs or
 private deployment scripts. These packaging checks do not extend playback or
 codec validation coverage.
+
+
+## Connect diagnostic context after RC1
+
+Static inspection of Spotify 1.3.6.1921 identified the cached
+`ConnectDevicesAPI.getConnectState()` shape and the PlayerAPI `action` event.
+Connect state describes the playback target; PlayerAPI's mapped snapshot omits
+an incoming command's sender. Logs therefore keep controller attribution unknown
+and only mark directly observed local client requests as local. They do not infer
+remote control from a device list or a missing local action.
+
+`DebugConnect=1` is gated by debug logging and the existing metadata collector.
+The focused `bash test-connect-diagnostics.sh` gate passed in one execution:
+the Windows INI fixture covered defaults, explicit opt-out, missing-key migration,
+Unicode/unknown-section preservation and capture-independent persistence. The
+Node VM fixture covered cached local/remote/unknown targets, honest unknown
+initiators, passive local requests, paused deduplication, bounded observations,
+opt-out and cleanup failure, accessor privacy and no additional network/control
+calls. No earlier gate or broad suite was rerun. Independent static review found
+no blocker. The subsequent `bash build-native.sh` DLL/launcher build passed;
+existing vendor warnings remained visible. The implementation has not been
+installed for live Connect validation.
+RC1's existing assets/tag and the running installation remain unchanged.

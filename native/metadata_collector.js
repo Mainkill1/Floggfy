@@ -5,7 +5,7 @@
  window.__floggfyMetadata=true;
  const prefix='FLOGGFY_METADATA_V1:',seenPayload=new Map(),records=[];
  const serviceCache=new Map();
- let builder,activeRequests=0;
+ let builder,activeRequests=0,connectDevices;
  let reported=false,player,root,queue=[],seen=new Set(),walked=0,lastPlayback='',playbackTime=-Infinity;
  function playback(data){
   const payload=Object.entries(data).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&');
@@ -37,6 +37,67 @@
    ' code='+current.code+' status='+current.status+' inst='+changed('instance')+' dev='+changed('device');
   debugPrevious=current;
   if(message.length<100)console.info(message);
+ }
+ // ConnectDevicesAPI supplies the playback target, not the sender of Pause.
+ // Observe only already-created services. Never discover/transfer devices or
+ // infer a remote command from the absence of a local client action.
+ let connectPrevious,connectPaused,connectPausedTarget,controlBinding,controlQueue=[],controlOmitted=0;
+ function connectEnabled(){return own(options(),'debug')===true&&own(options(),'connect')===true;}
+ function connectStatus(message){const line='FLOGGFY_STATUS:'+message;if(line.length<100)console.info(line);}
+ function detachControls(){
+  const binding=controlBinding;if(!binding)return true;
+  if(!binding.active)return false; // Failed removal: retain at most one inert binding.
+  binding.active=false;
+  try{binding.remove.call(binding.events,'action',binding.listener);controlBinding=undefined;return true;}catch{return false;}
+ }
+ function syncControls(){
+  if(controlBinding&&controlBinding.player===player&&controlBinding.active)return;
+  if(!detachControls()||!player)return;
+  try{
+   const getEvents=method(player,'getEvents');if(!getEvents)return;
+   const events=getEvents.call(player),add=method(events,'addListener'),remove=method(events,'removeListener');
+   if(!add||!remove)return;
+   const binding={player,events,remove,active:true};
+   binding.listener=event=>{
+    try{
+     if(!binding.active||!connectEnabled())return;
+     const action=own(own(event,'data'),'action');
+     if(!['play','pause','resume','skipToNext','skipToPrevious'].includes(action))return;
+     if(controlQueue.length<16)controlQueue.push(action);else controlOmitted=Math.min(1000000,controlOmitted+1);
+    }catch{/* A diagnostic observer must never affect command dispatch. */}
+   };
+   controlBinding=binding; // Own cleanup even if addListener throws after attaching.
+   try{add.call(events,'action',binding.listener);}catch{detachControls();}
+  }catch{/* Changed event APIs leave commands untouched. */}
+ }
+ function connectDiagnostics(state){
+  if(!connectEnabled()){
+   detachControls();connectDevices=undefined;connectPrevious=undefined;connectPaused=undefined;connectPausedTarget=undefined;
+   controlQueue=[];controlOmitted=0;return;
+  }
+  syncControls();
+  let cached;
+  try{const getter=method(connectDevices,'getConnectState');if(getter)cached=getter.call(connectDevices);}catch{}
+  const raw=own(cached,'connectionStatus'),device=own(cached,'activeDevice');
+  const status=typeof raw==='string'&&['NOT_CONNECTED','CONNECTING','CONNECTED','NO_DEVICES_AVAILABLE'].includes(raw)?
+   (raw==='NO_DEVICES_AVAILABLE'?'no_devices':raw.toLowerCase()):'unknown';
+  const local=own(device,'isLocal'),target=local===true?'local':local===false?'remote':'unknown';
+  const value=own(device,'id'),id=typeof value==='string'&&value.length>0&&value.length<=256?value:undefined;
+  const current={status,target,id};
+  if(!connectPrevious||Object.keys(current).some(key=>current[key]!==connectPrevious[key])){
+   const changed=id===undefined?'?':connectPrevious&&connectPrevious.id!==undefined?Number(id!==connectPrevious.id):0;
+   connectStatus('connect state='+status+' target='+target+' device_changed='+changed+' controller=unknown');
+  }
+  connectPrevious=current;
+  for(const action of controlQueue)connectStatus('control request='+action+' source=local-client');
+  controlQueue=[];
+  if(controlOmitted){connectStatus('control observations_omitted='+controlOmitted);controlOmitted=0;}
+  const paused=own(state,'isPaused');
+  if(typeof paused==='boolean'&&(paused!==connectPaused||target!==connectPausedTarget)){
+   connectStatus('control state='+(paused?'paused':'playing')+' target='+target+' initiator=unknown');
+  }
+  connectPaused=typeof paused==='boolean'?paused:undefined;
+  connectPausedTarget=target;
  }
  function requestState(uri){
   let entry=serviceCache.get(uri);
@@ -86,6 +147,11 @@
  }
  function scan(){
   const sp=own(window,'Spicetify'),p=own(sp,'Player');if(method(p,'getState'))player=p;
+  const observeConnect=connectEnabled();
+  if(observeConnect)try{
+   const candidate=own(own(sp,'Platform'),'ConnectDevicesAPI');
+   if(method(candidate,'getConnectState'))connectDevices=candidate;
+  }catch{}
   const main=document.querySelector('#main');
   const key=main&&Object.keys(main).find(k=>k.startsWith('__reactContainer$'));
   const current=key&&own(main,key);
@@ -105,6 +171,7 @@
     if(++n>160)break;
     if(String(key)==='Symbol(RequestBuilder)'){const candidate=own(value,'instance');if(method(candidate,'build'))builder=candidate;}
     if(String(key)==='Symbol(PlayerAPI)'){const candidate=own(value,'instance');if(method(candidate,'getState'))player=candidate;}
+    if(observeConnect&&String(key)==='Symbol(ConnectDevicesAPI)'){const candidate=own(value,'instance');if(method(candidate,'getConnectState'))connectDevices=candidate;}
    }}catch{}
    if(own(o,'uri')||own(o,'trackUri')||own(o,'queryKey'))remember(o);
    try{let count=0;for(const v of Map.prototype.values.call(o)){if(++count>80||queue.length>=8192)break;if(object(v))queue.push(v);}}catch{}
@@ -200,10 +267,10 @@
  }
  function tick(){
   try{
-   automatic();scan();if(!player){debugObservation();playback({v:1});return;}
+   automatic();scan();if(!player){debugObservation();connectDiagnostics();playback({v:1});return;}
    if(!reported){console.info('FLOGGFY_STATUS:cached player found');reported=true;}
    const state=method(player,'getState').call(player),item=own(state,'item'),m=own(item,'metadata')||{},uri=text(own(item,'uri'));
-   debugObservation(state,item);
+   debugObservation(state,item);connectDiagnostics(state);
    if(!/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')){playback({v:1});return;}
    const track=uri.startsWith('spotify:track:'),show=own(item,'show')||{};
    const data={v:1,title:text(own(m,'title')||own(item,'name')),
