@@ -53,19 +53,19 @@ static bool Comments(const ogg_packet& packet,const Tags& tags,std::vector<uint8
     if(!read(vendor) || offset+4>limit) return false;
     uint32_t count=Little(packet.packet+offset); offset+=4;
     if(count>100000 || count>(limit-offset)/4) return false;
+    std::vector<uint8_t> picture;
+    const bool has_picture=BuildPicture(tags,picture);
     std::vector<std::string> fields;
     for(uint32_t i=0;i<count;i++) {
         std::string field; if(!read(field)) return false;
         std::string key=Upper(field.substr(0,field.find('=')));
-        bool replace=key=="METADATA_BLOCK_PICTURE";
+        bool replace=tags.replace_fields || (has_picture && key=="METADATA_BLOCK_PICTURE");
         for(const auto& item:tags.fields) if(key==Upper(item.first)) replace=true;
         if(!replace) fields.push_back(std::move(field));
     }
     if(offset+1!=limit || packet.packet[offset]!=1) return false;
     for(const auto& item:tags.fields) fields.push_back(item.first+'='+item.second);
-    std::vector<uint8_t> picture;
-    if(!BuildPicture(tags,picture)) return false;
-    fields.push_back("METADATA_BLOCK_PICTURE="+Base64(picture));
+    if(has_picture) fields.push_back("METADATA_BLOCK_PICTURE="+Base64(picture));
     out.assign({'\x03','v','o','r','b','i','s'});
     if(vendor.empty()) vendor="SpotifyRepair native history";
     Number(out,uint32_t(vendor.size())); out.insert(out.end(),vendor.begin(),vendor.end());

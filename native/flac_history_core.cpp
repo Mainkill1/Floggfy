@@ -59,7 +59,7 @@ static bool Fields(const uint8_t* b,size_t n,const Tags& tags,std::string& vendo
     if(count>100000 || count>(n-p)/4) return false;
     for(uint32_t i=0;i<count;i++) {
         std::string s; if(!read(s)) return false; auto key=Upper(s.substr(0,s.find('=')));
-        bool replace=key=="METADATA_BLOCK_PICTURE";
+        bool replace=tags.replace_fields || key=="METADATA_BLOCK_PICTURE";
         for(const auto& tag:tags.fields) if(key==Upper(tag.first)) replace=true;
         if(!replace) fields.push_back(std::move(s));
     }
@@ -103,7 +103,7 @@ static bool SameTrack(const Tags& existing,const Tags& incoming) {
     }
     return true;
 }
-static bool Synced(const std::string& words) {
+bool IsSyncedLyrics(const std::string& words) {
     size_t p=0;unsigned previous=0,lines=0;
     while(p<words.size()) {
         if(words[p++]!='[')return false;
@@ -127,8 +127,8 @@ bool CopyFlacLyrics(const std::vector<uint8_t>& source,Tags& incoming) {
     const auto lyrics=Value(existing,"LYRICS"),alias=Value(existing,"UNSYNCEDLYRICS");
     const auto old=!lyrics.empty()?lyrics:alias;
     const auto current=Value(incoming,"LYRICS");
-    if(old.empty()||Synced(current))return false;
-    if((!current.empty()||!Value(incoming,"UNSYNCEDLYRICS").empty())&&!Synced(old))return false;
+    if(old.empty()||IsSyncedLyrics(current))return false;
+    if((!current.empty()||!Value(incoming,"UNSYNCEDLYRICS").empty())&&!IsSyncedLyrics(old))return false;
     for(auto it=incoming.fields.begin();it!=incoming.fields.end();)if(Upper(it->first)=="LYRICS")it=incoming.fields.erase(it);else ++it;
     incoming.fields.push_back({!lyrics.empty()?"LYRICS":"UNSYNCEDLYRICS",old});return true;
 }
@@ -137,7 +137,7 @@ LyricsUpdate FillFlacLyrics(const std::vector<uint8_t>& source,const Tags& incom
     if(lyrics.empty() || lyrics.size()>65536)return LyricsUpdate::Unchanged;
     Tags existing;if(!ReadFlacComments(source,existing,error))return LyricsUpdate::Invalid;
     const auto old=Value(existing,"LYRICS"),alias=Value(existing,"UNSYNCEDLYRICS");
-    if((!old.empty()||!alias.empty())&&(!Synced(lyrics)||Synced(old)||Synced(alias)))return LyricsUpdate::Unchanged;
+    if((!old.empty()||!alias.empty())&&(!IsSyncedLyrics(lyrics)||IsSyncedLyrics(old)||IsSyncedLyrics(alias)))return LyricsUpdate::Unchanged;
     if(!SameTrack(existing,incoming))return LyricsUpdate::Unchanged;
     std::string vendor;std::vector<std::string> fields;size_t audio=0;
     if(!CommentFields(source,vendor,fields,audio))return LyricsUpdate::Invalid;
@@ -165,12 +165,14 @@ bool TagFlac(const std::vector<uint8_t>& source,const Tags& tags,std::vector<uin
     if(ParseFlacMetadata(source,info,audio)!=FlacParse::Valid || source.size()-audio<2) return fail("invalid or incomplete FLAC metadata/audio");
     std::vector<std::pair<unsigned,std::vector<uint8_t>>> blocks;
     std::vector<std::string> fields; std::string vendor="SpotifyRepair native history";
+    std::vector<uint8_t> picture;
+    const bool has_picture=BuildPicture(tags,picture);
     size_t p=4; unsigned comment_blocks=0;
     while(p<audio) {
         unsigned kind=source[p]&127; size_t n=(size_t(source[p+1])<<16)|(size_t(source[p+2])<<8)|source[p+3]; p+=4;
         if(kind==4) {
             if(++comment_blocks>1 || !Fields(source.data()+p,n,tags,vendor,fields)) return fail("invalid FLAC Vorbis comments");
-        } else if(kind!=6 && kind!=1) { // Replace artwork and remove unused padding.
+        } else if(kind!=1 && (kind!=6 || !has_picture)) { // Preserve old artwork unless a valid replacement arrived.
             blocks.push_back({kind,std::vector<uint8_t>(source.begin()+p,source.begin()+p+n)});
         }
         p+=n;
@@ -179,8 +181,8 @@ bool TagFlac(const std::vector<uint8_t>& source,const Tags& tags,std::vector<uin
     std::vector<uint8_t> comments; Number(comments,uint32_t(vendor.size())); comments.insert(comments.end(),vendor.begin(),vendor.end());
     Number(comments,uint32_t(fields.size()));
     for(const auto& field:fields) { Number(comments,uint32_t(field.size())); comments.insert(comments.end(),field.begin(),field.end()); }
-    std::vector<uint8_t> picture; if(!BuildPicture(tags,picture)) return fail("missing FLAC artwork");
-    blocks.push_back({4,std::move(comments)}); blocks.push_back({6,std::move(picture)});
+    blocks.push_back({4,std::move(comments)});
+    if(has_picture) blocks.push_back({6,std::move(picture)});
     output.reserve(source.size()+tags.cover.size()+65536); output={'f','L','a','C'};
     for(size_t i=0;i<blocks.size();i++) {
         const auto& block=blocks[i]; size_t n=block.second.size(); if(n>0xffffff) return fail("FLAC metadata block too large");

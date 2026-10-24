@@ -6,11 +6,19 @@ enum class MediaKind { Music, Compilation, Soundtrack, VariousArtists, Audiobook
 struct Catalog {
     MediaKind kind=MediaKind::Music;
     std::wstring artist,album,title,author,series,book,show;
-    unsigned track=0,episode_year=0;
+    // A known media-session album artist anchors the existing folder even if
+    // Spotify later supplies a richer artist list for the recording's tags.
+    std::wstring folder_artist;
+    // Lookup-only compatibility for older folders named from expanded credits.
+    // Never used for new filenames or ALBUMARTIST tags.
+    std::wstring legacy_artist;
+    unsigned track=0,episode_year=0,disc=0;
+    std::string spotify_uri;
+    double duration=0;
 };
-std::wstring RelativePath(const Catalog& item,const std::wstring& extension);
-std::wstring OutputPath(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder=false);
-enum class Codec { Vorbis, Flac };
+std::wstring RelativePath(const Catalog& item,const std::wstring& extension,bool track_numbers=false);
+std::wstring OutputPath(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder=false,bool track_numbers=false);
+enum class Codec { Vorbis, Flac, Aac };
 struct Quality { Codec codec=Codec::Vorbis; unsigned rate=0,channels=0,bits=0,bitrate=0; };
 bool HigherQuality(const Quality& incoming,const Quality& existing);
 }

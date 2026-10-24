@@ -53,4 +53,17 @@ bool ReadRecentDownloads(std::vector<RecentDownload>& out) {
     try {out=rows;}catch(...) {ReleaseSRWLockShared(&lock);throw;}
     ReleaseSRWLockShared(&lock);return true;
 }
+void RelocateRecentDownload(const std::wstring& old_path,const std::wstring& new_path) noexcept {
+    try {
+        RecentDownload old{L"",old_path,0},next{L"",new_path,0};
+        if(!Clean(old)||!Clean(next)||SamePath(old.path,next.path))return;
+        Exclusive guard;
+        if(std::none_of(rows.begin(),rows.end(),[&](const auto& row){return SamePath(row.path,old.path);}))return;
+        // Work on a bounded copy so allocation failure retains every old row.
+        auto updated=rows;
+        updated.erase(std::remove_if(updated.begin(),updated.end(),[&](const auto& row){return SamePath(row.path,next.path);}),updated.end());
+        for(auto& row:updated)if(SamePath(row.path,old.path)){row.path=next.path;break;}
+        rows.swap(updated);
+    }catch(...) {}
+}
 }

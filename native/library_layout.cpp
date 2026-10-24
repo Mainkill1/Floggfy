@@ -14,11 +14,12 @@ static std::wstring Safe(std::wstring s,const wchar_t* fallback) {
        (base.size()==4 && (base.substr(0,3)==L"COM" || base.substr(0,3)==L"LPT") && base[3]>=L'1' && base[3]<=L'9')) s=L"_"+s;
     return s;
 }
-std::wstring RelativePath(const Catalog& c,const std::wstring& extension) {
+std::wstring RelativePath(const Catalog& c,const std::wstring& extension,bool track_numbers) {
     std::vector<std::wstring> parts;
     auto album=Safe(c.album,L"Unknown Album");
+    const auto& folder_artist=c.folder_artist.empty()?c.artist:c.folder_artist;
     switch(c.kind) {
-        case MediaKind::Music: parts={L"Music",L"Artists",Safe(c.artist,L"Unknown Artist"),album}; break;
+        case MediaKind::Music: parts={L"Music",L"Artists",Safe(folder_artist,L"Unknown Artist"),album}; break;
         case MediaKind::Compilation: parts={L"Music",L"Compilations",album}; break;
         case MediaKind::Soundtrack: parts={L"Music",L"Soundtracks",album}; break;
         case MediaKind::VariousArtists: parts={L"Music",L"Various Artists",album}; break;
@@ -35,11 +36,13 @@ std::wstring RelativePath(const Catalog& c,const std::wstring& extension) {
     }
     std::wstring out;
     for(const auto& part:parts) { out+=part; out+=L'\\'; }
-    if(c.track) { wchar_t number[20]; swprintf(number,20,L"%02u - ",c.track); out+=number; }
+    if(track_numbers && c.track) {
+        wchar_t number[20];swprintf(number,20,L"%02u - ",c.track);out+=number;
+    }
     return out+Safe(c.title,L"Untitled")+extension;
 }
-std::wstring OutputPath(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder) {
-    auto relative=RelativePath(item,extension);
+std::wstring OutputPath(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder,bool track_numbers) {
+    auto relative=RelativePath(item,extension,track_numbers);
     if(music_folder && relative.rfind(L"Music\\",0)==0) relative.erase(0,6);
     auto base=root;
     while(!base.empty() && (base.back()==L'\\' || base.back()==L'/')) base.pop_back();
@@ -49,6 +52,9 @@ bool HigherQuality(const Quality& incoming,const Quality& existing) {
     if(!incoming.rate || !incoming.channels) return false;
     if(incoming.codec!=existing.codec) return incoming.codec==Codec::Flac && incoming.bits>=16 && incoming.channels==existing.channels && incoming.rate>=existing.rate;
     if(incoming.channels!=existing.channels || !existing.rate) return false;
+    // Measured AAC bitrate is not a source quality tier. Preserve an existing
+    // complete AAC rendition rather than treating VBR size variation as better.
+    if(incoming.codec==Codec::Aac)return false;
     if(incoming.codec==Codec::Vorbis) return incoming.bitrate && existing.bitrate &&
         incoming.bitrate>existing.bitrate && incoming.rate>=existing.rate;
     return incoming.bits && existing.bits && incoming.bits>=existing.bits && incoming.rate>=existing.rate &&

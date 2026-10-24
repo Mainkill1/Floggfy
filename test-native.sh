@@ -2,6 +2,8 @@
 set -euo pipefail
 cd -- "$(dirname -- "$0")"
 mkdir -p build
+gcc -std=c11 -O2 -Wall -Wextra -c native/vendor/minimp4/minimp4.c -o build/minimp4.o
+gcc -std=c11 -O2 -Wall -Wextra -c native/vorbis_headers_stb.c -o build/vorbis-headers-stb-test.o
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/hook_init_state_test.cpp -o build/hook-init-state-test
 build/hook-init-state-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/hook_installation_test.cpp -o build/hook-installation-test
@@ -49,3 +51,18 @@ build/playback-quality-test
 
 g++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread tests/album_artwork_test.cpp native/album_artwork.cpp native/image_info.cpp -o build/album-artwork-test
 build/album-artwork-test
+
+# Existing files must contain complete audio and match the recording identity.
+g++ -std=c++17 -O2 -Wall -Wextra -Werror -I native/vendor/libogg/include \
+    tests/recording_file_test.cpp native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp build/minimp4.o native/vorbis_headers.cpp build/vorbis-headers-stb-test.o native/flac_history_core.cpp native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/ogg-framing-test.o -o build/recording-file-test
+build/recording-file-test
+
+g++ -std=c++17 -O2 -Wall -Wextra -Werror -I native/vendor/libogg/include \
+ tests/metadata_update_test.cpp native/metadata_update_core.cpp native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp build/minimp4.o native/vorbis_headers.cpp build/vorbis-headers-stb-test.o native/flac_history_core.cpp native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/ogg-framing-test.o -o build/metadata-update-test
+build/metadata-update-test
+
+# Supported AAC packets retain their configuration, timing and original bytes.
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/spac_stream_test.cpp native/spac_stream.cpp -o build/spac-stream-test
+build/spac-stream-test
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/aac_container_test.cpp native/aac_container.cpp native/image_info.cpp build/minimp4.o -o build/aac-container-test
+build/aac-container-test

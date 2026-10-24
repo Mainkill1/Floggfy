@@ -15,6 +15,8 @@ struct FlacCoverage {
     bool Frame(const FlacInfo& info,unsigned block,unsigned rate,unsigned channels,unsigned bits,unsigned number_type,uint64_t number);
     bool Complete(const FlacInfo& info) const { return info.total_samples && samples==info.total_samples; }
 };
+// Recognize bounded, monotonic LRC timestamps without accepting plain text.
+bool IsSyncedLyrics(const std::string& lyrics);
 bool CopyFlacLyrics(const std::vector<uint8_t>& source,Tags& incoming);
 enum class LyricsUpdate { Updated, Unchanged, Invalid };
 // Read comment fields without decoding audio or requiring artwork.

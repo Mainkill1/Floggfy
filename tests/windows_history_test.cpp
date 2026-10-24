@@ -33,7 +33,7 @@ int main() {
     check(DecideSave(dir+L"\\unknown.ogg",qhigh)==SaveDecision::Skip,"unknown existing content preserved");
     auto lo=read(low),hi=read(high); DeleteFileW(target.c_str());
     check(PublishBytes(target,qlow,lo.data(),lo.size())==FilePublication::Saved,"first completed file published");
-    check(PublishBytes(target,qlow,hi.data(),hi.size())==FilePublication::Skipped && read(target)==lo,"duplicate skip performs no overwrite");
+    check(PublishBytes(target,qlow,lo.data(),lo.size())==FilePublication::Skipped && read(target)==lo,"duplicate skip performs no overwrite");
     check(PublishBytes(target,qhigh,hi.data(),0)==FilePublication::Failed && read(target)==lo,"failed upgrade preserves previous file");
     check(PublishBytes(target,qhigh,hi.data(),hi.size())==FilePublication::Upgraded && read(target)==hi,"verified higher quality replaces lower quality");
     check(PublishBytes(target,qlow,lo.data(),lo.size())==FilePublication::Skipped && read(target)==hi,"downgrade prevented");

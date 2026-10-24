@@ -1,3 +1,529 @@
+## Release 1.2.4 handoff
+
+The maintainer approved merge and release after controlled use on Windows x64
+Spotify 1.3.6.1921. Release packaging uses the unchanged native/collector code at
+`dd5c24b`, plus the packaging version and bundled-license update. The installed
+DLL SHA256 is `ce3f9bf8e7cf31214229649c11f1b2e06afbfb4e490fb8e1dae54e9ea03e731b`.
+Its main-process module path, startup-ready signal, visible window and unchanged
+INI were verified after installation. That is deployment evidence; it does not
+turn the failed/unexecuted regression cases below into passing tests.
+
+Packaging verification checked that the standalone DLL and ZIP core match that
+build, the launcher matches its built executable, internal/external checksum
+manifests match, and the archive includes the shipped INI, README and all six
+bundled-library license notices. No new behavioral tests, reruns or full suites
+were executed for release. The album-artist, full directory-lookup and filename
+option runtime coverage limitations remain recorded below.
+
+Known follow-up: a discovery miss currently lists both known artist folders
+upfront; the separate optional conversion check may reread an already unnumbered
+file. Cached Song hits only check their existing file signature. The Song link
+opens the actual verified recording, including a retained legacy folder. Release
+1.2.4 does not relocate existing music or delete already-created duplicates.
+
+The sections below retain the validation state at each change's test attempt.
+
+## Album artist and contributing artists
+
+The collector and native cache previously preferred longer name lists for both
+ARTIST and ALBUMARTIST. Album artist is now an identity choice, not a completeness
+score: current explicit album artists override older cached lists, and the native
+cache only fills a missing ALBUMARTIST. Full contributing credits can still enrich
+ARTIST. Multiple explicitly reported album artists are retained by the collector.
+The production bridge honors a known Windows album artist for catalog identity,
+placement and emitted ALBUMARTIST, keeping guest performers in ARTIST. A bounded
+lookup-only legacy credit string retains discovery of the one known older folder;
+it cannot name a new file or alter tags. Request identity includes that alias.
+No punctuation conversion, library sweep, worker or metadata-rewrite policy was
+added. Existing populated file tags are not automatically replaced.
+
+Validation is **incomplete**. Exactly one `bash test-album-artists.sh` invocation
+failed (exit 1): a missing closing brace in the JavaScript fixture caused a syntax
+error before any assertions ran. The Windows executable compiled and linked with
+`-Wall -Wextra -Werror` before the Node step, but was not executed. The fixture now
+uses a separate registry declaration and a simpler object literal. No runtime
+test was rerun under the one-run limit.
+
+Independent static review approved the policy and legacy-lookup guards. The
+unexecuted JavaScript cases cover explicit/current versus longer cached album
+credits, separate ARTIST guests and multiple genuine album artists. The unexecuted
+Windows cases use the actual metadata bridge and cache merge, checking tag/catalog
+precedence, missing-field behavior, legacy-folder discovery/rename/reuse and
+Metadata=0. Storage enrichment and artwork providers are stubbed; no workers or
+live client requests are started by that executable. No full suite ran or saved
+user recordings were changed. The installed DLL remains the preceding `5d2c6cf`
+build; this policy correction has not been deployed.
+
+One final compile-only operation passed (exit 0): `node --check` for the corrected
+fixture and production collector, then `bash build-native.sh` for the DLL/launcher.
+No runtime assertions were executed by those checks. Existing vendor warnings
+remain visible. This is compilation evidence, not a passing test result.
+
+## Song cache discovery throttling
+
+The Song worker checks a matching verified path/signature before listing its
+folder. Repeated unchanged saved-song requests avoid enumeration and full audio
+reads. A changed/deleted cached file immediately falls through to directory-first
+discovery. One unavailable request/timestamp in the existing worker cache backs
+off empty or failed discoveries for five seconds. Full request identity/settings
+and publication revision changes bypass the cooldown. Explicit successful-save
+refresh still forces fresh discovery; no extra worker or directory index exists.
+
+A live conversion failure also exposed artist-folder drift: an existing numbered
+recording and a new capture had identical Spotify URI, sample count, bit depth and
+sample rate, but enriched album-artist text sent lookup/publication to a different
+folder. No user recording was renamed/deleted during inspection. A known Windows
+album artist now anchors placement separately from full Spotify artist tags. The
+one exact enriched-artist directory remains a lookup-only alias, so files already
+saved there remain discoverable and best-quality selection spans both locations.
+Each known folder is listed once, with no library sweep; conversion retains the
+selected recording's current folder and only removes the filename prefix.
+
+`bash test-directory-lookup.sh --song-cache` — **PASS**, exit 0, exactly one
+combined execution for these two findings (one allocation each). It compiled with
+`-Wall -Wextra -Werror`; vendor warnings remain unsuppressed. Real Windows TEMP
+fixtures verified zero directory/full-audio reads on unchanged positive cache
+hits, immediate changed-signature rediscovery, zero I/O during the miss cooldown,
+expiry discovery, explicit positive/negative refresh, new tracks/settings, failed
+listing backoff and stale-request rejection. Artist-folder cases renamed a legacy
+file despite richer tag artists, retained full identity tags, found and renamed
+an existing higher-quality file in the enriched-artist folder, and skipped a
+lower-quality replay rather than creating a file in the vacant stable folder.
+Each of the two exact folders was enumerated once per discovery operation.
+
+Independent static review approved both changes before the focused execution.
+The actual metadata bridge is replaced by an enrichment stub in this test; it is
+not a live Spotify metadata test. Earlier failed full directory and filename-option
+runs below remain historical: their other runtime cases were not rerun. No full
+suite ran, no user recordings were modified, and the installed DLL is unchanged.
+One standalone `bash build-native.sh` passed (exit 0), compiling the actual
+metadata bridge and producing the DLL/launcher. No additional tests or test
+reruns ran after the focused pass. Live Spotify validation of this new DLL remains
+pending; existing recordings and the installed DLL were left intact.
+
+## Directory-first recording lookup
+
+At `34218e3`, conversion checks, publication lookup and the Song worker listed
+the containing song directory once per operation and compared filenames in memory.
+The Song worker now reaches that listing only when discovery is needed, as above. The
+same short-lived list serves FLAC, Ogg and M4A and all deterministic legacy or
+collision aliases. Only listed candidates/backups are inspected. Existing best
+quality and identity rules remain; this is not a library sweep or directory cache.
+Windows case-insensitive comparison is used. Incomplete/unreadable listings and
+more than 16,384 entries block the operation rather than imply a vacancy. Final
+renames/publication retain live handle locking, identity checks and no-overwrite
+promotion. No filesystem work moved onto capture or menu callbacks.
+
+Validation is **incomplete**. Exactly one `bash test-directory-lookup.sh` execution
+failed compilation (exit 1) before runtime cases: the Windows `wmain` test entry
+point lacked an explicit return. It now returns 0. The test was not rerun.
+
+One subsequent standalone compilation check passed (exit 0): the corrected test
+source compiled with `-fsyntax-only -Wall -Wextra -Werror`, followed by
+`bash build-native.sh`, which produced the DLL and launcher. Neither step executed
+the test. Existing vendor warnings remain visible. Independent static review
+approved the directory/identity/recovery and mutation guards before the attempted
+test. No full suite, runtime fixture cases or live Spotify checks ran for this
+follow-up, and the installed Spotify DLL was not replaced.
+
+The unexecuted cases assert one listing across codec lookups, no absent-candidate
+attribute probes, best collision reuse after deletion, case-insensitive names,
+locked files, backup recovery, directory occupants, missing directories, failed or
+partial enumeration, entry bounds, Ogg/M4A prefix conversion, occupied targets,
+menu cache invalidation and preferred-format publication. They are written, not
+claimed as passing. Earlier validation below describes preceding revisions.
+
+## Configurable filename numbering and track-start conversion
+
+Added INI-only, default-off TrackNumberInFilename and ConvertNumberedFilenames.
+Numbering selects NN - Title versus Title for new files; disc information remains
+in tags. Both enabled flags are normalized to numbering on/conversion off, and the
+conversion value is persisted as 0 through the existing atomic Unicode settings
+writer. Missing keys are added without discarding unknown settings.
+
+When conversion is enabled, a playing track observation queues one coalesced
+request on the existing publication worker. Audio jobs keep their two queue slots
+and have priority. The producer does no disk I/O and invalidates older requests
+even when its try-lock loses; unchanged requests do not starve an in-flight check.
+Identity deduplication uses raw catalog fields rather than sanitized filenames.
+The check selects the best verified saved recording and converts an exact known
+old prefix. A completed-listen conversion fallback uses the same policy.
+
+The converter locks a complete owned file against writes/deletes, verifies its
+recording identity and performs a no-overwrite same-directory handle rename.
+Source/configuration permission is checked again after inspection immediately
+before the rename. Audio, tags, artwork and lyrics are not rewritten. An existing
+Latest Downloads row follows the new path without creating a download entry.
+Occupied targets, ambiguous/unowned files and lost requests do not authorize an
+overwrite or duplicate deletion.
+
+Validation status for this addition is **incomplete**:
+
+- One execution of bash test-filename-options.sh failed compilation (exit 1),
+  before any runtime cases ran. The raw-identity pointer initializer mixed const
+  and non-const string pointers; the source now uses an explicitly typed const
+  pointer array. The focused test was not rerun, respecting the one-run limit.
+- One subsequent standalone bash build-native.sh passed (exit 0), compiling the
+  corrected production source and producing the DLL/launcher. Vendor warnings
+  remain unsuppressed; the production C++ build retains -Werror.
+- Independent static review approved the corrected cancellation, identity and
+  rename guards. Static review is not runtime validation.
+
+The unexecuted regression cases cover all option combinations, startup conflict
+persistence and Unicode/unknown settings, byte-preserving FLAC/Ogg/M4A renames,
+occupied/locked/unowned sources, genuine numeric titles, legacy identity suffixes,
+track-start processing without a completed listen, lost-lock/superseding requests,
+late settings cancellation, independent audio queue capacity, recent-row remapping,
+and numbering-mode save/menu behavior. None is claimed as passing in this addition.
+Both new options ship disabled. No full suite or fuzzing ran. After installing
+the built DLL, the user explicitly enabled conversion, restarted Spotify and
+reported that it works. The installed module, startup-ready signal and configured
+option values were observed. This is a user-reported live functional check, not
+a pass of the automated regression cases or an independent before/after audio-byte
+comparison on the music library. The failed focused run remains recorded above.
+
+## Song shortcut and filename compatibility follow-up
+
+New files use the song title alone; track/disc numbers remain in tags. The shared
+bounded naming helper recognizes older numbered, disc-prefixed and suffixed names
+before choosing a new destination. Historical aliases are lookup-only: a vacancy
+at an old numbered name cannot become a new output. Existing matching recordings
+are reused in place, preserving audio-quality/identity/recovery decisions. Genuine
+different-recording collisions still preserve both recordings safely.
+
+The folder shortcut checks the three ordinary filenames before any collision
+lookup and stops at the first complete identity match. It does not invoke the
+publication resolver or choose the best audio rendition merely to open a folder.
+A normal matching file needs one complete inspection, rather than resolution plus
+a second inspection. The existing worker cache now retains at most 16 positive
+path/catalog/signature entries across track changes; it holds no audio/artwork.
+Revisits check signatures, and changed files, request settings and successful saves
+invalidate reuse. Menu callbacks remain RAM-only. An empty pending target can
+become ready during submenu preparation only for its frozen identity and settings;
+an already-bound label/target is never redirected.
+
+`bash test-song-shortcut.sh` — **PASS**, exit 0, one combined Windows executable
+execution covering both findings. No finding exceeded one execution. Assertions
+covered zero collision searches and one inspection for ordinary FLAC/Ogg/M4A,
+no additional full read on a verified song revisit, changed/missing/wrong-identity
+files, blocked storage, settings/freshness cancellation, delayed menu-target
+readiness and frozen click targets. Layout/resolver cases retained track/disc tags,
+reused numbered/disc-prefixed and old suffix names instead of allocating another
+file, and preserved unrelated same-title recordings. The existing CEF callback
+microbenchmark ran inside that same executable; it is not a measurement of real
+Spotify menu-opening latency.
+
+One standalone `bash build-native.sh` also passed. Project C++ used `-Werror`;
+existing vendor warnings remain visible. Independent static review approved the
+changes. No test rerun or full suite ran. The validation uses synthetic fixtures,
+not live Spotify CEF or a measured slow network share. First-time verification
+still reads complete audio, on its storage worker. The compatibility change does
+not bulk rename or delete existing music or automatically remove prior duplicates.
+
+## Timeline-refresh follow-up to the fourth review
+
+The observer's exact timeline equality check at `22984d0` rejected legitimate
+Position/LastUpdatedTime refreshes during the asynchronous property request.
+The guard now compares movement at the two source timestamps at normal 1x
+playback, allowing up to 250 ms of rounding difference and end clamping. It still
+requires the same app/canonical session, bounds and playback state, valid positions,
+nonregressing timestamps and no backward movement. Discontinuous jumps and wraps
+retry rather than attach potentially stale properties. This follows the Windows
+[Position/LastUpdatedTime contract](https://learn.microsoft.com/en-us/uwp/api/windows.media.control.globalsystemmediatransportcontrolssessiontimelineproperties).
+The observer thread, original observation timestamps and three-second coverage
+limit are unchanged; capture never waits on COM.
+
+`bash test-media-observer.sh` — **PASS**, exit 0, **one execution**. The focused
+Windows executable compiled production media code with `-Werror` and exercised
+the shared guard with repeated position/time changes across six simulated seconds
+while the production listen tracker remained eligible. Forward/backward seeks,
+wraps, duration/origin/status changes, paused timestamp refresh, clock regression,
+invalid positions and end clamping were covered. A genuine four-second observation
+gap still invalidated coverage. Existing injected blocked-provider, snapshot
+freshness/sequence and stop-lifetime cases also passed in that same invocation.
+Independent static review found no concrete blocker.
+
+One standalone `bash build-native.sh` execution also passed, producing the DLL and
+launcher; vendor warnings remain visible. No test rerun, full suite, live SMTC or
+Spotify playback was performed for this follow-up. The running Spotify DLL has
+not been replaced. These checks establish the guard's behavior with constructed
+timelines; real application timeline precision and session transitions still need
+live validation.
+
+## Fourth review: media I/O, preferred recordings and AAC memory
+
+Source revision `55c2be2` (documentation-only changes may follow). A dedicated
+basic-media observer owns Windows COM/WinRT calls and waits. Capture consumes
+sequenced RAM snapshots with original observation times; it never calls the
+blocking media reader. Session/timeline changes retry without publishing a false
+failure. Missing usable observations for more than three seconds still invalidate
+coverage; the change prevents a stalled observer from blocking decoder events,
+not from making unavailable coverage trustworthy. No Windows artwork provider was
+reintroduced.
+
+Preferred-format lookup now distinguishes a vacancy, a verified matching
+recording and an unsafe/blocked result. Locked FLAC/Ogg candidates and ordinary or
+suffixed `.previous` backups defer AAC publication instead of permitting a duplicate.
+The bounded resolver returns its existing-file snapshot for skip/metadata planning,
+so publication does not immediately reread the same file. Replacement still locks
+and revalidates the actual object; those safety reads are intentional. Every
+occupied deterministic collision candidate still needs inspection. There is no
+unbounded scan or new filesystem cache.
+
+SpAC extraction and M4A construction each enforce a conservative 512 MiB operation
+peak estimate before large allocations. Extraction reserves the known packet count
+and checks source, restored bytes and object overhead. Publication releases flattened
+source before muxing. Construction budgets retained capacities, the full 128 MiB
+vendor allowance, one reserved media output and metadata/table scratch, then rewrites
+only the terminal movie metadata in place. External metadata tagging keeps its
+source and budgets its required second buffer. Resource failures are distinct from
+invalid/unsupported inputs. This is an operation bound, not measured process-wide
+peak memory or an independent audio decode.
+
+Targeted command: `bash test-aac.sh <complete-spac-file> <spotify-dll>` — **PASS**,
+exit 0, **one execution total**, shared by all three review findings. No finding
+exceeded one test execution. The Windows executable covered:
+
+- A provider blocked for over 3.1 seconds while RAM-only capture-style polling
+  continued; one-time sequence consumption, stale rejection, new identities,
+  failure publication and nonblocking stop/restart lifetime.
+- Actual Windows sharing locks on FLAC, Ogg, collision suffixes and recovery
+  backups; no new M4A while uncertain, retained bytes and recovery after unlock.
+- Allocation-free peak arithmetic at the boundary and beyond it, overflow/count
+  rejection, actual resource-failure classification, preserved metadata/artwork,
+  exact compressed media/configuration/timing and unchanged no-op behavior.
+- The real HE-AACv2 source: 4,063 access units, 566,143 media bytes, 599,576-byte
+  M4A. Every output media packet matched its input byte for byte. Optional hook
+  discovery was checked against the supplied Spotify client without invoking it.
+
+Project C++ compiled with `-Werror`; existing vendor warnings were unsuppressed.
+One standalone `bash build-native.sh` execution also passed (exit 0), producing
+the production DLL and launcher. These corrections have not been installed into
+the running Spotify instance.
+No test rerun, full suite, fuzzing, independent decoder invocation or live Spotify
+playback was performed for these corrections. The media provider test uses an
+injected callback, not SMTC: real Windows session/timeline coherence and live
+transitions remain unverified on this revision. Slow storage can still occupy the
+publication worker and exhaust its bounded queue. The lookup change removes
+redundant planning reads; it does not promise cancellation of stalled file I/O.
+Earlier VLC decoding/live captures below are historical evidence for their stated
+revisions, including the documented VLC trimming variance.
+
+## Optional SpAC AAC capture
+
+`AAC=0` is the new default and the option is INI-only. Supported full SpAC AAC
+streams are captured through the existing bounded workers and remuxed as M4A
+without re-encoding. Unknown configurations, partial/seek streams and frame gaps
+are rejected. Existing matching FLAC/Ogg recordings suppress a low-quality AAC
+counterpart; complete AAC recordings can receive metadata-only updates when
+allowed. AAC VBR size differences do not authorize an audio-quality replacement.
+
+Forensic inspection of an actual low-quality playback found a complete HE-AACv2
+stream: 371 checksum-valid SpAC pages, 4,063 access units, ASC `eb8a0800`, rendered
+44,100 Hz stereo, 8,314,226 presented samples, 5,119 priming samples and 1,679 trailing
+samples. It contains no Ogg/Vorbis markers. These are actual encoded packets;
+synthetic test packets are labeled as such and are never claimed to decode.
+
+One combined `bash test-aac.sh` invocation **passed** (exit 0), exercising parser,
+M4A container/tagging, disabled-default and Downloads gates, native hook forwarding,
+complete publication, duplicates, metadata opt-out/fills, preferred FLAC retention,
+recording identity and collision names. Optional private arguments remux the
+actual captured stream and map the supplied Spotify DLL for static discovery.
+The gate does not invoke Spotify functions or play synthetic AAC packets.
+The actual stream was remuxed to a 599,576-byte M4A. Its 566,143-byte `mdat`
+payload hashes identically to the original extracted access units. A separate
+VLC/FAAD decode succeeded as HE-AACv2/SBR+PS, 44,100 Hz stereo with no decoder
+errors. VLC produced 8,314,880 PCM frames, 654 more than the 8,314,226 presented
+samples in the source/container edit timeline (about 14.8 ms). The container
+encodes source timing exactly; this check does not claim sample-exact VLC trimming
+or equality to Spotify's rendered PCM. Synthetic sentinels were not decoded.
+Vendor warnings remain visible; project C++ compiled with `-Werror`.
+The production DLL/launcher build passed. With the optional AAC setting enabled,
+Windows Spotify 1.3.6.1921 completed a live capture and published a 703,075-byte M4A
+through the normal recording pipeline. The file contains a 640 by 640 validated
+Spotify cover, 3,521 bytes of synchronized lyrics and recording-identity metadata.
+Its AAC payload still hashes identically to the independently inspected source
+access units. Queue diagnostics showed no dropped events. The private observation
+module was removed before this production replay; only the production hooks were
+loaded. This establishes one successful full AAC publication on that client,
+not support for every Spotify build/profile or independent PCM equivalence.
+No full suite has been run for this addition. Prior evidence below applies only
+to the revisions explicitly described there.
+
+## Late capture completion after a playback transition
+
+Live testing reported repeated completed-listen association failures during
+low-quality playback. The previous activity message conflated missing and
+ambiguous matches and labeled both FLAC and Ogg failures as Ogg. That historical
+log does not establish the exact cause of the reported song's failures.
+
+Static investigation found a concrete ordering race: a natural title transition
+queued the completed listen, then deleted its still-active capture before the
+final codec callback could arrive. Pending-listen candidates now survive only
+within the original ten-second completion deadline and the existing birth and
+generation bounds. Stream completeness, duration, uniqueness, epoch and integrity
+checks remain required. Skips still discard unassociated captures, and retained
+buffers are released when their listen is handled or the deadline expires.
+Failure entries now include the track, separate missing/ambiguous reasons, and
+ready/active timing and duration counts even when DebugLog is disabled.
+
+Targeted validation: `bash test-capture-association.sh` — **PASS**, one execution
+(exit status 0). Project C++ compiled with `-Werror`; the vendor parser emitted
+two unsuppressed unused-function warnings.
+The test injects decoder events and timeline observations into production capture
+and scheduling functions; it does not play Spotify or independently decode audio.
+Coverage includes late Ogg EOS/FLAC frames, normal changes and repeat-one, invalid
+or expired captures, duration mismatches, ambiguous matches, ordinary skips and
+pending-ready preservation across a later short-track transition. No full suites
+are run for this fix. Live confirmation of the reported failure remains pending.
+
+## Windows artwork fallback removal (after 96a2768)
+
+Windows thumbnail acquisition, its worker/cache, retry helper and artwork fields
+in media-session snapshots have been removed. Basic Windows track/timeline reads
+remain; Spotify is the only active external artwork source. New saves can be
+coverless. Existing artwork, synchronized lyrics and custom tags continue through
+eligible audio upgrades, even with `Metadata=0`. Metadata-only artwork fills and
+upgrades still honor `UpdateExistingMetadata=0` and preserve compressed audio.
+
+Validation for this change is limited to one targeted command:
+`bash test-artwork-policy.sh` — **PASS**, one execution, exit status 0.
+The vendor parser emitted two unsuppressed unused-function warnings; project
+C++ compiled with `-Werror`. No code changed after this execution.
+The focused Windows executable compiles/links the capture and media-session code,
+but exercises enrichment through an injected Spotify artwork-cache boundary.
+Its cases cover valid/invalid/unmatched client art, coverless FLAC/Ogg publication,
+missing/better artwork updates, opt-out and unchanged updates, and preservation
+of an existing cover, synced lyrics and custom fields in a 16-to-24-bit FLAC
+replacement without new artwork. No full suites or additional builds are run.
+
+Live Spotify capture, SMTC/WinRT track and timeline reads, real CDN fetching,
+menu behavior and interrupted-process recovery are not exercised by this test.
+Source review confirms the corresponding recording safeguards and Spotify artwork
+fetch implementation were retained; this is not a claim of live Windows coverage.
+
+All results below predate the fallback removal. The historical thumbnail-cache
+case and correction-runner issue 2 were retired with their implementation.
+
+## Historical PR #11 review corrections (through 96a2768)
+
+The original correction pass used exactly one targeted execution per issue.
+After its settings failure, a separately authorized follow-up compiled and ran
+issue 5 once more with a deterministic redundant-notification check: it passed.
+Total: seven executions, two for issue 5 and one for each other issue. No full
+suites, fuzz/stress runs or live Spotify checks ran in either pass.
+
+| Issue | Command | Executions | Result |
+| --- | --- | --- | --- |
+| 1: artwork/tag preservation during upgrades | `bash test-pr11-corrections.sh 1` | 1 | Pass (Windows) |
+| 2: asynchronous thumbnail retention | `bash test-pr11-corrections.sh 2` | 1 | Pass (Windows, injected media provider) |
+| 3: collision destination reuse | `bash test-pr11-corrections.sh 3` | 1 | Pass (Windows) |
+| 4: delayed-title/repeat reconciliation | `bash test-pr11-corrections.sh 4` | 1 | Pass (portable) |
+| 5: settings persistence failures | `bash test-pr11-corrections.sh 5` | 2 | Original cleanup assertion failed; authorized follow-up passed (Windows) |
+| 6: Vorbis setup-header validation | `bash test-pr11-corrections.sh 6` | 1 | Pass (portable) |
+
+Issue 5 reached its final cleanup assertion after the exception, denied-write,
+read-failure, retry, Unicode and unknown-section assertions succeeded. Inspection
+found that a pending notification could redundantly persist a generation already
+acknowledged by `FlushSettings`, exposing a staging file after the flush returned.
+No leftover staging file remained on later read-only inspection. The worker now
+skips already-persisted generations while retaining retries for failed generations.
+The authorized follow-up compiles the actual persistence worker and deliberately
+signals it again after a successful flush. It waits for that notification to be
+fully processed, then verifies no additional INI read occurred, file bytes remain
+unchanged, flush still succeeds and no staging file remains. All original failure,
+retry, Unicode and unknown-section checks also passed. This validates the final
+settings guard without relying only on the timing of the original failure.
+
+One standalone `bash build-native.sh` invocation built the DLL and launcher
+successfully before the targeted tests and final settings correction. The vendor
+parser emitted two unsuppressed unused-function warnings. This build therefore
+does not include the final settings edit; the follow-up Windows test compiled
+and executed that edit directly. Project C++ checks retain `-Werror`;
+no warnings were suppressed to pass a test.
+
+Coverage includes missing/invalid/inferior/better artwork; repeated custom tags
+and synchronized lyrics; unchanged incoming compressed audio, identity checks and
+locked publication; retained A artwork after B/C transitions, bounded coalescing,
+stale identities and `Metadata=0`; deletion of an ordinary collision occupant and
+reuse of its higher-quality suffix; equal/different-duration delayed titles,
+repeated cycles, seeks and observation gaps; malformed/truncated Vorbis setup,
+unsupported headers, CRC corruption and missing EOS.
+
+Windows media-session/WinRT thumbnail retrieval was not exercised against Spotify
+in this pass. Cache tests inject the provider and use actual Windows threads.
+Real SMB outages and interruption during publication were not retested. Vorbis
+validation checks supported headers separately from structural Ogg CRC/framing/EOS;
+it does not independently decode every audio packet. Unsupported headers are
+rejected conservatively and cannot authorize replacement. Audio upgrades retain
+bounded temporary old/new metadata buffers; the 512 MiB file-read limit is not
+a total process-memory limit.
+
+## Historical recording integrity and metadata-update candidate (e8ae8f8)
+
+The following results predate these corrections and were not rerun on the updated
+candidate.
+
+The unchanged `bash test-native.sh` and `bash test-native-windows.sh` commands
+pass on the combined candidate. The Windows suite also builds and tests the DLL
+and launcher. GCC 14 with `_FORTIFY_SOURCE=2`, `-O2` and `-Werror` passes the FLAC
+test that previously ignored `fread` results. No warning suppression is required.
+Independent source review found no unresolved findings after its corrections.
+
+Regression coverage includes:
+
+- Storage blocked for more than three seconds while capture queue production,
+  draining and listen observations continue; stale requests and `Menu=0` handling.
+- Complete-file and recording-identity checks, disc/name collisions, owned partial
+  recovery, conflicting writers, locked files and actual publisher process
+  termination during first saves and upgrades.
+- Repeat-one generations, seeks, delayed titles, pauses and invalidated coverage.
+- Unicode INI migration and fresh-process reload, failed migration preservation,
+  large legacy files, concurrent persistence and exception-safe lock ownership.
+- Metadata heartbeat freshness during blocked enrichment and retained rich fields.
+- Missing artwork and metadata fills for FLAC/Ogg, unchanged compressed audio,
+  preserved custom/repeated fields and padding, date/year conflicts, synchronized
+  lyrics, metadata-only race protection and unchanged second passes.
+- Existing-metadata opt-out persistence, generation changes during updates,
+  no-op bypasses, identical images, trusted client-cover upgrades, larger-cover
+  preservation and unsupported/oversized-image preservation for FLAC/Ogg.
+- Checked read failures, short reads, size changes, allocation failures, frozen
+  menu targets, reference cleanup, and the **Latest Downloads** label.
+
+Live checks used Windows x64 Spotify **1.3.6.1921** and an isolated output folder.
+Repeat-one produced a complete FLAC on the first cycle. After optional date/year,
+lyrics and artwork were removed from that test copy, the next complete cycle
+restored them without changing the compressed audio bytes. The restored FLAC
+passes independent Xiph decoding, frame CRC and STREAMINFO audio MD5 checks.
+The menu hid Latest Downloads before a save and enabled the Song folder shortcut
+only for verified saved audio; its final submenu label is Latest Downloads.
+
+On the final code candidate, a separate complete replay with
+`UpdateExistingMetadata=0` preserved the seeded existing file byte-for-byte and
+kept its modification time. Enabling the option restored missing date/year and
+lyrics and upgraded a deliberately small 1 × 1 PNG cover to the validated
+640 × 640 Spotify JPEG without changing the compressed audio.
+
+A further complete repeat preserved both file bytes and modification time,
+confirming an unchanged replay does not rewrite the file. The final enriched
+FLAC also passes independent Xiph decoding, frame CRC and supplied STREAMINFO
+MD5 checks with artwork required.
+
+The final DLL also saved a complete 320 kbps nominal, 44.1 kHz stereo Ogg
+recording (9,177,757 bytes). Independent Xiph Vorbis decoding and Ogg CRC checks
+pass. Artwork was unavailable for this song; the audio and text tags were saved
+successfully, exercising the optional-artwork path. Original DLL and INI backups
+were restored byte-for-byte after live testing. All music fixtures stayed in an
+isolated test location.
+
+Slow-storage and interrupted-publication evidence comes from controlled Windows
+fault/process tests, not a real SMB outage or killing Spotify mid-write. An
+interrupted write can leave a `.complete-*` staging file; it is never accepted as
+the final recording. Upgrade recovery may briefly leave the normal path absent
+while retaining the prior audio. Unknown/unowned files are preserved. Existing-file
+inspection uses a separate temporary buffer capped at 512 MiB per worker.
+
+
 ## Version 1.2
 
 The portable native regression suite and Windows regression/startup suite pass.

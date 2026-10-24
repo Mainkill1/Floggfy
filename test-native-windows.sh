@@ -14,6 +14,8 @@ python3 tests/create_cache_fixtures.py "$floggfy_test_root/cache-fixtures"
 mkdir -p "$floggfy_test_root/cache-users/synthetic-user/primary.ldb"
 cp "$floggfy_test_root/cache-fixtures/separate-album.ldb" "$floggfy_test_root/cache-users/synthetic-user/primary.ldb/000001.ldb"
 mkdir -p build/windows-tests
+x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vendor/minimp4/minimp4.c -o build/windows-tests/minimp4.o
+x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vorbis_headers_stb.c -o build/windows-tests/vorbis-headers-stb.o
 python3 - <<'PY'
 from pathlib import Path
 script='window.__floggfyNative=true;\n'+Path('native/metadata_collector.js').read_text()
@@ -23,10 +25,12 @@ for source in buffer hook trampoline hde/hde64; do
     x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c \
         "native/vendor/minhook/src/$source.c" -o "build/windows-tests/minhook-${source//\//-}.o"
 done
+x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/windows-tests/history-ogg.o
 common=(-std=c++17 -O2 -Wall -Wextra -Werror -static-libgcc -static-libstdc++)
-x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_history_test.cpp \
- native/existing_quality.cpp native/file_publication.cpp native/history_settings.cpp \
- native/async_log.cpp native/library_layout.cpp native/ogg_history_core.cpp \
+x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_history_test.cpp \
+ native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp build/windows-tests/minimp4.o native/vorbis_headers.cpp build/windows-tests/vorbis-headers-stb.o native/existing_quality.cpp native/file_publication.cpp native/metadata_update_core.cpp native/history_settings.cpp \
+ native/async_log.cpp native/library_layout.cpp native/ogg_history_core.cpp native/image_info.cpp \
+ native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp build/windows-tests/history-ogg.o \
  -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-history-test.exe"
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_log_test.cpp native/async_log.cpp \
  native/history_settings.cpp -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-log-test.exe"
@@ -48,13 +52,13 @@ x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/ve
 quality_sources=(native/playback_quality.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/windows-tests/ogg-framing.o)
 x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/playback_quality_test.cpp "${quality_sources[@]}" -o "$floggfy_test_root/playback-quality-test.exe"
 "$floggfy_test_root/playback-quality-test.exe"
-x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_menu_quality_test.cpp native/song_destination.cpp native/library_layout.cpp "${quality_sources[@]}" native/history_settings.cpp native/async_log.cpp build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-menu-quality-test.exe"
+x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_menu_quality_test.cpp native/library_layout.cpp "${quality_sources[@]}" native/history_settings.cpp native/async_log.cpp build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-menu-quality-test.exe"
 "$floggfy_test_root/windows-menu-quality-test.exe"
 
-x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_quality_observer_test.cpp native/playback_quality_windows.cpp "${quality_sources[@]}" native/media_session.cpp native/library_layout.cpp native/existing_quality.cpp native/file_publication.cpp native/lyrics_update.cpp native/recent_downloads.cpp native/song_destination.cpp native/spotify_hook_discovery.cpp native/history_settings.cpp native/async_log.cpp build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_test_root/windows-quality-observer-test.exe"
+x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_quality_observer_test.cpp native/playback_quality_windows.cpp "${quality_sources[@]}" native/media_session.cpp native/library_layout.cpp native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp build/windows-tests/minimp4.o native/vorbis_headers.cpp build/windows-tests/vorbis-headers-stb.o native/existing_quality.cpp native/file_publication.cpp native/lyrics_update.cpp native/metadata_update_core.cpp native/metadata_update_windows.cpp native/recent_downloads.cpp native/song_destination.cpp native/spotify_hook_discovery.cpp native/history_settings.cpp native/async_log.cpp build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_test_root/windows-quality-observer-test.exe"
 "$floggfy_test_root/windows-quality-observer-test.exe"
 
-x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_lyrics_update_test.cpp native/lyrics_update.cpp "${quality_sources[@]}" native/history_settings.cpp native/async_log.cpp -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-lyrics-update-test.exe"
+x86_64-w64-mingw32-g++ "${common[@]}" -DFLOGGFY_PUBLICATION_TEST -I native/vendor/libogg/include tests/windows_lyrics_update_test.cpp native/lyrics_update.cpp native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp build/windows-tests/minimp4.o native/vorbis_headers.cpp build/windows-tests/vorbis-headers-stb.o native/existing_quality.cpp native/file_publication.cpp native/metadata_update_core.cpp native/library_layout.cpp "${quality_sources[@]}" native/history_settings.cpp native/async_log.cpp -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-lyrics-update-test.exe"
 "$floggfy_test_root/windows-lyrics-update-test.exe"
 
 # Synthetic host preloads System32 VERSION.dll before its entry point.
@@ -82,18 +86,59 @@ x86_64-w64-mingw32-g++ "${common[@]}" tests/album_artwork_test.cpp native/album_
 floggfy_settings_test_root="$floggfy_test_root/settings-defaults"
 mkdir -p "$floggfy_settings_test_root"
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_settings_test.cpp -lole32 -luuid -lshell32 -o "$floggfy_settings_test_root/windows-settings-test.exe"
-for scenario in new missing zero legacy-zero lyrics-zero; do
+for scenario in new missing zero legacy-zero lyrics-zero updates-zero aac-one; do
     "$floggfy_settings_test_root/windows-settings-test.exe" "$scenario"
 done
 
-x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_artwork_enrichment_test.cpp \
- native/rich_metadata.cpp native/cached_metadata.cpp native/cached_metadata_windows.cpp native/history_settings.cpp native/async_log.cpp \
- native/media_session.cpp native/image_info.cpp native/playback_quality_windows.cpp native/playback_quality.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/windows-tests/metadata-ogg.o build/windows-tests/minhook-*.o \
- -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_test_root/windows-artwork-enrichment-test.exe"
-"$floggfy_test_root/windows-artwork-enrichment-test.exe"
+bash test-artwork-policy.sh
 
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_recent_downloads_test.cpp native/recent_downloads.cpp -o "$floggfy_test_root/windows-recent-downloads-test.exe"
 "$floggfy_test_root/windows-recent-downloads-test.exe"
 
-x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_song_destination_test.cpp native/library_layout.cpp native/history_settings.cpp native/async_log.cpp -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-song-destination-test.exe"
+x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_song_destination_test.cpp native/library_layout.cpp native/existing_quality.cpp native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp build/windows-tests/minimp4.o native/vorbis_headers.cpp build/windows-tests/vorbis-headers-stb.o "${quality_sources[@]}" native/history_settings.cpp native/async_log.cpp -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-song-destination-test.exe"
 "$floggfy_test_root/windows-song-destination-test.exe"
+
+# Unicode persistence is checked in a fresh child process, including migration.
+x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_settings_unicode_test.cpp -lole32 -luuid -lshell32 -o "$floggfy_settings_test_root/windows-settings-unicode-test.exe"
+"$floggfy_settings_test_root/windows-settings-unicode-test.exe"
+
+# Deliberately blocked enrichment must not delay the metadata heartbeat.
+x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_metadata_liveness_test.cpp \
+ native/rich_metadata.cpp native/cached_metadata.cpp native/history_settings.cpp native/async_log.cpp \
+ native/media_session.cpp native/image_info.cpp native/playback_quality_windows.cpp native/playback_quality.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/windows-tests/metadata-ogg.o build/windows-tests/minhook-*.o \
+ -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_test_root/windows-metadata-liveness-test.exe"
+"$floggfy_test_root/windows-metadata-liveness-test.exe"
+
+# Publication tests include real process termination and conflicting path races.
+x86_64-w64-mingw32-g++ "${common[@]}" -municode -DFLOGGFY_PUBLICATION_TEST -I native/vendor/libogg/include \
+ tests/windows_publication_test.cpp native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp build/windows-tests/minimp4.o native/vorbis_headers.cpp build/windows-tests/vorbis-headers-stb.o native/existing_quality.cpp native/file_publication.cpp native/metadata_update_core.cpp native/library_layout.cpp "${quality_sources[@]}" -o "$floggfy_test_root/windows-publication-test.exe"
+"$floggfy_test_root/windows-publication-test.exe"
+
+# Metadata fills work for existing FLAC and Ogg without publishing new audio.
+x86_64-w64-mingw32-g++ "${common[@]}" -DFLOGGFY_PUBLICATION_TEST -I native/vendor/libogg/include \
+ tests/windows_metadata_update_test.cpp native/metadata_update_windows.cpp native/metadata_update_core.cpp native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp build/windows-tests/minimp4.o native/vorbis_headers.cpp build/windows-tests/vorbis-headers-stb.o native/existing_quality.cpp native/file_publication.cpp native/library_layout.cpp "${quality_sources[@]}" native/history_settings.cpp native/async_log.cpp \
+ -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-metadata-update-test.exe"
+"$floggfy_test_root/windows-metadata-update-test.exe"
+
+# Storage failure returns an error without dereferencing a failed file mapping.
+x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include \
+ tests/windows_recording_read_test.cpp native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp build/windows-tests/minimp4.o native/vorbis_headers.cpp build/windows-tests/vorbis-headers-stb.o native/library_layout.cpp "${quality_sources[@]}" native/history_settings.cpp native/async_log.cpp \
+ -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-recording-read-test.exe"
+"$floggfy_test_root/windows-recording-read-test.exe"
+
+# Focused correction regressions also remain part of the normal Windows suite.
+for issue in 1 3 5; do
+    bash test-pr11-corrections.sh "$issue"
+done
+
+# Optional AAC capture and Windows publication are exercised in one executable.
+bash test-aac.sh
+
+# Naming configuration and atomic conversion share one focused integration gate.
+bash test-filename-options.sh
+
+# Directory enumeration bounds and one-list reuse across all codec/name checks.
+bash test-directory-lookup.sh
+
+# Album-artist precedence remains separate from guest/contributing credits.
+bash test-album-artists.sh

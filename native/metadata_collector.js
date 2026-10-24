@@ -105,7 +105,7 @@
  function artists(v){return entries(Array.isArray(v)?v:own(v,'items'),32).map(x=>text(x)||text(own(x,'name'))||text(own(own(x,'profile'),'name'))).filter(Boolean);}
  function indexed(m,key){const names=[];const first=text(own(m,key));if(first)names.push(first);for(let i=1;i<32;i++){const n=text(own(m,key+':'+i)||own(m,key+'_'+i));if(n&&!names.includes(n))names.push(n);}return names;}
  function putArtists(data,tag,names){if(names.length&&(!data[tag]||names.length>=data[tag].split('; ').length))data[tag]=[...new Set(names)].join('; ');}
- function merge(data,source){
+ function merge(data,source,currentItem=false){
   if(!object(source))return;
   const m=own(source,'metadata')||source,album=own(source,'album')||{},date=own(album,'date');
   let release=text(own(m,'release_date'))||text(own(m,'album_release_date'))||text(own(source,'release_date'))||text(own(own(source,'releaseDate'),'isoString'))||text(own(own(album,'releaseDate'),'isoString'));
@@ -119,7 +119,11 @@
   const names=artists(own(source,'artists')||own(m,'artists')||own(source,'artist'));
   putArtists(data,'ARTIST',names.length?names:indexed(m,'artist_name'));
   const albumNames=artists(own(album,'artists')||own(album,'artist'));
-  putArtists(data,'ALBUMARTIST',albumNames.length?albumNames:indexed(m,'album_artist_name'));
+  const explicitAlbumNames=indexed(m,'album_artist_name');
+  const albumCredits=currentItem&&explicitAlbumNames.length?explicitAlbumNames:albumNames.length?albumNames:explicitAlbumNames;
+  // More track/guest credits do not make an album artist more accurate. The
+  // current item's explicit album artist wins over older cached album lists.
+  if(albumCredits.length&&(currentItem||!data.ALBUMARTIST))data.ALBUMARTIST=[...new Set(albumCredits)].join('; ');
   const label=text(own(m,'album_label')||own(m,'label')||own(source,'label')||own(album,'label'));
   if(label&&label.length<=4096){data.LABEL=label;data.ORGANIZATION=label;}
   const genres=list(own(m,'genre')||own(m,'genres')||own(source,'genres')||own(album,'genres')||own(album,'genre'));
@@ -203,7 +207,7 @@
    const fetched=serviceCache.get(uri);
    if(fetched){merge(data,fetched.metadata.data);merge(data,fetched.album.data);if(options().lyrics!==false)merge(data,fetched.lyrics.data);}
    for(const record of records)cached(data,record);
-   merge(data,item); // Current playback snapshot wins over older cached data.
+   merge(data,item,true); // Current playback snapshot wins over older cached data.
    if(options().lyrics===false)delete data.LYRICS;
    const encode=()=>Object.entries(data).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&');
    let payload=encode();if(payload.length>131072){delete data.LYRICS;payload=encode();}

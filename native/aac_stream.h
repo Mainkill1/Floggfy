@@ -1,0 +1,69 @@
+#pragma once
+#include "ogg_tags.h"
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+namespace history {
+// SpAC timing describes rendered samples, including HE-AAC rate expansion.
+// Preserve the exact decoder configuration; never synthesize ADTS headers.
+struct AacInfo {
+    uint32_t rate=0,channels=0,samples_per_packet=0,priming=0,total_samples=0;
+    std::vector<uint8_t> config;
+};
+enum class AacParse { NeedMore,Complete,Invalid,Unsupported };
+class SpacStream {
+    std::vector<uint8_t> pending_;
+    uint64_t frames_=0,audio_bytes_=0;
+    bool configured_=false,complete_=false,failed_=false;
+    AacParse failure_=AacParse::Invalid;
+    AacParse ParsePage(const uint8_t* page,size_t size,
+                       std::vector<std::vector<uint8_t>>* packets);
+public:
+    AacInfo info;
+    // Holds at most one bounded partial page; no file or decoder operations.
+    AacParse Push(const uint8_t* bytes,size_t size);
+    double Duration() const {return info.rate?double(info.total_samples)/info.rate:0;}
+    bool Complete() const {return complete_&&!failed_;}
+    size_t MemoryUsage() const {return pending_.capacity()+info.config.capacity();}
+    friend bool ReadSpac(const std::vector<uint8_t>&,AacInfo&,
+                         std::vector<std::vector<uint8_t>>&,std::string&);
+};
+// Publication-only extraction, bounded to a complete supported SpAC stream.
+bool ReadSpac(const std::vector<uint8_t>& source,AacInfo& info,
+              std::vector<std::vector<uint8_t>>& packets,std::string& error);
+struct AacFile {
+    AacInfo info;
+    Tags tags;
+    uint64_t audio_bytes=0;
+    bool complete=false,has_artwork=false,artwork_edit_safe=true;
+    std::vector<std::vector<uint8_t>> covers;
+};
+// Per-operation peak allowance, independent of the capture/file-size limits.
+inline constexpr uint64_t AacConstructionMemoryLimit=uint64_t{512}<<20;
+// Includes both retained source and extracted packets. Implemented by SpAC.
+bool AacExtractionFitsBudget(size_t source_capacity,size_t source_size,size_t packet_count);
+struct AacMemoryPlan {
+    uint64_t peak_bytes=0,output_capacity=0;
+};
+// Allocation-free estimate. retained_input_bytes includes all caller-owned AU,
+// vector/string capacities and object/allocation overhead; metadata_bytes is
+// the raw key/value/cover byte total. The result also reserves the entire
+// 128 MiB vendor budget and conservative metadata/table reconstruction scratch.
+// False leaves plan empty. These are memory limits, not codec-validity checks.
+bool EstimateAacConstructionMemory(uint64_t packet_count,uint64_t packet_bytes,
+    uint64_t retained_input_bytes,uint64_t metadata_bytes,uint64_t metadata_fields,
+    AacMemoryPlan& plan) noexcept;
+enum class AacWriteFailure { None,InvalidOrUnsupported,ResourceLimit };
+// Remux original access units into M4A, including known source priming/trimming.
+// Clears/releases an old output before construction; output cannot alias input.
+bool MakeAacM4a(const AacInfo&,const std::vector<std::vector<uint8_t>>& packets,
+               const Tags&,std::vector<uint8_t>& output,std::string& error,
+               AacWriteFailure* failure=nullptr);
+// Strict bounded container/header inspection, not an independent AAC decode.
+bool InspectAacM4a(const uint8_t* source,size_t size,AacFile& out);
+// Preserve compressed media and unknown metadata; apply only supplied tag deltas.
+bool TagAacM4a(const std::vector<uint8_t>& source,const Tags& tags,
+              std::vector<uint8_t>& output,std::string& error,
+              AacWriteFailure* failure=nullptr);
+}

@@ -7,6 +7,12 @@
 #include <string>
 #include <vector>
 #include <cassert>
+#include <new>
+static thread_local bool fail_menu_allocation=false;
+static bool fail_recent_placeholder=false;
+void* operator new(std::size_t n){if(fail_menu_allocation){fail_menu_allocation=false;throw std::bad_alloc();}if(auto p=HeapAlloc(GetProcessHeap(),0,n?n:1))return p;throw std::bad_alloc();}
+void operator delete(void* p) noexcept {if(p)HeapFree(GetProcessHeap(),0,p);}
+void operator delete(void* p,std::size_t) noexcept {if(p)HeapFree(GetProcessHeap(),0,p);}
 static unsigned capability_queries=0;
 static SIZE_T CountQuery(LPCVOID p,PMEMORY_BASIC_INFORMATION m,SIZE_T n) {
   ++capability_queries;return VirtualQuery(p,m,n);
@@ -166,6 +172,7 @@ static Menu *AddChild(Menu *m, int id, const String *s) {
   Init(*M(m).child);
   M(m).child->submenu = true;
   Retain(&M(m).child->api.base);
+  if(id==recent_id&&fail_recent_placeholder){fail_recent_placeholder=false;fail_menu_allocation=true;}
   return &M(m).child->api;
 }
 static void Init(Model &model) {
@@ -201,7 +208,11 @@ static void OriginalCommand(Delegate *, Menu *menu, int, int) {
 static int format_calls=0;
 static int OriginalFormat(Delegate*,Menu* menu,String*) {++format_calls;ReleaseMenu(menu);return 0;}
 static int ReleaseDelegate(Base *) { return 0; }
+#ifdef FLOGGFY_SONG_SHORTCUT_TEST
+int RunMenuQualityTests() {
+#else
 int main() {
+#endif
   assert(menu_init.TryBegin(GetTickCount64()));menu_prepared=true;
   FinishMenuStartup(false,false);
   assert(menu_init.State()==hooks::InitState::RetryableFailure);
@@ -222,6 +233,12 @@ int main() {
   ReleaseSRWLockExclusive(&history::snapshot_lock);
   history::updated = GetTickCount64() - 4000;
   assert(history::ReadPlaybackQuality().rate == 0); // Stale worker snapshots are not current.
+  Model failed_population;Init(failed_population);
+  failed_population.entries={{1,5,L"First"},{2,5,L"Second"},{3,5,L"Third"}};
+  fail_recent_placeholder=true;bool allocation_threw=false;
+  try {Populate(&failed_population.api);}catch(const std::bad_alloc&){allocation_threw=true;}
+  assert(allocation_threw&&failed_population.child&&failed_population.child->child);
+  assert(failed_population.child->refs==1&&failed_population.child->child->refs==1);
   Model root;
   Init(root);
   root.entries = {{1, 5, L"First"}, {2, 5, L"Second"}, {3, 5, L"Third"}};
@@ -236,7 +253,7 @@ int main() {
   assert(root.child);
   auto &child = *root.child;
   assert(Index(&child.api,28490)==Index(&child.api,location_id)+1);
-  assert(child.entries[Index(&child.api,28490)].label==L"Latest Downloads >");
+  assert(child.entries[Index(&child.api,28490)].label==L"Latest Downloads");
   assert(!child.entries[Index(&child.api,recent_id)].visible);
   assert(child.child && child.child->refs==1);
   assert(!child.child->entries[0].enabled);
@@ -358,9 +375,31 @@ int main() {
   Retain(&child.api.base);Execute(&wrapped.api,&child.api,song_id,0);
   assert(filesystem_calls==fs_before_disabled_click && folder_creations==0 && folder_opens==0);
   SetSongFile(actual.identity,history::OutputPath(L"C:\\Saved",destination_catalog,L".flac",false));
+  // The parent already froze this label while its destination check was
+  // pending. Opening the child can pick up its now-ready RAM result.
+  published_song_generation=history::GetSettings().generation+1;
+  Retain(&child.api.base);WillShow(&wrapped.api,&child.api);
+  assert(!child.entries[Index(&child.api,song_id)].enabled);
+  SetSongFile(actual.identity+99,L"C:\\Other\\wrong.flac");
+  Retain(&child.api.base);WillShow(&wrapped.api,&child.api);
+  assert(!child.entries[Index(&child.api,song_id)].enabled);
+  SetSongFile(actual.identity,history::OutputPath(L"C:\\Saved",destination_catalog,L".flac",false));
+  const auto same_label=child.entries[Index(&child.api,song_id)].label;
+  Retain(&child.api.base);WillShow(&wrapped.api,&child.api);
+  assert(child.entries[Index(&child.api,song_id)].enabled&&child.entries[Index(&child.api,song_id)].label==same_label);
   build_root();
   assert(child.entries[Index(&child.api,song_id)].visible && child.entries[Index(&child.api,song_id)].enabled);
   assert(folder_creations==0 && folder_opens==0);
+  // Parent formatting starts an opening snapshot. A renderer update between
+  // parent and Song formatting must not redirect that opening's label or target.
+  auto before_show=actual;before_show.identity+=77;before_show.title.fill(0);std::copy_n(L"Before show",11,before_show.title.begin());
+  history::PublishClientPlaybackQuality(before_show);history::PublishPlaybackQuality(before_show);
+  SetSongFile(before_show.identity,L"C:\\Changed-before-show\\song.flac");
+  old_label=L"Song: Unavailable";rendered=Text(old_label);
+  Retain(&child.api.base);Format(&wrapped.api,&child.api,&rendered);
+  assert(std::wstring(rendered.str,rendered.length)==L"Song: Next");rendered.dtor(rendered.str);
+  history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
+  SetSongFile(actual.identity,history::OutputPath(L"C:\\Saved",destination_catalog,L".flac",false));
   assert(!child.entries[Index(&child.api,recent_id)].visible);
   published_recent={{L"Newest song",L"C:\\Music\\newest.flac",42},
                     {L"Earlier song",L"C:\\Music\\earlier.ogg",17}};
@@ -371,14 +410,14 @@ int main() {
   assert(recent.entries[1].label==L"Earlier song" && recent.entries[1].id==first_recent_id+1);
   assert(recent.refs==1 && filesystem_calls==0 && shell_calls==0);
   Retain(&root.api.base);WillShow(&wrapped.api,&root.api);
-  assert(wrapped.recent_open && root.refs==1);
+  assert(wrapped.opening.Visible() && root.refs==1);
   const auto reads_while_open=recent_reads;
   published_recent={{L"Arrived while menu open",L"C:\\Music\\different.flac",8}};
   build_root();assert(recent_reads==reads_while_open && recent.entries[0].label==L"Newest song");
   Retain(&recent.api.base);Execute(&wrapped.api,&recent.api,first_recent_id,0);
   assert(selected_path==L"C:\\Music\\newest.flac" && shell_calls==1 && recent.refs==1);
   Retain(&root.api.base);Closed(&wrapped.api,&root.api);
-  assert(!wrapped.recent_open && root.refs==1);
+  assert(!wrapped.opening.Visible() && root.refs==1);
   recent_ready=false;build_root();
   assert(recent.entries.size()==2 && recent.entries[0].label==L"Newest song");
   Retain(&recent.api.base);Execute(&wrapped.api,&recent.api,first_recent_id+1,0);
@@ -414,9 +453,9 @@ int main() {
   assert(recent.entries[1].label==std::wstring(94,L'界')+L"\u2026");
   assert(recent.entries[2].label==intact_pair.substr(0,95)+L"\u2026");
   assert(recent.entries[3].label==std::wstring(190,L'&')+L"\u2026");
-  assert(recent.entries[4].label==L"Untitled download" && wrapped.recent[4].title.empty());
+  assert(recent.entries[4].label==L"Untitled download" && wrapped.opening.snapshot.recent[4].title.empty());
   assert(recent.entries[5].label==split_pair.substr(0,96));
-  assert(wrapped.recent[0].title==unsafe_title && wrapped.recent[1].title==split_pair);
+  assert(wrapped.opening.snapshot.recent[0].title==unsafe_title && wrapped.opening.snapshot.recent[1].title==split_pair);
   assert(filesystem_calls==fs_before_labels && shell_calls==4 && recent.refs==1);
   Retain(&recent.api.base);Execute(&wrapped.api,&recent.api,first_recent_id,0);
   assert(selected_path==L"C:\\Music\\escaped.flac" && shell_calls==5 && recent.refs==1);
@@ -571,4 +610,5 @@ int main() {
   std::puts("PASS: Song requires saved audio, rechecks deleted files/folders on click, never creates folders and preserves frozen targets");
   std::puts("PASS: bottom technical quality rows, independent codec display, duplicate-free "
             "refresh and disabled-command ownership");
+  return 0;
 }
