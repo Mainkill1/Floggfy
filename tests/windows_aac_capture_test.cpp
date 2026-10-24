@@ -92,6 +92,17 @@ void TestPipeline(const std::wstring& root) {
         GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES);
     CloseHandle(locked);
     assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped&&Read(flac)==high&&GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES);
+    // Interrupted-upgrade backups retain the same uncertainty guarantee. Check
+    // both ordinary and deterministic suffixed backup names.
+    const auto backup=flac+L".previous";
+    assert(MoveFileW(flac.c_str(),backup.c_str()));
+    locked=CreateFileW(backup.c_str(),GENERIC_READ,0,nullptr,OPEN_EXISTING,0,nullptr);
+    assert(locked!=INVALID_HANDLE_VALUE);
+    assert(Publish(*capture,heard,CaptureEpoch())==Publication::Failed &&
+        GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES);
+    CloseHandle(locked);
+    assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped && Read(flac)==high &&
+        GetFileAttributesW(backup.c_str())==INVALID_FILE_ATTRIBUTES);
     assert(DeleteFileW(flac.c_str()));
     auto unrelated_tags=tags;
     for(auto& field:unrelated_tags.fields)if(field.first=="SPOTIFY_URI")field.second="spotify:track:other";
@@ -101,6 +112,13 @@ void TestPipeline(const std::wstring& root) {
     assert(flac_suffix.state==RecordingDestinationState::Vacant && flac_suffix.path!=flac);
     Write(flac_suffix.path,high);assert(DeleteFileW(flac.c_str()));
     locked=CreateFileW(flac_suffix.path.c_str(),GENERIC_READ,0,nullptr,OPEN_EXISTING,0,nullptr);
+    assert(locked!=INVALID_HANDLE_VALUE);
+    assert(Publish(*capture,heard,CaptureEpoch())==Publication::Failed &&
+        GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES);
+    CloseHandle(locked);
+    const auto suffix_backup=flac_suffix.path+L".previous";
+    assert(MoveFileW(flac_suffix.path.c_str(),suffix_backup.c_str()));
+    locked=CreateFileW(suffix_backup.c_str(),GENERIC_READ,0,nullptr,OPEN_EXISTING,0,nullptr);
     assert(locked!=INVALID_HANDLE_VALUE);
     assert(Publish(*capture,heard,CaptureEpoch())==Publication::Failed &&
         GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES);

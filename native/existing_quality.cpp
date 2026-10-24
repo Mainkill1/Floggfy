@@ -146,19 +146,32 @@ RecordingDestination ResolveRecordingDestination(const std::wstring& base,const 
     if(unreadable) return {};
     // Only recover backups if no complete candidate already exists. Avoid
     // restoring an obsolete ordinary filename beside a retained suffix.
+    bool restore_reserved=false;
     for(const auto& path:candidates) {
-        if(!RecoverRecording(path,catalog))continue;
+        const auto backup=path+L".previous";
+        if(Missing(backup))continue;
+        RecordingFile retained;
+        const auto result=InspectRecordingFile(backup,retained);
+        if(result==RecordingRead::ReadError) {
+            if(!Missing(backup))return {};
+            continue;
+        }
+        if(result==RecordingRead::InvalidContainer || !retained.owned || !MatchesRecording(retained,catalog))continue;
+        if(!Missing(path)) {
+            if(path==base)restore_reserved=true;
+            else return {}; // Retained suffix backup needs recovery, not a duplicate.
+            continue;
+        }
+        if(!RestoreBackup(backup,path,catalog))return {};
         RecordingFile restored;
-        if(ReadRecording(path,restored) && MatchesRecording(restored,catalog)) {
+        if(ReadRecording(path,restored) && restored.owned && MatchesRecording(restored,catalog)) {
             if(restored.complete)return {RecordingDestinationState::Existing,path,std::move(restored)};
             if(restored.owned && repairable.empty()) {repairable=path;repairable_recording=std::move(restored);}
-        }
+        } else return {};
     }
     if(!repairable.empty()) return {RecordingDestinationState::Existing,std::move(repairable),std::move(repairable_recording)};
 
-    RecordingFile reserved;
     const auto backup=base+L".previous";
-    bool restore_reserved=ReadRecording(backup,reserved) && reserved.owned && MatchesRecording(reserved,catalog);
     if(restore_reserved) {
         // A raced ordinary destination can leave its verified old object in
         // .previous. Recover beside the raced file without overwriting it.

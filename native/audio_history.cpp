@@ -401,10 +401,13 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     const auto& inspected=resolved.recording;
     // These are planning decisions, not write authorization. PublishBytes
     // revalidates under its existing handle reservation before any replacement.
-    const auto decision=preferred?SaveDecision::Skip:
-        resolved.state==RecordingDestinationState::Vacant?SaveDecision::NewFile:
-        inspected.owned && (!inspected.complete || HigherQuality(quality,inspected.quality))
-            ?SaveDecision::Upgrade:SaveDecision::Skip;
+    auto decision=SaveDecision::NewFile;
+    if(preferred || resolved.state==RecordingDestinationState::Existing) {
+        decision=SaveDecision::Skip;
+        if(!preferred && inspected.owned &&
+           (!inspected.complete || HigherQuality(quality,inspected.quality)))
+            decision=SaveDecision::Upgrade;
+    }
     if(decision==SaveDecision::Skip) {
         // An audio duplicate may still have missing metadata. Update only a
         // verified matching recording; this never adds a Latest Downloads entry.
