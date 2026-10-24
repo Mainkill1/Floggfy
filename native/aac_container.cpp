@@ -7,6 +7,8 @@
 #include <iterator>
 #include <set>
 #include <utility>
+#include <new>
+#include <stdexcept>
 extern "C" int floggfy_mp4_begin(void);
 extern "C" void floggfy_mp4_end(void);
 namespace history {
@@ -19,8 +21,41 @@ constexpr uint32_t Code(char a,char b,char c,char d) {
 }
 constexpr uint32_t moov=Code('m','o','o','v'),trak=Code('t','r','a','k'),udta=Code('u','d','t','a');
 constexpr uint32_t meta=Code('m','e','t','a'),ilst=Code('i','l','s','t'),covr=Code('c','o','v','r');
-[[noreturn]] void Bad(){throw "unsupported or invalid M4A container";}
+struct InvalidFailure {};
+struct ResourceFailure { const char* reason; };
+[[noreturn]] void Bad(){throw InvalidFailure{};}
 void Need(bool value){if(!value)Bad();}
+void Resource(bool value,const char* reason){if(!value)throw ResourceFailure{reason};}
+constexpr uint64_t vendor_memory=uint64_t{128}<<20,scratch_base=uint64_t{8}<<20;
+constexpr uint64_t allocation_overhead=32;
+// Every charge is checked before arithmetic; a rejected estimate allocates nothing.
+bool Charge(uint64_t& total,uint64_t count,uint64_t each=1) noexcept {
+    if(total>AacConstructionMemoryLimit||count>(AacConstructionMemoryLimit-total)/each)return false;
+    total+=count*each;return true;
+}
+void AddCharge(uint64_t& total,uint64_t count,uint64_t each=1){
+    Resource(Charge(total,count,each),"AAC resource limit: retained input or construction peak exceeds 512 MiB");
+}
+uint64_t MetadataBound(uint64_t bytes,uint64_t fields){
+    Resource(bytes<=metadata_limit&&fields<=65536,"AAC resource limit: metadata exceeds supported budget");
+    uint64_t bound=4096;AddCharge(bound,bytes);AddCharge(bound,fields,128);return bound;
+}
+struct TagMemory {uint64_t retained=sizeof(Tags),bytes=0,fields=0;};
+TagMemory MeasureTags(const Tags& tags){
+    TagMemory out;out.fields=tags.fields.size();
+    Resource(out.fields<=65536&&tags.cover.size()<=4u*1024u*1024u,"AAC resource limit: metadata exceeds supported budget");
+    AddCharge(out.retained,tags.fields.capacity(),sizeof(tags.fields[0]));
+    AddCharge(out.retained,tags.cover.capacity());AddCharge(out.retained,tags.mime.capacity());
+    AddCharge(out.retained,2,allocation_overhead);AddCharge(out.bytes,tags.cover.size());
+    for(const auto& field:tags.fields){
+        Need(field.first.size()<=255);
+        AddCharge(out.bytes,field.first.size());AddCharge(out.bytes,field.second.size());
+        AddCharge(out.retained,field.first.capacity());AddCharge(out.retained,field.second.capacity());
+        AddCharge(out.retained,2,allocation_overhead);
+    }
+    Resource(out.bytes<=metadata_limit,"AAC resource limit: metadata exceeds supported budget");
+    return out;
+}
 uint16_t U16(const uint8_t* p){return uint16_t((uint16_t(p[0])<<8)|p[1]);}
 uint32_t U32(const uint8_t* p){return (uint32_t(p[0])<<24)|(uint32_t(p[1])<<16)|(uint32_t(p[2])<<8)|p[3];}
 uint64_t U64(const uint8_t* p){return (uint64_t(U32(p))<<32)|U32(p+4);}
@@ -29,7 +64,7 @@ void Add(Bytes& b,const uint8_t* p,size_t n){Need(b.size()<=file_limit&&n<=file_
 void Add(Bytes& b,const Bytes& more){Add(b,more.data(),more.size());}
 void N32(Bytes& b,uint32_t n){for(unsigned i=0;i<4;++i)b.push_back(uint8_t(n>>(24-i*8)));}
 void N16(Bytes& b,uint16_t n){b.push_back(uint8_t(n>>8));b.push_back(uint8_t(n));}
-Bytes Boxed(uint32_t kind,const Bytes& payload){Need(payload.size()<=file_limit-8);Bytes b;N32(b,uint32_t(payload.size()+8));N32(b,kind);Add(b,payload);return b;}
+Bytes Boxed(uint32_t kind,const Bytes& payload){Need(payload.size()<=file_limit-8);Bytes b;b.reserve(payload.size()+8);N32(b,uint32_t(payload.size()+8));N32(b,kind);Add(b,payload);return b;}
 struct Box {size_t at=0,size=0,header=0;uint32_t kind=0;size_t Body()const{return at+header;}size_t End()const{return at+size;}};
 std::vector<Box> Boxes(const uint8_t* b,size_t first,size_t end){
     std::vector<Box> result;
@@ -145,6 +180,33 @@ Metadata ReadTags(const uint8_t* b,const Box& movie,AacFile& file){
     }
     return result;
 }
+// Validate the top-level byte ranges without building a box vector. This runs
+// before inspection/rewrite allocations so opaque, huge moov payloads cannot
+// evade the construction-memory policy.
+Box TerminalMovie(const uint8_t* source,size_t size){
+    Need(source&&size>=8);
+    Resource(size<=file_limit,"AAC resource limit: file exceeds 512 MiB");
+    Box movie;size_t at=0,count=0;
+    while(at<size){
+        Need(size-at>=8&&count++<65536);
+        uint64_t bytes=U32(source+at);size_t header=8;
+        if(bytes==1){Need(size-at>=16);bytes=U64(source+at+8);header=16;}
+        Need(bytes>=header&&bytes<=size-at);
+        if(U32(source+at+4)==moov){Need(!movie.size);movie={at,size_t(bytes),header,moov};}
+        at+=size_t(bytes);
+    }
+    Need(movie.size&&movie.End()==size);return movie;
+}
+uint64_t RewriteMemory(size_t source_capacity,size_t source_size,size_t movie_bytes,const TagMemory& tags,bool copy_media){
+    const auto metadata=MetadataBound(tags.bytes,tags.fields);
+    uint64_t output=source_size;AddCharge(output,metadata);
+    Resource(output<=file_limit,"AAC resource limit: rewritten file exceeds 512 MiB");
+    uint64_t peak=tags.retained;AddCharge(peak,source_capacity);
+    if(copy_media)AddCharge(peak,output);
+    AddCharge(peak,scratch_base);AddCharge(peak,movie_bytes,32);AddCharge(peak,metadata,32);
+    AddCharge(peak,tags.fields,512);
+    return output;
+}
 struct Layout{Box movie,track,movie_header,track_header,media_header;Metadata metadata;uint32_t packets=0;};
 Layout Inspect(const uint8_t* b,size_t size,AacFile& file,bool require_edit=true){
     Need(b&&size>=8&&size<=file_limit);const auto top=Boxes(b,0,size);const auto ft=One(top,Code('f','t','y','p'));Need(ft.at==0&&ft.size-ft.header>=8&&(ft.size-ft.header)%4==0);
@@ -201,7 +263,7 @@ Bytes FieldItem(const std::string& key,const std::string& value){
 uint16_t Number(const std::string& value){if(value.empty())return 0;uint32_t n=0;for(const auto c:value){Need(c>='0'&&c<='9');n=n*10+uint32_t(c-'0');Need(n<=65535);}return uint16_t(n);}
 std::string Field(const std::vector<std::pair<std::string,std::string>>& fields,const std::string& key){for(const auto& f:fields)if(f.first==key)return f.second;return {};}
 Bytes MetadataMovie(const uint8_t* source,const Layout& layout,const AacFile& file,const Tags& delta){
-    Need(delta.fields.size()<=65536&&delta.cover.size()<=4u*1024u*1024u);
+    Resource(delta.fields.size()<=65536&&delta.cover.size()<=4u*1024u*1024u,"AAC resource limit: metadata exceeds supported budget");
     std::vector<std::pair<std::string,std::string>> fields;std::set<std::string> touched;size_t total=delta.cover.size();
     for(const auto& field:delta.fields){Need(field.first.size()<=255&&field.second.size()<=metadata_limit-total);total+=field.first.size()+field.second.size();Need(total<=metadata_limit);const auto key=Key(field.first);Need(!key.empty()&&Text(key)&&Text(field.second));fields.emplace_back(key,field.second);touched.insert(key);}
     const bool track=touched.count("TRACKNUMBER")||touched.count("TRACKTOTAL"),disc=touched.count("DISCNUMBER")||touched.count("DISCTOTAL");
@@ -246,40 +308,182 @@ Bytes TimedMovie(const uint8_t* b,const Layout& layout,const AacInfo& info){
     for(const auto& child:Children(b,layout.movie)){if(child.kind==trak)Add(movie_payload,track);else if(child.kind==Code('m','v','h','d'))Add(movie_payload,movie_header);else Add(movie_payload,b+child.at,child.size);}
     return Boxed(moov,movie_payload);
 }
-struct Sink{Bytes bytes;bool failed=false;};
+// Make owns this single reserved media buffer. Vendor writes and later moov
+// replacements must remain within the preflight bound; neither may grow it.
+struct Sink {Bytes bytes;size_t limit=0;bool failed=false;};
 int Write(int64_t offset,const void* data,size_t size,void* context)noexcept{
-    auto& sink=*static_cast<Sink*>(context);try{if(sink.failed||offset<0||uint64_t(offset)>file_limit||size>file_limit-size_t(offset)){sink.failed=true;return -1;}
-        const auto end=size_t(offset)+size;if(end>sink.bytes.size())sink.bytes.resize(end);if(size)std::memcpy(sink.bytes.data()+size_t(offset),data,size);return 0;
+    auto& sink=*static_cast<Sink*>(context);
+    try{
+        if(sink.failed||offset<0||uint64_t(offset)>sink.limit||size>sink.limit-size_t(offset)){
+            sink.failed=true;return -1;
+        }
+        const auto end=size_t(offset)+size;
+        if(end>sink.bytes.capacity()){sink.failed=true;return -1;}
+        if(end>sink.bytes.size())sink.bytes.resize(end);
+        if(size)std::memcpy(sink.bytes.data()+size_t(offset),data,size);
+        return 0;
     }catch(...){sink.failed=true;return -1;}
 }
-struct Budget{Budget(){Need(floggfy_mp4_begin()!=0);}~Budget(){floggfy_mp4_end();}};
-struct Mux{MP4E_mux_t* handle=nullptr;~Mux(){if(handle)MP4E_close(handle);}int Close(){auto* h=handle;handle=nullptr;return MP4E_close(h);}};
+struct Budget {
+    Budget(){Resource(floggfy_mp4_begin()!=0,"AAC resource limit: vendor allocation budget unavailable");}
+    ~Budget(){floggfy_mp4_end();}
+};
+struct Mux {
+    MP4E_mux_t* handle=nullptr;
+    ~Mux(){if(handle)MP4E_close(handle);}
+    int Close(){auto* h=handle;handle=nullptr;return MP4E_close(h);}
+};
+void MuxResult(int status,const Sink& sink){
+    Resource(status!=MP4E_STATUS_NO_MEMORY&&!sink.failed,"AAC resource limit: mux allocation or output budget exhausted");
+    Need(status==MP4E_STATUS_OK);
+}
+void ReplaceMovie(Sink& sink,const Box& old,const Bytes& replacement){
+    Need(old.kind==moov&&old.End()==sink.bytes.size()&&replacement.size()>=8&&
+         U32(replacement.data())==replacement.size()&&U32(replacement.data()+4)==moov);
+    Resource(old.at<=sink.limit&&replacement.size()<=sink.limit-old.at,
+             "AAC resource limit: terminal moov exceeds reserved output");
+    const size_t end=old.at+replacement.size();
+    Resource(end<=sink.bytes.capacity(),"AAC resource limit: terminal moov requires another media allocation");
+    sink.bytes.resize(end);
+    std::memcpy(sink.bytes.data()+old.at,replacement.data(),replacement.size());
+}
+void Failure(AacWriteFailure* out,AacWriteFailure value){if(out)*out=value;}
+}
+bool EstimateAacConstructionMemory(uint64_t packet_count,uint64_t packet_bytes,
+    uint64_t retained_input_bytes,uint64_t metadata_bytes,uint64_t metadata_fields,
+    AacMemoryPlan& plan) noexcept {
+    plan={};
+    if(!packet_count||packet_count>packet_limit||packet_bytes<packet_count||
+       packet_bytes>file_limit||retained_input_bytes<packet_bytes||
+       metadata_bytes>metadata_limit||metadata_fields>65536)return false;
+    // Each AU contributes stsz+stco entries. 8 KiB covers all fixed boxes,
+    // exact ASC, edit-list and metadata envelopes; each text field receives
+    // 128 bytes of descriptor/key wrapping beyond its raw bytes.
+    uint64_t movie=8192;
+    if(!Charge(movie,packet_count,8)||!Charge(movie,metadata_bytes)||
+       !Charge(movie,metadata_fields,128))return false;
+    uint64_t output=packet_bytes;
+    if(!Charge(output,movie)||!Charge(output,64)||output>file_limit)return false;
+    // 32x moov bounds simultaneously live boxed copies, vector growth and
+    // inspection fields/art. Extra per-field space covers string/set objects.
+    // Keep the full vendor allowance even though it is freed before rewriting.
+    uint64_t peak=retained_input_bytes;
+    if(!Charge(peak,vendor_memory)||!Charge(peak,output)||!Charge(peak,scratch_base)||
+       !Charge(peak,movie,32)||!Charge(peak,metadata_fields,512))return false;
+    plan={peak,output};return true;
 }
 bool InspectAacM4a(const uint8_t* source,size_t size,AacFile& out){
-    out={};try{AacFile result;Inspect(source,size,result);out=std::move(result);return true;}catch(...){return false;}
+    out={};
+    try{
+        const auto movie=TerminalMovie(source,size);
+        uint64_t peak=size;AddCharge(peak,scratch_base);AddCharge(peak,movie.size,32);
+        AacFile result;Inspect(source,size,result);out=std::move(result);return true;
+    }catch(...){return false;}
 }
-bool TagAacM4a(const Bytes& source,const Tags& tags,Bytes& output,std::string& error){
-    output.clear();error.clear();try{AacFile file;const auto layout=Inspect(source.data(),source.size(),file);
+bool TagAacM4a(const Bytes& source,const Tags& tags,Bytes& output,std::string& error,AacWriteFailure* failure){
+    Failure(failure,AacWriteFailure::None);error.clear();
+    if(&source==&output||&tags.cover==&output){
+        error="M4A output must not alias its source or metadata";
+        Failure(failure,AacWriteFailure::InvalidOrUnsupported);return false;
+    }
+    Bytes().swap(output);
+    try{
+        const auto terminal=TerminalMovie(source.data(),source.size());
+        const auto metadata=MeasureTags(tags);
+        const auto capacity=RewriteMemory(source.capacity(),source.size(),terminal.size,metadata,true);
+        AacFile file;const auto layout=Inspect(source.data(),source.size(),file);
         if(tags.fields.empty()&&tags.cover.empty()&&!tags.replace_fields){output=source;return true;}
         const auto movie=MetadataMovie(source.data(),layout,file,tags);
-        Bytes result;Add(result,source.data(),layout.movie.at);Add(result,movie);AacFile checked;Inspect(result.data(),result.size(),checked);output=std::move(result);return true;
-    }catch(...){error="Unsupported or invalid M4A metadata update";return false;}
+        Resource(layout.movie.at<=capacity&&movie.size()<=capacity-layout.movie.at,
+                 "AAC resource limit: metadata rewrite exceeded planned output");
+        // External tagging preserves its caller's source, so this path needs
+        // exactly one additional media buffer; its full capacity was budgeted.
+        Bytes result;result.reserve(size_t(capacity));
+        Add(result,source.data(),layout.movie.at);Add(result,movie);
+        AacFile checked;Inspect(result.data(),result.size(),checked);
+        output=std::move(result);return true;
+    }catch(const ResourceFailure& problem){
+        error=problem.reason;Failure(failure,AacWriteFailure::ResourceLimit);
+    }catch(const std::bad_alloc&){
+        error="AAC resource limit: allocation failed";Failure(failure,AacWriteFailure::ResourceLimit);
+    }catch(const std::length_error&){
+        error="AAC resource limit: allocation size rejected";Failure(failure,AacWriteFailure::ResourceLimit);
+    }catch(...){
+        error="Unsupported or invalid M4A metadata update";Failure(failure,AacWriteFailure::InvalidOrUnsupported);
+    }
+    Bytes().swap(output);return false;
 }
-bool MakeAacM4a(const AacInfo& info,const std::vector<Bytes>& packets,const Tags& tags,Bytes& output,std::string& error){
-    output.clear();error.clear();try{
-        AacInfo parsed;parsed.config=info.config;Configuration(parsed);Need(parsed.rate==info.rate&&parsed.channels==info.channels&&parsed.samples_per_packet==info.samples_per_packet);
-        Need(!packets.empty()&&packets.size()<=packet_limit&&info.total_samples&&uint64_t(info.total_samples)<=uint64_t(info.rate)*6*3600&&info.priming<=uint32_t(INT32_MAX));
-        const uint64_t samples=packets.size()*uint64_t(info.samples_per_packet),used=uint64_t(info.total_samples)+info.priming;Need(samples<=UINT32_MAX&&samples>=used&&samples-used<info.samples_per_packet);
-        size_t bytes=0;for(const auto& packet:packets){Need(!packet.empty()&&packet.size()<=65536&&packet.size()<=file_limit-bytes);bytes+=packet.size();}
-        Sink sink;Budget budget;Mux mux; mux.handle=MP4E_open(0,0,&sink,Write);Need(mux.handle);
-        MP4E_track_t track{};track.object_type_indication=MP4_OBJECT_TYPE_AUDIO_ISO_IEC_14496_3;track.track_media_kind=e_audio;track.time_scale=info.rate;track.default_duration=info.samples_per_packet;track.u.a.channelcount=info.channels;
-        track.language[0]='u';track.language[1]='n';track.language[2]='d';const int id=MP4E_add_track(mux.handle,&track);Need(id>=0);
-        Need(MP4E_set_dsi(mux.handle,id,info.config.data(),int(info.config.size()))==MP4E_STATUS_OK);
-        for(const auto& packet:packets)Need(MP4E_put_sample(mux.handle,id,packet.data(),int(packet.size()),int(info.samples_per_packet),MP4E_SAMPLE_RANDOM_ACCESS)==MP4E_STATUS_OK);
-        Need(mux.Close()==MP4E_STATUS_OK&&!sink.failed);
-        AacFile initial;const auto layout=Inspect(sink.bytes.data(),sink.bytes.size(),initial,false);const auto movie=TimedMovie(sink.bytes.data(),layout,info);
-        sink.bytes.resize(layout.movie.at);Add(sink.bytes,movie);
-        Need(TagAacM4a(sink.bytes,tags,output,error));return true;
-    }catch(...){output.clear();error="Unsupported AAC configuration, timing, or M4A resource limit";return false;}
+bool MakeAacM4a(const AacInfo& info,const std::vector<Bytes>& packets,const Tags& tags,
+               Bytes& output,std::string& error,AacWriteFailure* failure){
+    Failure(failure,AacWriteFailure::None);error.clear();
+    bool alias=&output==&info.config||&output==&tags.cover;
+    for(const auto& packet:packets)if(&packet==&output)alias=true;
+    if(alias){
+        error="M4A output must not alias input access units, configuration or metadata";
+        Failure(failure,AacWriteFailure::InvalidOrUnsupported);return false;
+    }
+    Bytes().swap(output);
+    try{
+        Need(!packets.empty());
+        Resource(packets.size()<=packet_limit,"AAC resource limit: too many access units");
+        Need(info.config.size()<=64);
+        const auto metadata=MeasureTags(tags);
+        uint64_t retained=metadata.retained,bytes=0;
+        AddCharge(retained,sizeof(info)+sizeof(packets)+allocation_overhead);
+        AddCharge(retained,info.config.capacity());
+        AddCharge(retained,packets.capacity(),sizeof(Bytes));
+        AddCharge(retained,packets.size(),allocation_overhead);
+        for(const auto& packet:packets){
+            Need(!packet.empty()&&packet.size()<=65536);
+            AddCharge(bytes,packet.size());AddCharge(retained,packet.capacity());
+        }
+        AacMemoryPlan plan;
+        Resource(EstimateAacConstructionMemory(packets.size(),bytes,retained,metadata.bytes,metadata.fields,plan),
+                 "AAC resource limit: planned construction peak exceeds 512 MiB");
+        // All potentially large input/output/scratch capacities were checked
+        // above; only the <=64-byte decoder configuration is copied here.
+        AacInfo parsed;parsed.config=info.config;Configuration(parsed);
+        Need(parsed.rate==info.rate&&parsed.channels==info.channels&&parsed.samples_per_packet==info.samples_per_packet);
+        Need(info.total_samples&&uint64_t(info.total_samples)<=uint64_t(info.rate)*6*3600&&info.priming<=uint32_t(INT32_MAX));
+        const uint64_t samples=packets.size()*uint64_t(info.samples_per_packet),used=uint64_t(info.total_samples)+info.priming;
+        Need(samples<=UINT32_MAX&&samples>=used&&samples-used<info.samples_per_packet);
+        Sink sink;sink.limit=size_t(plan.output_capacity);sink.bytes.reserve(sink.limit);
+        Resource(sink.bytes.capacity()==sink.limit,"AAC resource limit: allocator exceeded planned output capacity");
+        {
+            Budget budget;Mux mux;mux.handle=MP4E_open(0,0,&sink,Write);
+            Resource(mux.handle!=nullptr,"AAC resource limit: mux allocation failed");
+            MP4E_track_t track{};track.object_type_indication=MP4_OBJECT_TYPE_AUDIO_ISO_IEC_14496_3;
+            track.track_media_kind=e_audio;track.time_scale=info.rate;track.default_duration=info.samples_per_packet;
+            track.u.a.channelcount=info.channels;track.language[0]='u';track.language[1]='n';track.language[2]='d';
+            const int id=MP4E_add_track(mux.handle,&track);
+            if(id<0)MuxResult(id,sink);
+            Need(id==0);
+            MuxResult(MP4E_set_dsi(mux.handle,id,info.config.data(),int(info.config.size())),sink);
+            for(const auto& packet:packets)MuxResult(MP4E_put_sample(mux.handle,id,packet.data(),int(packet.size()),int(info.samples_per_packet),MP4E_SAMPLE_RANDOM_ACCESS),sink);
+            MuxResult(mux.Close(),sink);
+        } // Free the vendor arena before any moov reconstruction.
+        {
+            AacFile initial;const auto layout=Inspect(sink.bytes.data(),sink.bytes.size(),initial,false);
+            const auto movie=TimedMovie(sink.bytes.data(),layout,info);ReplaceMovie(sink,layout.movie,movie);
+        }
+        if(!tags.fields.empty()||!tags.cover.empty()||tags.replace_fields){
+            AacFile file;const auto layout=Inspect(sink.bytes.data(),sink.bytes.size(),file);
+            const auto movie=MetadataMovie(sink.bytes.data(),layout,file,tags);ReplaceMovie(sink,layout.movie,movie);
+        }
+        AacFile checked;Inspect(sink.bytes.data(),sink.bytes.size(),checked);
+        Need(checked.info.config==info.config&&checked.info.rate==info.rate&&checked.info.channels==info.channels&&
+             checked.info.samples_per_packet==info.samples_per_packet&&checked.info.priming==info.priming&&
+             checked.info.total_samples==info.total_samples&&checked.audio_bytes==bytes);
+        output=std::move(sink.bytes);return true;
+    }catch(const ResourceFailure& problem){
+        error=problem.reason;Failure(failure,AacWriteFailure::ResourceLimit);
+    }catch(const std::bad_alloc&){
+        error="AAC resource limit: allocation failed";Failure(failure,AacWriteFailure::ResourceLimit);
+    }catch(const std::length_error&){
+        error="AAC resource limit: allocation size rejected";Failure(failure,AacWriteFailure::ResourceLimit);
+    }catch(...){
+        error="Unsupported AAC configuration, timing, or M4A structure";Failure(failure,AacWriteFailure::InvalidOrUnsupported);
+    }
+    Bytes().swap(output);return false;
 }
 }

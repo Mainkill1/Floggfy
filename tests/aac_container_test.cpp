@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
 using namespace history;
 namespace {
 using Bytes=std::vector<uint8_t>;
@@ -26,6 +27,20 @@ void SameAudio(const Bytes& a,const Bytes& b){assert(At(a,{"mdat"})==At(b,{"mdat
 void Rejected(const Bytes& b){AacFile out;out.complete=true;assert(!InspectAacM4a(b.data(),b.size(),out)&&!out.complete);}
 }
 int RunAacContainerTests(){
+    // Pure planning cases reject construction peaks without allocating media.
+    AacMemoryPlan plan;
+    assert(EstimateAacConstructionMemory(4,1024,4096,512,4,plan));
+    assert(plan.output_capacity>1024&&plan.peak_bytes>=128u*1024u*1024u);
+    const uint64_t overhead=plan.peak_bytes-4096;
+    assert(EstimateAacConstructionMemory(4,1024,AacConstructionMemoryLimit-overhead,512,4,plan));
+    assert(plan.peak_bytes==AacConstructionMemoryLimit);
+    assert(!EstimateAacConstructionMemory(4,1024,AacConstructionMemoryLimit-overhead+1,512,4,plan));
+    assert(plan.peak_bytes==0&&plan.output_capacity==0);
+    assert(!EstimateAacConstructionMemory(uint64_t{1}<<21,1024,4096,512,4,plan));
+    assert(!EstimateAacConstructionMemory(4,1024,std::numeric_limits<uint64_t>::max(),512,4,plan));
+    assert(!EstimateAacConstructionMemory(4,1024,4096,std::numeric_limits<uint64_t>::max(),4,plan));
+    assert(!EstimateAacConstructionMemory(4,1024,4096,512,65537,plan));
+    assert(!EstimateAacConstructionMemory(4,uint64_t{512}<<20,uint64_t{512}<<20,0,0,plan));
     // Actual native SpAC header configuration. Payload sentinels exercise exact
     // remuxing only; this test never claims to decode synthetic AAC access units.
     AacInfo info;info.rate=44100;info.channels=2;info.samples_per_packet=2048;
@@ -35,7 +50,11 @@ int RunAacContainerTests(){
     for(uint32_t i=0;i<count;++i){packets.push_back({uint8_t(i),uint8_t(i>>8),0xa5,0});expected.insert(expected.end(),packets.back().begin(),packets.back().end());}
     Tags tags;tags.fields={{"TITLE","Song \xE2\x99\xAB"},{"ARTIST","Artist"},{"ALBUM","Album"},{"ALBUMARTIST","Album Artist"},{"DATE","2025-12-31"},{"YEAR","2025"},{"LYRICS","[00:00.00] Words\n"},{"TRACKNUMBER","2"},{"TRACKTOTAL","10"},{"DISCNUMBER","1"},{"DISCTOTAL","2"},{"SPOTIFY_URI","spotify:track:fixture"},{"HISTORY_COMPLETE_LISTEN","1"},{"HISTORY_CAPTURE","native compressed AAC input"},{"CUSTOM_REPEAT","one"},{"CUSTOM_REPEAT","two"}};
     tags.cover=artwork_fixture::png();tags.mime="image/png";std::string error;Bytes original;
-    assert(MakeAacM4a(info,packets,tags,original,error));const auto inspected=Inspect(original);
+    AacWriteFailure failure=AacWriteFailure::ResourceLimit;
+    original.reserve(1024u*1024u); // An old caller buffer must not inflate the peak.
+    assert(MakeAacM4a(info,packets,tags,original,error,&failure));
+    assert(failure==AacWriteFailure::None&&original.capacity()<1024u*1024u);
+    const auto inspected=Inspect(original);
     assert(inspected.info.config==info.config&&inspected.info.rate==44100&&inspected.info.channels==2&&inspected.info.samples_per_packet==2048&&inspected.info.priming==5119&&inspected.info.total_samples==8314226);
     const auto media=At(original,{"mdat"});assert(Bytes(media.begin()+8,media.end())==expected&&inspected.audio_bytes==expected.size());
     assert(inspected.has_artwork&&inspected.artwork_edit_safe&&inspected.covers.size()==1&&inspected.tags.cover==tags.cover);
@@ -85,7 +104,9 @@ int RunAacContainerTests(){
     bad=original;Write(bad,mvhd+24,info.total_samples-1);Rejected(bad);
     bad=Insert(original,{"moov"},At(original,{"moov","trak"}));Rejected(bad);
     bad=Insert(original,{"moov","trak","mdia","minf","stbl"},At(original,{"moov","trak","mdia","minf","stbl","stsz"}));Rejected(bad);
-    auto unsupported=info;unsupported.config={0xf9,0x40,0x00};assert(!MakeAacM4a(unsupported,packets,tags,tagged,error)&&tagged.empty());
+    auto unsupported=info;unsupported.config={0xf9,0x40,0x00};
+    assert(!MakeAacM4a(unsupported,packets,tags,tagged,error,&failure)&&tagged.empty());
+    assert(failure==AacWriteFailure::InvalidOrUnsupported&&error.find("resource")==std::string::npos);
     unsupported=info;unsupported.config.resize(65);assert(!MakeAacM4a(unsupported,packets,tags,tagged,error));
     unsupported=info;unsupported.rate=48000;assert(!MakeAacM4a(unsupported,packets,tags,tagged,error));
     unsupported=info;unsupported.total_samples+=2048;assert(!MakeAacM4a(unsupported,packets,tags,tagged,error));
@@ -94,6 +115,10 @@ int RunAacContainerTests(){
     // Failure after the bounded mux has completed must still clean up fully.
     Tags invalid_art;invalid_art.cover={0,1,2};invalid_art.mime="image/png";
     assert(!MakeAacM4a(info,packets,invalid_art,tagged,error)&&tagged.empty());
+    // The external tagging contract must never destroy an aliased source.
+    const auto unchanged=source;
+    assert(!TagAacM4a(source,delta,source,error,&failure));
+    assert(source==unchanged&&failure==AacWriteFailure::InvalidOrUnsupported);
     // A failed operation cannot poison the next bounded mux operation.
     assert(MakeAacM4a(info,packets,empty,tagged,error));Inspect(tagged);
     std::puts("PASS: bounded M4A remux, exact AAC bytes/config/timing, metadata preservation and conservative rejection");

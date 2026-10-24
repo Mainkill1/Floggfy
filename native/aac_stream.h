@@ -39,12 +39,31 @@ struct AacFile {
     bool complete=false,has_artwork=false,artwork_edit_safe=true;
     std::vector<std::vector<uint8_t>> covers;
 };
+// Per-operation peak allowance, independent of the capture/file-size limits.
+inline constexpr uint64_t AacConstructionMemoryLimit=uint64_t{512}<<20;
+// Includes both retained source and extracted packets. Implemented by SpAC.
+bool AacExtractionFitsBudget(size_t source_capacity,size_t source_size,size_t packet_count);
+struct AacMemoryPlan {
+    uint64_t peak_bytes=0,output_capacity=0;
+};
+// Allocation-free estimate. retained_input_bytes includes all caller-owned AU,
+// vector/string capacities and object/allocation overhead; metadata_bytes is
+// the raw key/value/cover byte total. The result also reserves the entire
+// 128 MiB vendor budget and conservative metadata/table reconstruction scratch.
+// False leaves plan empty. These are memory limits, not codec-validity checks.
+bool EstimateAacConstructionMemory(uint64_t packet_count,uint64_t packet_bytes,
+    uint64_t retained_input_bytes,uint64_t metadata_bytes,uint64_t metadata_fields,
+    AacMemoryPlan& plan) noexcept;
+enum class AacWriteFailure { None,InvalidOrUnsupported,ResourceLimit };
 // Remux original access units into M4A, including known source priming/trimming.
+// Clears/releases an old output before construction; output cannot alias input.
 bool MakeAacM4a(const AacInfo&,const std::vector<std::vector<uint8_t>>& packets,
-               const Tags&,std::vector<uint8_t>& output,std::string& error);
+               const Tags&,std::vector<uint8_t>& output,std::string& error,
+               AacWriteFailure* failure=nullptr);
 // Strict bounded container/header inspection, not an independent AAC decode.
 bool InspectAacM4a(const uint8_t* source,size_t size,AacFile& out);
 // Preserve compressed media and unknown metadata; apply only supplied tag deltas.
 bool TagAacM4a(const std::vector<uint8_t>& source,const Tags& tags,
-              std::vector<uint8_t>& output,std::string& error);
+              std::vector<uint8_t>& output,std::string& error,
+              AacWriteFailure* failure=nullptr);
 }
