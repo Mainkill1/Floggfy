@@ -45,6 +45,8 @@ FLAC needs lossless playback in Spotify. Floggfy does not convert Ogg into FLAC.
 ## Settings
 
 **To Disk** includes **Downloads**, **Save Location**, **FLAC**, **Ogg** and **Lyrics** controls.
+Artist folders use the album artist; guest/contributing credits remain in the `ARTIST` tag.
+
 The INI also has `TrackNumberInFilename` for numbered versus title-only new names,
 and `ConvertNumberedFilenames` to remove verified old prefixes when playback starts.
 Both default to `0`. Enabling numbering disables conversion. Restart after INI edits.

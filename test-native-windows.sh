@@ -139,3 +139,6 @@ bash test-filename-options.sh
 
 # Directory enumeration bounds and one-list reuse across all codec/name checks.
 bash test-directory-lookup.sh
+
+# Album-artist precedence remains separate from guest/contributing credits.
+bash test-album-artists.sh

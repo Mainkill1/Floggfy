@@ -552,7 +552,7 @@ static void QueueFilenameCheck(const Media& media,const Settings& settings) {
         auto wide=[&](const std::wstring& value){text(Utf8(value));};
         // Use raw identity, not sanitized filenames: A/B and A:B may share a
         // basename but are still distinct recordings when Spotify URI is absent.
-        const std::wstring* fields[]={&settings.root,&catalog.title,&catalog.artist,&catalog.folder_artist,&catalog.album,&catalog.author,&catalog.series,&catalog.book,&catalog.show};
+        const std::wstring* fields[]={&settings.root,&catalog.title,&catalog.artist,&catalog.folder_artist,&catalog.legacy_artist,&catalog.album,&catalog.author,&catalog.series,&catalog.book,&catalog.show};
         for(const auto* field:fields)wide(*field);
         text(catalog.spotify_uri);
         key+=std::to_string(unsigned(catalog.kind))+":"+std::to_string(catalog.track)+":"+

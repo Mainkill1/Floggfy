@@ -336,8 +336,16 @@ void EnrichCatalog(const Media& media,Catalog& catalog) {
  auto next=catalog;next.spotify_uri=std::move(uri);
  auto replace=[](std::wstring& target,const std::string& value){auto wide=MetadataWide(value);if(!wide.empty())target.swap(wide);};
  replace(next.title,fields[0]);replace(next.album,fields[1]);
- if(!fields[2].empty())replace(next.artist,fields[2]);
- else if(media.album_artist.empty())replace(next.artist,fields[3]);
+ const auto album_artist=MetadataWide(fields[2]),contributors=MetadataWide(fields[3]);
+ if(!media.album_artist.empty()) {
+  next.artist=media.album_artist;
+  next.folder_artist=media.album_artist;
+ } else if(!album_artist.empty())next.artist=album_artist;
+ // Expanded credits are only an exact legacy-folder lookup alias. They never
+ // become the album artist merely because that list has more names.
+ next.legacy_artist.clear();
+ if(!album_artist.empty() && album_artist!=next.artist)next.legacy_artist=album_artist;
+ else if(!contributors.empty() && contributors!=next.artist)next.legacy_artist=contributors;
  const auto track=MetadataNumber(fields[4]),disc=MetadataNumber(fields[5]);
  if(track)next.track=track;
  if(disc)next.disc=disc;
@@ -355,6 +363,10 @@ void EnrichTags(const Media& media,Tags& tags) {
   if(field.first=="LYRICS"&&!preferences.lyrics)continue;
   tags.fields.erase(std::remove_if(tags.fields.begin(),tags.fields.end(),[&](const auto& entry){return entry.first==field.first;}),tags.fields.end());
   tags.fields.push_back(field);
+ }
+ if(!media.album_artist.empty()) {
+  tags.fields.erase(std::remove_if(tags.fields.begin(),tags.fields.end(),[](const auto& field){return field.first=="ALBUMARTIST";}),tags.fields.end());
+  tags.fields.emplace_back("ALBUMARTIST",Utf8(media.album_artist));
  }
  if(!metadata.uri.empty()) {
   std::vector<uint8_t> cover;std::string mime;ImageInfo original;

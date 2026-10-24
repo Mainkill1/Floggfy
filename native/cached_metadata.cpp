@@ -607,7 +607,9 @@ bool MergeCachedMetadata(const CachedTrackMetadata &cached, RichMetadata &live) 
   for (const auto &field : cached.fields) {
     auto old = live.fields.find(field.first);
     bool replace = old == live.fields.end() || old->second.empty();
-    if (!replace && (field.first == "ARTIST" || field.first == "ALBUMARTIST"))
+    // Guest credits can enrich ARTIST, but a longer album-artist list must not
+    // replace a populated current album artist.
+    if (!replace && field.first == "ARTIST")
       replace = RicherArtists(field.second, old->second);
     if (!replace && field.first == "DATE")
       replace = old->second.substr(0, 4) == field.second.substr(0, 4) &&

@@ -1,3 +1,39 @@
+## Album artist and contributing artists
+
+The collector and native cache previously preferred longer name lists for both
+ARTIST and ALBUMARTIST. Album artist is now an identity choice, not a completeness
+score: current explicit album artists override older cached lists, and the native
+cache only fills a missing ALBUMARTIST. Full contributing credits can still enrich
+ARTIST. Multiple explicitly reported album artists are retained by the collector.
+The production bridge honors a known Windows album artist for catalog identity,
+placement and emitted ALBUMARTIST, keeping guest performers in ARTIST. A bounded
+lookup-only legacy credit string retains discovery of the one known older folder;
+it cannot name a new file or alter tags. Request identity includes that alias.
+No punctuation conversion, library sweep, worker or metadata-rewrite policy was
+added. Existing populated file tags are not automatically replaced.
+
+Validation is **incomplete**. Exactly one `bash test-album-artists.sh` invocation
+failed (exit 1): a missing closing brace in the JavaScript fixture caused a syntax
+error before any assertions ran. The Windows executable compiled and linked with
+`-Wall -Wextra -Werror` before the Node step, but was not executed. The fixture now
+uses a separate registry declaration and a simpler object literal. No runtime
+test was rerun under the one-run limit.
+
+Independent static review approved the policy and legacy-lookup guards. The
+unexecuted JavaScript cases cover explicit/current versus longer cached album
+credits, separate ARTIST guests and multiple genuine album artists. The unexecuted
+Windows cases use the actual metadata bridge and cache merge, checking tag/catalog
+precedence, missing-field behavior, legacy-folder discovery/rename/reuse and
+Metadata=0. Storage enrichment and artwork providers are stubbed; no workers or
+live client requests are started by that executable. No full suite ran or saved
+user recordings were changed. The installed DLL remains the preceding `5d2c6cf`
+build; this policy correction has not been deployed.
+
+One final compile-only operation passed (exit 0): `node --check` for the corrected
+fixture and production collector, then `bash build-native.sh` for the DLL/launcher.
+No runtime assertions were executed by those checks. Existing vendor warnings
+remain visible. This is compilation evidence, not a passing test result.
+
 ## Song cache discovery throttling
 
 The Song worker checks a matching verified path/signature before listing its

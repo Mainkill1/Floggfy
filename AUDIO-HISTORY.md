@@ -115,14 +115,17 @@ The resolver checks existing deterministic names before allocating a vacant one,
 so deleting the ordinary filename does not hide a previously suffixed recording.
 It also checks the text-identity suffix used before URI enrichment. Searches are
 bounded to 195 known names per folder including old numbered/disc prefixes.
-A known Windows album artist keeps its existing folder identity even when Spotify
-provides a fuller artist list for tags. The single exact Spotify-derived folder is
-also a lookup alias for files already saved there. No other artist folders are
-searched, and new files use the stable folder. At most two nonrecursive listings
-are shared across format lookups, each limited to 16,384 entries. Inaccessible or
+The known album artist names the artist folder and the `ALBUMARTIST` tag;
+contributing/guest performers belong in `ARTIST`. Longer contributor lists never
+expand a populated album artist. The current client's explicit album-artist value
+wins over older cached lists. A known Windows album artist remains authoritative
+when client cache enrichment disagrees. One exact legacy folder named from
+expanded album/contributor credits remains a lookup-only alias for files already saved there. No other artist folders are
+searched, and new files use the album-artist folder. Existing populated tags are
+preserved by the established metadata-only/audio-upgrade policy; this does not
+bulk rewrite a saved library. At most two nonrecursive listings are shared across format lookups, each limited to 16,384 entries. Inaccessible or
 partial listings and inaccessible possible matches defer a new save instead of
-risking a duplicate. Final publication and
-renames still lock/revalidate the live file; a listing never authorizes a write.
+risking a duplicate. Final publication and renames still lock/revalidate the live file; a listing never authorizes a write.
 
 A Vorbis upgrade requires higher known nominal bitrate and no sample-rate
 reduction. FLAC upgrades require matching channel count, no bit-depth/sample-rate

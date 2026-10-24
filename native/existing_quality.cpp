@@ -30,7 +30,8 @@ bool FilenameLess(const std::wstring& a,const std::wstring& b) {
     return CompareStringOrdinal(a.c_str(),int(a.size()),b.c_str(),int(b.size()),TRUE)==CSTR_LESS_THAN;
 }
 std::wstring ArtistFolderAlias(const std::wstring& base,const Catalog& catalog) {
-    if((catalog.kind!=MediaKind::Music && catalog.kind!=MediaKind::VariousArtists) || catalog.folder_artist.empty())return {};
+    if((catalog.kind!=MediaKind::Music && catalog.kind!=MediaKind::VariousArtists) ||
+       (catalog.folder_artist.empty() && catalog.legacy_artist.empty()))return {};
     const auto slash=base.find_last_of(L"\\/"),dot=base.find_last_of(L'.');
     if(dot==std::wstring::npos || (slash!=std::wstring::npos && dot<slash))return {};
     const auto extension=base.substr(dot);
@@ -38,6 +39,7 @@ std::wstring ArtistFolderAlias(const std::wstring& base,const Catalog& catalog) 
     // directory suffix, so numbered and title-only filenames use the same alias.
     auto current=RelativePath(catalog,extension);
     auto enriched=catalog;enriched.folder_artist.clear();
+    if(!catalog.legacy_artist.empty())enriched.artist=catalog.legacy_artist;
     enriched.kind=_wcsicmp(enriched.artist.c_str(),L"Various Artists")==0?MediaKind::VariousArtists:MediaKind::Music;
     auto alias=RelativePath(enriched,extension);
     const auto prefix=std::wstring(L"Music\\").size();

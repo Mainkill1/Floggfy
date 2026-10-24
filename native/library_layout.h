@@ -9,6 +9,9 @@ struct Catalog {
     // A known media-session album artist anchors the existing folder even if
     // Spotify later supplies a richer artist list for the recording's tags.
     std::wstring folder_artist;
+    // Lookup-only compatibility for older folders named from expanded credits.
+    // Never used for new filenames or ALBUMARTIST tags.
+    std::wstring legacy_artist;
     unsigned track=0,episode_year=0,disc=0;
     std::string spotify_uri;
     double duration=0;
