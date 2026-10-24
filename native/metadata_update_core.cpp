@@ -1,4 +1,5 @@
 #include "metadata_update_core.h"
+#include "aac_stream.h"
 #include "flac_history_core.h"
 #include <algorithm>
 #include <set>
@@ -215,10 +216,11 @@ MetadataUpdate FillRecordingMetadata(const std::vector<uint8_t>& source,const Ta
     if(!plan.Needed())return MetadataUpdate::Unchanged;
     auto& delta=plan.delta;std::vector<uint8_t> picture;
     if(plan.picture) {
-        if(!BuildPicture(incoming,picture)){error="invalid artwork candidate";return MetadataUpdate::Invalid;}
+        if(existing.quality.codec!=Codec::Aac && !BuildPicture(incoming,picture)){error="invalid artwork candidate";return MetadataUpdate::Invalid;}
         delta.cover=incoming.cover;delta.mime=incoming.mime;
     }
-    const bool updated=existing.quality.codec==Codec::Flac ? FillFlac(source,delta,picture,output,error) : TagOgg(source,delta,output,error);
+    const bool updated=existing.quality.codec==Codec::Flac ? FillFlac(source,delta,picture,output,error) :
+        existing.quality.codec==Codec::Aac ? TagAacM4a(source,delta,output,error) : TagOgg(source,delta,output,error);
     RecordingFile result;
     if(!updated || !InspectRecording(output.data(),output.size(),result) || !result.complete || !result.owned ||
        !MatchesRecording(result,catalog) || !SameQuality(existing.quality,result.quality)) {
@@ -238,6 +240,10 @@ bool PreserveUpgradeMetadata(const std::vector<uint8_t>& source,const std::vecto
         return false;
     }
     const auto plan=PlanMetadata(old,next.tags);
+    if(next.quality.codec==Codec::Aac) {
+        error="AAC renditions do not have a verified audio quality upgrade order";
+        return false;
+    }
     Tags merged;
     merged.replace_fields=true;
     // Preserve populated user fields (including repeats). The shared delta

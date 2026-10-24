@@ -12,7 +12,7 @@ struct Catalog {
 };
 std::wstring RelativePath(const Catalog& item,const std::wstring& extension);
 std::wstring OutputPath(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder=false);
-enum class Codec { Vorbis, Flac };
+enum class Codec { Vorbis, Flac, Aac };
 struct Quality { Codec codec=Codec::Vorbis; unsigned rate=0,channels=0,bits=0,bitrate=0; };
 bool HigherQuality(const Quality& incoming,const Quality& existing);
 }

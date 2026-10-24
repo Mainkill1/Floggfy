@@ -11,12 +11,13 @@ if [[ "$issue" == 4 ]]; then
     exec build/pr11-corrections/issue4 --issue4
 fi
 if [[ "$issue" == 6 ]]; then
+    gcc -std=c11 -O2 -Wall -Wextra -c native/vendor/minimp4/minimp4.c -o build/pr11-corrections/minimp4-native.o
     gcc -std=c11 -O2 -Wall -Wextra -c native/vorbis_headers_stb.c -o build/pr11-corrections/vorbis-native.o
     gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/pr11-corrections/ogg-native.o
     g++ "${common[@]}" -pthread -I native/vendor/libogg/include tests/recording_file_test.cpp \
-        native/recording_file.cpp native/vorbis_headers.cpp native/flac_history_core.cpp native/compressed_buffer.cpp \
+        native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp native/vorbis_headers.cpp native/flac_history_core.cpp native/compressed_buffer.cpp \
         native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp \
-        build/pr11-corrections/vorbis-native.o build/pr11-corrections/ogg-native.o -o build/pr11-corrections/issue6
+        build/pr11-corrections/vorbis-native.o build/pr11-corrections/ogg-native.o build/pr11-corrections/minimp4-native.o -o build/pr11-corrections/issue6
     exec build/pr11-corrections/issue6 --issue6
 fi
 # Windows tests use an isolated executable directory beneath Windows TEMP.
@@ -26,16 +27,17 @@ mkdir -p "$floggfy_correction_root"
 common+=(-static-libgcc -static-libstdc++)
 case "$issue" in
 1|3)
+    x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vendor/minimp4/minimp4.c -o build/pr11-corrections/minimp4.o
     x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vorbis_headers_stb.c -o build/pr11-corrections/vorbis-windows.o
     x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/pr11-corrections/ogg-windows.o
     source=tests/windows_collision_reuse_test.cpp
     flags=()
     if [[ "$issue" == 1 ]]; then source=tests/windows_upgrade_metadata_test.cpp; flags=(-DFLOGGFY_PUBLICATION_TEST); fi
     x86_64-w64-mingw32-g++ "${common[@]}" "${flags[@]}" -I native/vendor/libogg/include "$source" \
-        native/file_publication.cpp native/existing_quality.cpp native/metadata_update_core.cpp native/recording_file.cpp \
+        native/file_publication.cpp native/existing_quality.cpp native/metadata_update_core.cpp native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp \
         native/vorbis_headers.cpp native/library_layout.cpp native/playback_quality.cpp native/flac_history_core.cpp \
         native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp \
-        build/pr11-corrections/vorbis-windows.o build/pr11-corrections/ogg-windows.o -o "$floggfy_correction_root/issue$issue.exe"
+        build/pr11-corrections/vorbis-windows.o build/pr11-corrections/ogg-windows.o build/pr11-corrections/minimp4.o -o "$floggfy_correction_root/issue$issue.exe"
     ;;
 5)
     x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_settings_failure_test.cpp -lole32 -luuid -lshell32 \

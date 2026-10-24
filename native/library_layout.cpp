@@ -50,6 +50,9 @@ bool HigherQuality(const Quality& incoming,const Quality& existing) {
     if(!incoming.rate || !incoming.channels) return false;
     if(incoming.codec!=existing.codec) return incoming.codec==Codec::Flac && incoming.bits>=16 && incoming.channels==existing.channels && incoming.rate>=existing.rate;
     if(incoming.channels!=existing.channels || !existing.rate) return false;
+    // Measured AAC bitrate is not a source quality tier. Preserve an existing
+    // complete AAC rendition rather than treating VBR size variation as better.
+    if(incoming.codec==Codec::Aac)return false;
     if(incoming.codec==Codec::Vorbis) return incoming.bitrate && existing.bitrate &&
         incoming.bitrate>existing.bitrate && incoming.rate>=existing.rate;
     return incoming.bits && existing.bits && incoming.bits>=existing.bits && incoming.rate>=existing.rate &&

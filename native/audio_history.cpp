@@ -20,6 +20,7 @@
 #include "metadata_update_core.h"
 #include "media_session.h"
 #include "image_info.h"
+#include "aac_stream.h"
 #include "spotify_hook_discovery.h"
 #include "vendor/minhook/include/MinHook.h"
 #include <algorithm>
@@ -49,8 +50,18 @@ FlacRead original_flac_read;
 FlacFrame original_flac_frame;
 FlacError original_flac_error;
 void* flac_targets[4]={};
+struct AacView {const unsigned char* bytes;size_t size;};
+static_assert(sizeof(AacView)==16,"Windows x64 SpacReader input view ABI");
+using AacInitialize=void*(*)(void*,bool);
+using AacPush=void*(*)(void*,void*,const AacView*);
+using AacDestroy=void*(*)(void*,unsigned);
+AacInitialize original_aac_initialize=nullptr;
+AacPush original_aac_push=nullptr;
+AacDestroy original_aac_destroy=nullptr;
+void* aac_targets[3]={};
 hooks::CallbackCounter audio_callbacks;
-enum class AudioEventKind : unsigned { OggPage,FormatDetected,FlacBegin,FlacBytes,FlacFrame,FlacError,FlacEnd };
+enum class AudioEventKind : unsigned { OggPage,FormatDetected,FlacBegin,FlacBytes,FlacFrame,FlacError,FlacEnd,
+    AacBegin,AacBytes,AacError,AacDestroy };
 struct Slot { uintptr_t context; unsigned length; double time; AudioEventKind kind;unsigned epoch; uint64_t input_length;
     uint32_t format; bool matched,capture; unsigned char bytes[65307]; };
 constexpr unsigned capacity=128;
@@ -184,17 +195,84 @@ static void FlacErrorHook(void* context,unsigned error) {
     original_flac_error(context,error);
     FlacEvent(context,AudioEventKind::FlacError,nullptr,0,error);
 }
+static void QueueAac(void* context,AudioEventKind kind,const unsigned char* bytes,size_t size,
+                     double time,unsigned epoch,unsigned status=0) {
+    AcquireSRWLockExclusive(&queue_lock);
+    if(count==capacity)InterlockedIncrement(&dropped);
+    else {
+        auto& s=queue[tail];s.context=reinterpret_cast<uintptr_t>(context);s.kind=kind;
+        s.capture=true;s.epoch=epoch;s.time=time;s.length=unsigned(size);s.format=status;
+        if(size)memcpy(s.bytes,bytes,size);
+        tail=(tail+1)%capacity;++count;
+    }
+    ReleaseSRWLockExclusive(&queue_lock);SetEvent(event);
+}
+static void* AacInitializeHook(void* context,bool mode) {
+    auto callback=audio_callbacks.Enter();
+    auto result=original_aac_initialize(context,mode);
+    if(AACEnabled())QueueAac(context,AudioEventKind::AacBegin,nullptr,0,Now(),CaptureEpoch());
+    return result;
+}
+static void* AacPushHook(void* context,void* status,const AacView* input) {
+    auto callback=audio_callbacks.Enter();
+    if(!AACEnabled())return original_aac_push(context,status,input);
+    const auto epoch=CaptureEpoch();const auto time=Now();
+    // Original input is borrowed and may be released by the demuxer. Copy it
+    // before calling through; enqueue only after checking the original status.
+    unsigned char bytes[65307];
+    const auto size=input?input->size:0;
+    const bool bounded=input&&input->bytes&&size<=sizeof(bytes);
+    if(bounded&&size)memcpy(bytes,input->bytes,size);
+    auto result=original_aac_push(context,status,input);
+    uint32_t code=~0u;if(status)memcpy(&code,status,sizeof(code));
+    if(!bounded||code>1)QueueAac(context,AudioEventKind::AacError,nullptr,0,time,epoch,code);
+    else if(size)QueueAac(context,AudioEventKind::AacBytes,bytes,size,time,epoch);
+    return result;
+}
+static void* AacDestroyHook(void* context,unsigned flags) {
+    auto callback=audio_callbacks.Enter();
+    if(AACEnabled())QueueAac(context,AudioEventKind::AacDestroy,nullptr,0,Now(),CaptureEpoch());
+    return original_aac_destroy(context,flags);
+}
 struct Capture {
     Stream stream;
-    bool lossless=false,metadata=false;
+    bool lossless=false,metadata=false,aac=false;
+    SpacStream spac;
     FlacInfo flac;
     FlacCoverage coverage;
     double born=0,finished=0,retained_until=0;
     uint64_t bytes=0,listen_generation=0;
     CompressedBuffer data;
-    double Duration() const { return lossless && flac.rate ? double(coverage.samples)/flac.rate : stream.Duration(); }
-    Quality Encoding() const { return lossless ? Quality{Codec::Flac,flac.rate,flac.channels,flac.bits,0} : Quality{Codec::Vorbis,stream.rate,stream.channels,0,stream.bitrate}; }
+    size_t Capacity() const {return data.capacity()+(aac?spac.MemoryUsage():0);}
+    double Duration() const {
+        if(aac)return spac.Duration();
+        return lossless&&flac.rate?double(coverage.samples)/flac.rate:stream.Duration();
+    }
+    Quality Encoding() const {
+        if(aac)return {Codec::Aac,spac.info.rate,spac.info.channels,0,0};
+        if(lossless)return {Codec::Flac,flac.rate,flac.channels,flac.bits,0};
+        return {Codec::Vorbis,stream.rate,stream.channels,0,stream.bitrate};
+    }
+    uint64_t Samples() const {
+        if(aac)return spac.info.total_samples;
+        return lossless?coverage.samples:uint64_t(stream.samples);
+    }
+    uint64_t SourceUnits() const {
+        if(aac) {
+            const auto samples=uint64_t(spac.info.total_samples)+spac.info.priming;
+            return spac.info.samples_per_packet?(samples+spac.info.samples_per_packet-1)/spac.info.samples_per_packet:0;
+        }
+        return lossless?coverage.frames:stream.pages;
+    }
+    const wchar_t* Extension() const {return aac?L".m4a":lossless?L".flac":L".ogg";}
+    const char* Source() const {
+        if(aac)return "native compressed SpAC AAC packets";
+        return lossless?"native compressed FLAC input":"native compressed Ogg pages";
+    }
 };
+static bool FormatEnabled(const Capture& capture,const Settings& settings) {
+    return capture.aac?settings.aac:capture.lossless?settings.flac:settings.ogg;
+}
 struct Heard { Media media; double start=0,finish=0;std::uint64_t generation=0; };
 constexpr double completion_wait=10;
 static bool CaptureTimingMatchesListen(const Capture& capture,const Heard& heard) {
@@ -222,7 +300,7 @@ static std::string Grouped(unsigned value) {
     return text;
 }
 static std::string SavedAudioDetails(const Quality& quality,size_t bytes) {
-    std::string text=quality.codec==Codec::Flac ? "FLAC" : "Ogg Vorbis";
+    std::string text=quality.codec==Codec::Flac ? "FLAC" : quality.codec==Codec::Aac?"AAC (M4A)":"Ogg Vorbis";
     if(quality.codec==Codec::Flac && quality.bits)text+=" "+std::to_string(quality.bits)+"-bit";
     if(quality.codec==Codec::Vorbis && quality.bitrate) {
         text+=quality.bitrate%1000 ? " "+std::to_string(quality.bitrate)+" bps nominal" : " "+std::to_string(quality.bitrate/1000)+" kbps nominal";
@@ -271,43 +349,47 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     swprintf(stamp,64,L"%04u-%02u-%02uT%02u:%02u:%02uZ",t.wYear,t.wMonth,t.wDay,t.wHour,t.wMinute,t.wSecond);
     auto catalog=CatalogFor(heard.media);
     auto settings=GetSettings();
-    if(settings.capture_epoch!=expected_epoch || !settings.downloads || !(c.lossless ? settings.flac : settings.ogg)) return finish(Publication::Skipped,"skipped","capture settings changed or downloads/format disabled");
+    if(settings.capture_epoch!=expected_epoch || !settings.downloads || !FormatEnabled(c,settings)) return finish(Publication::Skipped,"skipped","capture settings changed or downloads/format disabled");
     Quality quality=c.Encoding();
     Tags tags;
     tags.fields={{"TITLE",Utf8(heard.media.title)},{"ARTIST",Utf8(heard.media.artist)},
       {"ALBUM",Utf8(heard.media.album)},{"ALBUMARTIST",Utf8(heard.media.album_artist)},
       {"TRACKNUMBER",std::to_string(heard.media.track)},
       {"HISTORY_COMPLETE_LISTEN","1"},{"HISTORY_TRANSCODED","0"},
-      {"HISTORY_SAMPLES",std::to_string(c.lossless ? c.coverage.samples : c.stream.samples)},
+      {"HISTORY_SAMPLES",std::to_string(c.Samples())},
       {"HISTORY_SAMPLE_RATE",std::to_string(quality.rate)},
       {"HISTORY_BITS_PER_SAMPLE",std::to_string(quality.bits)},
       {"HISTORY_NOMINAL_BITRATE",std::to_string(quality.bitrate)},
       {"HISTORY_MEDIA_DURATION",std::to_string(heard.media.duration)},
-      {"HISTORY_SOURCE_PAGES",std::to_string(c.lossless ? c.coverage.frames : c.stream.pages)},
+      {"HISTORY_SOURCE_PAGES",std::to_string(c.SourceUnits())},
       {"HISTORY_SOURCE_BYTES",std::to_string(c.bytes)},
       {"HISTORY_ELAPSED_SECONDS",std::to_string(heard.finish-heard.start)},
-      {"HISTORY_SAVED_UTC",Utf8(stamp)},{"HISTORY_CAPTURE",c.lossless ? "native compressed FLAC input" : "native compressed Ogg pages"}};
+      {"HISTORY_SAVED_UTC",Utf8(stamp)},{"HISTORY_CAPTURE",c.Source()}};
     if(!heard.media.genre.empty())tags.fields.push_back({"GENRE",Utf8(heard.media.genre)});
     EnrichTags(heard.media,tags);
     // Use the same RAM-only canonical catalog as Song probing. Enrichment may
     // arrive while a completed listen waits for publication; make final tags
     // and path planning agree before inspecting any existing recording.
     catalog=CatalogFor(heard.media);ApplyCatalogIdentity(tags,catalog);
-    const auto destination=ResolveRecordingPath(OutputPath(settings.root,catalog,c.lossless ? L".flac" : L".ogg",settings.music_folder),catalog);
+    const auto destination=ResolveRecordingPath(OutputPath(settings.root,catalog,c.Extension(),settings.music_folder),catalog);
     if(destination.empty())return finish(Publication::Failed,"failed","no safe recording destination; existing files retained");
     const auto flac=c.lossless ? destination : ResolveRecordingPath(OutputPath(settings.root,catalog,L".flac",settings.music_folder),catalog);
     RecordingFile inspected;
     const bool existing_lossless=!c.lossless && !flac.empty() && ReadRecording(flac,inspected) &&
         inspected.complete && MatchesRecording(inspected,catalog) && inspected.quality.codec==Codec::Flac;
-    const auto decision=existing_lossless ? SaveDecision::Skip : DecideSave(destination,quality,catalog,&inspected);
+    const auto ogg=c.aac&&!existing_lossless?ResolveRecordingPath(OutputPath(settings.root,catalog,L".ogg",settings.music_folder),catalog):std::wstring{};
+    const bool existing_vorbis=c.aac&&!existing_lossless&&!ogg.empty()&&ReadRecording(ogg,inspected)&&
+        inspected.complete&&MatchesRecording(inspected,catalog)&&inspected.quality.codec==Codec::Vorbis;
+    const auto existing_path=existing_lossless?flac:existing_vorbis?ogg:destination;
+    const auto decision=existing_lossless||existing_vorbis ? SaveDecision::Skip : DecideSave(destination,quality,catalog,&inspected);
     if(decision==SaveDecision::Skip) {
         // An audio duplicate may still have missing metadata. Update only a
         // verified matching recording; this never adds a Latest Downloads entry.
         const auto latest=GetSettings();
-        const bool target_enabled=existing_lossless ? settings.flac : (c.lossless ? settings.flac : settings.ogg);
+        const bool target_enabled=existing_lossless ? settings.flac : existing_vorbis?settings.ogg:FormatEnabled(c,settings);
         if(settings.metadata && settings.update_existing_metadata && target_enabled && latest.generation==settings.generation &&
            latest.downloads && latest.metadata && latest.update_existing_metadata) {
-            const auto& path=existing_lossless ? flac : destination;
+            const auto& path=existing_path;
             if(inspected.owned && inspected.complete && NeedsRecordingMetadata(inspected,tags)) {
                 const auto result=UpdateRecordingMetadata(path,tags,catalog,settings.generation);
                 if(result==FileMetadataUpdate::Updated) {
@@ -318,17 +400,21 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
                     return finish(Publication::Failed,"failed","metadata update failed; existing file retained");
             }
         }
-        Log(("SKIP existing equal, higher or unverified quality "+Utf8(existing_lossless ? flac : destination)).c_str());
-        return finish(Publication::Skipped,"skipped",ExistingSkipReason(existing_lossless ? flac : destination,quality,catalog,&inspected));
+        Log(("SKIP existing equal, higher or unverified quality "+Utf8(existing_path)).c_str());
+        return finish(Publication::Skipped,"skipped",ExistingSkipReason(existing_path,quality,catalog,&inspected));
     }
     // Existing tags/art/lyrics are merged by PublishBytes while its exact old
     // object is locked. Do not take a separate stale preservation snapshot here.
     std::vector<uint8_t> tagged; std::string error;
     auto source=c.data.Flatten();
-    bool tagged_ok=c.lossless ? TagFlac(source,tags,tagged,error) : TagOgg(source,tags,tagged,error);
+    bool tagged_ok=false;
+    if(c.aac) {
+        AacInfo info;std::vector<std::vector<uint8_t>> packets;
+        tagged_ok=ReadSpac(source,info,packets,error)&&MakeAacM4a(info,packets,tags,tagged,error);
+    } else tagged_ok=c.lossless ? TagFlac(source,tags,tagged,error) : TagOgg(source,tags,tagged,error);
     if(!tagged_ok)return finish(Publication::Failed,"failed","tagging failed: "+error);
     auto latest=GetSettings();
-    if(latest.generation!=settings.generation || !latest.downloads || !(c.lossless ? latest.flac : latest.ogg)) return finish(Publication::Skipped,"skipped","capture settings changed or downloads/format disabled");
+    if(latest.generation!=settings.generation || !latest.downloads || !FormatEnabled(c,latest)) return finish(Publication::Skipped,"skipped","capture settings changed or downloads/format disabled");
     if(!Directories(destination.substr(0,destination.find_last_of(L'\\')))) return finish(Publication::Failed,"failed","could not create save directory");
     // Only complete tagged audio reaches the bounded save worker's staged,
     // flushed publication protocol. Recording identity authorizes replacement.
@@ -393,8 +479,8 @@ static void ProcessFlacCapture(const Slot& s,CaptureBuffers& buffers) {
     Capture& c=*found->second;
     if(s.kind==AudioEventKind::FlacError) { active.erase(found); Log("FLAC decoder error; stream discarded"); return; }
     if(s.kind==AudioEventKind::FlacBytes) {
-        size_t reserved=publishing_reserved.load(); for(const auto& item:active) reserved+=item.second->data.capacity();
-        for(const auto& item:ready) reserved+=item->data.capacity();
+        size_t reserved=publishing_reserved.load(); for(const auto& item:active) reserved+=item.second->Capacity();
+        for(const auto& item:ready) reserved+=item->Capacity();
         size_t available=reserved<memory_limit ? memory_limit-reserved : 0;
         if(!c.data.Append(s.bytes,s.length,available)) { active.erase(found); Log("FLAC capture memory limit; stream discarded"); return; }
         c.bytes+=s.length;
@@ -436,8 +522,8 @@ static void ProcessOggCapture(const Slot& s,CaptureBuffers& buffers) {
         active.erase(found); Log("stream discarded: page gap or integrity failure"); return;
     }
     size_t reserved=publishing_reserved.load();
-    for(const auto& item:active) reserved+=item.second->data.capacity();
-    for(const auto& item:ready) reserved+=item->data.capacity();
+    for(const auto& item:active) reserved+=item.second->Capacity();
+    for(const auto& item:ready) reserved+=item->Capacity();
     size_t available=reserved<memory_limit ? memory_limit-reserved : 0;
     if(!c.data.Append(s.bytes,s.length,available)) {
         active.erase(found);
@@ -451,6 +537,48 @@ static void ProcessOggCapture(const Slot& s,CaptureBuffers& buffers) {
         ready.push_back(std::move(found->second)); active.erase(found);
     }
 }
+static void ProcessAacCapture(const Slot& s,CaptureBuffers& buffers) {
+    auto& active=buffers.active;auto& ready=buffers.ready;
+    auto found=active.find(s.context);
+    if(s.kind==AudioEventKind::AacBegin) {
+        if(found==active.end()&&active.size()>=16){Log("AAC decoder limit reached; stream ignored");return;}
+        auto capture=std::make_unique<Capture>();capture->aac=true;capture->born=s.time;
+        active[s.context]=std::move(capture);return;
+    }
+    if(found==active.end()||!found->second->aac)return;
+    if(s.kind==AudioEventKind::AacDestroy||s.kind==AudioEventKind::AacError) {
+        active.erase(found);
+        if(s.kind==AudioEventKind::AacError)Log("AAC decoder input rejected; stream discarded");
+        return;
+    }
+    auto& c=*found->second;
+    auto reserved=[&] {
+        size_t total=publishing_reserved.load();
+        for(const auto& entry:active)total+=entry.second->Capacity();
+        for(const auto& entry:ready)total+=entry->Capacity();
+        return total;
+    };
+    const auto used=reserved();
+    if(!c.spac.MemoryUsage()&&(used>=memory_limit||memory_limit-used<65536+64)) {
+        active.erase(found);Log("AAC capture memory limit; stream discarded");return;
+    }
+    const auto result=c.spac.Push(s.bytes,s.length);
+    if(result==AacParse::Invalid||result==AacParse::Unsupported) {
+        active.erase(found);Log(result==AacParse::Unsupported?
+            "unsupported SpAC AAC configuration; stream discarded":"AAC page checksum or frame gap; stream discarded");return;
+    }
+    const auto allocated=reserved();
+    if(!c.data.Append(s.bytes,s.length,allocated<memory_limit?memory_limit-allocated:0)) {
+        active.erase(found);Log("AAC capture memory limit; stream discarded");return;
+    }
+    c.bytes+=s.length;
+    if(result==AacParse::Complete) {
+        c.finished=s.time;
+        char line[180];snprintf(line,sizeof(line),"AAC COMPLETE source_bytes=%llu rate=%u channels=%u samples=%u priming=%u duration=%.6f",
+            static_cast<unsigned long long>(c.bytes),c.spac.info.rate,c.spac.info.channels,c.spac.info.total_samples,c.spac.info.priming,c.Duration());Log(line);
+        ready.push_back(std::move(found->second));active.erase(found);
+    }
+}
 static void ProcessCaptureEvent(const Slot& s,CaptureBuffers& buffers,PlaybackQualityTracker& quality,
                                 bool observing_quality,bool enabled,unsigned epoch) {
     if(s.kind==AudioEventKind::FormatDetected) {
@@ -460,7 +588,8 @@ static void ProcessCaptureEvent(const Slot& s,CaptureBuffers& buffers,PlaybackQu
     }
     if(observing_quality) ObserveCodecQuality(s,quality);
     if(!enabled || !s.capture || s.epoch!=epoch) return;
-    if(s.kind>=AudioEventKind::FlacBegin) ProcessFlacCapture(s,buffers);
+    if(s.kind>=AudioEventKind::AacBegin)ProcessAacCapture(s,buffers);
+    else if(s.kind>=AudioEventKind::FlacBegin) ProcessFlacCapture(s,buffers);
     else ProcessOggCapture(s,buffers);
 }
 static void AssociateListen(Media media,Listen& listen,Media& current,std::vector<Heard>& heard,
@@ -543,7 +672,7 @@ static void SchedulePublications(std::vector<Heard>& heard,CaptureBuffers& buffe
             if(CaptureMatchesListen(c,*h)) { match=i; ++matches; }
         }
         if(matches==1) {
-            SaveJob job;job.reserved=ready[match]->data.capacity();job.epoch=epoch;
+            SaveJob job;job.reserved=ready[match]->Capacity();job.epoch=epoch;
             job.capture=std::move(ready[match]);job.heard=*h;job.capture->listen_generation=h->generation;
             publishing_reserved.fetch_add(job.reserved);
             if(saves.Push(std::move(job)))SetEvent(save_event);
@@ -579,7 +708,7 @@ static DWORD WINAPI Worker(LPVOID) {
                 bool initial=generation==~0u;
                 generation=preferences.generation;
                 output=preferences.root; memory_limit=size_t(preferences.max_buffered_mib)*1024*1024;
-                bool capture=preferences.downloads && (preferences.ogg || preferences.flac);
+                bool capture=preferences.downloads && (preferences.ogg || preferences.flac || preferences.aac);
                 if(capture!=enabled || initial || preferences.capture_epoch!=epoch) {
                     active.clear(); ready.clear(); heard.clear(); listen={}; current={}; next_media=0;
                     if(!enabled && capture) saved_count=0;
@@ -631,8 +760,8 @@ static DWORD WINAPI Worker(LPVOID) {
             }
             if(now>=next_log) {
                 size_t buffered=0;
-                for(const auto& item:active) buffered+=item.second->data.capacity();
-                for(const auto& item:ready) buffered+=item->data.capacity();
+                for(const auto& item:active) buffered+=item.second->Capacity();
+                for(const auto& item:ready) buffered+=item->Capacity();
                 char line[350]; snprintf(line,sizeof(line),"status calls=%ld pages=%ld dropped=%ld active=%zu ready=%zu saved=%u pos=%.3f/%.3f eligible=%d buffered=%zu",
                   calls,pages,dropped,active.size(),ready.size(),saved_count.load(),current.position,current.duration,listen.eligible,buffered); Log(line); next_log=now+10;
             }
@@ -646,6 +775,7 @@ static DWORD WINAPI Worker(LPVOID) {
     MH_DisableHook(target);
     MH_DisableHook(sniff_target);
     for(auto address:flac_targets) if(address) MH_DisableHook(address);
+    for(auto address:aac_targets) if(address) MH_DisableHook(address);
     return 0;
 }
 }
@@ -672,6 +802,15 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
     flac_targets[1]=DiscoveredTarget(spotify_module,discovered,spotify::TargetKind::FlacRead);
     flac_targets[2]=DiscoveredTarget(spotify_module,discovered,spotify::TargetKind::FlacFrame);
     flac_targets[3]=DiscoveredTarget(spotify_module,discovered,spotify::TargetKind::FlacError);
+    if(preferences.aac) {
+        auto* base=reinterpret_cast<unsigned char*>(spotify_module);
+        auto* dos=reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+        auto* nt=reinterpret_cast<IMAGE_NT_HEADERS64*>(base+dos->e_lfanew);
+        spotify::AacHookTargets aac;
+        if(spotify::DiscoverAacHookTargets(base,nt->OptionalHeader.SizeOfImage,aac)==spotify::DiscoveryResult::Found) {
+            aac_targets[0]=base+aac.initialize;aac_targets[1]=base+aac.push;aac_targets[2]=base+aac.destroy;
+        } else Log("optional AAC capture unsupported on this Spotify build; FLAC/Ogg remain available");
+    }
     auto release_resources=[] {
         if(event) { CloseHandle(event); event=nullptr; }
         if(save_event) { CloseHandle(save_event); save_event=nullptr; }
@@ -681,6 +820,8 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
         original_flac_read=nullptr; original_flac_frame=nullptr; original_flac_error=nullptr;
         target=nullptr; sniff_target=nullptr;
         for(auto& address:flac_targets) address=nullptr;
+        for(auto& address:aac_targets)address=nullptr;
+        original_aac_initialize=nullptr;original_aac_push=nullptr;original_aac_destroy=nullptr;
     };
     save_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);
     queue=static_cast<Slot*>(HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof(Slot)*capacity));
@@ -704,7 +845,7 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
         return;
     }
     auto close_threads=[&] {CloseHandle(publisher);CloseHandle(worker);publisher=nullptr;worker=nullptr;};
-    void* created_targets[6]={};unsigned created_count=0;
+    void* created_targets[9]={};unsigned created_count=0;
     auto rollback=[&] {
         hooks::RollbackStatus result;
         auto disabled=[](MH_STATUS value){return value==MH_OK||value==MH_ERROR_DISABLED||value==MH_ERROR_NOT_CREATED;};
@@ -734,6 +875,30 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
     for(unsigned i=0;status==MH_OK && i<4;i++) {
         status=create_hook(flac_targets[i],flac_callbacks[i],flac_originals[i]);
         if(status==MH_OK) status=MH_QueueEnableHook(flac_targets[i]);
+    }
+    if(status==MH_OK&&aac_targets[0]) {
+        void* callbacks[]={reinterpret_cast<void*>(AacInitializeHook),reinterpret_cast<void*>(AacPushHook),reinterpret_cast<void*>(AacDestroyHook)};
+        void** originals[]={reinterpret_cast<void**>(&original_aac_initialize),reinterpret_cast<void**>(&original_aac_push),reinterpret_cast<void**>(&original_aac_destroy)};
+        const auto first_aac=created_count;auto aac_status=MH_OK;
+        for(unsigned i=0;aac_status==MH_OK&&i<3;++i) {
+            aac_status=create_hook(aac_targets[i],callbacks[i],originals[i]);
+            if(aac_status==MH_OK)aac_status=MH_QueueEnableHook(aac_targets[i]);
+        }
+        if(aac_status!=MH_OK) {
+            // None of these detours has been activated. Remove just the
+            // optional group and retain the supported FLAC/Ogg capability.
+            bool removed_all=true;
+            for(unsigned i=first_aac;i<created_count;++i) {
+                const auto removed=MH_RemoveHook(created_targets[i]);
+                if(removed!=MH_OK){status=removed;removed_all=false;}
+            }
+            // Keep failed removals in the shared rollback registry.
+            if(removed_all) {
+                created_count=first_aac;
+                for(auto& address:aac_targets)address=nullptr;
+            }
+            Log("optional AAC hook preparation failed; AAC capture unavailable");
+        }
     }
     if(status==MH_OK) status=MH_QueueEnableHook(target);
     if(status==MH_OK) status=MH_QueueEnableHook(sniff_target);

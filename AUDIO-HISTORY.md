@@ -38,6 +38,8 @@ MaxBufferedMiB=500
   subfolder, including redirected Music folders. A custom directory is accepted.
 - **FLAC/Ogg:** select which original source formats to retain. Enabling FLAC does
   not convert Vorbis playback into lossless audio. Spotify must supply FLAC.
+- **AAC:** INI-only, default `0`. Set `AAC=1` and restart to capture supported
+  low-quality SpAC/AAC streams as M4A. Downloads still controls all saving.
 - **Metadata:** enriches tracks using existing client state, cached metadata, and Spotify's authenticated track/album services. Set 0 and restart to disable its hooks.
 - **UpdateExistingMetadata:** default on. Set 0 to disable metadata-only changes
   to existing files, including lyrics and artwork upgrades. New audio saves and
@@ -251,3 +253,35 @@ lower-quality replay can enrich an existing FLAC without replacing its audio.
 update planner reuses the quality inspection and skips reopening, retagging or
 staging an existing file when no metadata or artwork changes are needed. Updates are logged separately and do
 not add a Latest Downloads entry. There is no bulk library scan.
+
+## Optional low-quality AAC streams
+
+Spotify may supply SpAC AAC rather than Vorbis at low quality. `AAC=0` leaves this
+capture path disabled by default, including its optional native hooks. `AAC=1`
+uses the existing bounded capture/publication workers; it adds no worker or menu
+control. Dynamic capability discovery verifies the reader constructor, input
+method and vtable; an unavailable AAC capability leaves FLAC/Ogg support active.
+
+SpAC pages use Ogg-like lacing, a different checksum and AAC-specific setup data.
+Each page checksum and frame index must agree, capture must start at frame zero,
+and the complete packet count must match rendered samples plus source priming.
+Seeks, gaps, unsupported headers, lost events and memory limits prevent saving.
+The parser retains at most one 64 KiB page; its allocation is included in capture
+accounting. AAC contexts are limited to sixteen. Raw captures remain in RAM until
+a complete listen and stream are associated. Publication remuxes unchanged access
+units and exact decoder configuration into M4A with sample-exact edit timing.
+The container inspector checks headers, sample tables, offsets and timing; it does
+not independently decode AAC payloads. Supported profiles are AAC-LC, HE-AAC and
+HE-AAC v2 with up to two rendered channels; xHE-AAC/USAC is currently unsupported.
+
+M4A files embed available tags, synchronized lyrics and validated Spotify artwork.
+Art remains optional. Metadata-only changes preserve compressed media and unknown
+metadata, honor `UpdateExistingMetadata=0`, and do not add Latest Downloads rows.
+A verified matching FLAC or Ogg suppresses a new low-quality AAC counterpart.
+Existing AAC renditions are retained: variable bitrate/file size does not prove a
+quality upgrade. Collision naming, identity verification and atomic publication
+use the same safeguards as other recordings. The Song shortcut also finds M4A.
+
+The bounded minimp4 muxer retains its upstream license in
+`native/vendor/minimp4`; no external player, decoder or network service is required
+for production AAC capture.

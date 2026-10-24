@@ -181,6 +181,7 @@ AacParse SpacStream::Push(const uint8_t* bytes,size_t size) {
             if(complete_&&size)return fail(AacParse::Invalid);
         }
     }
+    if(complete_)std::vector<uint8_t>().swap(pending_);
     return complete_?AacParse::Complete:AacParse::NeedMore;
 }
 bool ReadSpac(const std::vector<uint8_t>& source,AacInfo& info,std::vector<std::vector<uint8_t>>& packets,std::string& error) {

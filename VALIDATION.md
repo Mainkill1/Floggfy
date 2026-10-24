@@ -1,3 +1,36 @@
+## Optional SpAC AAC capture
+
+`AAC=0` is the new default and the option is INI-only. Supported full SpAC AAC
+streams are captured through the existing bounded workers and remuxed as M4A
+without re-encoding. Unknown configurations, partial/seek streams and frame gaps
+are rejected. Existing matching FLAC/Ogg recordings suppress a low-quality AAC
+counterpart; complete AAC recordings can receive metadata-only updates when
+allowed. AAC VBR size differences do not authorize an audio-quality replacement.
+
+Forensic inspection of an actual low-quality playback found a complete HE-AACv2
+stream: 371 checksum-valid SpAC pages, 4,063 access units, ASC `eb8a0800`, rendered
+44,100 Hz stereo, 8,314,226 presented samples, 5,119 priming samples and 1,679 trailing
+samples. It contains no Ogg/Vorbis markers. These are actual encoded packets;
+synthetic test packets are labeled as such and are never claimed to decode.
+
+One combined `bash test-aac.sh` invocation **passed** (exit 0), exercising parser,
+M4A container/tagging, disabled-default and Downloads gates, native hook forwarding,
+complete publication, duplicates, metadata opt-out/fills, preferred FLAC retention,
+recording identity and collision names. Optional private arguments remux the
+actual captured stream and map the supplied Spotify DLL for static discovery.
+The gate does not invoke Spotify functions or play synthetic AAC packets.
+The actual stream was remuxed to a 599,576-byte M4A. Its 566,143-byte `mdat`
+payload hashes identically to the original extracted access units. A separate
+VLC/FAAD decode succeeded as HE-AACv2/SBR+PS, 44,100 Hz stereo with no decoder
+errors. VLC produced 8,314,880 PCM frames, 654 more than the 8,314,226 presented
+samples in the source/container edit timeline (about 14.8 ms). The container
+encodes source timing exactly; this check does not claim sample-exact VLC trimming
+or equality to Spotify's rendered PCM. Synthetic sentinels were not decoded.
+Vendor warnings remain visible; project C++ compiled with `-Werror`.
+Production hook execution remains pending installation/live replay. No full
+suite has been run for this addition. Prior evidence below applies only
+to the revisions explicitly described there.
+
 ## Late capture completion after a playback transition
 
 Live testing reported repeated completed-listen association failures during

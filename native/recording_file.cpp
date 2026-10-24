@@ -2,6 +2,7 @@
 #include "ogg_history_core.h"
 #include "image_info.h"
 #include "vorbis_headers.h"
+#include "aac_stream.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -329,8 +330,26 @@ bool InspectRecording(const uint8_t* bytes,size_t size,RecordingFile& out) {
     bool valid=false;
     if(!std::memcmp(bytes,"fLaC",4)) valid=Flac(bytes,size,out);
     else if(!std::memcmp(bytes,"OggS",4)) valid=Ogg(bytes,size,out);
+    else if(size>=12 && !std::memcmp(bytes+4,"ftyp",4)) {
+        AacFile aac;
+        valid=InspectAacM4a(bytes,size,aac);
+        if(valid) {
+            out.quality={Codec::Aac,aac.info.rate,aac.info.channels,0,0};
+            out.tags=std::move(aac.tags);out.complete=aac.complete;
+            out.has_artwork=aac.has_artwork;out.artwork_edit_safe=aac.artwork_edit_safe;
+            for(const auto& bytes:aac.covers) {
+                RecordingArtwork image;
+                if(!ReadRecordingArtwork(bytes,image)){out.artwork_edit_safe=false;continue;}
+                out.artworks.push_back(image);
+                if(!out.artwork.valid || uint64_t(image.width)*image.height>uint64_t(out.artwork.width)*out.artwork.height)
+                    out.artwork=std::move(image);
+            }
+        }
+    }
     out.owned=valid && Field(out.tags,"HISTORY_COMPLETE_LISTEN")=="1" &&
-        (Field(out.tags,"HISTORY_CAPTURE")=="native compressed FLAC input" || Field(out.tags,"HISTORY_CAPTURE")=="native compressed Ogg pages");
+        ((out.quality.codec==Codec::Flac && Field(out.tags,"HISTORY_CAPTURE")=="native compressed FLAC input") ||
+         (out.quality.codec==Codec::Vorbis && Field(out.tags,"HISTORY_CAPTURE")=="native compressed Ogg pages") ||
+         (out.quality.codec==Codec::Aac && Field(out.tags,"HISTORY_CAPTURE")=="native compressed SpAC AAC packets"));
     return valid;
 }
 bool MatchesRecording(const RecordingFile& file,const Catalog& c) {

@@ -21,7 +21,7 @@ struct DestinationRequest {
     // selected its destination; it is independent of the capture epoch.
     unsigned generation=0;
     Catalog catalog;
-    std::wstring flac,ogg;
+    std::wstring flac,ogg,aac;
 };
 SRWLOCK destination_lock=SRWLOCK_INIT;
 INIT_ONCE destination_once=INIT_ONCE_STATIC_INIT;
@@ -47,7 +47,7 @@ struct DestinationTryExclusive {
 };
 static bool SameRequest(const DestinationRequest& a,const DestinationRequest& b) {
     const auto& x=a.catalog;const auto& y=b.catalog;
-    return a.identity==b.identity && a.generation==b.generation && a.flac==b.flac && a.ogg==b.ogg &&
+    return a.identity==b.identity && a.generation==b.generation && a.flac==b.flac && a.ogg==b.ogg && a.aac==b.aac &&
         x.kind==y.kind && x.artist==y.artist && x.album==y.album && x.title==y.title &&
         x.author==y.author && x.series==y.series && x.book==y.book && x.show==y.show &&
         x.track==y.track && x.episode_year==y.episode_year && x.disc==y.disc &&
@@ -91,7 +91,7 @@ static std::wstring ProbeSavedSong(const DestinationRequest& request,Verificatio
     if(cache.request && cache.request->revision==request.revision && SameRequest(request,*cache.request) &&
        !cache.file.empty() && current.Read(cache.file) && current==cache.signature) return cache.file;
     cache.request.reset();cache.file.clear();
-    for(const auto* base:{&request.flac,&request.ogg}) {
+    for(const auto* base:{&request.flac,&request.ogg,&request.aac}) {
         if(!destination_enabled.load(std::memory_order_acquire) || request.serial!=request_serial.load(std::memory_order_acquire))return {};
         const auto file=ResolveRecordingPath(*base,request.catalog);
         if(!destination_enabled.load(std::memory_order_acquire) || request.serial!=request_serial.load(std::memory_order_acquire))return {};
@@ -172,6 +172,7 @@ void PublishSongDestination(std::uint64_t identity,const std::wstring& root,
         if(identity && !root.empty()) {
             request.flac=OutputPath(root,catalog,L".flac",music_folder);
             request.ogg=OutputPath(root,catalog,L".ogg",music_folder);
+            request.aac=OutputPath(root,catalog,L".m4a",music_folder);
         }
         DestinationTryExclusive guard;
         if(!guard.locked || !destination_enabled.load(std::memory_order_relaxed) ||

@@ -14,8 +14,9 @@ struct AacInfo {
 enum class AacParse { NeedMore,Complete,Invalid,Unsupported };
 class SpacStream {
     std::vector<uint8_t> pending_;
-    uint64_t frames_=0;
+    uint64_t frames_=0,audio_bytes_=0;
     bool configured_=false,complete_=false,failed_=false;
+    AacParse failure_=AacParse::Invalid;
     AacParse ParsePage(const uint8_t* page,size_t size,
                        std::vector<std::vector<uint8_t>>* packets);
 public:
@@ -24,6 +25,7 @@ public:
     AacParse Push(const uint8_t* bytes,size_t size);
     double Duration() const {return info.rate?double(info.total_samples)/info.rate:0;}
     bool Complete() const {return complete_&&!failed_;}
+    size_t MemoryUsage() const {return pending_.capacity()+info.config.capacity();}
     friend bool ReadSpac(const std::vector<uint8_t>&,AacInfo&,
                          std::vector<std::vector<uint8_t>>&,std::string&);
 };
@@ -34,7 +36,8 @@ struct AacFile {
     AacInfo info;
     Tags tags;
     uint64_t audio_bytes=0;
-    bool complete=false;
+    bool complete=false,has_artwork=false,artwork_edit_safe=true;
+    std::vector<std::vector<uint8_t>> covers;
 };
 // Remux original access units into M4A, including known source priming/trimming.
 bool MakeAacM4a(const AacInfo&,const std::vector<std::vector<uint8_t>>& packets,

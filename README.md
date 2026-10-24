@@ -80,6 +80,24 @@ and recording safeguards remain active. New files may have no cover unless one
 is embedded in the captured source. Existing artwork still survives eligible
 audio quality upgrades, even with `Metadata=0`.
 
+Optional AAC capture is configured only in `SpotifyHistory.ini`:
+
+```ini
+[To Disk]
+; Usually used for low-quality streams. Disabled by default; restart after changing.
+AAC=0
+```
+
+Set `AAC=1` to retain supported SpAC AAC streams as `.m4a` files. Original AAC
+packets and decoder configuration are remuxed without re-encoding; source priming
+and tail trimming are recorded in the file timeline. Regular AAC-LC, HE-AAC and
+HE-AAC v2 are supported; xHE-AAC/USAC and unverified configurations are skipped.
+Existing matching FLAC/Ogg recordings are retained instead of adding an AAC copy.
+Complete AAC files can receive missing metadata, lyrics and better Spotify artwork
+when existing-file updates are enabled. AAC bitrate estimates do not authorize
+replacement of an existing AAC rendition. This option adds no menu toggle.
+
+
 <img width="338" height="362" alt="image" src="https://github.com/user-attachments/assets/b6294a3d-c09d-4dba-926a-72a1529d1db7" />
 
 

@@ -3,6 +3,7 @@
 set -euo pipefail
 cd -- "$(dirname -- "$0")"
 mkdir -p build/artwork-policy
+x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vendor/minimp4/minimp4.c -o build/artwork-policy/minimp4.o
 floggfy_temp_win=$(cmd.exe /c echo %TEMP% 2>/dev/null | tr -d '\r')
 floggfy_artwork_root="$(wslpath -u "$floggfy_temp_win")/Floggfy-artwork-policy-tests"
 mkdir -p "$floggfy_artwork_root"
@@ -25,7 +26,7 @@ x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -static-libgcc -stat
     native/audio_history.cpp native/media_session.cpp native/playback_quality_windows.cpp native/playback_quality.cpp \
     native/spotify_hook_discovery.cpp native/rich_metadata.cpp native/cached_metadata.cpp native/cached_metadata_windows.cpp \
     native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp native/ogg_history_core.cpp native/image_info.cpp \
-    native/recording_file.cpp native/vorbis_headers.cpp native/existing_quality.cpp native/library_layout.cpp \
+    native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp native/vorbis_headers.cpp native/existing_quality.cpp native/library_layout.cpp \
     native/file_publication.cpp native/metadata_update_core.cpp native/metadata_update_windows.cpp \
     native/recent_downloads.cpp native/song_destination.cpp native/async_log.cpp \
     build/artwork-policy/*.o -lole32 -luuid -lshell32 -lruntimeobject \

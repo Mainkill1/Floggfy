@@ -241,4 +241,44 @@ std::uint32_t TargetRva(const HookTargets& targets, TargetKind kind) noexcept {
     return 0;
 }
 
+DiscoveryResult DiscoverAacHookTargets(const std::uint8_t* mapped_image,
+    std::size_t available,AacHookTargets& targets) noexcept {
+    targets={};Image image{};
+    if(!ParseImage(mapped_image,available,image))return DiscoveryResult::InvalidImage;
+    // SpacReader constructor and incremental compressed-input method. Resolve
+    // function starts through x64 unwind metadata, then cross-check the vtable.
+    static constexpr std::uint8_t initialize[]={
+        0x66,0x89,0xb7,0x38,0x01,0x00,0x00,0x88,0x9f,0x3a,0x01,0x00,0x00,
+        0x40,0x88,0xb7,0x3b,0x01,0x00,0x00};
+    static constexpr std::uint8_t push[]={
+        0x4c,0x8b,0xea,0x48,0x8b,0xf9,0x4d,0x8b,0x38,0x4d,0x8b,0x60,0x08,
+        0x4d,0x03,0xe7,0x45,0x33,0xf6,0x83,0xce,0xff,0x44,0x39,0x77,0x58};
+    HookTarget ctor{},feed{};
+    auto result=FindTarget(image,{TargetKind::AacInitialize,initialize,sizeof(initialize),0xc0,0x180},ctor);
+    if(result!=DiscoveryResult::Found)return result;
+    result=FindTarget(image,{TargetKind::AacPush,push,sizeof(push),0x400,0x650},feed);
+    if(result!=DiscoveryResult::Found)return result;
+    // Audited constructor prefix: lea rax,[rip+vtable]; mov [rcx],rax.
+    const std::uint8_t lea[]={0x48,0x8d,0x05};
+    const std::uint8_t store[]={0x48,0x89,0x01};
+    if(!Range(available,ctor.rva+0x14,10) ||
+       std::memcmp(mapped_image+ctor.rva+0x14,lea,sizeof(lea)) ||
+       std::memcmp(mapped_image+ctor.rva+0x1b,store,sizeof(store)))return DiscoveryResult::InconsistentLayout;
+    std::int32_t relative=0;
+    if(!Read(mapped_image,available,ctor.rva+0x17,relative))return DiscoveryResult::InvalidImage;
+    const auto table=std::int64_t(ctor.rva)+0x1b+relative;
+    if(table<0 || !Range(image.image_size,std::size_t(table),24))return DiscoveryResult::InconsistentLayout;
+    std::uint64_t destroy_pointer=0,push_pointer=0;
+    if(!Read(mapped_image,available,std::size_t(table),destroy_pointer) ||
+       !Read(mapped_image,available,std::size_t(table)+16,push_pointer))return DiscoveryResult::InvalidImage;
+    const auto base=reinterpret_cast<std::uintptr_t>(mapped_image);
+    if(push_pointer!=base+feed.rva || destroy_pointer<base || destroy_pointer-base>=image.image_size)
+        return DiscoveryResult::InconsistentLayout;
+    const auto destroy=std::uint32_t(destroy_pointer-base);
+    std::uint32_t begin=0,end=0;
+    if(!RuntimeFunction(image,destroy,1,begin,end) || begin!=destroy || end-begin<0x20 || end-begin>0x100)
+        return DiscoveryResult::InconsistentLayout;
+    targets={ctor.rva,feed.rva,destroy};return DiscoveryResult::Found;
+}
+
 } // namespace spotify
