@@ -1,3 +1,34 @@
+## Directory-first recording lookup
+
+Conversion checks, publication lookup and the Song worker now list the containing
+song directory once per operation and compare expected filenames in memory. The
+same short-lived list serves FLAC, Ogg and M4A and all deterministic legacy or
+collision aliases. Only listed candidates/backups are inspected. Existing best
+quality and identity rules remain; this is not a library sweep or directory cache.
+Windows case-insensitive comparison is used. Incomplete/unreadable listings and
+more than 16,384 entries block the operation rather than imply a vacancy. Final
+renames/publication retain live handle locking, identity checks and no-overwrite
+promotion. No filesystem work moved onto capture or menu callbacks.
+
+Validation is **incomplete**. Exactly one `bash test-directory-lookup.sh` execution
+failed compilation (exit 1) before runtime cases: the Windows `wmain` test entry
+point lacked an explicit return. It now returns 0. The test was not rerun.
+
+One subsequent standalone compilation check passed (exit 0): the corrected test
+source compiled with `-fsyntax-only -Wall -Wextra -Werror`, followed by
+`bash build-native.sh`, which produced the DLL and launcher. Neither step executed
+the test. Existing vendor warnings remain visible. Independent static review
+approved the directory/identity/recovery and mutation guards before the attempted
+test. No full suite, runtime fixture cases or live Spotify checks ran for this
+follow-up, and the installed Spotify DLL was not replaced.
+
+The unexecuted cases assert one listing across codec lookups, no absent-candidate
+attribute probes, best collision reuse after deletion, case-insensitive names,
+locked files, backup recovery, directory occupants, missing directories, failed or
+partial enumeration, entry bounds, Ogg/M4A prefix conversion, occupied targets,
+menu cache invalidation and preferred-format publication. They are written, not
+claimed as passing. Earlier validation below describes preceding revisions.
+
 ## Configurable filename numbering and track-start conversion
 
 Added INI-only, default-off TrackNumberInFilename and ConvertNumberedFilenames.

@@ -98,9 +98,10 @@ static bool CurrentRequest(const DestinationRequest& request) {
     return destination_enabled.load(std::memory_order_acquire) &&
         request.serial==request_serial.load(std::memory_order_acquire);
 }
-static bool VerifySavedFile(const std::wstring& file,const DestinationRequest& request,FileSignature& signature) {
+static bool VerifySavedFile(const std::wstring& file,const DestinationRequest& request,
+                            const RecordingDirectory& directory,FileSignature& signature) {
     FileSignature before;Quality quality;
-    if(!CurrentRequest(request) || !before.Read(file) || !CurrentRequest(request))return false;
+    if(!CurrentRequest(request) || !directory.Contains(file) || !before.Read(file) || !CurrentRequest(request))return false;
     if(!ExistingRecording(file,request.catalog,quality) || !CurrentRequest(request))return false;
     return signature.Read(file) && before==signature && CurrentRequest(request);
 }
@@ -110,13 +111,17 @@ static void Remember(const DestinationRequest& request,const std::wstring& file,
     cache.entries.insert(cache.entries.begin(),VerifiedDestination{request,file,signature});
 }
 static std::wstring ProbeSavedSong(const DestinationRequest& request,VerificationCache& cache) {
+    // One short-lived listing serves all formats and historical names. Never
+    // perform a filesystem probe for each generated but absent candidate.
+    RecordingDirectory directory;
+    if(!CurrentRequest(request) || !ListRecordingDirectory(request.flac,directory) || !CurrentRequest(request))return {};
     cache.entries.erase(std::remove_if(cache.entries.begin(),cache.entries.end(),[&](const auto& entry) {
         return entry.request.revision!=request.revision;
     }),cache.entries.end());
     for(auto entry=cache.entries.begin();entry!=cache.entries.end();++entry) {
         if(!SameRequest(request,entry->request))continue;
         FileSignature current;
-        if(CurrentRequest(request) && current.Read(entry->file) && current==entry->signature && CurrentRequest(request)) {
+        if(CurrentRequest(request) && directory.Contains(entry->file) && current.Read(entry->file) && current==entry->signature && CurrentRequest(request)) {
             std::rotate(cache.entries.begin(),entry,entry+1);
             return cache.entries.front().file;
         }
@@ -127,8 +132,8 @@ static std::wstring ProbeSavedSong(const DestinationRequest& request,Verificatio
         FileSignature signature;
         // Opening the containing folder needs any verified matching recording,
         // not the best-quality collision candidate chosen for audio replacement.
-        // Ordinary saved files therefore take one inspection and no name scan.
-        if(VerifySavedFile(*base,request,signature)) {
+        // Ordinary saved files therefore take one inspection after listing.
+        if(VerifySavedFile(*base,request,directory,signature)) {
             Remember(request,*base,signature,cache);return *base;
         }
     }
@@ -140,7 +145,7 @@ static std::wstring ProbeSavedSong(const DestinationRequest& request,Verificatio
             if(file==*base)continue; // Already verified above.
             if(!CurrentRequest(request))return {};
             FileSignature signature;
-            if(VerifySavedFile(file,request,signature)) {
+            if(VerifySavedFile(file,request,directory,signature)) {
                 Remember(request,file,signature,cache);return file;
             }
         }

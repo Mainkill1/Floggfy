@@ -17,6 +17,22 @@ bool ExistingRecording(const std::wstring& file,const Catalog& catalog,Quality& 
 // Recover only a verified same-recording backup left by an interrupted upgrade.
 bool RecoverRecording(const std::wstring& path,const Catalog& catalog);
 enum class RecordingDestinationState { Vacant, Existing, Blocked };
+// Short-lived, bounded listing of one containing directory. All codec/name
+// checks in a worker operation share it; it is never a cross-request cache or
+// authorization to rename/replace a file. Partial/failed listings are unusable.
+class RecordingDirectory {
+public:
+    bool Covers(const std::wstring& file) const;
+    bool Contains(const std::wstring& file) const;
+private:
+    friend bool ListRecordingDirectory(const std::wstring&,RecordingDirectory&);
+    std::wstring directory_;
+    std::vector<std::wstring> names_;
+    bool complete_=false;
+};
+// A missing directory is an empty listing; access/enumeration errors and more
+// than 16,384 entries fail closed. No directories or files are created.
+bool ListRecordingDirectory(const std::wstring& file,RecordingDirectory& out);
 struct RecordingDestination {
     RecordingDestinationState state=RecordingDestinationState::Blocked;
     std::wstring path;
@@ -26,7 +42,8 @@ struct RecordingDestination {
 };
 // Blocked distinguishes I/O uncertainty from a verified vacancy. Callers must
 // not interpret it as absence when searching a preferred recording format.
-RecordingDestination ResolveRecordingDestination(const std::wstring& base,const Catalog& catalog,bool track_numbers=false);
+RecordingDestination ResolveRecordingDestination(const std::wstring& base,const Catalog& catalog,bool track_numbers=false,
+    const RecordingDirectory* directory=nullptr);
 // Pure, bounded naming rule shared by publication and folder lookup. The menu
 // can stop at its first complete matching file; replacement must examine all.
 std::vector<std::wstring> RecordingPathCandidates(const std::wstring& base,const Catalog& catalog,bool legacy_names=true,bool track_numbers=false);

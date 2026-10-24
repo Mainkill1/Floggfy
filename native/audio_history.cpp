@@ -407,6 +407,10 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     // arrive while a completed listen waits for publication; make final tags
     // and path planning agree before inspecting any existing recording.
     catalog=CatalogFor(heard.media);ApplyCatalogIdentity(tags,catalog);
+    const auto capture_path=OutputPath(settings.root,catalog,c.Extension(),settings.music_folder,settings.track_number_in_filename);
+    RecordingDirectory directory;
+    if(!ListRecordingDirectory(capture_path,directory))
+        return finish(Publication::Failed,"failed","recording directory could not be listed; publication deferred");
     // Search preferred formats first. Blocked is I/O uncertainty, never proof
     // that a recording is absent. The resolver returns its verified snapshot
     // so skip/metadata planning does not read the entire file again.
@@ -416,7 +420,7 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
         if(c.lossless || (codec==Codec::Vorbis && !c.aac)) break;
         const auto extension=codec==Codec::Flac?L".flac":L".ogg";
         auto preferred=ResolveRecordingDestination(
-            OutputPath(settings.root,catalog,extension,settings.music_folder,settings.track_number_in_filename),catalog,settings.track_number_in_filename);
+            OutputPath(settings.root,catalog,extension,settings.music_folder,settings.track_number_in_filename),catalog,settings.track_number_in_filename,&directory);
         if(preferred.state==RecordingDestinationState::Blocked)
             return finish(Publication::Failed,"failed","preferred recording could not be inspected; publication deferred");
         if(preferred.state==RecordingDestinationState::Existing && preferred.recording.complete &&
@@ -429,7 +433,7 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     }
     const bool preferred=existing_lossless||existing_vorbis;
     if(!preferred) resolved=ResolveRecordingDestination(
-        OutputPath(settings.root,catalog,c.Extension(),settings.music_folder,settings.track_number_in_filename),catalog,settings.track_number_in_filename);
+        capture_path,catalog,settings.track_number_in_filename,&directory);
     if(resolved.state==RecordingDestinationState::Blocked)
         return finish(Publication::Failed,"failed","no safe recording destination; existing files retained");
     if(settings.convert_numbered_filenames && !settings.track_number_in_filename) {
@@ -576,9 +580,12 @@ static void ProcessFilenameCheck(const FilenameCheck& check) {
             settings.generation==check.settings.generation && settings.downloads &&
             settings.convert_numbered_filenames && !settings.track_number_in_filename;
     };
+    if(!current())return;
+    RecordingDirectory directory;
+    if(!ListRecordingDirectory(OutputPath(check.settings.root,check.catalog,L".flac",check.settings.music_folder,false),directory))return;
     for(const auto* extension:{L".flac",L".ogg",L".m4a"}) {
         if(!current())return;
-        auto resolved=ResolveRecordingDestination(OutputPath(check.settings.root,check.catalog,extension,check.settings.music_folder,false),check.catalog);
+        auto resolved=ResolveRecordingDestination(OutputPath(check.settings.root,check.catalog,extension,check.settings.music_folder,false),check.catalog,false,&directory);
         if(!current())return;
         if(resolved.state==RecordingDestinationState::Blocked)return;
         if(resolved.state!=RecordingDestinationState::Existing || !resolved.recording.complete)continue;

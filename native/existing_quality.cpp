@@ -13,6 +13,22 @@ struct Handle {
     HANDLE value=INVALID_HANDLE_VALUE;
     ~Handle() { if(value!=INVALID_HANDLE_VALUE && value) CloseHandle(value); }
 };
+struct FindHandle {
+    HANDLE value=INVALID_HANDLE_VALUE;
+    ~FindHandle(){if(value!=INVALID_HANDLE_VALUE)FindClose(value);}
+};
+std::wstring LookupPath(std::wstring path) {
+    std::replace(path.begin(),path.end(),L'/',L'\\');
+    return WindowsPath(path);
+}
+std::wstring ContainingDirectory(const std::wstring& file) {
+    const auto path=LookupPath(file);
+    const auto slash=path.find_last_of(L'\\');
+    return slash==std::wstring::npos?L".\\":path.substr(0,slash+1);
+}
+bool FilenameLess(const std::wstring& a,const std::wstring& b) {
+    return CompareStringOrdinal(a.c_str(),int(a.size()),b.c_str(),int(b.size()),TRUE)==CSTR_LESS_THAN;
+}
 bool Missing(const std::wstring& path) {
     if(GetFileAttributesW(WindowsPath(path).c_str())!=INVALID_FILE_ATTRIBUTES) return false;
     DWORD error=GetLastError();
@@ -37,6 +53,49 @@ bool RestoreBackup(const std::wstring& backup,const std::wstring& destination,co
     std::memcpy(info->FileName,path.data(),info->FileNameLength);
     return SetFileInformationByHandle(file.value,FileRenameInfo,info,DWORD(bytes))!=0;
 }
+}
+bool RecordingDirectory::Covers(const std::wstring& file) const {
+    const auto directory=ContainingDirectory(file);
+    return complete_ && CompareStringOrdinal(directory_.c_str(),int(directory_.size()),
+        directory.c_str(),int(directory.size()),TRUE)==CSTR_EQUAL;
+}
+bool RecordingDirectory::Contains(const std::wstring& file) const {
+    if(!Covers(file))return false;
+    const auto slash=file.find_last_of(L"\\/");
+    const auto name=file.substr(slash==std::wstring::npos?0:slash+1);
+    return std::binary_search(names_.begin(),names_.end(),name,FilenameLess);
+}
+bool ListRecordingDirectory(const std::wstring& file,RecordingDirectory& out) {
+    out={};
+    if(file.empty())return false;
+    try {
+        RecordingDirectory listing;
+        listing.directory_=ContainingDirectory(file);
+        WIN32_FIND_DATAW entry{};
+        FindHandle find{FindFirstFileExW((listing.directory_+L"*").c_str(),FindExInfoBasic,
+            &entry,FindExSearchNameMatch,nullptr,0)};
+        if(find.value==INVALID_HANDLE_VALUE) {
+            const auto error=GetLastError();
+            if(error!=ERROR_FILE_NOT_FOUND && error!=ERROR_PATH_NOT_FOUND)return false;
+        } else {
+            constexpr size_t max_entries=16384;
+            size_t entries=0;
+            for(;;) {
+                if(++entries>max_entries)return false;
+                const std::wstring name=entry.cFileName;
+                // Keep directories too: one occupying a candidate must not be
+                // mistaken for a vacant filename. Never recurse into them.
+                if(name!=L"." && name!=L"..")listing.names_.push_back(name);
+                if(FindNextFileW(find.value,&entry))continue;
+                if(GetLastError()!=ERROR_NO_MORE_FILES)return false;
+                break;
+            }
+        }
+        std::sort(listing.names_.begin(),listing.names_.end(),FilenameLess);
+        listing.complete_=true;
+        out=std::move(listing);
+        return true;
+    }catch(...) {return false;}
 }
 RecordingRead InspectRecordingFile(const std::wstring& path,RecordingFile& out) {
     out={};
@@ -129,21 +188,28 @@ std::vector<std::wstring> RecordingPathCandidates(const std::wstring& base,const
 
     return candidates;
 }
-RecordingDestination ResolveRecordingDestination(const std::wstring& base,const Catalog& catalog,bool track_numbers) {
+RecordingDestination ResolveRecordingDestination(const std::wstring& base,const Catalog& catalog,bool track_numbers,
+    const RecordingDirectory* directory) {
     const auto candidates=RecordingPathCandidates(base,catalog,true,track_numbers);
     if(candidates.empty())return {};
     const auto writable=RecordingPathCandidates(base,catalog,false,track_numbers);
+    RecordingDirectory local;
+    if(!directory) {
+        if(!ListRecordingDirectory(base,local))return {};
+        directory=&local;
+    }
+    if(!directory->Covers(base))return {};
 
     // Never return the first vacancy until all deterministic names have been
-    // checked (at most 195 known names including legacy prefixes, never a directory scan). A prior collision
-    // remains this recording's home even if the
+    // compared in RAM with this directory listing. Only listed candidates are
+    // opened. A prior collision remains this recording's home even if the
     // unrelated occupant of the ordinary filename was later deleted.
     std::wstring vacant,repairable,matching;
     bool unreadable=false;
     Quality best;
     RecordingFile best_recording,repairable_recording;
     for(const auto& path:candidates) {
-        if(Missing(path)) {
+        if(!directory->Contains(path)) {
             // Historical prefixes are lookup aliases, never new-file names.
             if(vacant.empty() && std::find(writable.begin(),writable.end(),path)!=writable.end()) vacant=path;
             continue;
@@ -177,7 +243,7 @@ RecordingDestination ResolveRecordingDestination(const std::wstring& base,const 
     bool restore_reserved=false;
     for(const auto& path:candidates) {
         const auto backup=path+L".previous";
-        if(Missing(backup))continue;
+        if(!directory->Contains(backup))continue;
         RecordingFile retained;
         const auto result=InspectRecordingFile(backup,retained);
         if(result==RecordingRead::ReadError) {
@@ -185,7 +251,7 @@ RecordingDestination ResolveRecordingDestination(const std::wstring& base,const 
             continue;
         }
         if(result==RecordingRead::InvalidContainer || !retained.owned || !MatchesRecording(retained,catalog))continue;
-        if(!Missing(path)) {
+        if(directory->Contains(path) && !Missing(path)) {
             if(path==base)restore_reserved=true;
             else return {}; // Retained suffix backup needs recovery, not a duplicate.
             continue;
@@ -204,7 +270,7 @@ RecordingDestination ResolveRecordingDestination(const std::wstring& base,const 
         // A raced ordinary destination can leave its verified old object in
         // .previous. Recover beside the raced file without overwriting it.
         for(const auto& path:writable) {
-            if(!Missing(path)) continue;
+            if(directory->Contains(path)) continue;
             if(RestoreBackup(backup,path,catalog) || Reusable(path,catalog)) {
                 RecordingFile restored;
                 if(ReadRecording(path,restored) && MatchesRecording(restored,catalog))

@@ -91,6 +91,12 @@ Downloads is enabled; it does not require a completed listen or metadata updatin
 If both options are `1`, numbering wins and conversion is reset to `0` in the INI.
 The two settings never compete to rename a file back and forth.
 
+The check lists the containing album directory once, then compares expected
+FLAC/Ogg/M4A names and legacy aliases against that list in memory. Only listed
+matching candidates are opened for identity/quality validation; absent generated
+names do not cause individual filesystem probes. The list is discarded after
+the operation.
+
 The check uses one coalesced pending request on the existing publication worker;
 rapid track changes discard superseded requests and audio saves take priority.
 There is no library-wide sweep or capture/menu-thread filesystem I/O. A completed
@@ -108,9 +114,11 @@ counterpart only for the same recording.
 The resolver checks existing deterministic names before allocating a vacant one,
 so deleting the ordinary filename does not hide a previously suffixed recording.
 It also checks the text-identity suffix used before URI enrichment. Searches are
-bounded to 195 known names including legacy numbered/disc-prefixed variants,
-without scanning directories; inaccessible possible matches
-defer a new save instead of risking a duplicate.
+bounded to 195 known names including legacy numbered/disc-prefixed variants.
+One nonrecursive directory listing is shared across format lookups; it is limited
+to 16,384 entries. Inaccessible or partial listings and inaccessible possible
+matches defer a new save instead of risking a duplicate. Final publication and
+renames still lock/revalidate the live file; a listing never authorizes a write.
 
 A Vorbis upgrade requires higher known nominal bitrate and no sample-rate
 reduction. FLAC upgrades require matching channel count, no bit-depth/sample-rate
@@ -177,13 +185,13 @@ Explorer failures produce an error notice. Menu construction performs no filesys
 or shell work.
 
 The current **Song** row stays visible but greyed out unless a matching saved
-FLAC or Ogg file exists. When enabled, it opens the containing folder. A separate
+FLAC, Ogg or M4A file exists. When enabled, it opens the containing folder. A separate
 worker checks destination paths; capture processing and menu rendering only
 exchange bounded requests and memory snapshots. Superseded results cannot enable
 a different track or save location, and `Menu=0` disables destination probes.
-The shortcut checks the three ordinary filenames first, verifies a matching file
-once, and only searches legacy/collision names if needed, stopping at the first
-complete match. Publication still chooses the best verified existing recording.
+The shortcut lists the directory once and checks the three ordinary filenames
+against that list first. It verifies a listed matching file once and only compares
+legacy/collision names if needed, stopping at the first complete match. Publication still chooses the best verified existing recording.
 A 16-entry worker cache retains verified path/catalog/signature data across song
 changes; signatures are checked before reuse and saves invalidate the cache. It
 does not retain audio or artwork. A pending row may acquire its verified target

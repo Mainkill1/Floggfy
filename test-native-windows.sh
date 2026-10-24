@@ -136,3 +136,6 @@ bash test-aac.sh
 
 # Naming configuration and atomic conversion share one focused integration gate.
 bash test-filename-options.sh
+
+# Directory enumeration bounds and one-list reuse across all codec/name checks.
+bash test-directory-lookup.sh
