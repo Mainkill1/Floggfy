@@ -19,6 +19,25 @@
  function remember(o){if(!records.includes(o)){if(records.length>=96)records.shift();records.push(o);}}
  function method(o,k){for(let i=0;object(o)&&i<4;i++,o=Object.getPrototypeOf(o)){const v=own(o,k);if(typeof v==='function')return v;}return undefined;}
  function options(){return own(window,'__floggfyConfig')||{};}
+ // Debug observations are raw local flags, never a diagnosis of their cause.
+ let debugPrevious;
+ function debugObservation(state,item){
+  if(own(options(),'debug')!==true||!object(state)||!object(item)){debugPrevious=undefined;return;}
+  const boolean=v=>typeof v==='boolean'?Number(v):'?';
+  const number=v=>Number.isSafeInteger(v)&&Math.abs(v)<=99999?v:'?';
+  const identity=v=>typeof v==='string'&&v.length>0&&v.length<=256?v:undefined;
+  const error=own(state,'error');
+  const current={paused:boolean(own(state,'isPaused')),buffer:boolean(own(state,'isBuffering')),
+   active:boolean(own(state,'isActiveDevice')),code:number(own(error,'code')??own(state,'errorCode')),
+   status:number(own(error,'status')??own(state,'errorStatus')),
+   instance:identity(own(state,'playbackId')),device:identity(own(own(state,'device'),'id'))};
+  if(debugPrevious&&Object.keys(current).every(key=>Object.is(current[key],debugPrevious[key])))return;
+  const changed=key=>current[key]===undefined?'?':debugPrevious&&debugPrevious[key]!==undefined?Number(current[key]!==debugPrevious[key]):0;
+  const message='FLOGGFY_STATUS:client obs paused='+current.paused+' buf='+current.buffer+' active='+current.active+
+   ' code='+current.code+' status='+current.status+' inst='+changed('instance')+' dev='+changed('device');
+  debugPrevious=current;
+  if(message.length<100)console.info(message);
+ }
  function requestState(uri){
   let entry=serviceCache.get(uri);
   if(!entry){entry={metadata:{attempts:0},album:{attempts:0},lyrics:{attempts:0}};serviceCache.set(uri,entry);}
@@ -181,9 +200,10 @@
  }
  function tick(){
   try{
-   automatic();scan();if(!player){playback({v:1});return;}
+   automatic();scan();if(!player){debugObservation();playback({v:1});return;}
    if(!reported){console.info('FLOGGFY_STATUS:cached player found');reported=true;}
    const state=method(player,'getState').call(player),item=own(state,'item'),m=own(item,'metadata')||{},uri=text(own(item,'uri'));
+   debugObservation(state,item);
    if(!/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')){playback({v:1});return;}
    const track=uri.startsWith('spotify:track:'),show=own(item,'show')||{};
    const data={v:1,title:text(own(m,'title')||own(item,'name')),
@@ -215,7 +235,7 @@
    if(payload.length>131072||(last&&last.payload===payload&&now-last.time<15000))return;
    seenPayload.set(uri,{payload,time:now});if(seenPayload.size>64)seenPayload.delete(seenPayload.keys().next().value);
    console.info(prefix+payload);
-  }catch{/* Missing or changed caches leave ordinary tags intact. */}
+  }catch{debugPrevious=undefined;/* Missing or changed caches leave ordinary tags intact. */}
  }
  window.__floggfyPoll=tick;
  console.info('FLOGGFY_STATUS:metadata collector started');
