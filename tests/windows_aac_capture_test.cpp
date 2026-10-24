@@ -128,7 +128,7 @@ void TestPipeline(const std::wstring& root) {
     assert(reused.state==RecordingDestinationState::Existing && reused.path==flac_suffix.path && reused.recording.complete);
     assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped && Read(flac_suffix.path)==high &&
         GetFileAttributesW(flac.c_str())==INVALID_FILE_ATTRIBUTES && GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES);
-    assert(DeleteFileW(flac_suffix.path.c_str())&&SetUpdateExistingMetadata(true));
+    assert(DeleteFileW(flac_suffix.path.c_str()));
     // Apply the same fail-closed rule to a locked Vorbis candidate even when
     // there is no FLAC, and reuse the verified collision suffix after deletion.
     const auto ogg=OutputPath(root,catalog,L".ogg",false);
@@ -141,7 +141,7 @@ void TestPipeline(const std::wstring& root) {
         GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES);
     CloseHandle(locked);
     assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped && Read(ogg)==vorbis);
-    assert(DeleteFileW(ogg.c_str()));
+    assert(DeleteFileW(ogg.c_str())&&SetUpdateExistingMetadata(true));
     // Recording identity still disambiguates AAC filename collisions.
     AacInfo info;std::vector<std::vector<uint8_t>> packets;
     assert(ReadSpac(source,info,packets,error));
@@ -161,6 +161,22 @@ void RealSample(const std::wstring& input,const std::wstring& output) {
     AacFile inspected;assert(InspectAacM4a(m4a.data(),m4a.size(),inspected)&&inspected.complete);
     assert(inspected.info.config==info.config&&inspected.info.total_samples==info.total_samples&&inspected.info.priming==info.priming);
     uint64_t audio_bytes=0;for(const auto& p:packets)audio_bytes+=p.size();assert(audio_bytes==inspected.audio_bytes);
+    bool matched_media=false;
+    for(size_t at=0;at<m4a.size();) {
+        assert(m4a.size()-at>=8);
+        uint32_t size=0;for(unsigned i=0;i<4;++i)size=(size<<8)|m4a[at+i];
+        assert(size>=8 && size<=m4a.size()-at);
+        if(!memcmp(m4a.data()+at+4,"mdat",4)) {
+            size_t cursor=at+8;
+            for(const auto& packet:packets) {
+                assert(packet.size()<=at+size-cursor && !memcmp(m4a.data()+cursor,packet.data(),packet.size()));
+                cursor+=packet.size();
+            }
+            assert(cursor==at+size && !matched_media);matched_media=true;
+        }
+        at+=size;
+    }
+    assert(matched_media); // Real input AUs survive this exact writer revision.
     Write(output,m4a);
     printf("REAL SAMPLE: rate=%u channels=%u samples=%u priming=%u units=%zu audio_bytes=%llu m4a_bytes=%zu\n",
         info.rate,info.channels,info.total_samples,info.priming,packets.size(),static_cast<unsigned long long>(audio_bytes),m4a.size());

@@ -107,6 +107,9 @@ int RunAacContainerTests(){
     auto unsupported=info;unsupported.config={0xf9,0x40,0x00};
     assert(!MakeAacM4a(unsupported,packets,tags,tagged,error,&failure)&&tagged.empty());
     assert(failure==AacWriteFailure::InvalidOrUnsupported&&error.find("resource")==std::string::npos);
+    Tags over_budget;over_budget.cover.resize(4u*1024u*1024u+1);
+    assert(!MakeAacM4a(info,packets,over_budget,tagged,error,&failure)&&tagged.empty());
+    assert(failure==AacWriteFailure::ResourceLimit&&error.find("resource")!=std::string::npos);
     unsupported=info;unsupported.config.resize(65);assert(!MakeAacM4a(unsupported,packets,tags,tagged,error));
     unsupported=info;unsupported.rate=48000;assert(!MakeAacM4a(unsupported,packets,tags,tagged,error));
     unsupported=info;unsupported.total_samples+=2048;assert(!MakeAacM4a(unsupported,packets,tags,tagged,error));

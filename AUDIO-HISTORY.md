@@ -272,7 +272,7 @@ not add a Latest Downloads entry. There is no bulk library scan.
 
 Spotify may supply SpAC AAC rather than Vorbis at low quality. `AAC=0` leaves this
 capture path disabled by default, including its optional native hooks. `AAC=1`
-uses the existing bounded capture/publication workers; it adds no worker or menu
+uses the existing bounded capture/publication workers; it adds no codec-specific worker or menu
 control. Dynamic capability discovery verifies the reader constructor, input
 method and vtable; an unavailable AAC capability leaves FLAC/Ogg support active.
 
@@ -297,6 +297,18 @@ listen; it does not count as an absent file or permit an extra M4A beside it.
 Existing AAC renditions are retained: variable bitrate/file size does not prove a
 quality upgrade. Collision naming, identity verification and atomic publication
 use the same safeguards as other recordings. The Song shortcut also finds M4A.
+
+AAC extraction and M4A construction each preflight a conservative 512 MiB
+operation budget. It includes retained input capacities and packet objects;
+construction also reserves the vendor's full 128 MiB allowance, one media output
+and bounded metadata/table scratch. The flattened SpAC source is released before
+muxing. Muxing and tagging share one reserved output buffer and rewrite only its
+terminal movie metadata; they do not duplicate all compressed samples for tagging.
+Oversized operations fail before construction and leave existing recordings intact.
+This budget is separate from capture buffering and is not a process-wide memory
+cap. External metadata-only tagging retains its source and budgets its necessary
+second output buffer. A resource-limit failure is distinguished from invalid or
+unsupported AAC input. None of these checks transcode, downsample or truncate audio.
 
 The bounded minimp4 muxer retains its upstream license in
 `native/vendor/minimp4`; no external player, decoder or network service is required
