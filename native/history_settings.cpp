@@ -30,6 +30,10 @@ static constexpr char default_ini[]=
     "Menu=1\r\n"
     "; Empty uses the Windows Music folder plus \\Spotify.\r\n"
     "Save Location=\r\n"
+    "; Prefix new filenames with the track number when known.\r\n"
+    "TrackNumberInFilename=0\r\n"
+    "; Rename matching numbered files on access; disabled when numbering is on.\r\n"
+    "ConvertNumberedFilenames=0\r\n"
     "Ogg=1\r\n"
     "; Captures native FLAC when Spotify supplies lossless audio.\r\n"
     "Flac=1\r\n"
@@ -52,6 +56,26 @@ static bool CreateDefaultIni(const std::wstring& path) {
     std::wstring text;for(const char* p=default_ini;*p;++p)text+=wchar_t(*p);
     return settings_file::Write(path,text,true);
 }
+// Missing/blank options and conflicting enabled flags need an atomic rewrite.
+// Reading does not change capture epochs or acknowledge persistence.
+static bool ReadFilenameOptions(Settings& target,const std::wstring& path) {
+    bool needs_persist=false;
+    auto option=[&](const wchar_t* key) {
+        wchar_t value[2]{};
+        if(!GetPrivateProfileStringW(L"To Disk",key,L"",value,2,path.c_str())) {
+            needs_persist=true;
+            return false;
+        }
+        return GetPrivateProfileIntW(L"To Disk",key,0,path.c_str())!=0;
+    };
+    target.track_number_in_filename=option(L"TrackNumberInFilename");
+    target.convert_numbered_filenames=option(L"ConvertNumberedFilenames");
+    if(target.track_number_in_filename && target.convert_numbered_filenames) {
+        target.convert_numbered_filenames=false;
+        needs_persist=true;
+    }
+    return needs_persist;
+}
 static bool ReachedGeneration(volatile LONG& progress,unsigned expected) {
     return static_cast<LONG>(unsigned(InterlockedCompareExchange(&progress,0,0))-expected)>=0;
 }
@@ -71,6 +95,8 @@ static DWORD WINAPI PersistSettings(LPVOID) {
                 auto flag=[&](const wchar_t* key,bool value){settings_file::Set(text,key,value?L"1":L"0");};
                 flag(L"Downloads",snapshot.downloads);flag(L"Ogg",snapshot.ogg);flag(L"FLAC",snapshot.flac);flag(L"AAC",snapshot.aac);flag(L"Lyrics",snapshot.lyrics);
                 flag(L"UpdateExistingMetadata",snapshot.update_existing_metadata);
+                flag(L"TrackNumberInFilename",snapshot.track_number_in_filename);
+                flag(L"ConvertNumberedFilenames",snapshot.convert_numbered_filenames && !snapshot.track_number_in_filename);
                 settings_file::Set(text,L"Save Location",snapshot.save_location);
                 ok=settings_file::Write(ini,text);
             }
@@ -132,6 +158,7 @@ void InitSettings(HMODULE proxy) {
     settings.menu=GetPrivateProfileIntW(L"To Disk",L"Menu",1,ini.c_str())!=0;
     settings.ogg=GetPrivateProfileIntW(L"To Disk",L"Ogg",1,ini.c_str())!=0;
     settings.flac=GetPrivateProfileIntW(L"To Disk",L"FLAC",1,ini.c_str())!=0;
+    const bool filename_options_pending=ReadFilenameOptions(settings,ini);
     settings.aac=GetPrivateProfileIntW(L"To Disk",L"AAC",0,ini.c_str())!=0;
     settings.metadata=GetPrivateProfileIntW(L"To Disk",L"Metadata",1,ini.c_str())!=0;
     settings.lyrics=GetPrivateProfileIntW(L"To Disk",L"Lyrics",1,ini.c_str())!=0;
@@ -160,7 +187,10 @@ void InitSettings(HMODULE proxy) {
         if(persist_done) CloseHandle(persist_done);
         settings_signal=nullptr;persist_done=nullptr;
     }
-    persisted_generation=LONG(settings.generation);StartLogger();
+    // Missing options/conflict normalization are pending until Write succeeds.
+    InterlockedExchange(&persisted_generation,filename_options_pending?-1:LONG(settings.generation));
+    if(filename_options_pending && settings_signal)SetEvent(settings_signal);
+    StartLogger();
 }
 Settings GetSettings() {
     SharedSrw guard(lock);return settings;
