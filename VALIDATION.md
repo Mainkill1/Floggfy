@@ -1,3 +1,41 @@
+## Song shortcut and filename compatibility follow-up
+
+New files use the song title alone; track/disc numbers remain in tags. The shared
+bounded naming helper recognizes older numbered, disc-prefixed and suffixed names
+before choosing a new destination. Historical aliases are lookup-only: a vacancy
+at an old numbered name cannot become a new output. Existing matching recordings
+are reused in place, preserving audio-quality/identity/recovery decisions. Genuine
+different-recording collisions still preserve both recordings safely.
+
+The folder shortcut checks the three ordinary filenames before any collision
+lookup and stops at the first complete identity match. It does not invoke the
+publication resolver or choose the best audio rendition merely to open a folder.
+A normal matching file needs one complete inspection, rather than resolution plus
+a second inspection. The existing worker cache now retains at most 16 positive
+path/catalog/signature entries across track changes; it holds no audio/artwork.
+Revisits check signatures, and changed files, request settings and successful saves
+invalidate reuse. Menu callbacks remain RAM-only. An empty pending target can
+become ready during submenu preparation only for its frozen identity and settings;
+an already-bound label/target is never redirected.
+
+`bash test-song-shortcut.sh` — **PASS**, exit 0, one combined Windows executable
+execution covering both findings. No finding exceeded one execution. Assertions
+covered zero collision searches and one inspection for ordinary FLAC/Ogg/M4A,
+no additional full read on a verified song revisit, changed/missing/wrong-identity
+files, blocked storage, settings/freshness cancellation, delayed menu-target
+readiness and frozen click targets. Layout/resolver cases retained track/disc tags,
+reused numbered/disc-prefixed and old suffix names instead of allocating another
+file, and preserved unrelated same-title recordings. The existing CEF callback
+microbenchmark ran inside that same executable; it is not a measurement of real
+Spotify menu-opening latency.
+
+One standalone `bash build-native.sh` also passed. Project C++ used `-Werror`;
+existing vendor warnings remain visible. Independent static review approved the
+changes. No test rerun or full suite ran. The validation uses synthetic fixtures,
+not live Spotify CEF or a measured slow network share. First-time verification
+still reads complete audio, on its storage worker. The compatibility change does
+not bulk rename or delete existing music or automatically remove prior duplicates.
+
 ## Timeline-refresh follow-up to the fourth review
 
 The observer's exact timeline equality check at `22984d0` rejected legitimate

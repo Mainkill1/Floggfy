@@ -189,6 +189,7 @@ struct MenuOpening {
         std::wstring song_file;
         std::vector<history::RecentDownload> recent;
         bool song_bound=false;
+        unsigned song_settings_generation=0;
     } snapshot;
     Phase phase=Phase::Preparing;
     bool Visible()const{return phase==Phase::Visible;}
@@ -212,13 +213,19 @@ static int Release(Base* p) { auto* w=Self(p); if(w->refs.fetch_sub(1,std::memor
 static int One(Base* p) { return Self(p)->refs.load()==1; }
 static int Any(Base* p) { return Self(p)->refs.load()!=0; }
 static void ReleaseMenu(Menu* menu) { if(menu && menu->base.release) menu->base.release(&menu->base); }
-static void BindSong(Wrapped* wrapped) {
-    const auto snapshot=history::ReadPlaybackQuality();
+static void RefreshPendingSongTarget(Wrapped* wrapped) {
+    auto& opening=wrapped->opening.snapshot;
+    if(!opening.song_bound || !opening.song_file.empty())return;
     std::wstring saved_file;
-    history::ReadSongDestination(snapshot.identity,history::GetSettings().generation,saved_file);
-    wrapped->opening.snapshot.song_file.swap(saved_file);
-    wrapped->opening.snapshot.song=snapshot;
-    wrapped->opening.snapshot.song_bound=true;
+    if(history::ReadSongDestination(opening.song.identity,opening.song_settings_generation,saved_file))
+        opening.song_file.swap(saved_file);
+}
+static void BindSong(Wrapped* wrapped) {
+    auto& opening=wrapped->opening.snapshot;
+    opening.song=history::ReadPlaybackQuality();
+    opening.song_settings_generation=history::GetSettings().generation;
+    opening.song_file.clear();opening.song_bound=true;
+    RefreshPendingSongTarget(wrapped);
 }
 static std::wstring RecentLabel(const std::wstring& title) {
     if(title.empty()) return L"Untitled download";
@@ -371,6 +378,7 @@ static void WillShow(Delegate* self,Menu* menu) {
     if(o && o->will_show) { menu->base.add_ref(&menu->base); o->will_show(o,menu); }
     if(Self(self)->CapableCached(menu) && MenuMethods::IndexOf(menu,song_id)>=0) {
         if(!Self(self)->opening.snapshot.song_bound) BindSong(Self(self));
+        else RefreshPendingSongTarget(Self(self));
         UpdateQuality(menu,&Self(self)->opening.snapshot.song,&Self(self)->opening.snapshot.song_file);
     }
     else Populate(menu);
@@ -401,6 +409,7 @@ static int Format(Delegate* self,Menu* menu,String* label) {
             try { if(Self(self)->CapableCached(child) && MenuMethods::IndexOf(child,song_id)>=0 &&
                      MenuMethods::IndexOf(child,downloads_id)>=0) {
                          if(!Self(self)->opening.Visible()) BindSong(Self(self));
+                         else RefreshPendingSongTarget(Self(self));
                          UpdateQuality(child,&Self(self)->opening.snapshot.song,&Self(self)->opening.snapshot.song_file);
                          if(!Self(self)->opening.Visible()) RefreshRecent(Self(self),child);
                      } }
@@ -420,6 +429,7 @@ static int Format(Delegate* self,Menu* menu,String* label) {
                MenuMethods::IndexOf(menu,downloads_id)<0) break;
             try {
                 if(i==0 && !Self(self)->opening.snapshot.song_bound) BindSong(Self(self));
+                else if(i==0)RefreshPendingSongTarget(Self(self));
                 const auto rows=history::PlaybackQualityLabels(i==0 ? Self(self)->opening.snapshot.song : history::ReadPlaybackQuality());
                 if(i==0) MenuMethods::SetEnabled(menu,song_id,int(!Self(self)->opening.snapshot.song_file.empty()));
                 if(set_string(rows[i].data(),rows[i].size(),label,1))changed=1;

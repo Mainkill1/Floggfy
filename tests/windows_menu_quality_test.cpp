@@ -208,7 +208,11 @@ static void OriginalCommand(Delegate *, Menu *menu, int, int) {
 static int format_calls=0;
 static int OriginalFormat(Delegate*,Menu* menu,String*) {++format_calls;ReleaseMenu(menu);return 0;}
 static int ReleaseDelegate(Base *) { return 0; }
+#ifdef FLOGGFY_SONG_SHORTCUT_TEST
+int RunMenuQualityTests() {
+#else
 int main() {
+#endif
   assert(menu_init.TryBegin(GetTickCount64()));menu_prepared=true;
   FinishMenuStartup(false,false);
   assert(menu_init.State()==hooks::InitState::RetryableFailure);
@@ -371,6 +375,18 @@ int main() {
   Retain(&child.api.base);Execute(&wrapped.api,&child.api,song_id,0);
   assert(filesystem_calls==fs_before_disabled_click && folder_creations==0 && folder_opens==0);
   SetSongFile(actual.identity,history::OutputPath(L"C:\\Saved",destination_catalog,L".flac",false));
+  // The parent already froze this label while its destination check was
+  // pending. Opening the child can pick up its now-ready RAM result.
+  published_song_generation=history::GetSettings().generation+1;
+  Retain(&child.api.base);WillShow(&wrapped.api,&child.api);
+  assert(!child.entries[Index(&child.api,song_id)].enabled);
+  SetSongFile(actual.identity+99,L"C:\\Other\\wrong.flac");
+  Retain(&child.api.base);WillShow(&wrapped.api,&child.api);
+  assert(!child.entries[Index(&child.api,song_id)].enabled);
+  SetSongFile(actual.identity,history::OutputPath(L"C:\\Saved",destination_catalog,L".flac",false));
+  const auto same_label=child.entries[Index(&child.api,song_id)].label;
+  Retain(&child.api.base);WillShow(&wrapped.api,&child.api);
+  assert(child.entries[Index(&child.api,song_id)].enabled&&child.entries[Index(&child.api,song_id)].label==same_label);
   build_root();
   assert(child.entries[Index(&child.api,song_id)].visible && child.entries[Index(&child.api,song_id)].enabled);
   assert(folder_creations==0 && folder_opens==0);
@@ -594,4 +610,5 @@ int main() {
   std::puts("PASS: Song requires saved audio, rechecks deleted files/folders on click, never creates folders and preserves frozen targets");
   std::puts("PASS: bottom technical quality rows, independent codec display, duplicate-free "
             "refresh and disabled-command ownership");
+  return 0;
 }

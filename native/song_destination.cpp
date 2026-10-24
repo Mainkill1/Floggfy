@@ -7,6 +7,8 @@
 #include <optional>
 #include <utility>
 #include <cstring>
+#include <vector>
+#include <algorithm>
 namespace history {
 namespace {
 struct DestinationRequest {
@@ -81,24 +83,65 @@ struct FileSignature {
             CompareFileTime(&a.ftLastWriteTime,&b.ftLastWriteTime)==0 && CompareFileTime(&a.ftCreationTime,&b.ftCreationTime)==0;
     }
 };
-struct VerificationCache {
-    std::optional<DestinationRequest> request;
+struct VerifiedDestination {
+    DestinationRequest request;
     std::wstring file;
     FileSignature signature;
 };
+struct VerificationCache {
+    // Retain only bounded path/catalog/signature data, never audio or artwork.
+    // Revisited songs still need a fresh signature check on this worker.
+    std::vector<VerifiedDestination> entries;
+};
+static bool CurrentRequest(const DestinationRequest& request) {
+    return destination_enabled.load(std::memory_order_acquire) &&
+        request.serial==request_serial.load(std::memory_order_acquire);
+}
+static bool VerifySavedFile(const std::wstring& file,const DestinationRequest& request,FileSignature& signature) {
+    FileSignature before;Quality quality;
+    if(!CurrentRequest(request) || !before.Read(file) || !CurrentRequest(request))return false;
+    if(!ExistingRecording(file,request.catalog,quality) || !CurrentRequest(request))return false;
+    return signature.Read(file) && before==signature && CurrentRequest(request);
+}
+static void Remember(const DestinationRequest& request,const std::wstring& file,
+                     const FileSignature& signature,VerificationCache& cache) {
+    if(cache.entries.size()==16)cache.entries.pop_back();
+    cache.entries.insert(cache.entries.begin(),VerifiedDestination{request,file,signature});
+}
 static std::wstring ProbeSavedSong(const DestinationRequest& request,VerificationCache& cache) {
-    FileSignature current;
-    if(cache.request && cache.request->revision==request.revision && SameRequest(request,*cache.request) &&
-       !cache.file.empty() && current.Read(cache.file) && current==cache.signature) return cache.file;
-    cache.request.reset();cache.file.clear();
+    cache.entries.erase(std::remove_if(cache.entries.begin(),cache.entries.end(),[&](const auto& entry) {
+        return entry.request.revision!=request.revision;
+    }),cache.entries.end());
+    for(auto entry=cache.entries.begin();entry!=cache.entries.end();++entry) {
+        if(!SameRequest(request,entry->request))continue;
+        FileSignature current;
+        if(CurrentRequest(request) && current.Read(entry->file) && current==entry->signature && CurrentRequest(request)) {
+            std::rotate(cache.entries.begin(),entry,entry+1);
+            return cache.entries.front().file;
+        }
+        cache.entries.erase(entry);break; // Changed/deleted files need validation again.
+    }
     for(const auto* base:{&request.flac,&request.ogg,&request.aac}) {
-        if(!destination_enabled.load(std::memory_order_acquire) || request.serial!=request_serial.load(std::memory_order_acquire))return {};
-        const auto file=ResolveRecordingPath(*base,request.catalog);
-        if(!destination_enabled.load(std::memory_order_acquire) || request.serial!=request_serial.load(std::memory_order_acquire))return {};
-        FileSignature before,after;Quality quality;
-        if(!file.empty() && before.Read(file) && ExistingRecording(file,request.catalog,quality) &&
-           after.Read(file) && before==after) {
-            cache.request=request;cache.file=file;cache.signature=after;return file;
+        if(!CurrentRequest(request))return {};
+        FileSignature signature;
+        // Opening the containing folder needs any verified matching recording,
+        // not the best-quality collision candidate chosen for audio replacement.
+        // Ordinary saved files therefore take one inspection and no name scan.
+        if(VerifySavedFile(*base,request,signature)) {
+            Remember(request,*base,signature,cache);return *base;
+        }
+    }
+    // Check all three ordinary names before any collision search. Their
+    // containing directory is identical; the menu does not choose an upgrade.
+    for(const auto* base:{&request.flac,&request.ogg,&request.aac}) {
+        if(!CurrentRequest(request))return {};
+        for(const auto& file:RecordingPathCandidates(*base,request.catalog)) {
+            if(file==*base)continue; // Already verified above.
+            if(!CurrentRequest(request))return {};
+            FileSignature signature;
+            if(VerifySavedFile(file,request,signature)) {
+                Remember(request,file,signature,cache);return file;
+            }
         }
     }
     return {};

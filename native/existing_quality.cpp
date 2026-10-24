@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <vector>
 #include <utility>
+#include <cwchar>
 namespace history {
 namespace {
 struct Handle {
@@ -85,30 +86,48 @@ bool RecoverRecording(const std::wstring& path,const Catalog& catalog) {
     if(!Missing(path)) return false;
     return RestoreBackup(path+L".previous",path,catalog);
 }
-RecordingDestination ResolveRecordingDestination(const std::wstring& base,const Catalog& catalog) {
+std::vector<std::wstring> RecordingPathCandidates(const std::wstring& base,const Catalog& catalog,bool legacy_names) {
     if(base.empty()) return {};
     auto slash=base.find_last_of(L"\\/"),dot=base.find_last_of(L'.');
     if(dot==std::wstring::npos || (slash!=std::wstring::npos && dot<slash)) dot=base.size();
     const auto extension=base.substr(dot);
-    std::vector<std::wstring> candidates{base};
-    auto add_suffix=[&](const Catalog& identity) {
-        const auto stem=base.substr(0,dot)+RecordingSuffix(identity);
-        for(unsigned attempt=0;attempt<32;++attempt) {
-            const auto path=stem+(attempt?L"-"+std::to_wstring(attempt):L"")+extension;
-            if(std::find(candidates.begin(),candidates.end(),path)==candidates.end())candidates.push_back(path);
+    const auto filename=slash==std::wstring::npos?0:slash+1;
+    const auto directory=base.substr(0,filename);
+    std::wstring numbered=base.substr(filename);
+    std::vector<std::wstring> bases{base};
+    if(legacy_names && catalog.track) {
+        wchar_t prefix[20];std::swprintf(prefix,20,L"%02u - ",catalog.track);
+        numbered=prefix+numbered;bases.push_back(directory+numbered);
+    }
+    if(legacy_names && catalog.disc>1)
+        bases.push_back(directory+L"Disc "+std::to_wstring(catalog.disc)+L" - "+numbered);
+    // Older numbered names remain valid homes for the same recording. Merely
+    // changing filename style must never allocate a second copy of that song.
+    auto candidates=bases;
+    for(const auto& ordinary:bases) {
+        const auto stem=ordinary.substr(0,ordinary.size()-extension.size());
+        auto add_suffix=[&](const Catalog& identity) {
+            const auto named=stem+RecordingSuffix(identity);
+            for(unsigned attempt=0;attempt<32;++attempt) {
+                const auto path=named+(attempt?L"-"+std::to_wstring(attempt):L"")+extension;
+                if(std::find(candidates.begin(),candidates.end(),path)==candidates.end())candidates.push_back(path);
+            }
+        };
+        add_suffix(catalog);
+        if(!catalog.spotify_uri.empty()) {
+            auto legacy=catalog;legacy.spotify_uri.clear();add_suffix(legacy);
         }
-    };
-    add_suffix(catalog);
-    if(!catalog.spotify_uri.empty()) {
-        // A file may have been collision-named before Spotify supplied its URI,
-        // then enriched in place. Its original text-identity suffix still counts.
-        auto legacy=catalog;
-        legacy.spotify_uri.clear();
-        add_suffix(legacy);
     }
 
+    return candidates;
+}
+RecordingDestination ResolveRecordingDestination(const std::wstring& base,const Catalog& catalog) {
+    const auto candidates=RecordingPathCandidates(base,catalog);
+    if(candidates.empty())return {};
+    const auto writable=RecordingPathCandidates(base,catalog,false);
+
     // Never return the first vacancy until all deterministic names have been
-    // checked (at most 65 names, never a directory scan). A prior collision
+    // checked (at most 195 known names including legacy prefixes, never a directory scan). A prior collision
     // remains this recording's home even if the
     // unrelated occupant of the ordinary filename was later deleted.
     std::wstring vacant,repairable,matching;
@@ -117,7 +136,8 @@ RecordingDestination ResolveRecordingDestination(const std::wstring& base,const 
     RecordingFile best_recording,repairable_recording;
     for(const auto& path:candidates) {
         if(Missing(path)) {
-            if(vacant.empty()) vacant=path;
+            // Historical prefixes are lookup aliases, never new-file names.
+            if(vacant.empty() && std::find(writable.begin(),writable.end(),path)!=writable.end()) vacant=path;
             continue;
         }
         RecordingFile existing;
@@ -175,7 +195,7 @@ RecordingDestination ResolveRecordingDestination(const std::wstring& base,const 
     if(restore_reserved) {
         // A raced ordinary destination can leave its verified old object in
         // .previous. Recover beside the raced file without overwriting it.
-        for(const auto& path:candidates) {
+        for(const auto& path:writable) {
             if(!Missing(path)) continue;
             if(RestoreBackup(backup,path,catalog) || Reusable(path,catalog)) {
                 RecordingFile restored;

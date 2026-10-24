@@ -2,6 +2,7 @@
 #include "library_layout.h"
 #include "recording_file.h"
 #include <string>
+#include <vector>
 namespace history {
 // Complete container and supported codec-header validation, not independent
 // audio decoding. A header alone never counts as a saved song.
@@ -26,6 +27,9 @@ struct RecordingDestination {
 // Blocked distinguishes I/O uncertainty from a verified vacancy. Callers must
 // not interpret it as absence when searching a preferred recording format.
 RecordingDestination ResolveRecordingDestination(const std::wstring& base,const Catalog& catalog);
+// Pure, bounded naming rule shared by publication and folder lookup. The menu
+// can stop at its first complete matching file; replacement must examine all.
+std::vector<std::wstring> RecordingPathCandidates(const std::wstring& base,const Catalog& catalog,bool legacy_names=true);
 std::wstring ResolveRecordingPath(const std::wstring& base,const Catalog& catalog);
 enum class SaveDecision { NewFile, Upgrade, Skip };
 SaveDecision DecideSave(const std::wstring& path,const Quality& incoming);

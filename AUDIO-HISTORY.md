@@ -59,13 +59,15 @@ MaxBufferedMiB=500
 Default music paths are:
 
 ```text
-<Windows Music>\Spotify\Artists\Artist\Album\01 - Title.ogg
-<Windows Music>\Spotify\Artists\Artist\Album\01 - Title.flac
+<Windows Music>\Spotify\Artists\Artist\Album\Title.ogg
+<Windows Music>\Spotify\Artists\Artist\Album\Title.flac
 ```
 
-Album folders have no year prefix. Filenames have no timestamps. Missing track
-numbers omit the numeric prefix. Later discs include a disc prefix. Title, artist,
-album, album artist and track number are embedded in the single audio file.
+Album folders have no year prefix. New filenames use the title alone. Track and
+disc numbers remain in metadata. Existing numbered or disc-prefixed filenames
+are recognized and reused in place; a naming-style change never authorizes a
+second copy. Title, artist, album, album artist and track/disc numbers are embedded
+in the single audio file.
 Validated cover artwork is included when available; missing artwork does not
 discard completed audio. No image/JSON
 sidecars or per-song directories are created. Buffers remain in RAM until a
@@ -81,7 +83,8 @@ counterpart only for the same recording.
 The resolver checks existing deterministic names before allocating a vacant one,
 so deleting the ordinary filename does not hide a previously suffixed recording.
 It also checks the text-identity suffix used before URI enrichment. Searches are
-bounded to 65 names without scanning directories; inaccessible possible matches
+bounded to 195 known names including legacy numbered/disc-prefixed variants,
+without scanning directories; inaccessible possible matches
 defer a new save instead of risking a duplicate.
 
 A Vorbis upgrade requires higher known nominal bitrate and no sample-rate
@@ -153,6 +156,13 @@ FLAC or Ogg file exists. When enabled, it opens the containing folder. A separat
 worker checks destination paths; capture processing and menu rendering only
 exchange bounded requests and memory snapshots. Superseded results cannot enable
 a different track or save location, and `Menu=0` disables destination probes.
+The shortcut checks the three ordinary filenames first, verifies a matching file
+once, and only searches legacy/collision names if needed, stopping at the first
+complete match. Publication still chooses the best verified existing recording.
+A 16-entry worker cache retains verified path/catalog/signature data across song
+changes; signatures are checked before reuse and saves invalidate the cache. It
+does not retain audio or artwork. A pending row may acquire its verified target
+when the submenu is prepared without changing the frozen song label or settings.
 The click rechecks the file so deletion produces an unavailable notice instead of opening an
 empty folder. Only audio saves create directories. Folder clicks do not add
 download history entries.
