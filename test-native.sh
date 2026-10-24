@@ -60,3 +60,9 @@ build/recording-file-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror -I native/vendor/libogg/include \
  tests/metadata_update_test.cpp native/metadata_update_core.cpp native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp build/minimp4.o native/vorbis_headers.cpp build/vorbis-headers-stb-test.o native/flac_history_core.cpp native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/ogg-framing-test.o -o build/metadata-update-test
 build/metadata-update-test
+
+# Supported AAC packets retain their configuration, timing and original bytes.
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/spac_stream_test.cpp native/spac_stream.cpp -o build/spac-stream-test
+build/spac-stream-test
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/aac_container_test.cpp native/aac_container.cpp native/image_info.cpp build/minimp4.o -o build/aac-container-test
+build/aac-container-test

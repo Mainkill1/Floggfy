@@ -27,8 +27,16 @@ samples in the source/container edit timeline (about 14.8 ms). The container
 encodes source timing exactly; this check does not claim sample-exact VLC trimming
 or equality to Spotify's rendered PCM. Synthetic sentinels were not decoded.
 Vendor warnings remain visible; project C++ compiled with `-Werror`.
-Production hook execution remains pending installation/live replay. No full
-suite has been run for this addition. Prior evidence below applies only
+The production DLL/launcher build passed. With the optional AAC setting enabled,
+Windows Spotify 1.3.6.1921 completed a live capture and published a 703,075-byte M4A
+through the normal recording pipeline. The file contains a 640 by 640 validated
+Spotify cover, 3,521 bytes of synchronized lyrics and recording-identity metadata.
+Its AAC payload still hashes identically to the independently inspected source
+access units. Queue diagnostics showed no dropped events. The private observation
+module was removed before this production replay; only the production hooks were
+loaded. This establishes one successful full AAC publication on that client,
+not support for every Spotify build/profile or independent PCM equivalence.
+No full suite has been run for this addition. Prior evidence below applies only
 to the revisions explicitly described there.
 
 ## Late capture completion after a playback transition

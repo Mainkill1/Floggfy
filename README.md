@@ -85,7 +85,7 @@ Optional AAC capture is configured only in `SpotifyHistory.ini`:
 ```ini
 [To Disk]
 ; Usually used for low-quality streams. Disabled by default; restart after changing.
-AAC=0
+Aac=0
 ```
 
 Set `AAC=1` to retain supported SpAC AAC streams as `.m4a` files. Original AAC

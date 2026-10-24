@@ -11,7 +11,7 @@ and <=6 hours of presentation. This bounds muxer products and durations.
 
 Documented source changes: normalize line endings; add a guard excluding
 video helpers and the permissive demuxer; replace strdup with portable bounded
-malloc/copy; free the temporary index on a failed backpatch callback; fold
+malloc/copy; free the temporary index on a failed backpatch callback;
 write the reserved descriptor bit and mandatory SLConfigDescriptor; fold
 rates >65535 in the legacy 16.16 sample-entry field (exact ASC/mdhd retained).
 No warning suppression. Compile minimp4.c as C11 with -O2 -Wall -Wextra;

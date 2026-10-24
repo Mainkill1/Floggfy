@@ -130,3 +130,6 @@ x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include \
 for issue in 1 3 5; do
     bash test-pr11-corrections.sh "$issue"
 done
+
+# Optional AAC capture and Windows publication are exercised in one executable.
+bash test-aac.sh
