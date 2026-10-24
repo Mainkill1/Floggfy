@@ -40,8 +40,12 @@ occupied/locked/unowned sources, genuine numeric titles, legacy identity suffixe
 track-start processing without a completed listen, lost-lock/superseding requests,
 late settings cancellation, independent audio queue capacity, recent-row remapping,
 and numbering-mode save/menu behavior. None is claimed as passing in this addition.
-Both new options ship disabled. No full suite, fuzzing or live rename experiment
-was used as a substitute for the failed focused run.
+Both new options ship disabled. No full suite or fuzzing ran. After installing
+the built DLL, the user explicitly enabled conversion, restarted Spotify and
+reported that it works. The installed module, startup-ready signal and configured
+option values were observed. This is a user-reported live functional check, not
+a pass of the automated regression cases or an independent before/after audio-byte
+comparison on the music library. The failed focused run remains recorded above.
 
 ## Song shortcut and filename compatibility follow-up
 
