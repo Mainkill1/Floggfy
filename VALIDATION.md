@@ -852,8 +852,11 @@ The focused `bash test-playback-diagnostics.sh` gate covers unchanged paused
 observations, immediate resumed status, raw playback transitions, exact FLAC
 coverage reasons without altered acceptance, native callback return/data
 preservation, bounded timing summaries, last-observed NLM context, and guarded
-client diagnostics with identifier privacy. The gate has not yet been executed
-for this change. No broad regression suite is planned for this focused update.
+client diagnostics with identifier privacy. It passed in one execution: the
+Windows executable and Node VM test both completed successfully. No test was
+rerun and no broad Linux/Windows regression suite was executed. Existing vendor
+warnings were not suppressed. Independent static review found no blocker.
+The subsequent `bash build-native.sh` production DLL/launcher build passed.
 
 The Windows media-service provider and NLM interception require live validation;
 synthetic callbacks cannot establish the cause of issue #12 or prove the absence
