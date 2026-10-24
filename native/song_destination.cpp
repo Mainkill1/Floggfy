@@ -22,6 +22,7 @@ struct DestinationRequest {
     // Settings generation binds each result to the exact configuration that
     // selected its destination; it is independent of the capture epoch.
     unsigned generation=0;
+    bool track_numbers=false;
     Catalog catalog;
     std::wstring flac,ogg,aac;
 };
@@ -49,18 +50,18 @@ struct DestinationTryExclusive {
 };
 static bool SameRequest(const DestinationRequest& a,const DestinationRequest& b) {
     const auto& x=a.catalog;const auto& y=b.catalog;
-    return a.identity==b.identity && a.generation==b.generation && a.flac==b.flac && a.ogg==b.ogg && a.aac==b.aac &&
+    return a.identity==b.identity && a.generation==b.generation && a.track_numbers==b.track_numbers && a.flac==b.flac && a.ogg==b.ogg && a.aac==b.aac &&
         x.kind==y.kind && x.artist==y.artist && x.album==y.album && x.title==y.title &&
         x.author==y.author && x.series==y.series && x.book==y.book && x.show==y.show &&
         x.track==y.track && x.episode_year==y.episode_year && x.disc==y.disc &&
         x.spotify_uri==y.spotify_uri && x.duration==y.duration;
 }
 static std::uint64_t IntentKey(std::uint64_t identity,const std::wstring& root,const Catalog& catalog,
-                               bool music_folder,unsigned generation) {
+                               bool music_folder,unsigned generation,bool track_numbers) {
     std::uint64_t hash=14695981039346656037ULL;
     auto number=[&](std::uint64_t value) {for(unsigned i=0;i<8;++i){hash^=uint8_t(value>>(i*8));hash*=1099511628211ULL;}};
     auto wide=[&](const std::wstring& value) {number(value.size());for(wchar_t c:value)number(unsigned(c));};
-    number(identity);number(generation);number(music_folder);number(unsigned(catalog.kind));wide(root);
+    number(identity);number(generation);number(music_folder);number(track_numbers);number(unsigned(catalog.kind));wide(root);
     for(const auto* value:{&catalog.artist,&catalog.album,&catalog.title,&catalog.author,&catalog.series,&catalog.book,&catalog.show})wide(*value);
     number(catalog.track);number(catalog.episode_year);number(catalog.disc);
     number(catalog.spotify_uri.size());for(unsigned char c:catalog.spotify_uri)number(c);
@@ -135,7 +136,7 @@ static std::wstring ProbeSavedSong(const DestinationRequest& request,Verificatio
     // containing directory is identical; the menu does not choose an upgrade.
     for(const auto* base:{&request.flac,&request.ogg,&request.aac}) {
         if(!CurrentRequest(request))return {};
-        for(const auto& file:RecordingPathCandidates(*base,request.catalog)) {
+        for(const auto& file:RecordingPathCandidates(*base,request.catalog,true,request.track_numbers)) {
             if(file==*base)continue; // Already verified above.
             if(!CurrentRequest(request))return {};
             FileSignature signature;
@@ -200,22 +201,22 @@ void StartSongDestinationWorker(bool enabled) noexcept {
     }
 }
 void PublishSongDestination(std::uint64_t identity,const std::wstring& root,
-                            const Catalog& catalog,bool music_folder,unsigned settings_generation) noexcept {
+                            const Catalog& catalog,bool music_folder,unsigned settings_generation,bool track_numbers) noexcept {
     if(!destination_enabled.load(std::memory_order_acquire)) return;
     // New intent invalidates an old reply even when submission loses a try-lock.
     // Identical requests share an in-flight probe instead of starving slow I/O.
-    const auto intent=IntentKey(identity,root,catalog,music_folder,settings_generation);
+    const auto intent=IntentKey(identity,root,catalog,music_folder,settings_generation,track_numbers);
     if(intent_key.exchange(intent,std::memory_order_acq_rel)!=intent)
         request_serial.fetch_add(1,std::memory_order_acq_rel);
     const auto serial=request_serial.load(std::memory_order_acquire);
     try {
         DestinationRequest request;
-        request.identity=identity;request.generation=settings_generation;request.catalog=catalog;
+        request.identity=identity;request.generation=settings_generation;request.catalog=catalog;request.track_numbers=track_numbers;
         request.serial=serial;request.intent=intent;request.revision=cache_revision.load(std::memory_order_acquire);
         if(identity && !root.empty()) {
-            request.flac=OutputPath(root,catalog,L".flac",music_folder);
-            request.ogg=OutputPath(root,catalog,L".ogg",music_folder);
-            request.aac=OutputPath(root,catalog,L".m4a",music_folder);
+            request.flac=OutputPath(root,catalog,L".flac",music_folder,track_numbers);
+            request.ogg=OutputPath(root,catalog,L".ogg",music_folder,track_numbers);
+            request.aac=OutputPath(root,catalog,L".m4a",music_folder,track_numbers);
         }
         DestinationTryExclusive guard;
         if(!guard.locked || !destination_enabled.load(std::memory_order_relaxed) ||

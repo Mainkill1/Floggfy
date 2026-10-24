@@ -16,8 +16,8 @@ static BOOL WINAPI BlockingAttributes(LPCWSTR path,GET_FILEEX_INFO_LEVELS level,
     return GetFileAttributesExW(path,level,data);
 }
 namespace history {
-static std::vector<std::wstring> CountingCandidates(const std::wstring& path,const Catalog& catalog) {
-    ++collision_searches;return RecordingPathCandidates(path,catalog);
+static std::vector<std::wstring> CountingCandidates(const std::wstring& path,const Catalog& catalog,bool legacy,bool numbered) {
+    ++collision_searches;return RecordingPathCandidates(path,catalog,legacy,numbered);
 }
 static bool CountingRecording(const std::wstring& path,const Catalog& catalog,Quality& quality) {
     ++verification_reads;return ExistingRecording(path,catalog,quality);

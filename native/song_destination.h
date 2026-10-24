@@ -9,7 +9,7 @@ void StartSongDestinationWorker(bool enabled) noexcept;
 // RAM-only request submission, safe for capture/heartbeat threads. One worker
 // probes storage; at most one superseding request is retained while it blocks.
 void PublishSongDestination(std::uint64_t identity,const std::wstring& root,
-                            const Catalog& catalog,bool music_folder,unsigned settings_generation) noexcept;
+                            const Catalog& catalog,bool music_folder,unsigned settings_generation,bool track_numbers=false) noexcept;
 // Successful publication requests a fresh probe without touching storage here.
 void RefreshSongDestination() noexcept;
 // Nonblocking RAM snapshot read, matching latest identity/settings/freshness.

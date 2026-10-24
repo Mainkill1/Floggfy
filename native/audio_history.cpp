@@ -292,7 +292,7 @@ static Catalog CatalogFor(const Media& media) {
 }
 static void PublishCurrentDestination(const Media& media,const Settings& settings) {
     PublishSongDestination(media.title.empty() ? 0 : PlaybackIdentity(media.Key()),
-                           settings.root,CatalogFor(media),settings.music_folder,settings.generation);
+                           settings.root,CatalogFor(media),settings.music_folder,settings.generation,settings.track_number_in_filename);
 }
 static std::string Grouped(unsigned value) {
     auto text=std::to_string(value);
@@ -380,7 +380,7 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
         if(c.lossless || (codec==Codec::Vorbis && !c.aac)) break;
         const auto extension=codec==Codec::Flac?L".flac":L".ogg";
         auto preferred=ResolveRecordingDestination(
-            OutputPath(settings.root,catalog,extension,settings.music_folder),catalog);
+            OutputPath(settings.root,catalog,extension,settings.music_folder,settings.track_number_in_filename),catalog,settings.track_number_in_filename);
         if(preferred.state==RecordingDestinationState::Blocked)
             return finish(Publication::Failed,"failed","preferred recording could not be inspected; publication deferred");
         if(preferred.state==RecordingDestinationState::Existing && preferred.recording.complete &&
@@ -393,9 +393,27 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     }
     const bool preferred=existing_lossless||existing_vorbis;
     if(!preferred) resolved=ResolveRecordingDestination(
-        OutputPath(settings.root,catalog,c.Extension(),settings.music_folder),catalog);
+        OutputPath(settings.root,catalog,c.Extension(),settings.music_folder,settings.track_number_in_filename),catalog,settings.track_number_in_filename);
     if(resolved.state==RecordingDestinationState::Blocked)
         return finish(Publication::Failed,"failed","no safe recording destination; existing files retained");
+    if(settings.convert_numbered_filenames && !settings.track_number_in_filename &&
+       resolved.state==RecordingDestinationState::Existing && resolved.recording.complete && resolved.recording.owned) {
+        const auto latest=GetSettings();
+        if(latest.generation!=settings.generation || !latest.downloads)
+            return finish(Publication::Skipped,"skipped","capture settings changed before filename conversion");
+        const auto extension=existing_lossless?L".flac":existing_vorbis?L".ogg":c.Extension();
+        const auto title_path=OutputPath(settings.root,catalog,extension,settings.music_folder,false);
+        std::wstring renamed;
+        const auto converted=ConvertRecordingFilename(resolved.path,title_path,catalog,renamed);
+        if(converted==FilenameConversion::Failed)
+            return finish(Publication::Failed,"failed","filename conversion failed; existing file retained");
+        if(converted==FilenameConversion::Renamed) {
+            resolved.path.swap(renamed); // renamed now holds the previous path.
+            RelocateRecentDownload(renamed,resolved.path);
+            RefreshSongDestination();
+            LogActivity("renamed","removed filename number prefix; existing audio and metadata retained | "+identity);
+        }
+    }
     const auto& destination=resolved.path;
     const auto& existing_path=resolved.path;
     const auto& inspected=resolved.recording;

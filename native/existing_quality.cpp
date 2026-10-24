@@ -86,21 +86,29 @@ bool RecoverRecording(const std::wstring& path,const Catalog& catalog) {
     if(!Missing(path)) return false;
     return RestoreBackup(path+L".previous",path,catalog);
 }
-std::vector<std::wstring> RecordingPathCandidates(const std::wstring& base,const Catalog& catalog,bool legacy_names) {
+std::vector<std::wstring> RecordingPathCandidates(const std::wstring& base,const Catalog& catalog,bool legacy_names,bool track_numbers) {
     if(base.empty()) return {};
     auto slash=base.find_last_of(L"\\/"),dot=base.find_last_of(L'.');
     if(dot==std::wstring::npos || (slash!=std::wstring::npos && dot<slash)) dot=base.size();
     const auto extension=base.substr(dot);
     const auto filename=slash==std::wstring::npos?0:slash+1;
     const auto directory=base.substr(0,filename);
-    std::wstring numbered=base.substr(filename);
-    std::vector<std::wstring> bases{base};
-    if(legacy_names && catalog.track) {
-        wchar_t prefix[20];std::swprintf(prefix,20,L"%02u - ",catalog.track);
-        numbered=prefix+numbered;bases.push_back(directory+numbered);
+    std::wstring title=base.substr(filename),track;
+    if(catalog.track){wchar_t prefix[20];std::swprintf(prefix,20,L"%02u - ",catalog.track);track=prefix;}
+    if(track_numbers && !track.empty()) {
+        if(title.rfind(track,0)!=0)return {}; // A configured base must agree with its naming mode.
+        title.erase(0,track.size());
     }
-    if(legacy_names && catalog.disc>1)
-        bases.push_back(directory+L"Disc "+std::to_wstring(catalog.disc)+L" - "+numbered);
+    const auto numbered=track+title;
+    std::vector<std::wstring> bases{base};
+    auto alias=[&](const std::wstring& name) {
+        const auto path=directory+name;
+        if(std::find(bases.begin(),bases.end(),path)==bases.end())bases.push_back(path);
+    };
+    if(legacy_names) {
+        alias(title);alias(numbered);
+        if(catalog.disc>1)alias(L"Disc "+std::to_wstring(catalog.disc)+L" - "+numbered);
+    }
     // Older numbered names remain valid homes for the same recording. Merely
     // changing filename style must never allocate a second copy of that song.
     auto candidates=bases;
@@ -121,10 +129,10 @@ std::vector<std::wstring> RecordingPathCandidates(const std::wstring& base,const
 
     return candidates;
 }
-RecordingDestination ResolveRecordingDestination(const std::wstring& base,const Catalog& catalog) {
-    const auto candidates=RecordingPathCandidates(base,catalog);
+RecordingDestination ResolveRecordingDestination(const std::wstring& base,const Catalog& catalog,bool track_numbers) {
+    const auto candidates=RecordingPathCandidates(base,catalog,true,track_numbers);
     if(candidates.empty())return {};
-    const auto writable=RecordingPathCandidates(base,catalog,false);
+    const auto writable=RecordingPathCandidates(base,catalog,false,track_numbers);
 
     // Never return the first vacancy until all deterministic names have been
     // checked (at most 195 known names including legacy prefixes, never a directory scan). A prior collision
@@ -209,8 +217,8 @@ RecordingDestination ResolveRecordingDestination(const std::wstring& base,const 
     if(vacant.empty()) return {};
     return {RecordingDestinationState::Vacant,std::move(vacant),{}};
 }
-std::wstring ResolveRecordingPath(const std::wstring& base,const Catalog& catalog) {
-    return ResolveRecordingDestination(base,catalog).path;
+std::wstring ResolveRecordingPath(const std::wstring& base,const Catalog& catalog,bool track_numbers) {
+    return ResolveRecordingDestination(base,catalog,track_numbers).path;
 }
 SaveDecision DecideSave(const std::wstring& path,const Quality&) {
     // Callers without a recording identity may create, but cannot replace.

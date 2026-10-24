@@ -26,11 +26,11 @@ struct RecordingDestination {
 };
 // Blocked distinguishes I/O uncertainty from a verified vacancy. Callers must
 // not interpret it as absence when searching a preferred recording format.
-RecordingDestination ResolveRecordingDestination(const std::wstring& base,const Catalog& catalog);
+RecordingDestination ResolveRecordingDestination(const std::wstring& base,const Catalog& catalog,bool track_numbers=false);
 // Pure, bounded naming rule shared by publication and folder lookup. The menu
 // can stop at its first complete matching file; replacement must examine all.
-std::vector<std::wstring> RecordingPathCandidates(const std::wstring& base,const Catalog& catalog,bool legacy_names=true);
-std::wstring ResolveRecordingPath(const std::wstring& base,const Catalog& catalog);
+std::vector<std::wstring> RecordingPathCandidates(const std::wstring& base,const Catalog& catalog,bool legacy_names=true,bool track_numbers=false);
+std::wstring ResolveRecordingPath(const std::wstring& base,const Catalog& catalog,bool track_numbers=false);
 enum class SaveDecision { NewFile, Upgrade, Skip };
 SaveDecision DecideSave(const std::wstring& path,const Quality& incoming);
 // Optional inspection lets callers plan metadata changes without rereading the file.

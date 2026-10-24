@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstring>
 #include <vector>
+#include <cwchar>
 namespace history {
 #ifdef FLOGGFY_PUBLICATION_TEST
 void PublicationTestPhase(const wchar_t* phase,const std::wstring& path);
@@ -138,6 +139,52 @@ Catalog CatalogFromTags(const Tags& tags) {
     catalog.duration=std::strtod(field("HISTORY_MEDIA_DURATION").c_str(),nullptr);
     return catalog;
 }
+}
+FilenameConversion ConvertRecordingFilename(const std::wstring& source,const std::wstring& title_path,
+    const Catalog& catalog,std::wstring& renamed_path) {
+    try {
+        auto same=[](const std::wstring& a,const std::wstring& b) {
+            return CompareStringOrdinal(a.c_str(),int(a.size()),b.c_str(),int(b.size()),TRUE)==CSTR_EQUAL;
+        };
+        const auto plain=RecordingPathCandidates(title_path,catalog,false);
+        if(std::any_of(plain.begin(),plain.end(),[&](const auto& path){return same(path,source);}))
+            return FilenameConversion::Unchanged;
+        const auto known=RecordingPathCandidates(title_path,catalog,true);
+        if(std::none_of(known.begin(),known.end(),[&](const auto& path){return same(path,source);}))
+            return FilenameConversion::Unchanged;
+        const auto slash=source.find_last_of(L"\\/");
+        if(slash==std::wstring::npos)return FilenameConversion::Unchanged;
+        const auto filename=source.substr(slash+1);
+        std::wstring track;
+        if(catalog.track){wchar_t prefix[20];std::swprintf(prefix,20,L"%02u - ",catalog.track);track=prefix;}
+        std::vector<std::wstring> prefixes;
+        if(catalog.disc>1)prefixes.push_back(L"Disc "+std::to_wstring(catalog.disc)+L" - "+track);
+        if(!track.empty())prefixes.push_back(track);
+        std::wstring target;
+        for(const auto& prefix:prefixes)if(filename.rfind(prefix,0)==0) {
+            target=source.substr(0,slash+1)+filename.substr(prefix.size());break;
+        }
+        if(target.empty() || std::none_of(plain.begin(),plain.end(),[&](const auto& path){return same(path,target);}))
+            return FilenameConversion::Unchanged;
+
+        // Freeze the exact source against writes/deletion before validating
+        // ownership and identity. The existing rename helper never overwrites.
+        Handle file{CreateFileW(WindowsPath(source).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,
+            nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
+        RecordingFile existing;
+        if(file.value==INVALID_HANDLE_VALUE || !SameFile(file.value,source) ||
+           !ReadRecording(source,existing) || !existing.complete || !existing.owned ||
+           !MatchesRecording(existing,catalog))return FilenameConversion::Failed;
+        // Allocate the caller's result before committing the
+        // pathname change, so allocation failure cannot hide a successful move.
+        std::wstring result=target;
+        if(!RenameHandle(file.value,target)) {
+            const auto error=GetLastError();
+            return error==ERROR_ALREADY_EXISTS || error==ERROR_FILE_EXISTS
+                ?FilenameConversion::Unchanged:FilenameConversion::Failed;
+        }
+        renamed_path.swap(result);return FilenameConversion::Renamed;
+    }catch(...){return FilenameConversion::Failed;}
 }
 FilePublication PublishBytes(const std::wstring& path,const Quality& quality,const void* bytes,size_t size,const Catalog& catalog,
                              size_t* published_bytes) {

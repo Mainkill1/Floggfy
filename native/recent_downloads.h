@@ -14,4 +14,6 @@ void RecordRecentDownload(const std::wstring& title, const std::wstring& path,
                           std::uint64_t bytes) noexcept;
 // Never waits for another caller. False leaves out unchanged; retain the old snapshot.
 bool ReadRecentDownloads(std::vector<RecentDownload>& out);
+// Move an existing row's click target after a rename; no new download/order.
+void RelocateRecentDownload(const std::wstring& old_path,const std::wstring& new_path) noexcept;
 }
