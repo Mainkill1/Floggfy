@@ -10,6 +10,8 @@
 #include "playback_quality.h"
 #include "async_log.h"
 #include "bounded_queue.h"
+#include "srw_guard.h"
+#include <optional>
 #include <atomic>
 #include "library_layout.h"
 #include "existing_quality.h"
@@ -290,9 +292,12 @@ static Catalog CatalogFor(const Media& media) {
     if(_wcsicmp(c.artist.c_str(),L"Various Artists")==0) c.kind=MediaKind::VariousArtists;
     EnrichCatalog(media,c);return c;
 }
+static void QueueFilenameCheck(const Media&,const Settings&);
+static void CancelFilenameChecks();
 static void PublishCurrentDestination(const Media& media,const Settings& settings) {
     PublishSongDestination(media.title.empty() ? 0 : PlaybackIdentity(media.Key()),
                            settings.root,CatalogFor(media),settings.music_folder,settings.generation,settings.track_number_in_filename);
+    QueueFilenameCheck(media,settings);
 }
 static std::string Grouped(unsigned value) {
     auto text=std::to_string(value);
@@ -337,6 +342,37 @@ static void ApplyCatalogIdentity(Tags& tags,const Catalog& catalog) {
     SetIdentityTag(tags,"TRACKNUMBER",catalog.track ? std::to_string(catalog.track) : std::string{});
     SetIdentityTag(tags,"DISCNUMBER",catalog.disc ? std::to_string(catalog.disc) : std::string{});
     SetIdentityTag(tags,"SPOTIFY_URI",catalog.spotify_uri);
+}
+static std::atomic<uint64_t> filename_check_serial{0};
+struct FilenamePermit {unsigned generation=0;uint64_t serial=0;};
+static bool FilenameStillCurrent(void* argument) {
+    const auto& permit=*static_cast<FilenamePermit*>(argument);
+    const auto current=GetSettings();
+    return current.generation==permit.generation && current.downloads &&
+        current.convert_numbered_filenames && !current.track_number_in_filename &&
+        (!permit.serial || permit.serial==filename_check_serial.load(std::memory_order_acquire));
+}
+// Shared by track-start checking and the completed-listen fallback. Only the
+// publication worker invokes this helper; menu/capture code never renames files.
+static FilenameConversion ConvertResolvedFilename(RecordingDestination& resolved,const Catalog& catalog,
+    const Settings& settings,const wchar_t* extension,uint64_t serial=0) {
+    if(!settings.convert_numbered_filenames || settings.track_number_in_filename ||
+       resolved.state!=RecordingDestinationState::Existing || !resolved.recording.complete || !resolved.recording.owned)
+        return FilenameConversion::Unchanged;
+    const auto latest=GetSettings();
+    if(latest.generation!=settings.generation || !latest.downloads || !latest.convert_numbered_filenames || latest.track_number_in_filename)
+        return FilenameConversion::Unchanged;
+    const auto title_path=OutputPath(settings.root,catalog,extension,settings.music_folder,false);
+    std::wstring renamed;
+    FilenamePermit permit{settings.generation,serial};
+    const auto result=ConvertRecordingFilename(resolved.path,title_path,catalog,renamed,FilenameStillCurrent,&permit);
+    if(result==FilenameConversion::Renamed) {
+        resolved.path.swap(renamed); // renamed now holds the previous path.
+        RelocateRecentDownload(renamed,resolved.path);
+        RefreshSongDestination();
+        LogActivity("renamed","removed filename number prefix; existing audio and metadata retained | "+Utf8(catalog.title));
+    }
+    return result;
 }
 enum class Publication { Saved,Skipped,Failed };
 static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch) {
@@ -396,23 +432,10 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
         OutputPath(settings.root,catalog,c.Extension(),settings.music_folder,settings.track_number_in_filename),catalog,settings.track_number_in_filename);
     if(resolved.state==RecordingDestinationState::Blocked)
         return finish(Publication::Failed,"failed","no safe recording destination; existing files retained");
-    if(settings.convert_numbered_filenames && !settings.track_number_in_filename &&
-       resolved.state==RecordingDestinationState::Existing && resolved.recording.complete && resolved.recording.owned) {
-        const auto latest=GetSettings();
-        if(latest.generation!=settings.generation || !latest.downloads)
-            return finish(Publication::Skipped,"skipped","capture settings changed before filename conversion");
+    if(settings.convert_numbered_filenames && !settings.track_number_in_filename) {
         const auto extension=existing_lossless?L".flac":existing_vorbis?L".ogg":c.Extension();
-        const auto title_path=OutputPath(settings.root,catalog,extension,settings.music_folder,false);
-        std::wstring renamed;
-        const auto converted=ConvertRecordingFilename(resolved.path,title_path,catalog,renamed);
-        if(converted==FilenameConversion::Failed)
+        if(ConvertResolvedFilename(resolved,catalog,settings,extension)==FilenameConversion::Failed)
             return finish(Publication::Failed,"failed","filename conversion failed; existing file retained");
-        if(converted==FilenameConversion::Renamed) {
-            resolved.path.swap(renamed); // renamed now holds the previous path.
-            RelocateRecentDownload(renamed,resolved.path);
-            RefreshSongDestination();
-            LogActivity("renamed","removed filename number prefix; existing audio and metadata retained | "+identity);
-        }
     }
     const auto& destination=resolved.path;
     const auto& existing_path=resolved.path;
@@ -495,10 +518,86 @@ static std::atomic<size_t> publishing_reserved{0};
 static std::atomic<unsigned> saved_count{0};
 static std::atomic<bool> workers_running{false};
 static hooks::InitController audio_init;
+// Conversion checks share the existing publisher, but never consume an audio
+// queue slot. Rapid track changes retain only one superseding request. Serial
+// cancellation rejects an older request after a new track/settings observation.
+struct FilenameCheck {Catalog catalog;Settings settings;uint64_t serial=0;};
+static SRWLOCK filename_check_lock=SRWLOCK_INIT;
+static std::optional<FilenameCheck> pending_filename_check;
+// Producer-only state: the capture worker owns these two fields.
+static std::string last_filename_check_key;
+static uint64_t last_filename_check_serial=0,queued_filename_check_serial=0;
+static void CancelFilenameChecks() {
+    filename_check_serial.fetch_add(1,std::memory_order_acq_rel);
+    last_filename_check_key.clear();last_filename_check_serial=queued_filename_check_serial=0;
+}
+static void QueueFilenameCheck(const Media& media,const Settings& settings) {
+    try {
+        if(!settings.downloads || !settings.convert_numbered_filenames || settings.track_number_in_filename || media.title.empty() || !media.playing) {
+            if(!last_filename_check_key.empty())CancelFilenameChecks();
+            return;
+        }
+        auto catalog=CatalogFor(media);
+        std::string key;
+        auto text=[&](const std::string& value){key+=std::to_string(value.size())+":"+value;};
+        auto wide=[&](const std::wstring& value){text(Utf8(value));};
+        // Use raw identity, not sanitized filenames: A/B and A:B may share a
+        // basename but are still distinct recordings when Spotify URI is absent.
+        const std::wstring* fields[]={&settings.root,&catalog.title,&catalog.artist,&catalog.album,&catalog.author,&catalog.series,&catalog.book,&catalog.show};
+        for(const auto* field:fields)wide(*field);
+        text(catalog.spotify_uri);
+        key+=std::to_string(unsigned(catalog.kind))+":"+std::to_string(catalog.track)+":"+
+            std::to_string(catalog.disc)+":"+std::to_string(catalog.episode_year)+":"+
+            std::to_string(catalog.duration)+":"+std::to_string(settings.generation)+":"+std::to_string(settings.music_folder);
+        // Invalidate the previous intent even if submission loses the try-lock.
+        // Retrying this same intent preserves its serial instead of starving I/O.
+        if(key!=last_filename_check_key || last_filename_check_serial!=filename_check_serial.load(std::memory_order_acquire)) {
+            last_filename_check_serial=filename_check_serial.fetch_add(1,std::memory_order_acq_rel)+1;
+            last_filename_check_key.swap(key);
+        }
+        if(queued_filename_check_serial==last_filename_check_serial)return;
+        FilenameCheck check{std::move(catalog),settings,last_filename_check_serial};
+        if(!TryAcquireSRWLockExclusive(&filename_check_lock))return;
+        struct Unlock {~Unlock(){ReleaseSRWLockExclusive(&filename_check_lock);}} unlock;
+        if(check.serial!=filename_check_serial.load(std::memory_order_acquire))return;
+        pending_filename_check=std::move(check);
+        queued_filename_check_serial=last_filename_check_serial;
+        SetEvent(save_event);
+    }catch(...) {CancelFilenameChecks(); /* Retry later; never leave an older request authorized. */}
+}
+static std::optional<FilenameCheck> TakeFilenameCheck() {
+    ExclusiveSrw guard(filename_check_lock);
+    auto check=std::move(pending_filename_check);pending_filename_check.reset();return check;
+}
+static void ProcessFilenameCheck(const FilenameCheck& check) {
+    auto current=[&] {
+        const auto settings=GetSettings();
+        return check.serial==filename_check_serial.load(std::memory_order_acquire) &&
+            settings.generation==check.settings.generation && settings.downloads &&
+            settings.convert_numbered_filenames && !settings.track_number_in_filename;
+    };
+    for(const auto* extension:{L".flac",L".ogg",L".m4a"}) {
+        if(!current())return;
+        auto resolved=ResolveRecordingDestination(OutputPath(check.settings.root,check.catalog,extension,check.settings.music_folder,false),check.catalog);
+        if(!current())return;
+        if(resolved.state==RecordingDestinationState::Blocked)return;
+        if(resolved.state!=RecordingDestinationState::Existing || !resolved.recording.complete)continue;
+        if(ConvertResolvedFilename(resolved,check.catalog,check.settings,extension,check.serial)==FilenameConversion::Failed)
+            LogActivity("failed","filename conversion deferred; existing recording retained | "+Utf8(check.catalog.title));
+        return; // Best verified format/recording found; no new audio is created.
+    }
+}
 static DWORD WINAPI SaveWorker(LPVOID) {
     while(workers_running.load(std::memory_order_acquire)) {
         SaveJob job;
-        if(!saves.Pop(job)){WaitForSingleObject(save_event,200);continue;}
+        if(!saves.Pop(job)) {
+            auto check=TakeFilenameCheck();
+            if(check) {
+                try {ProcessFilenameCheck(*check);}catch(...) {Log("filename check failed; existing recordings retained");}
+                continue;
+            }
+            WaitForSingleObject(save_event,200);continue;
+        }
         std::string identity=Utf8(job.heard.media.artist)+" - "+Utf8(job.heard.media.title);
         try {
             auto result=Publish(*job.capture,job.heard,job.epoch);
@@ -771,7 +870,7 @@ static DWORD WINAPI Worker(LPVOID) {
                 bool capture=preferences.downloads && (preferences.ogg || preferences.flac || preferences.aac);
                 if(capture!=enabled || initial || preferences.capture_epoch!=epoch) {
                     active.clear(); ready.clear(); heard.clear(); listen={}; current={};
-                    last_media=minimum_media_time=now;media_unavailable=false;
+                    last_media=minimum_media_time=now;media_unavailable=false;CancelFilenameChecks();
                     if(!enabled && capture) saved_count=0;
                     enabled=capture;
                     Log(enabled ? "To Disk capture enabled" : "To Disk capture disabled");
@@ -810,7 +909,7 @@ static DWORD WINAPI Worker(LPVOID) {
                 // observations still cannot establish continuous listening.
                 PublishSongDestination(0,L"",{},false,0);
                 listen.eligible=false;quality.Media({},L"",0,0,Now());client_quality.clear();
-                if(!media_unavailable)Log("Spotify media snapshot unavailable or stale; listen invalidated");
+                if(!media_unavailable){CancelFilenameChecks();Log("Spotify media snapshot unavailable or stale; listen invalidated");}
                 media_unavailable=true;
             }
             if(!enabled) {
@@ -837,6 +936,7 @@ static DWORD WINAPI Worker(LPVOID) {
             WaitForSingleObject(event,50);
         }
     } catch(...) { Log("history worker stopped after an exception; playback remains with original parser"); }
+    CancelFilenameChecks();
     reader.Stop(); // Nonblocking even if Windows is still servicing a COM call.
     PublishPlaybackQuality({});
     PublishSongDestination(0,L"",{},false,0);

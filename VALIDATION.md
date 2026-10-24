@@ -1,3 +1,48 @@
+## Configurable filename numbering and track-start conversion
+
+Added INI-only, default-off TrackNumberInFilename and ConvertNumberedFilenames.
+Numbering selects NN - Title versus Title for new files; disc information remains
+in tags. Both enabled flags are normalized to numbering on/conversion off, and the
+conversion value is persisted as 0 through the existing atomic Unicode settings
+writer. Missing keys are added without discarding unknown settings.
+
+When conversion is enabled, a playing track observation queues one coalesced
+request on the existing publication worker. Audio jobs keep their two queue slots
+and have priority. The producer does no disk I/O and invalidates older requests
+even when its try-lock loses; unchanged requests do not starve an in-flight check.
+Identity deduplication uses raw catalog fields rather than sanitized filenames.
+The check selects the best verified saved recording and converts an exact known
+old prefix. A completed-listen conversion fallback uses the same policy.
+
+The converter locks a complete owned file against writes/deletes, verifies its
+recording identity and performs a no-overwrite same-directory handle rename.
+Source/configuration permission is checked again after inspection immediately
+before the rename. Audio, tags, artwork and lyrics are not rewritten. An existing
+Latest Downloads row follows the new path without creating a download entry.
+Occupied targets, ambiguous/unowned files and lost requests do not authorize an
+overwrite or duplicate deletion.
+
+Validation status for this addition is **incomplete**:
+
+- One execution of bash test-filename-options.sh failed compilation (exit 1),
+  before any runtime cases ran. The raw-identity pointer initializer mixed const
+  and non-const string pointers; the source now uses an explicitly typed const
+  pointer array. The focused test was not rerun, respecting the one-run limit.
+- One subsequent standalone bash build-native.sh passed (exit 0), compiling the
+  corrected production source and producing the DLL/launcher. Vendor warnings
+  remain unsuppressed; the production C++ build retains -Werror.
+- Independent static review approved the corrected cancellation, identity and
+  rename guards. Static review is not runtime validation.
+
+The unexecuted regression cases cover all option combinations, startup conflict
+persistence and Unicode/unknown settings, byte-preserving FLAC/Ogg/M4A renames,
+occupied/locked/unowned sources, genuine numeric titles, legacy identity suffixes,
+track-start processing without a completed listen, lost-lock/superseding requests,
+late settings cancellation, independent audio queue capacity, recent-row remapping,
+and numbering-mode save/menu behavior. None is claimed as passing in this addition.
+Both new options ship disabled. No full suite, fuzzing or live rename experiment
+was used as a substitute for the failed focused run.
+
 ## Song shortcut and filename compatibility follow-up
 
 New files use the song title alone; track/disc numbers remain in tags. The shared

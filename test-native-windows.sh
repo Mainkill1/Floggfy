@@ -133,3 +133,6 @@ done
 
 # Optional AAC capture and Windows publication are exercised in one executable.
 bash test-aac.sh
+
+# Naming configuration and atomic conversion share one focused integration gate.
+bash test-filename-options.sh

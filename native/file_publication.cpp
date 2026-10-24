@@ -141,7 +141,7 @@ Catalog CatalogFromTags(const Tags& tags) {
 }
 }
 FilenameConversion ConvertRecordingFilename(const std::wstring& source,const std::wstring& title_path,
-    const Catalog& catalog,std::wstring& renamed_path) {
+    const Catalog& catalog,std::wstring& renamed_path,FilenameRenamePermit is_current,void* context) {
     try {
         auto same=[](const std::wstring& a,const std::wstring& b) {
             return CompareStringOrdinal(a.c_str(),int(a.size()),b.c_str(),int(b.size()),TRUE)==CSTR_EQUAL;
@@ -169,6 +169,7 @@ FilenameConversion ConvertRecordingFilename(const std::wstring& source,const std
 
         // Freeze the exact source against writes/deletion before validating
         // ownership and identity. The existing rename helper never overwrites.
+        if(is_current && !is_current(context))return FilenameConversion::Unchanged;
         Handle file{CreateFileW(WindowsPath(source).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,
             nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
         RecordingFile existing;
@@ -178,6 +179,9 @@ FilenameConversion ConvertRecordingFilename(const std::wstring& source,const std
         // Allocate the caller's result before committing the
         // pathname change, so allocation failure cannot hide a successful move.
         std::wstring result=target;
+        // Inspection may have waited on slow storage. Recheck cancellation and
+        // settings at commit, after allocation and before the atomic rename.
+        if(is_current && !is_current(context))return FilenameConversion::Unchanged;
         if(!RenameHandle(file.value,target)) {
             const auto error=GetLastError();
             return error==ERROR_ALREADY_EXISTS || error==ERROR_FILE_EXISTS

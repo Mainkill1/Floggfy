@@ -63,16 +63,41 @@ Default music paths are:
 <Windows Music>\Spotify\Artists\Artist\Album\Title.flac
 ```
 
-Album folders have no year prefix. New filenames use the title alone. Track and
-disc numbers remain in metadata. Existing numbered or disc-prefixed filenames
-are recognized and reused in place; a naming-style change never authorizes a
-second copy. Title, artist, album, album artist and track/disc numbers are embedded
+Album folders have no year prefix. New filenames use the title alone by default.
+`TrackNumberInFilename=1` adds `NN - ` when a track number is known; disc numbers
+remain in metadata. Existing title-only, numbered or disc-prefixed filenames
+are recognized and reused; switching naming mode never authorizes a second copy.
+Title, artist, album, album artist and track/disc numbers are embedded
 in the single audio file.
 Validated cover artwork is included when available; missing artwork does not
 discard completed audio. No image/JSON
 sidecars or per-song directories are created. Buffers remain in RAM until a
 complete listen and complete stream have been verified. Directories are created
 only when publishing a file.
+
+The INI-only naming options default to `0` and take effect after restarting:
+
+```ini
+TrackNumberInFilename=0
+ConvertNumberedFilenames=0
+```
+
+With conversion enabled, playback starting queues a check of existing recordings
+on the publication worker. It finds the best verified saved recording and removes
+only an exact Floggfy-generated track/disc prefix from a complete owned file. The
+same-directory atomic rename leaves every audio/metadata byte intact, preserves
+identity suffixes and never overwrites an occupied filename. Conversion runs while
+Downloads is enabled; it does not require a completed listen or metadata updating.
+If both options are `1`, numbering wins and conversion is reset to `0` in the INI.
+The two settings never compete to rename a file back and forth.
+
+The check uses one coalesced pending request on the existing publication worker;
+rapid track changes discard superseded requests and audio saves take priority.
+There is no library-wide sweep or capture/menu-thread filesystem I/O. A completed
+listen also provides a conversion fallback if its start check could not run.
+Renames do not enter Latest Downloads; existing session entries keep their order
+and follow the new path. Locked, ambiguous or unowned files remain intact. An
+occupied destination does not trigger duplicate deletion or an overwrite.
 
 Existing audio is skipped at equal or higher quality only after validating its
 complete container and recording identity. Spotify track URI takes precedence;
