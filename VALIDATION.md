@@ -1,3 +1,28 @@
+## Release 1.2.4 handoff
+
+The maintainer approved merge and release after controlled use on Windows x64
+Spotify 1.3.6.1921. Release packaging uses the unchanged native/collector code at
+`dd5c24b`, plus the packaging version and bundled-license update. The installed
+DLL SHA256 is `ce3f9bf8e7cf31214229649c11f1b2e06afbfb4e490fb8e1dae54e9ea03e731b`.
+Its main-process module path, startup-ready signal, visible window and unchanged
+INI were verified after installation. That is deployment evidence; it does not
+turn the failed/unexecuted regression cases below into passing tests.
+
+Packaging verification checked that the standalone DLL and ZIP core match that
+build, the launcher matches its built executable, internal/external checksum
+manifests match, and the archive includes the shipped INI, README and all six
+bundled-library license notices. No new behavioral tests, reruns or full suites
+were executed for release. The album-artist, full directory-lookup and filename
+option runtime coverage limitations remain recorded below.
+
+Known follow-up: a discovery miss currently lists both known artist folders
+upfront; the separate optional conversion check may reread an already unnumbered
+file. Cached Song hits only check their existing file signature. The Song link
+opens the actual verified recording, including a retained legacy folder. Release
+1.2.4 does not relocate existing music or delete already-created duplicates.
+
+The sections below retain the validation state at each change's test attempt.
+
 ## Album artist and contributing artists
 
 The collector and native cache previously preferred longer name lists for both

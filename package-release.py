@@ -7,7 +7,7 @@ from pathlib import Path
 import zipfile
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--version', default='1.2')
+parser.add_argument('--version', default='1.2.4')
 version = parser.parse_args().version
 if not version or any(c not in '0123456789abcdefghijklmnopqrstuvwxyz.-' for c in version):
     parser.error('version must contain only lowercase letters, digits, dots and hyphens')
@@ -27,9 +27,11 @@ payloads['SHA256SUMS.txt'] = ''.join(
     for name, data in payloads.items()).encode()
 for name in ['README.md', 'LICENSE', 'SpotifyHistory.ini']:
     payloads[name] = (root / name).read_bytes()
-for vendor in ['minhook', 'libogg', 'cef', 'soggfy']:
+for vendor in ['minhook', 'libogg', 'cef', 'soggfy', 'stb']:
     payloads[f'third-party/{vendor}/LICENSE.txt'] = (
         root / 'native' / 'vendor' / vendor / 'LICENSE.txt').read_bytes()
+payloads['third-party/minimp4/LICENSE'] = (
+    root / 'native' / 'vendor' / 'minimp4' / 'LICENSE').read_bytes()
 path = out / f'Floggfy-v{version}-Launcher-Windows-x64.zip'
 with zipfile.ZipFile(path, 'w') as archive:
     for name, data in payloads.items():
