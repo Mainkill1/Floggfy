@@ -174,6 +174,32 @@ and Windows x64 function metadata; missing or ambiguous matches disable capture.
 Menu integration checks its supported CEF version and structure sizes.
 
 Activity and opt-in diagnostics are in `Floggfy.log` in the selected save root.
+Periodic debug status is emitted only during observed playback. Paused or stale
+media snapshots suppress that heartbeat; other diagnostics and activity remain.
+With `DebugLog=1`, transitions include the raw Windows playback state, timeline
+movement, observation time and sequence. The existing client collector also
+reports changes in available pause/buffering flags and bounded numeric error
+fields. Playback-instance/device identifiers are represented only as change
+flags; identifiers, response bodies and tokens are not logged. Missing or changed
+client fields appear as unknown. `Metadata=0` does not enable the collector just
+for diagnostics.
+
+FLAC errors distinguish native read/frame return values and decoder callbacks
+from Floggfy's capture-only coverage guard. Coverage diagnostics include expected
+and observed frame fields, covered samples, context, capture epoch and queue lag.
+Debug timing aggregates native callback durations and queue lock wait/hold times;
+hooks record only counters and existing bounded events, and the worker formats
+these summaries. Counters/maxima are approximate interval observations under
+concurrency. Paused playback has no periodic timing/status heartbeat, while new
+errors and state changes remain visible.
+
+Network context is only the last result of an already intercepted Windows NLM
+query, with its age, HRESULT and original/effective connectivity flags. It does
+not perform another network request or establish that Spotify's audio service
+is reachable. A pause observation does not identify its initiator; neither a
+coverage rejection nor a client flag proves corrupted audio, a remote command,
+a service outage or a process crash. These diagnostics add no playback controls,
+new Spotify binary targets or exception handlers.
 At 5 MiB, the log removes the oldest complete lines to make room for each new
 entry. Logging and INI persistence use separate workers.
 Completed saves log the captured audio format/quality and final tagged file size

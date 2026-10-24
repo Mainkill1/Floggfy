@@ -840,3 +840,21 @@ This is an episode-title correction, not evidence of a new live Ogg quality test
 The native and full Windows suites passed; the additional same-title identity
 regression failed before its fix and passed afterward on Windows. Private
 diagnostics were removed and the original personal INI restored for final use.
+
+
+## Playback pause diagnostics (post-1.2.4)
+
+The reported playback pause has not been reproduced or assigned a cause. The
+reported FLAC frame-gap line comes from the capture coverage guard, after the
+native frame callback returned success; it does not establish a Spotify crash.
+
+The focused `bash test-playback-diagnostics.sh` gate covers unchanged paused
+observations, immediate resumed status, raw playback transitions, exact FLAC
+coverage reasons without altered acceptance, native callback return/data
+preservation, bounded timing summaries, last-observed NLM context, and guarded
+client diagnostics with identifier privacy. The gate has not yet been executed
+for this change. No broad regression suite is planned for this focused update.
+
+The Windows media-service provider and NLM interception require live validation;
+synthetic callbacks cannot establish the cause of issue #12 or prove the absence
+of hook interference. No corrected DLL has yet been installed for live playback.

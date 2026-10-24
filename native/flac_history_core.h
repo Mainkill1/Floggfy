@@ -12,7 +12,7 @@ FlacParse ParseFlacMetadata(const std::vector<uint8_t>& source,FlacInfo& info,si
 FlacParse ParseFlacMetadata(const CompressedBuffer& source,FlacInfo& info,size_t& audio);
 struct FlacCoverage {
     uint64_t samples=0; unsigned frames=0;
-    bool Frame(const FlacInfo& info,unsigned block,unsigned rate,unsigned channels,unsigned bits,unsigned number_type,uint64_t number);
+    bool Frame(const FlacInfo& info,unsigned block,unsigned rate,unsigned channels,unsigned bits,unsigned number_type,uint64_t number,const char** reason=nullptr);
     bool Complete(const FlacInfo& info) const { return info.total_samples && samples==info.total_samples; }
 };
 // Recognize bounded, monotonic LRC timestamps without accepting plain text.

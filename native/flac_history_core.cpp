@@ -41,12 +41,26 @@ template<class Source> static FlacParse Metadata(const Source& source,FlacInfo& 
 }
 FlacParse ParseFlacMetadata(const std::vector<uint8_t>& source,FlacInfo& info,size_t& audio) { return Metadata(source,info,audio); }
 FlacParse ParseFlacMetadata(const CompressedBuffer& source,FlacInfo& info,size_t& audio) { return Metadata(source,info,audio); }
-bool FlacCoverage::Frame(const FlacInfo& info,unsigned block,unsigned rate,unsigned channels,unsigned bits,unsigned number_type,uint64_t number) {
-    if(!block || block>info.max_block || rate!=info.rate || channels!=info.channels || bits!=info.bits || number_type>1) return false;
-    if(number_type==0 && (!info.max_block || number>info.total_samples/info.max_block)) return false;
-    uint64_t position=number_type==1 ? number : number*info.max_block;
-    if(position!=samples || !info.total_samples || samples>info.total_samples || block>info.total_samples-samples) return false;
-    samples+=block; ++frames; return true;
+bool FlacCoverage::Frame(const FlacInfo& info,unsigned block,unsigned rate,unsigned channels,unsigned bits,unsigned number_type,uint64_t number,const char** reason) {
+    if(reason) *reason=nullptr;
+    const auto reject=[reason](const char* detail) {
+        if(reason) *reason=detail;
+        return false;
+    };
+    // These reasons describe our capture guard, not a native decoder error.
+    // Keep every rejection before mutating coverage or subtracting samples.
+    if(!block || block>info.max_block) return reject("block-size");
+    if(rate!=info.rate || channels!=info.channels || bits!=info.bits) return reject("format");
+    if(number_type>1) return reject("number-type");
+    if(number_type==0 && (!info.max_block || number>info.total_samples/info.max_block))
+        return reject("frame-number");
+    const uint64_t position=number_type==1 ? number : number*info.max_block;
+    if(position!=samples) return reject("sample-position");
+    if(!info.total_samples || samples>info.total_samples || block>info.total_samples-samples)
+        return reject("sample-count");
+    samples+=block;
+    ++frames;
+    return true;
 }
 static uint32_t Little(const uint8_t* p) { return uint32_t(p[0])|(uint32_t(p[1])<<8)|(uint32_t(p[2])<<16)|(uint32_t(p[3])<<24); }
 static void Number(std::vector<uint8_t>& out,uint32_t n) { for(unsigned i=0;i<4;i++) out.push_back(uint8_t(n>>(8*i))); }

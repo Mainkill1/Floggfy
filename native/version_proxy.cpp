@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include "audio_history.h"
+#include "connectivity_diagnostics.h"
 #include "hook_init_state.h"
 #include "hook_startup_minhook.h"
 #include "history_settings.h"
@@ -213,6 +214,7 @@ static HRESULT STDMETHODCALLTYPE ConnectionConnectivity(INetworkConnection* self
     Method original = Original<Method>(self, 10);
     if (!original) return E_UNEXPECTED;
     HRESULT result = original(self, out);
+    const DWORD observed_flags=SUCCEEDED(result)&&out?static_cast<DWORD>(*out):0;
     if (SUCCEEDED(result) && out && !(*out & (NLM_CONNECTIVITY_IPV4_INTERNET | NLM_CONNECTIVITY_IPV6_INTERNET))) {
         GUID adapter;
         if (SUCCEEDED(self->GetAdapterId(&adapter))) {
@@ -228,6 +230,11 @@ static HRESULT STDMETHODCALLTYPE ConnectionConnectivity(INetworkConnection* self
                 }
             }
         }
+    }
+    if(history::DebugLoggingEnabled()) {
+        const bool valid=SUCCEEDED(result)&&out;
+        history::RecordConnectivity({true,valid,static_cast<std::int32_t>(result),
+            observed_flags,valid?static_cast<DWORD>(*out):0,GetTickCount64()});
     }
     return result;
 }

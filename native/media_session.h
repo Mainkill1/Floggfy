@@ -9,6 +9,7 @@ struct Media {
     unsigned track = 0;
     double position = 0, duration = 0;
     bool playing = false;
+    int playback_status = -1; // Raw Windows status; unknown for other providers.
     std::string Key() const;
 };
 std::string Utf8(const std::wstring& s);

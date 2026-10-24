@@ -155,6 +155,7 @@ MediaRead MediaReader::Observe(Media& out,double& observed_at) {
     if(current_app!=app||!SameSession(session.p,current.p)||!before.ContinuesTo(after))return MediaRead::Pending;
     const double observed=double(GetTickCount64())/1000.0;
     media.playing=after.status==4;
+    media.playback_status=after.status;
     media.duration=(double(after.end)-double(after.start))/10000000.0;
     media.position=(double(after.position)-double(after.start))/10000000.0;
     FILETIME now;GetSystemTimeAsFileTime(&now);
