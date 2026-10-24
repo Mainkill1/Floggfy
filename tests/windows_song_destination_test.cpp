@@ -16,10 +16,10 @@ static BOOL WINAPI BlockingAttributes(LPCWSTR path,GET_FILEEX_INFO_LEVELS level,
     return GetFileAttributesExW(path,level,data);
 }
 namespace history {
-static bool BlockingListing(const std::wstring& path,RecordingDirectory& directory) {
+static bool BlockingListing(const std::wstring& path,RecordingDirectory& directory,const Catalog* catalog=nullptr) {
     ++probe_attempts;
     if(hold_probe) {SetEvent(probe_entered);WaitForSingleObject(probe_release,INFINITE);}
-    return ListRecordingDirectory(path,directory);
+    return ListRecordingDirectory(path,directory,catalog);
 }
 static std::vector<std::wstring> CountingCandidates(const std::wstring& path,const Catalog& catalog,bool legacy,bool numbered) {
     ++collision_searches;return RecordingPathCandidates(path,catalog,legacy,numbered);

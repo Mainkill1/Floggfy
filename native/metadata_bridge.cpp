@@ -341,8 +341,10 @@ void EnrichCatalog(const Media& media,Catalog& catalog) {
  const auto track=MetadataNumber(fields[4]),disc=MetadataNumber(fields[5]);
  if(track)next.track=track;
  if(disc)next.disc=disc;
- if(next.kind==MediaKind::Music||next.kind==MediaKind::VariousArtists)
-  next.kind=_wcsicmp(next.artist.c_str(),L"Various Artists")==0 ? MediaKind::VariousArtists : MediaKind::Music;
+ if(next.kind==MediaKind::Music||next.kind==MediaKind::VariousArtists) {
+  const auto& folder_artist=next.folder_artist.empty()?next.artist:next.folder_artist;
+  next.kind=_wcsicmp(folder_artist.c_str(),L"Various Artists")==0 ? MediaKind::VariousArtists : MediaKind::Music;
+ }
  catalog=std::move(next);
 }
 void EnrichTags(const Media& media,Tags& tags) {

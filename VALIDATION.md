@@ -1,7 +1,50 @@
+## Song cache discovery throttling
+
+The Song worker checks a matching verified path/signature before listing its
+folder. Repeated unchanged saved-song requests avoid enumeration and full audio
+reads. A changed/deleted cached file immediately falls through to directory-first
+discovery. One unavailable request/timestamp in the existing worker cache backs
+off empty or failed discoveries for five seconds. Full request identity/settings
+and publication revision changes bypass the cooldown. Explicit successful-save
+refresh still forces fresh discovery; no extra worker or directory index exists.
+
+A live conversion failure also exposed artist-folder drift: an existing numbered
+recording and a new capture had identical Spotify URI, sample count, bit depth and
+sample rate, but enriched album-artist text sent lookup/publication to a different
+folder. No user recording was renamed/deleted during inspection. A known Windows
+album artist now anchors placement separately from full Spotify artist tags. The
+one exact enriched-artist directory remains a lookup-only alias, so files already
+saved there remain discoverable and best-quality selection spans both locations.
+Each known folder is listed once, with no library sweep; conversion retains the
+selected recording's current folder and only removes the filename prefix.
+
+`bash test-directory-lookup.sh --song-cache` — **PASS**, exit 0, exactly one
+combined execution for these two findings (one allocation each). It compiled with
+`-Wall -Wextra -Werror`; vendor warnings remain unsuppressed. Real Windows TEMP
+fixtures verified zero directory/full-audio reads on unchanged positive cache
+hits, immediate changed-signature rediscovery, zero I/O during the miss cooldown,
+expiry discovery, explicit positive/negative refresh, new tracks/settings, failed
+listing backoff and stale-request rejection. Artist-folder cases renamed a legacy
+file despite richer tag artists, retained full identity tags, found and renamed
+an existing higher-quality file in the enriched-artist folder, and skipped a
+lower-quality replay rather than creating a file in the vacant stable folder.
+Each of the two exact folders was enumerated once per discovery operation.
+
+Independent static review approved both changes before the focused execution.
+The actual metadata bridge is replaced by an enrichment stub in this test; it is
+not a live Spotify metadata test. Earlier failed full directory and filename-option
+runs below remain historical: their other runtime cases were not rerun. No full
+suite ran, no user recordings were modified, and the installed DLL is unchanged.
+One standalone `bash build-native.sh` passed (exit 0), compiling the actual
+metadata bridge and producing the DLL/launcher. No additional tests or test
+reruns ran after the focused pass. Live Spotify validation of this new DLL remains
+pending; existing recordings and the installed DLL were left intact.
+
 ## Directory-first recording lookup
 
-Conversion checks, publication lookup and the Song worker now list the containing
-song directory once per operation and compare expected filenames in memory. The
+At `34218e3`, conversion checks, publication lookup and the Song worker listed
+the containing song directory once per operation and compared filenames in memory.
+The Song worker now reaches that listing only when discovery is needed, as above. The
 same short-lived list serves FLAC, Ogg and M4A and all deterministic legacy or
 collision aliases. Only listed candidates/backups are inspected. Existing best
 quality and identity rules remain; this is not a library sweep or directory cache.

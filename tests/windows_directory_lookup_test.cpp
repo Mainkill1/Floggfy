@@ -3,7 +3,7 @@
 #include <windows.h>
 #include <cassert>
 #include <cwchar>
-static unsigned listings=0,attribute_checks=0,recording_opens=0;
+static unsigned listings=0,attribute_checks=0,recording_opens=0,signature_checks=0;
 static bool deny_listing=false,interrupt_listing=false,endless_listing=false;
 static HANDLE WINAPI CountFindFirst(LPCWSTR path,FINDEX_INFO_LEVELS level,LPVOID data,
     FINDEX_SEARCH_OPS search,LPVOID filter,DWORD flags) {
@@ -35,11 +35,16 @@ static HANDLE WINAPI CountOpen(LPCWSTR path,DWORD access,DWORD sharing,LPSECURIT
 #undef FindFirstFileExW
 #include "../native/audio_history.cpp"
 #include "../native/history_settings.cpp"
+static BOOL WINAPI CountSignature(LPCWSTR path,GET_FILEEX_INFO_LEVELS level,LPVOID data) {
+    ++signature_checks;return GetFileAttributesExW(path,level,data);
+}
+#define GetFileAttributesExW CountSignature
 #include "../native/song_destination.cpp"
+#undef GetFileAttributesExW
 #include "recording_fixture.h"
 using namespace history;
 namespace {
-void ResetCounts(){listings=attribute_checks=recording_opens=0;}
+void ResetCounts(){listings=attribute_checks=recording_opens=signature_checks=0;}
 void Write(const std::wstring& path,const std::vector<uint8_t>& bytes) {
     assert(EnsureDirectory(path.substr(0,path.find_last_of(L'\\'))));
     HANDLE file=CreateFileW(WindowsPath(path).c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,0,nullptr);
@@ -128,9 +133,44 @@ void MenuLookup(const std::wstring& root) {
     Write(old,Audio(c,16,true));destination_enabled=true;request_serial=41;
     VerificationCache cache;ResetCounts();assert(ProbeSavedSong(request,cache)==old);
     assert(listings==1&&recording_opens==1&&attribute_checks==0);
-    ResetCounts();assert(ProbeSavedSong(request,cache)==old&&listings==1&&recording_opens==0);
+    ResetCounts();
+    for(unsigned i=0;i<3;++i)assert(ProbeSavedSong(request,cache)==old);
+    assert(listings==0&&recording_opens==0&&signature_checks==3);
+    // A changed signature requires discovery and complete verification again.
+    HANDLE edit=CreateFileW(WindowsPath(old).c_str(),FILE_WRITE_ATTRIBUTES,0,nullptr,OPEN_EXISTING,0,nullptr);
+    assert(edit!=INVALID_HANDLE_VALUE);
+    const auto previous=cache.entries.front().signature.data.ftLastWriteTime;
+    ULARGE_INTEGER changed{};changed.LowPart=previous.dwLowDateTime;changed.HighPart=previous.dwHighDateTime;changed.QuadPart+=10000000;
+    FILETIME changed_time{changed.LowPart,changed.HighPart};assert(SetFileTime(edit,nullptr,nullptr,&changed_time));CloseHandle(edit);
+    ResetCounts();assert(ProbeSavedSong(request,cache)==old&&listings==1&&recording_opens==1);
     assert(DeleteFileW(WindowsPath(old).c_str()));ResetCounts();
     assert(ProbeSavedSong(request,cache).empty()&&listings==1&&recording_opens==0);
+    ResetCounts();
+    for(unsigned i=0;i<3;++i)assert(ProbeSavedSong(request,cache).empty());
+    assert(listings==0&&recording_opens==0&&signature_checks==0);
+    // External creation is discovered after the short miss cooldown expires.
+    Write(old,Audio(c,16,true));ResetCounts();assert(ProbeSavedSong(request,cache).empty()&&listings==0);
+    cache.unavailable_updated=GetTickCount64()-5000;
+    ResetCounts();assert(ProbeSavedSong(request,cache)==old&&listings==1&&recording_opens==1);
+    assert(DeleteFileW(WindowsPath(old).c_str()));assert(ProbeSavedSong(request,cache).empty());
+    Write(old,Audio(c,16,true));
+    // Publication refresh invalidates both positive and unavailable results.
+    destination_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(destination_event);
+    RefreshSongDestination();request.serial=request_serial.load();request.revision=cache_revision.load();
+    ResetCounts();assert(ProbeSavedSong(request,cache)==old&&listings==1&&recording_opens==1);
+    RefreshSongDestination();request.serial=request_serial.load();request.revision=cache_revision.load();
+    ResetCounts();assert(ProbeSavedSong(request,cache)==old&&listings==1&&recording_opens==1);
+    auto next=request;next.catalog=Song(L"New menu song");
+    next.flac=OutputPath(root,next.catalog,L".flac");next.ogg=OutputPath(root,next.catalog,L".ogg");next.aac=OutputPath(root,next.catalog,L".m4a");
+    Write(next.flac,Audio(next.catalog));ResetCounts();
+    assert(ProbeSavedSong(next,cache)==next.flac&&listings==1&&recording_opens==1);
+    assert(DeleteFileW(WindowsPath(next.flac).c_str())&&DeleteFileW(WindowsPath(old).c_str()));
+    ResetCounts();assert(ProbeSavedSong(next,cache).empty()&&listings==1);
+    next.generation++;ResetCounts();assert(ProbeSavedSong(next,cache).empty()&&listings==1); // New settings bypass cooldown.
+    next.generation++;deny_listing=true;ResetCounts();assert(ProbeSavedSong(next,cache).empty()&&listings==1);
+    deny_listing=false;ResetCounts();assert(ProbeSavedSong(next,cache).empty()&&listings==0&&signature_checks==0);
+    next.serial--;ResetCounts();assert(ProbeSavedSong(next,cache).empty()&&listings==0&&signature_checks==0);
+    CloseHandle(destination_event);destination_event=nullptr;
     destination_enabled=false;
 }
 void PreferredPublication(const std::wstring& root) {
@@ -148,17 +188,59 @@ void PreferredPublication(const std::wstring& root) {
         assert(DeleteFileW(WindowsPath(path).c_str()));
     }
 }
+void StableArtistFolder(const std::wstring& root) {
+    Media media;media.title=L"Collaborative track";media.artist=media.album_artist=L"Artist";
+    media.album=L"Album";media.track=3;media.duration=1;media.playing=true;
+    const auto catalog=CatalogFor(media);
+    assert(catalog.artist==L"Artist; Guest"&&catalog.folder_artist==L"Artist");
+    auto original=catalog;original.artist=L"Artist";original.folder_artist.clear();
+    const auto title=OutputPath(root,catalog,L".flac");
+    assert(title==OutputPath(root,original,L".flac"));
+    auto drifted=catalog;drifted.folder_artist.clear();
+    const auto wrong_folder=OutputPath(root,drifted,L".flac");assert(wrong_folder!=title);
+    const auto slash=title.find_last_of(L'\\');const auto old=title.substr(0,slash+1)+L"03 - "+title.substr(slash+1);
+    Write(old,Audio(original));
+    {ExclusiveSrw guard(history::lock);history::settings.root=root;history::settings.convert_numbered_filenames=true;
+     history::settings.track_number_in_filename=false;history::settings.metadata=false;history::settings.generation=7;}
+    FilenameCheck check{catalog,GetSettings(),filename_check_serial.load()};
+    ResetCounts();ProcessFilenameCheck(check);assert(listings==2); // Each of the two exact artist folders is listed once.
+    assert(GetFileAttributesW(WindowsPath(old).c_str())==INVALID_FILE_ATTRIBUTES);
+    RecordingFile saved;assert(ReadRecording(title,saved)&&saved.complete&&MatchesRecording(saved,catalog));
+    Tags identity;ApplyCatalogIdentity(identity,catalog);
+    assert(std::find(identity.fields.begin(),identity.fields.end(),std::make_pair(std::string("ALBUMARTIST"),std::string("Artist; Guest")))!=identity.fields.end());
+    Capture incoming;incoming.lossless=true;incoming.flac.rate=44100;incoming.flac.channels=2;incoming.flac.bits=16;
+    Heard heard;heard.media=media;heard.start=1;heard.finish=2;
+    assert(Publish(incoming,heard,CaptureEpoch())==Publication::Skipped);
+    assert(GetFileAttributesW(WindowsPath(wrong_folder).c_str())==INVALID_FILE_ATTRIBUTES);
+    // A recording already saved under enriched artist names is still found;
+    // existing higher quality wins across both known folders without copying.
+    const auto alternate_old=wrong_folder.substr(0,wrong_folder.find_last_of(L'\\')+1)+L"03 - "+wrong_folder.substr(wrong_folder.find_last_of(L'\\')+1);
+    Write(alternate_old,Audio(catalog,24));
+    ResetCounts();ProcessFilenameCheck(check);assert(listings==2);
+    assert(GetFileAttributesW(WindowsPath(alternate_old).c_str())==INVALID_FILE_ATTRIBUTES);
+    assert(ReadRecording(wrong_folder,saved)&&saved.quality.bits==24);
+    assert(DeleteFileW(WindowsPath(title).c_str()));
+    assert(Publish(incoming,heard,CaptureEpoch())==Publication::Skipped);
+    assert(GetFileAttributesW(WindowsPath(title).c_str())==INVALID_FILE_ATTRIBUTES);
+    assert(ReadRecording(wrong_folder,saved)&&saved.quality.bits==24);
+    assert(DeleteFileW(WindowsPath(wrong_folder).c_str()));
+}
 }
 namespace history {
 std::string ReadClientPlaybackQuality(const Media&){return {};}
-void EnrichCatalog(const Media& media,Catalog& c){c.disc=2;c.spotify_uri="spotify:track:"+Utf8(media.title);}
+void EnrichCatalog(const Media& media,Catalog& c){c.disc=2;c.spotify_uri="spotify:track:"+Utf8(media.title);if(media.title==L"Collaborative track")c.artist=L"Artist; Guest";}
 void EnrichTags(const Media&,Tags&) {}
 }
-int wmain() {
+int wmain(int argc,wchar_t** argv) {
     wchar_t executable[32768];assert(GetModuleFileNameW(nullptr,executable,32768));
     const std::wstring exe=executable,root=exe.substr(0,exe.find_last_of(L'\\'))+L"\\Music-\u97f3\u697d";
     history::log_enabled=history::debug_enabled=0;
-    Lookups(root);Conversion(root);MenuLookup(root);PreferredPublication(root);
+    if(argc==2&&std::wstring(argv[1])==L"--song-cache") {
+        MenuLookup(root);StableArtistFolder(root);
+        puts("PASS: verified Song cache avoids directory listings; misses back off; refresh bypasses cooldown; enriched artist tags retain stable folder lookup, prefix conversion and equal-quality reuse");
+        return 0;
+    }
+    Lookups(root);Conversion(root);MenuLookup(root);PreferredPublication(root);StableArtistFolder(root);
     puts("PASS: one directory listing per lookup across formats; only listed recordings inspected; collision/best-quality reuse, casefold, recovery, blocked/partial/bounded enumeration, conversion and menu cache");
     return 0;
 }

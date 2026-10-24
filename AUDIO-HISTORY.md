@@ -91,8 +91,8 @@ Downloads is enabled; it does not require a completed listen or metadata updatin
 If both options are `1`, numbering wins and conversion is reset to `0` in the INI.
 The two settings never compete to rename a file back and forth.
 
-The check lists the containing album directory once, then compares expected
-FLAC/Ogg/M4A names and legacy aliases against that list in memory. Only listed
+The check lists each known album directory once, then compares expected
+FLAC/Ogg/M4A names and legacy aliases against those lists in memory. Only listed
 matching candidates are opened for identity/quality validation; absent generated
 names do not cause individual filesystem probes. The list is discarded after
 the operation.
@@ -114,10 +114,14 @@ counterpart only for the same recording.
 The resolver checks existing deterministic names before allocating a vacant one,
 so deleting the ordinary filename does not hide a previously suffixed recording.
 It also checks the text-identity suffix used before URI enrichment. Searches are
-bounded to 195 known names including legacy numbered/disc-prefixed variants.
-One nonrecursive directory listing is shared across format lookups; it is limited
-to 16,384 entries. Inaccessible or partial listings and inaccessible possible
-matches defer a new save instead of risking a duplicate. Final publication and
+bounded to 195 known names per folder including old numbered/disc prefixes.
+A known Windows album artist keeps its existing folder identity even when Spotify
+provides a fuller artist list for tags. The single exact Spotify-derived folder is
+also a lookup alias for files already saved there. No other artist folders are
+searched, and new files use the stable folder. At most two nonrecursive listings
+are shared across format lookups, each limited to 16,384 entries. Inaccessible or
+partial listings and inaccessible possible matches defer a new save instead of
+risking a duplicate. Final publication and
 renames still lock/revalidate the live file; a listing never authorizes a write.
 
 A Vorbis upgrade requires higher known nominal bitrate and no sample-rate
@@ -189,12 +193,14 @@ FLAC, Ogg or M4A file exists. When enabled, it opens the containing folder. A se
 worker checks destination paths; capture processing and menu rendering only
 exchange bounded requests and memory snapshots. Superseded results cannot enable
 a different track or save location, and `Menu=0` disables destination probes.
-The shortcut lists the directory once and checks the three ordinary filenames
-against that list first. It verifies a listed matching file once and only compares
-legacy/collision names if needed, stopping at the first complete match. Publication still chooses the best verified existing recording.
-A 16-entry worker cache retains verified path/catalog/signature data across song
-changes; signatures are checked before reuse and saves invalidate the cache. It
-does not retain audio or artwork. A pending row may acquire its verified target
+The shortcut first checks its 16-entry verified-file cache with a fresh file
+signature. Unchanged saved files need no directory listing or audio reread.
+Discovery lists the directory once and compares the three ordinary names before
+legacy/collision aliases, stopping at the first complete identity match.
+Publication still chooses the best verified existing recording. An unavailable
+Song target is retried after five seconds; changed tracks/settings and successful
+publication refresh bypass that cooldown. Signatures that change trigger discovery
+immediately. The cache holds no audio, artwork or directory listing. A pending row may acquire its verified target
 when the submenu is prepared without changing the frozen song label or settings.
 The click rechecks the file so deletion produces an unavailable notice instead of opening an
 empty folder. Only audio saves create directories. Folder clicks do not add

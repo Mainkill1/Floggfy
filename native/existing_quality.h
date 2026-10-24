@@ -17,7 +17,8 @@ bool ExistingRecording(const std::wstring& file,const Catalog& catalog,Quality& 
 // Recover only a verified same-recording backup left by an interrupted upgrade.
 bool RecoverRecording(const std::wstring& path,const Catalog& catalog);
 enum class RecordingDestinationState { Vacant, Existing, Blocked };
-// Short-lived, bounded listing of one containing directory. All codec/name
+// Short-lived, bounded listings of the containing directory and, when needed,
+// its single known Spotify-artist alias. All codec/name
 // checks in a worker operation share it; it is never a cross-request cache or
 // authorization to rename/replace a file. Partial/failed listings are unusable.
 class RecordingDirectory {
@@ -25,14 +26,15 @@ public:
     bool Covers(const std::wstring& file) const;
     bool Contains(const std::wstring& file) const;
 private:
-    friend bool ListRecordingDirectory(const std::wstring&,RecordingDirectory&);
-    std::wstring directory_;
-    std::vector<std::wstring> names_;
+    friend bool ListRecordingDirectory(const std::wstring&,RecordingDirectory&,const Catalog*);
+    struct Listing {std::wstring directory;std::vector<std::wstring> names;};
+    std::vector<Listing> listings_;
     bool complete_=false;
 };
 // A missing directory is an empty listing; access/enumeration errors and more
-// than 16,384 entries fail closed. No directories or files are created.
-bool ListRecordingDirectory(const std::wstring& file,RecordingDirectory& out);
+// than 16,384 entries per directory fail closed. The optional catalog adds only
+// its exact artist-folder alias, never a library scan. No directories created.
+bool ListRecordingDirectory(const std::wstring& file,RecordingDirectory& out,const Catalog* catalog=nullptr);
 struct RecordingDestination {
     RecordingDestinationState state=RecordingDestinationState::Blocked;
     std::wstring path;

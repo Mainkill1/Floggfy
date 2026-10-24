@@ -6,6 +6,9 @@ enum class MediaKind { Music, Compilation, Soundtrack, VariousArtists, Audiobook
 struct Catalog {
     MediaKind kind=MediaKind::Music;
     std::wstring artist,album,title,author,series,book,show;
+    // A known media-session album artist anchors the existing folder even if
+    // Spotify later supplies a richer artist list for the recording's tags.
+    std::wstring folder_artist;
     unsigned track=0,episode_year=0,disc=0;
     std::string spotify_uri;
     double duration=0;

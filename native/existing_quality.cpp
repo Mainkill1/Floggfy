@@ -29,6 +29,29 @@ std::wstring ContainingDirectory(const std::wstring& file) {
 bool FilenameLess(const std::wstring& a,const std::wstring& b) {
     return CompareStringOrdinal(a.c_str(),int(a.size()),b.c_str(),int(b.size()),TRUE)==CSTR_LESS_THAN;
 }
+std::wstring ArtistFolderAlias(const std::wstring& base,const Catalog& catalog) {
+    if((catalog.kind!=MediaKind::Music && catalog.kind!=MediaKind::VariousArtists) || catalog.folder_artist.empty())return {};
+    const auto slash=base.find_last_of(L"\\/"),dot=base.find_last_of(L'.');
+    if(dot==std::wstring::npos || (slash!=std::wstring::npos && dot<slash))return {};
+    const auto extension=base.substr(dot);
+    // RelativePath owns sanitizing/truncation. Compare only its artist/album
+    // directory suffix, so numbered and title-only filenames use the same alias.
+    auto current=RelativePath(catalog,extension);
+    auto enriched=catalog;enriched.folder_artist.clear();
+    enriched.kind=_wcsicmp(enriched.artist.c_str(),L"Various Artists")==0?MediaKind::VariousArtists:MediaKind::Music;
+    auto alias=RelativePath(enriched,extension);
+    const auto prefix=std::wstring(L"Music\\").size();
+    current=current.substr(prefix,current.find_last_of(L'\\')+1-prefix);
+    alias=alias.substr(prefix,alias.find_last_of(L'\\')+1-prefix);
+    auto path=base;std::replace(path.begin(),path.end(),L'/',L'\\');
+    const auto filename=path.find_last_of(L'\\');
+    if(filename==std::wstring::npos || filename+1<current.size())return {};
+    const auto start=filename+1-current.size();
+    if(start && path[start-1]!=L'\\')return {};
+    if(CompareStringOrdinal(path.c_str()+start,int(current.size()),current.c_str(),int(current.size()),TRUE)!=CSTR_EQUAL ||
+       CompareStringOrdinal(current.c_str(),int(current.size()),alias.c_str(),int(alias.size()),TRUE)==CSTR_EQUAL)return {};
+    return path.substr(0,start)+alias+path.substr(filename+1);
+}
 bool Missing(const std::wstring& path) {
     if(GetFileAttributesW(WindowsPath(path).c_str())!=INVALID_FILE_ATTRIBUTES) return false;
     DWORD error=GetLastError();
@@ -56,42 +79,56 @@ bool RestoreBackup(const std::wstring& backup,const std::wstring& destination,co
 }
 bool RecordingDirectory::Covers(const std::wstring& file) const {
     const auto directory=ContainingDirectory(file);
-    return complete_ && CompareStringOrdinal(directory_.c_str(),int(directory_.size()),
-        directory.c_str(),int(directory.size()),TRUE)==CSTR_EQUAL;
+    return complete_ && std::any_of(listings_.begin(),listings_.end(),[&](const auto& listing) {
+        return CompareStringOrdinal(listing.directory.c_str(),int(listing.directory.size()),
+            directory.c_str(),int(directory.size()),TRUE)==CSTR_EQUAL;
+    });
 }
 bool RecordingDirectory::Contains(const std::wstring& file) const {
-    if(!Covers(file))return false;
+    if(!complete_)return false;
+    const auto directory=ContainingDirectory(file);
     const auto slash=file.find_last_of(L"\\/");
     const auto name=file.substr(slash==std::wstring::npos?0:slash+1);
-    return std::binary_search(names_.begin(),names_.end(),name,FilenameLess);
+    for(const auto& listing:listings_) {
+        if(CompareStringOrdinal(listing.directory.c_str(),int(listing.directory.size()),
+           directory.c_str(),int(directory.size()),TRUE)==CSTR_EQUAL)
+            return std::binary_search(listing.names.begin(),listing.names.end(),name,FilenameLess);
+    }
+    return false;
 }
-bool ListRecordingDirectory(const std::wstring& file,RecordingDirectory& out) {
+bool ListRecordingDirectory(const std::wstring& file,RecordingDirectory& out,const Catalog* catalog) {
     out={};
     if(file.empty())return false;
     try {
         RecordingDirectory listing;
-        listing.directory_=ContainingDirectory(file);
-        WIN32_FIND_DATAW entry{};
-        FindHandle find{FindFirstFileExW((listing.directory_+L"*").c_str(),FindExInfoBasic,
-            &entry,FindExSearchNameMatch,nullptr,0)};
-        if(find.value==INVALID_HANDLE_VALUE) {
-            const auto error=GetLastError();
-            if(error!=ERROR_FILE_NOT_FOUND && error!=ERROR_PATH_NOT_FOUND)return false;
-        } else {
-            constexpr size_t max_entries=16384;
-            size_t entries=0;
-            for(;;) {
-                if(++entries>max_entries)return false;
-                const std::wstring name=entry.cFileName;
-                // Keep directories too: one occupying a candidate must not be
-                // mistaken for a vacant filename. Never recurse into them.
-                if(name!=L"." && name!=L"..")listing.names_.push_back(name);
-                if(FindNextFileW(find.value,&entry))continue;
-                if(GetLastError()!=ERROR_NO_MORE_FILES)return false;
-                break;
+        std::vector<std::wstring> files{file};
+        if(catalog) {auto alias=ArtistFolderAlias(file,*catalog);if(!alias.empty())files.push_back(std::move(alias));}
+        for(const auto& lookup:files) {
+            RecordingDirectory::Listing directory;
+            directory.directory=ContainingDirectory(lookup);
+            WIN32_FIND_DATAW entry{};
+            FindHandle find{FindFirstFileExW((directory.directory+L"*").c_str(),FindExInfoBasic,
+                &entry,FindExSearchNameMatch,nullptr,0)};
+            if(find.value==INVALID_HANDLE_VALUE) {
+                const auto error=GetLastError();
+                if(error!=ERROR_FILE_NOT_FOUND && error!=ERROR_PATH_NOT_FOUND)return false;
+            } else {
+                constexpr size_t max_entries=16384;
+                size_t entries=0;
+                for(;;) {
+                    if(++entries>max_entries)return false;
+                    const std::wstring name=entry.cFileName;
+                    // Keep directories too: one occupying a candidate must not be
+                    // mistaken for a vacant filename. Never recurse into them.
+                    if(name!=L"." && name!=L"..")directory.names.push_back(name);
+                    if(FindNextFileW(find.value,&entry))continue;
+                    if(GetLastError()!=ERROR_NO_MORE_FILES)return false;
+                    break;
+                }
             }
+            std::sort(directory.names.begin(),directory.names.end(),FilenameLess);
+            listing.listings_.push_back(std::move(directory));
         }
-        std::sort(listing.names_.begin(),listing.names_.end(),FilenameLess);
         listing.complete_=true;
         out=std::move(listing);
         return true;
@@ -160,13 +197,18 @@ std::vector<std::wstring> RecordingPathCandidates(const std::wstring& base,const
     }
     const auto numbered=track+title;
     std::vector<std::wstring> bases{base};
-    auto alias=[&](const std::wstring& name) {
-        const auto path=directory+name;
+    auto alias=[&](const std::wstring& folder,const std::wstring& name) {
+        const auto path=folder+name;
         if(std::find(bases.begin(),bases.end(),path)==bases.end())bases.push_back(path);
     };
     if(legacy_names) {
-        alias(title);alias(numbered);
-        if(catalog.disc>1)alias(L"Disc "+std::to_wstring(catalog.disc)+L" - "+numbered);
+        std::vector<std::wstring> folders{directory};
+        const auto artist_alias=ArtistFolderAlias(base,catalog);
+        if(!artist_alias.empty())folders.push_back(artist_alias.substr(0,artist_alias.find_last_of(L"\\/")+1));
+        for(const auto& folder:folders) {
+            alias(folder,title);alias(folder,numbered);
+            if(catalog.disc>1)alias(folder,L"Disc "+std::to_wstring(catalog.disc)+L" - "+numbered);
+        }
     }
     // Older numbered names remain valid homes for the same recording. Merely
     // changing filename style must never allocate a second copy of that song.
@@ -195,7 +237,7 @@ RecordingDestination ResolveRecordingDestination(const std::wstring& base,const 
     const auto writable=RecordingPathCandidates(base,catalog,false,track_numbers);
     RecordingDirectory local;
     if(!directory) {
-        if(!ListRecordingDirectory(base,local))return {};
+        if(!ListRecordingDirectory(base,local,&catalog))return {};
         directory=&local;
     }
     if(!directory->Covers(base))return {};

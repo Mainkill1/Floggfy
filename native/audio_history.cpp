@@ -289,6 +289,7 @@ static double PendingCaptureDeadline(const Capture& capture,const std::vector<He
 static Catalog CatalogFor(const Media& media) {
     Catalog c; c.title=media.title; c.album=media.album; c.track=media.track;c.duration=media.duration;
     c.artist=media.album_artist.empty() ? media.artist : media.album_artist;
+    c.folder_artist=media.album_artist;
     if(_wcsicmp(c.artist.c_str(),L"Various Artists")==0) c.kind=MediaKind::VariousArtists;
     EnrichCatalog(media,c);return c;
 }
@@ -362,7 +363,11 @@ static FilenameConversion ConvertResolvedFilename(RecordingDestination& resolved
     const auto latest=GetSettings();
     if(latest.generation!=settings.generation || !latest.downloads || !latest.convert_numbered_filenames || latest.track_number_in_filename)
         return FilenameConversion::Unchanged;
-    const auto title_path=OutputPath(settings.root,catalog,extension,settings.music_folder,false);
+    const auto expected=OutputPath(settings.root,catalog,extension,settings.music_folder,false);
+    // Reused recordings keep their existing folder, including the recognized
+    // Spotify-artist alias. Conversion removes only the filename prefix.
+    const auto title_path=resolved.path.substr(0,resolved.path.find_last_of(L"\\/")+1)+
+        expected.substr(expected.find_last_of(L"\\/")+1);
     std::wstring renamed;
     FilenamePermit permit{settings.generation,serial};
     const auto result=ConvertRecordingFilename(resolved.path,title_path,catalog,renamed,FilenameStillCurrent,&permit);
@@ -409,7 +414,7 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     catalog=CatalogFor(heard.media);ApplyCatalogIdentity(tags,catalog);
     const auto capture_path=OutputPath(settings.root,catalog,c.Extension(),settings.music_folder,settings.track_number_in_filename);
     RecordingDirectory directory;
-    if(!ListRecordingDirectory(capture_path,directory))
+    if(!ListRecordingDirectory(capture_path,directory,&catalog))
         return finish(Publication::Failed,"failed","recording directory could not be listed; publication deferred");
     // Search preferred formats first. Blocked is I/O uncertainty, never proof
     // that a recording is absent. The resolver returns its verified snapshot
@@ -547,7 +552,7 @@ static void QueueFilenameCheck(const Media& media,const Settings& settings) {
         auto wide=[&](const std::wstring& value){text(Utf8(value));};
         // Use raw identity, not sanitized filenames: A/B and A:B may share a
         // basename but are still distinct recordings when Spotify URI is absent.
-        const std::wstring* fields[]={&settings.root,&catalog.title,&catalog.artist,&catalog.album,&catalog.author,&catalog.series,&catalog.book,&catalog.show};
+        const std::wstring* fields[]={&settings.root,&catalog.title,&catalog.artist,&catalog.folder_artist,&catalog.album,&catalog.author,&catalog.series,&catalog.book,&catalog.show};
         for(const auto* field:fields)wide(*field);
         text(catalog.spotify_uri);
         key+=std::to_string(unsigned(catalog.kind))+":"+std::to_string(catalog.track)+":"+
@@ -582,7 +587,7 @@ static void ProcessFilenameCheck(const FilenameCheck& check) {
     };
     if(!current())return;
     RecordingDirectory directory;
-    if(!ListRecordingDirectory(OutputPath(check.settings.root,check.catalog,L".flac",check.settings.music_folder,false),directory))return;
+    if(!ListRecordingDirectory(OutputPath(check.settings.root,check.catalog,L".flac",check.settings.music_folder,false),directory,&check.catalog))return;
     for(const auto* extension:{L".flac",L".ogg",L".m4a"}) {
         if(!current())return;
         auto resolved=ResolveRecordingDestination(OutputPath(check.settings.root,check.catalog,extension,check.settings.music_folder,false),check.catalog,false,&directory);

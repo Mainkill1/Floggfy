@@ -51,7 +51,7 @@ struct DestinationTryExclusive {
 static bool SameRequest(const DestinationRequest& a,const DestinationRequest& b) {
     const auto& x=a.catalog;const auto& y=b.catalog;
     return a.identity==b.identity && a.generation==b.generation && a.track_numbers==b.track_numbers && a.flac==b.flac && a.ogg==b.ogg && a.aac==b.aac &&
-        x.kind==y.kind && x.artist==y.artist && x.album==y.album && x.title==y.title &&
+        x.kind==y.kind && x.artist==y.artist && x.folder_artist==y.folder_artist && x.album==y.album && x.title==y.title &&
         x.author==y.author && x.series==y.series && x.book==y.book && x.show==y.show &&
         x.track==y.track && x.episode_year==y.episode_year && x.disc==y.disc &&
         x.spotify_uri==y.spotify_uri && x.duration==y.duration;
@@ -62,7 +62,7 @@ static std::uint64_t IntentKey(std::uint64_t identity,const std::wstring& root,c
     auto number=[&](std::uint64_t value) {for(unsigned i=0;i<8;++i){hash^=uint8_t(value>>(i*8));hash*=1099511628211ULL;}};
     auto wide=[&](const std::wstring& value) {number(value.size());for(wchar_t c:value)number(unsigned(c));};
     number(identity);number(generation);number(music_folder);number(track_numbers);number(unsigned(catalog.kind));wide(root);
-    for(const auto* value:{&catalog.artist,&catalog.album,&catalog.title,&catalog.author,&catalog.series,&catalog.book,&catalog.show})wide(*value);
+    for(const auto* value:{&catalog.artist,&catalog.folder_artist,&catalog.album,&catalog.title,&catalog.author,&catalog.series,&catalog.book,&catalog.show})wide(*value);
     number(catalog.track);number(catalog.episode_year);number(catalog.disc);
     number(catalog.spotify_uri.size());for(unsigned char c:catalog.spotify_uri)number(c);
     std::uint64_t duration=0;static_assert(sizeof(duration)==sizeof(catalog.duration),"duration bits");
@@ -93,6 +93,11 @@ struct VerificationCache {
     // Retain only bounded path/catalog/signature data, never audio or artwork.
     // Revisited songs still need a fresh signature check on this worker.
     std::vector<VerifiedDestination> entries;
+    // One unavailable Song request, not a directory index. Heartbeats may
+    // reuse its disabled result for five seconds; publication refresh, changed
+    // settings or a different track bypass the cooldown immediately.
+    std::optional<DestinationRequest> unavailable;
+    ULONGLONG unavailable_updated=0;
 };
 static bool CurrentRequest(const DestinationRequest& request) {
     return destination_enabled.load(std::memory_order_acquire) &&
@@ -109,24 +114,35 @@ static void Remember(const DestinationRequest& request,const std::wstring& file,
                      const FileSignature& signature,VerificationCache& cache) {
     if(cache.entries.size()==16)cache.entries.pop_back();
     cache.entries.insert(cache.entries.begin(),VerifiedDestination{request,file,signature});
+    cache.unavailable.reset();
 }
 static std::wstring ProbeSavedSong(const DestinationRequest& request,VerificationCache& cache) {
-    // One short-lived listing serves all formats and historical names. Never
-    // perform a filesystem probe for each generated but absent candidate.
-    RecordingDirectory directory;
-    if(!CurrentRequest(request) || !ListRecordingDirectory(request.flac,directory) || !CurrentRequest(request))return {};
+    if(!CurrentRequest(request))return {};
     cache.entries.erase(std::remove_if(cache.entries.begin(),cache.entries.end(),[&](const auto& entry) {
         return entry.request.revision!=request.revision;
     }),cache.entries.end());
     for(auto entry=cache.entries.begin();entry!=cache.entries.end();++entry) {
         if(!SameRequest(request,entry->request))continue;
         FileSignature current;
-        if(CurrentRequest(request) && directory.Contains(entry->file) && current.Read(entry->file) && current==entry->signature && CurrentRequest(request)) {
+        if(CurrentRequest(request) && current.Read(entry->file) && current==entry->signature && CurrentRequest(request)) {
             std::rotate(cache.entries.begin(),entry,entry+1);
             return cache.entries.front().file;
         }
-        cache.entries.erase(entry);break; // Changed/deleted files need validation again.
+        cache.entries.erase(entry);cache.unavailable.reset();break; // Changed/deleted files need discovery again.
     }
+    constexpr ULONGLONG unavailable_retry_ms=5000;
+    if(cache.unavailable && cache.unavailable->revision==request.revision &&
+       SameRequest(request,*cache.unavailable) && GetTickCount64()-cache.unavailable_updated<unavailable_retry_ms)return {};
+    auto unavailable=[&]() -> std::wstring {
+        if(CurrentRequest(request)) {cache.unavailable=request;cache.unavailable_updated=GetTickCount64();}
+        return {};
+    };
+    // Discovery only: one short-lived listing serves every format/alias. A
+    // verified cache hit above needs just its live signature, never a listing.
+    RecordingDirectory directory;
+    if(!CurrentRequest(request))return {};
+    if(!ListRecordingDirectory(request.flac,directory,&request.catalog))return unavailable();
+    if(!CurrentRequest(request))return {};
     for(const auto* base:{&request.flac,&request.ogg,&request.aac}) {
         if(!CurrentRequest(request))return {};
         FileSignature signature;
@@ -150,7 +166,7 @@ static std::wstring ProbeSavedSong(const DestinationRequest& request,Verificatio
             }
         }
     }
-    return {};
+    return unavailable();
 }
 static DWORD WINAPI DestinationWorker(void*) {
     VerificationCache cache;

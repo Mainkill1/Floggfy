@@ -17,8 +17,9 @@ static std::wstring Safe(std::wstring s,const wchar_t* fallback) {
 std::wstring RelativePath(const Catalog& c,const std::wstring& extension,bool track_numbers) {
     std::vector<std::wstring> parts;
     auto album=Safe(c.album,L"Unknown Album");
+    const auto& folder_artist=c.folder_artist.empty()?c.artist:c.folder_artist;
     switch(c.kind) {
-        case MediaKind::Music: parts={L"Music",L"Artists",Safe(c.artist,L"Unknown Artist"),album}; break;
+        case MediaKind::Music: parts={L"Music",L"Artists",Safe(folder_artist,L"Unknown Artist"),album}; break;
         case MediaKind::Compilation: parts={L"Music",L"Compilations",album}; break;
         case MediaKind::Soundtrack: parts={L"Music",L"Soundtracks",album}; break;
         case MediaKind::VariousArtists: parts={L"Music",L"Various Artists",album}; break;

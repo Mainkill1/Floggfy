@@ -21,4 +21,4 @@ x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -municode -static-li
     native/lyrics_update.cpp native/metadata_update_core.cpp native/metadata_update_windows.cpp native/recent_downloads.cpp \
     native/spotify_hook_discovery.cpp native/async_log.cpp \
     build/directory-lookup/*.o -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_names_root/directory-lookup-test.exe"
-exec "$floggfy_names_root/directory-lookup-test.exe"
+exec "$floggfy_names_root/directory-lookup-test.exe" "$@"
