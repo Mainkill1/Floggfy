@@ -1,5 +1,7 @@
 // Basic media observation boundary only: no live SMTC, artwork or disk access.
 #include "../native/media_session.h"
+#include "../native/media_timeline.h"
+#include "../native/ogg_history_core.h"
 #include <atomic>
 #include <cassert>
 #include <cstdio>
@@ -26,9 +28,48 @@ template<class Predicate> void Wait(Predicate ready) {
     const auto deadline=GetTickCount64()+6000;
     while(!ready()){assert(GetTickCount64()<deadline);Sleep(1);}
 }
+void TimelineContinuity() {
+    using history::media_detail::MediaTimeline;
+    constexpr int64_t second=10000000,utc=130000000000000000LL;
+    MediaTimeline before{0,180*second,10*second,utc,4};
+    assert(before.ContinuesTo(before));
+    auto after=before;after.position+=second/2;after.updated+=second/2;
+    assert(before.ContinuesTo(after)); // A normal refresh during the async call.
+    history::Listen listen;
+    auto current=before;current.position=0;
+    assert(listen.Observe("A",0,180,true,100).empty()&&listen.eligible);
+    for(unsigned i=1;i<=12;++i) {
+        auto next=current;next.position+=second/2;next.updated+=second/2;
+        assert(current.ContinuesTo(next));
+        assert(listen.Observe("A",double(next.position)/second,180,true,100+i*0.5).empty()&&listen.eligible);
+        current=next;
+    }
+    // Every pair changes Position/LastUpdatedTime for six seconds; no starvation.
+    assert(listen.last_time==106&&listen.last_position==6);
+    listen.Observe("A",10,180,true,110);assert(!listen.eligible); // Real observation gaps still fail.
+    after=before;after.updated+=second/2;after.position+=second/2+second/5;
+    assert(before.ContinuesTo(after)); // Bounded rounding jitter.
+    after.position+=second;assert(!before.ContinuesTo(after)); // Forward seek.
+    after=before;after.position-=second;after.updated+=second/2;
+    assert(!before.ContinuesTo(after)); // Backward seek.
+    after=before;after.updated-=1;assert(!before.ContinuesTo(after));
+    after=before;after.end+=second;assert(!before.ContinuesTo(after));
+    after=before;after.start+=1;assert(!before.ContinuesTo(after));
+    after=before;after.status=3;assert(!before.ContinuesTo(after));
+    auto paused=before;paused.status=3;after=paused;after.updated+=second;
+    assert(paused.ContinuesTo(after)); // Paused timeline timestamp refresh.
+    after.position+=1;assert(!paused.ContinuesTo(after));
+    after=before;after.position=after.end+1;assert(!before.ContinuesTo(after));
+    after=before;after.updated=0;assert(!before.ContinuesTo(after));
+    auto ending=before;ending.position=ending.end-second/4;
+    after=ending;after.updated+=second;after.position=after.end;
+    assert(ending.ContinuesTo(after)); // Natural clamping at the end.
+    after.position=0;assert(!ending.ContinuesTo(after)); // Equal-duration next track or repeat.
+}
 }
 int RunMediaSnapshotTests() {
     using namespace history;
+    TimelineContinuity();
     Source source;MediaSnapshotReader reader(Fetch,&source);
     Media out;out.title=L"untouched";double observed=0;uint64_t sequence=0;
     assert(reader.TryRead(out,observed,sequence)==MediaRead::Pending&&out.title==L"untouched"&&sequence==0);
@@ -67,7 +108,7 @@ int RunMediaSnapshotTests() {
     const auto stop_start=GetTickCount64();reader.Stop();
     assert(GetTickCount64()-stop_start<1000&&!reader.Start()&&!reader.IsStopped());
     SetEvent(source.release);Wait([&]{return reader.IsStopped();});
-    std::puts("PASS: blocked media I/O cannot stall capture-style polling; snapshots are fresh, sequenced once, and stopped state survives outstanding work");
+    std::puts("PASS: normal timeline refreshes retain coverage; seeks/transitions retry; blocked media I/O cannot stall polling; snapshots are fresh, sequenced once, and stop safely");
     return 0;
 }
 #ifndef FLOGGFY_COMBINED_TEST

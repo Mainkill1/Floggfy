@@ -1,4 +1,5 @@
 #include "media_session.h"
+#include "media_timeline.h"
 #include <roapi.h>
 #include <winstring.h>
 #include <algorithm>
@@ -73,14 +74,7 @@ std::string Media::Key() const {
     return Utf8(title)+"\x1f"+Utf8(artist)+"\x1f"+Utf8(album);
 }
 namespace {
-struct Timeline {
-    int64_t start=0,end=0,position=0,updated=0;
-    int status=0;
-    bool Same(const Timeline& other) const {
-        return start==other.start&&end==other.end&&position==other.position&&
-               updated==other.updated&&status==other.status;
-    }
-};
+using Timeline=media_detail::MediaTimeline;
 bool ReadTimeline(void* session,Timeline& out) {
     Com timeline,playback;
     return SUCCEEDED(Call(session,8,timeline.out()))&&SUCCEEDED(Call(session,9,playback.out()))&&
@@ -154,11 +148,11 @@ MediaRead MediaReader::Observe(Media& out,double& observed_at) {
         }
     }
     int track=0;Call(properties.p,11,&track);media.track=track>0?unsigned(track):0;
-    // A completed property operation must not be paired with a timeline/session
-    // that changed while it was outstanding (including equal-duration tracks).
+    // Accept ordinary Position/LastUpdatedTime refreshes during the async call.
+    // Session changes and discontinuous movement still require a fresh read.
     Com current;std::wstring current_app;Timeline after;
     if(!SpotifySession(manager_,current,current_app)||!ReadTimeline(current.p,after))return MediaRead::Failed;
-    if(current_app!=app||!SameSession(session.p,current.p)||!before.Same(after))return MediaRead::Pending;
+    if(current_app!=app||!SameSession(session.p,current.p)||!before.ContinuesTo(after))return MediaRead::Pending;
     const double observed=double(GetTickCount64())/1000.0;
     media.playing=after.status==4;
     media.duration=(double(after.end)-double(after.start))/10000000.0;

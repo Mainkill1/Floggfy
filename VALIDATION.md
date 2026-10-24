@@ -1,3 +1,33 @@
+## Timeline-refresh follow-up to the fourth review
+
+The observer's exact timeline equality check at `22984d0` rejected legitimate
+Position/LastUpdatedTime refreshes during the asynchronous property request.
+The guard now compares movement at the two source timestamps at normal 1x
+playback, allowing up to 250 ms of rounding difference and end clamping. It still
+requires the same app/canonical session, bounds and playback state, valid positions,
+nonregressing timestamps and no backward movement. Discontinuous jumps and wraps
+retry rather than attach potentially stale properties. This follows the Windows
+[Position/LastUpdatedTime contract](https://learn.microsoft.com/en-us/uwp/api/windows.media.control.globalsystemmediatransportcontrolssessiontimelineproperties).
+The observer thread, original observation timestamps and three-second coverage
+limit are unchanged; capture never waits on COM.
+
+`bash test-media-observer.sh` — **PASS**, exit 0, **one execution**. The focused
+Windows executable compiled production media code with `-Werror` and exercised
+the shared guard with repeated position/time changes across six simulated seconds
+while the production listen tracker remained eligible. Forward/backward seeks,
+wraps, duration/origin/status changes, paused timestamp refresh, clock regression,
+invalid positions and end clamping were covered. A genuine four-second observation
+gap still invalidated coverage. Existing injected blocked-provider, snapshot
+freshness/sequence and stop-lifetime cases also passed in that same invocation.
+Independent static review found no concrete blocker.
+
+One standalone `bash build-native.sh` execution also passed, producing the DLL and
+launcher; vendor warnings remain visible. No test rerun, full suite, live SMTC or
+Spotify playback was performed for this follow-up. The running Spotify DLL has
+not been replaced. These checks establish the guard's behavior with constructed
+timelines; real application timeline precision and session transitions still need
+live validation.
+
 ## Fourth review: media I/O, preferred recordings and AAC memory
 
 Source revision `55c2be2` (documentation-only changes may follow). A dedicated

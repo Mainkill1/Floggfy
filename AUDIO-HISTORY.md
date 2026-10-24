@@ -167,7 +167,10 @@ Existing-file inspection uses checked reads with a separate temporary buffer
 capped at 512 MiB; storage errors reject the inspection without stalling capture.
 Basic Windows track/timeline reads run on a dedicated media observer, including
 their WinRT waits. Capture consumes one sequenced RAM snapshot at a time without
-waiting for that observer. Changed session/timeline data is retried rather than
+waiting for that observer. Normal position/timestamp refreshes are accepted when
+their movement agrees with uninterrupted playback, allowing 250 ms of rounding
+difference and clamping at the track end. Session, timeline-bound or playback-state
+changes, regressing clocks, discontinuous jumps and wraps require a fresh read rather than being
 paired with stale properties. Snapshots keep their observation timestamp; they
 are not replayed as fresh listens. More than three seconds without a usable
 observation still invalidates listening coverage, while decoder events continue

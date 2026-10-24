@@ -23,7 +23,8 @@ public:
     // Capture callers must use MediaSnapshotReader instead.
     bool Read(Media& out);
     bool Read(Media& out,double& observed_at);
-    // Pending means the source changed while properties were outstanding.
+    // Pending means session/state/bounds or discontinuous playback changed
+    // while properties were outstanding. Normal timeline refreshes are allowed.
     MediaRead Observe(Media& out,double& observed_at);
 };
 class MediaSnapshotReader {
