@@ -1,3 +1,30 @@
+## Late capture completion after a playback transition
+
+Live testing reported repeated completed-listen association failures during
+low-quality playback. The previous activity message conflated missing and
+ambiguous matches and labeled both FLAC and Ogg failures as Ogg. That historical
+log does not establish the exact cause of the reported song's failures.
+
+Static investigation found a concrete ordering race: a natural title transition
+queued the completed listen, then deleted its still-active capture before the
+final codec callback could arrive. Pending-listen candidates now survive only
+within the original ten-second completion deadline and the existing birth and
+generation bounds. Stream completeness, duration, uniqueness, epoch and integrity
+checks remain required. Skips still discard unassociated captures, and retained
+buffers are released when their listen is handled or the deadline expires.
+Failure entries now include the track, separate missing/ambiguous reasons, and
+ready/active timing and duration counts even when DebugLog is disabled.
+
+Targeted validation: `bash test-capture-association.sh` — **PASS**, one execution
+(exit status 0). Project C++ compiled with `-Werror`; the vendor parser emitted
+two unsuppressed unused-function warnings.
+The test injects decoder events and timeline observations into production capture
+and scheduling functions; it does not play Spotify or independently decode audio.
+Coverage includes late Ogg EOS/FLAC frames, normal changes and repeat-one, invalid
+or expired captures, duration mismatches, ambiguous matches, ordinary skips and
+pending-ready preservation across a later short-track transition. No full suites
+are run for this fix. Live confirmation of the reported failure remains pending.
+
 ## Windows artwork fallback removal (after 96a2768)
 
 Windows thumbnail acquisition, its worker/cache, retry helper and artwork fields

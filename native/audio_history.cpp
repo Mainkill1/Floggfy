@@ -189,13 +189,23 @@ struct Capture {
     bool lossless=false,metadata=false;
     FlacInfo flac;
     FlacCoverage coverage;
-    double born=0,finished=0;
+    double born=0,finished=0,retained_until=0;
     uint64_t bytes=0,listen_generation=0;
     CompressedBuffer data;
     double Duration() const { return lossless && flac.rate ? double(coverage.samples)/flac.rate : stream.Duration(); }
     Quality Encoding() const { return lossless ? Quality{Codec::Flac,flac.rate,flac.channels,flac.bits,0} : Quality{Codec::Vorbis,stream.rate,stream.channels,0,stream.bitrate}; }
 };
 struct Heard { Media media; double start=0,finish=0;std::uint64_t generation=0; };
+constexpr double completion_wait=10;
+static bool CaptureTimingMatchesListen(const Capture& capture,const Heard& heard) {
+    return (!capture.listen_generation || capture.listen_generation==heard.generation) &&
+           capture.born>=heard.start-20 && capture.born<=heard.start+3 && capture.born<heard.finish;
+}
+static double PendingCaptureDeadline(const Capture& capture,const std::vector<Heard>& heard) {
+    for(const auto& pending:heard)
+        if(CaptureTimingMatchesListen(capture,pending))return pending.finish+completion_wait;
+    return 0;
+}
 static Catalog CatalogFor(const Media& media) {
     Catalog c; c.title=media.title; c.album=media.album; c.track=media.track;c.duration=media.duration;
     c.artist=media.album_artist.empty() ? media.artist : media.album_artist;
@@ -479,9 +489,20 @@ static void AssociateListen(Media media,Listen& listen,Media& current,std::vecto
             // that candidate; duration association still rejects
             // ambiguous or skipped streams at publication.
             if(done.empty())
-            ready.erase(std::remove_if(ready.begin(),ready.end(),prior),ready.end());
+                ready.erase(std::remove_if(ready.begin(),ready.end(),[&](const auto& c) {
+                    return prior(c) && !PendingCaptureDeadline(*c,heard);
+                }),ready.end());
             for(auto it=active.begin();it!=active.end();) {
-                if(prior(it->second)) it=active.erase(it); else ++it;
+                if(prior(it->second)) {
+                    // SMTC may announce the next track before the final codec
+                    // callback. Keep that bounded candidate for the completed
+                    // listen; an unfinished stream cannot pass a duration check.
+                    const auto deadline=PendingCaptureDeadline(*it->second,heard);
+                    if(deadline<=time) {it=active.erase(it);continue;}
+                    auto& retained=it->second->retained_until;
+                    retained=retained?std::min(retained,deadline):deadline;
+                }
+                ++it;
             }
         }
     }
@@ -489,9 +510,29 @@ static void AssociateListen(Media media,Listen& listen,Media& current,std::vecto
     else current=std::move(media);
 }
 static bool CaptureMatchesListen(const Capture& capture,const Heard& heard) {
-    return (!capture.listen_generation || capture.listen_generation==heard.generation) &&
-           std::fabs(capture.Duration()-heard.media.duration)<=1.0 &&
-           capture.born>=heard.start-20 && capture.born<=heard.start+3 && capture.born<heard.finish;
+    return CaptureTimingMatchesListen(capture,heard) &&
+           (!capture.retained_until || capture.finished<=capture.retained_until) &&
+           std::fabs(capture.Duration()-heard.media.duration)<=1.0;
+}
+static std::string AssociationFailure(const Heard& heard,const CaptureBuffers& buffers,size_t matches) {
+    size_t timing_ready=0,duration_ready=0,timing_active=0,flac_active=0,ogg_active=0;
+    for(const auto& c:buffers.ready) {
+        timing_ready+=CaptureTimingMatchesListen(*c,heard);
+        duration_ready+=std::fabs(c->Duration()-heard.media.duration)<=1.0;
+    }
+    for(const auto& entry:buffers.active) {
+        const auto& c=*entry.second;
+        if(CaptureTimingMatchesListen(c,heard)) {
+            ++timing_active;
+            if(c.lossless)++flac_active;else ++ogg_active;
+        }
+    }
+    char counts[260];
+    snprintf(counts,sizeof(counts)," | matches=%zu ready=%zu timing_ready=%zu duration_ready=%zu active=%zu timing_active=%zu (FLAC=%zu Ogg=%zu) expected=%.3fs",
+        matches,buffers.ready.size(),timing_ready,duration_ready,buffers.active.size(),timing_active,flac_active,ogg_active,heard.media.duration);
+    return std::string("completed listen discarded: ")+
+        (matches>1?"ambiguous completed captures":"no matching complete capture")+counts+
+        " | "+Utf8(heard.media.artist)+" - "+Utf8(heard.media.title);
 }
 static void SchedulePublications(std::vector<Heard>& heard,CaptureBuffers& buffers,unsigned epoch,double now) {
     auto& ready=buffers.ready;
@@ -508,10 +549,20 @@ static void SchedulePublications(std::vector<Heard>& heard,CaptureBuffers& buffe
             if(saves.Push(std::move(job)))SetEvent(save_event);
             else {size_t reserved=job.reserved;job.capture.reset();publishing_reserved.fetch_sub(reserved);LogActivity("failed","publication queue full; completed candidate discarded");}
             ready.erase(ready.begin()+match); h=heard.erase(h);
-        } else if(matches>1 || now-h->finish>10) {
-            Log("completed listen discarded: missing or ambiguous Ogg association"); h=heard.erase(h);
+        } else if(matches>1 || now-h->finish>completion_wait) {
+            LogActivity("failed",AssociationFailure(*h,buffers,matches)); h=heard.erase(h);
         } else ++h;
     }
+    // Release transition-only retention once its listen was queued/discarded,
+    // or its original completion deadline passed. Do not extend it on repeats.
+    auto expired=[&](const auto& capture) {
+        return capture->retained_until &&
+            (now>capture->retained_until || !PendingCaptureDeadline(*capture,heard));
+    };
+    for(auto it=buffers.active.begin();it!=buffers.active.end();) {
+        if(expired(it->second))it=buffers.active.erase(it);else ++it;
+    }
+    ready.erase(std::remove_if(ready.begin(),ready.end(),expired),ready.end());
 }
 static DWORD WINAPI Worker(LPVOID) {
     LONG overflow=0;

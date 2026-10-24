@@ -52,6 +52,97 @@ static void TestRepeatScheduling() {
   event_slot.kind=AudioEventKind::FlacError;ProcessCaptureEvent(event_slot,buffers,quality,false,true,3);assert(buffers.active.empty());
   std::puts("PASS: named codec events honor capture epochs; same-title repeat jobs retain distinct completed generations and old boundaries");
 }
+enum class LateCapture { Complete,Timeout,Invalid,PastDeadline };
+static void TestLateCapture(bool flac,bool repeat,LateCapture outcome) {
+  CaptureBuffers buffers;Listen listen;Media current;std::vector<Heard> heard;
+  Media media;media.title=L"Late ending";media.artist=L"Artist";media.album=L"Album";media.duration=10;media.playing=true;
+  auto sample=[&](double position,double time){media.position=position;AssociateListen(media,listen,current,heard,buffers,time);};
+  sample(0,100);
+  Slot slot{};slot.context=1;slot.time=100;
+  auto page=[&](unsigned sequence,unsigned flags,uint64_t samples) {
+    const auto bytes=recording_fixture::page(sequence?std::vector<uint8_t>{0}:recording_fixture::identification(),sequence,flags,samples);
+    slot.length=unsigned(bytes.size());memcpy(slot.bytes,bytes.data(),bytes.size());ProcessOggCapture(slot,buffers);
+  };
+  if(flac) {
+    auto c=std::make_unique<Capture>();c->lossless=true;c->metadata=true;c->born=100;
+    c->flac={44100,2,16,44100,44100,441000};c->coverage.samples=396900;c->coverage.frames=9;
+    buffers.active[1]=std::move(c);
+  } else {page(0,2,0);slot.time=109;page(1,0,396900);}
+  for(unsigned i=1;i<=19;++i)sample(i*.5,100+i*.5);
+  if(!repeat)media.title=L"Next song";
+  sample(.1,110.1);
+  if(repeat)sample(1.2,111.2);
+  assert(heard.size()==1&&heard[0].media.title==L"Late ending");
+  assert(buffers.active.count(1)&&buffers.active[1]->retained_until==120);
+  // The next decoder is unrelated to retention and must survive its cleanup.
+  auto next=std::make_unique<Capture>();next->born=110;buffers.active[2]=std::move(next);
+  SchedulePublications(heard,buffers,7,111.2);
+  SaveJob job;assert(!saves.Pop(job)&&buffers.active.count(1));
+  if(outcome!=LateCapture::Timeout) {
+    slot.time=outcome==LateCapture::PastDeadline?120.1:111.3;
+    if(flac) {
+      slot.kind=AudioEventKind::FlacFrame;
+      const uint32_t frame[]={44100,44100,2,0,16,0};
+      const uint64_t number=outcome==LateCapture::Invalid?8:9;
+      memcpy(slot.bytes,frame,sizeof(frame));memcpy(slot.bytes+24,&number,8);
+      ProcessFlacCapture(slot,buffers);
+    } else page(outcome==LateCapture::Invalid?3:2,4,441000);
+  }
+  const auto diagnostic=AssociationFailure(heard[0],buffers,0);
+  assert(diagnostic.find("no matching complete capture")!=std::string::npos);
+  assert(diagnostic.find("Artist - Late ending")!=std::string::npos);
+  SchedulePublications(heard,buffers,7,outcome==LateCapture::Complete?111.3:121);
+  if(outcome==LateCapture::Complete) {
+    assert(saves.Pop(job)&&job.heard.generation==1&&job.capture->Duration()==10);
+    publishing_reserved.fetch_sub(job.reserved);
+  } else assert(!saves.Pop(job));
+  assert(heard.empty()&&!buffers.active.count(1)&&buffers.active.count(2));
+}
+static void TestAssociationRejection() {
+  CaptureBuffers buffers;Heard heard;heard.media.title=L"Expected";heard.media.duration=10;
+  heard.start=100;heard.finish=110;heard.generation=1;
+  auto complete=[](double duration) {
+    auto c=std::make_unique<Capture>();c->lossless=true;c->born=100;c->finished=110;
+    c->flac.rate=1;c->coverage.samples=uint64_t(duration);return c;
+  };
+  buffers.ready.push_back(complete(12));
+  assert(!CaptureMatchesListen(*buffers.ready[0],heard));
+  assert(AssociationFailure(heard,buffers,0).find("timing_ready=1 duration_ready=0")!=std::string::npos);
+  std::vector<Heard> pending{heard};SchedulePublications(pending,buffers,7,121);
+  SaveJob job;assert(pending.empty()&&!saves.Pop(job));
+  buffers.ready.clear();buffers.ready.push_back(complete(10));buffers.ready.push_back(complete(10));
+  assert(AssociationFailure(heard,buffers,2).find("ambiguous completed captures")!=std::string::npos);
+  pending={heard};SchedulePublications(pending,buffers,7,111);
+  assert(pending.empty()&&!saves.Pop(job));
+  // A later short/abandoned track must not erase the pending prior ready file.
+  buffers.ready.pop_back();pending={heard};Listen listen;Media current,media;
+  media.title=L"Short next";media.duration=5;media.playing=true;
+  AssociateListen(media,listen,current,pending,buffers,108);
+  media.title=L"Skipped onward";AssociateListen(media,listen,current,pending,buffers,113);
+  assert(buffers.ready.size()==1&&pending.size()==1);
+  SchedulePublications(pending,buffers,7,113);
+  assert(saves.Pop(job)&&job.heard.media.title==L"Expected");publishing_reserved.fetch_sub(job.reserved);
+  // Without a completed listen, an ordinary skip still drops the old capture.
+  buffers={};pending.clear();listen={};current={};media.title=L"Skipped";media.duration=10;
+  AssociateListen(media,listen,current,pending,buffers,100);
+  auto partial=complete(9);buffers.active[1]=std::move(partial);
+  media.title=L"Next";AssociateListen(media,listen,current,pending,buffers,105);
+  assert(pending.empty()&&buffers.active.empty());
+}
+static void TestLateAssociation() {
+  TestRepeatScheduling();
+  save_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(save_event);
+  for(bool flac:{false,true}) {
+    TestLateCapture(flac,false,LateCapture::Complete);
+    TestLateCapture(flac,true,LateCapture::Complete);
+    TestLateCapture(flac,false,LateCapture::Timeout);
+    TestLateCapture(flac,false,LateCapture::Invalid);
+    TestLateCapture(flac,false,LateCapture::PastDeadline);
+  }
+  TestAssociationRejection();
+  CloseHandle(save_event);save_event=nullptr;
+  puts("PASS: late Ogg/FLAC completion survives natural transitions and repeats; original deadlines, invalid/mismatched/ambiguous capture rejection and skip cleanup remain intact");
+}
 static void TestLyricsPublication() {
   wchar_t temp[2048];GetTempPathW(2048,temp);
   assert(SetSaveLocation(std::wstring(temp)+L"Floggfy-lyric-publication-"+std::to_wstring(GetCurrentProcessId())));
@@ -159,12 +250,13 @@ static void TestPublicationLogging() {
   assert(SetDownloads(false));
   std::puts("PASS: normal publication logs contain final quality/size and accurate same/better/unverified/settings skip reasons");
 }
-int main() {
+int main(int argc,char** argv) {
+  if(argc==2&&std::string(argv[1])=="--association"){TestLateAssociation();return 0;}
+  TestLateAssociation();
   wchar_t ini_path[2048];GetModuleFileNameW(nullptr,ini_path,2048);std::wstring ini=ini_path;ini.resize(ini.find_last_of(L'\\')+1);ini+=L"SpotifyHistory.ini";
   assert(WritePrivateProfileStringW(L"To Disk",L"Log",L"1",ini.c_str()));
   assert(WritePrivateProfileStringW(L"To Disk",L"DebugLog",L"0",ini.c_str()));
   InitSettings(nullptr);
-  TestRepeatScheduling();
   StartSongDestinationWorker(true);
   std::vector<RecentDownload> recent;assert(ReadRecentDownloads(recent)&&recent.empty());
   TestLyricsPublication();

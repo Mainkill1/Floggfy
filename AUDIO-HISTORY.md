@@ -157,6 +157,10 @@ download history entries.
 
 Tagging, quality checks and publication run in a bounded background worker;
 pending compressed save buffers count against the configured allocation budget.
+A natural playback transition retains a matching unfinished capture for the
+completed listen's existing ten-second completion window, allowing a late final
+codec callback. It must still pass completeness, duration and unique-association
+checks before publication. Retention ends when the listen is handled or expires.
 Existing-file inspection uses checked reads with a separate temporary buffer
 capped at 512 MiB; storage errors reject the inspection without stalling capture.
 
