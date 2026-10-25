@@ -10,6 +10,7 @@
 #include "playback_quality.h"
 #include "async_log.h"
 #include <string_view>
+#include <array>
 #include "bounded_queue.h"
 #include "srw_guard.h"
 #include "connectivity_diagnostics.h"
@@ -140,25 +141,47 @@ struct QueueGuard {
     QueueGuard(const QueueGuard&)=delete;
     QueueGuard& operator=(const QueueGuard&)=delete;
 };
-static void LogTiming() {
+enum class TimingReason { Routine,Pause,Discontinuity,Failure };
+static void LogTiming(TimingReason reason=TimingReason::Routine) {
     if(!DebugLoggingEnabled())return;
     LARGE_INTEGER frequency{};
     if(!QueryPerformanceFrequency(&frequency)||frequency.QuadPart<=0)return;
-    const double microseconds=1000000.0/double(frequency.QuadPart);
-    struct Named {const char* name;TimingSample* sample;};
-    for(const auto& metric:{Named{"native-read",&native_read_timing},{"native-frame",&native_frame_timing},
-        {"native-error",&native_error_timing},{"native-init",&native_init_timing},{"native-ogg",&native_ogg_timing},
-        {"queue-producer-wait",&producer_wait_timing},{"queue-producer-hold",&producer_hold_timing},
-        {"queue-consumer-hold",&consumer_hold_timing}}) {
-        const auto n=metric.sample->count.exchange(0,std::memory_order_relaxed);
-        const auto maximum=metric.sample->maximum.exchange(0,std::memory_order_relaxed);
-        if(n||maximum) {
-            char line[180];snprintf(line,sizeof(line),"hook timing metric=%s count=%llu max_us=%.1f callbacks_now=%u",
-                metric.name,static_cast<unsigned long long>(n),double(maximum)*microseconds,audio_callbacks.Active());Log(line);
-        }
+    const double milliseconds=1000.0/double(frequency.QuadPart);
+    struct Metric {
+        const char* name;
+        TimingSample* sample;
+        uint64_t count=0;
+        double maximum_ms=0;
+    };
+    std::array<Metric,8> metrics{{
+        {"native-read",&native_read_timing},{"native-frame",&native_frame_timing},
+        {"native-error",&native_error_timing},{"native-init",&native_init_timing},
+        {"native-ogg",&native_ogg_timing},{"queue-producer-wait",&producer_wait_timing},
+        {"queue-producer-hold",&producer_hold_timing},{"queue-consumer-hold",&consumer_hold_timing}
+    }};
+    size_t worst=0;
+    for(size_t i=0;i<metrics.size();++i) {
+        auto& metric=metrics[i];
+        metric.count=metric.sample->count.exchange(0,std::memory_order_relaxed);
+        metric.maximum_ms=double(metric.sample->maximum.exchange(0,std::memory_order_relaxed))*milliseconds;
+        if(metric.maximum_ms>metrics[worst].maximum_ms)worst=i;
     }
     const auto empty=empty_flac_reads.exchange(0,std::memory_order_relaxed);
-    if(empty) {char line[100];snprintf(line,sizeof(line),"native-read continue-with-zero-bytes count=%llu",static_cast<unsigned long long>(empty));Log(line);}
+    // Reporting threshold only: this neither rejects audio nor diagnoses a pause.
+    // Normal polling still drains counters but emits no per-metric heartbeat.
+    constexpr double report_ms=10;
+    if(reason==TimingReason::Routine&&metrics[worst].maximum_ms<report_ms&&!empty)return;
+    const char* context=reason==TimingReason::Pause?"pause":
+        reason==TimingReason::Discontinuity?"timeline-jump":reason==TimingReason::Failure?"error":
+        metrics[worst].maximum_ms>=report_ms?"slow":"empty-read";
+    char line[600];snprintf(line,sizeof(line),
+        "hook timing reason=%s worst=%s count=%llu max_ms=%.3f threshold_ms=10 native_read_ms=%.3f native_frame_ms=%.3f native_error_ms=%.3f native_init_ms=%.3f native_ogg_ms=%.3f queue_wait_ms=%.3f producer_hold_ms=%.3f consumer_hold_ms=%.3f empty_reads=%llu callbacks_now=%u",
+        context,metrics[worst].maximum_ms>0?metrics[worst].name:"none",
+        static_cast<unsigned long long>(metrics[worst].count),metrics[worst].maximum_ms,
+        metrics[0].maximum_ms,metrics[1].maximum_ms,metrics[2].maximum_ms,metrics[3].maximum_ms,
+        metrics[4].maximum_ms,metrics[5].maximum_ms,metrics[6].maximum_ms,metrics[7].maximum_ms,
+        static_cast<unsigned long long>(empty),audio_callbacks.Active());
+    Log(line);
 }
 static void LogConnectivity() {
     if(!DebugLoggingEnabled())return;
@@ -196,7 +219,9 @@ struct PlaybackDiagnostics {
                 !known?"baseline":jump?"timeline-jump":"transition",PlaybackStatus(media.playback_status),media.playback_status,
                 media.playing,media.position,media.duration,movement,elapsed,at,
                 static_cast<unsigned long long>(sequence),changed);Log(line);
-            LogConnectivity();LogTiming();
+            LogConnectivity();
+            LogTiming(known&&playing&&!media.playing?TimingReason::Pause:
+                jump?TimingReason::Discontinuity:TimingReason::Routine);
         }
         known=true;playing=media.playing;status=media.playback_status;
         key=next_key;position=media.position;observed=at;
@@ -807,7 +832,7 @@ static void ProcessFlacCapture(const Slot& s,CaptureBuffers& buffers) {
             "FLAC native result ctx=%llx origin=%s code=%u requested=%llu returned=%llu mono=%.3f epoch=%u",
             static_cast<unsigned long long>(s.context),ErrorOrigin(s.error_source),s.format,
             static_cast<unsigned long long>(s.requested),static_cast<unsigned long long>(s.returned),s.time,s.epoch);Log(line);
-        LogConnectivity();LogTiming();
+        LogConnectivity();LogTiming(TimingReason::Failure);
     }
     if(s.kind==AudioEventKind::FlacBegin) {
         if(found!=active.end())LogCaptureContext(s,*found->second,"context-reinitialized");
@@ -848,13 +873,13 @@ static void ProcessFlacCapture(const Slot& s,CaptureBuffers& buffers) {
                     static_cast<unsigned long long>(s.context),reason,c.flac.rate,frame[1],c.flac.channels,frame[2],c.flac.bits,frame[4],
                     frame[0],c.flac.min_block,c.flac.max_block,frame[5],static_cast<unsigned long long>(number),
                     static_cast<unsigned long long>(c.coverage.samples));Log(line);
-                LogConnectivity();LogTiming();
+                LogConnectivity();LogTiming(TimingReason::Failure);
             }
             active.erase(found); Log("FLAC decoded-frame gap or format mismatch; stream discarded"); return;
         }
         if(!c.coverage.Complete(c.flac)) return;
     } else if(s.kind!=AudioEventKind::FlacEnd || !c.coverage.Complete(c.flac)) {
-        LogCaptureContext(s,c,"end-before-coverage");LogConnectivity();LogTiming();
+        LogCaptureContext(s,c,"end-before-coverage");LogConnectivity();LogTiming(TimingReason::Failure);
         active.erase(found); Log("FLAC truncated before total samples; discarded"); return;
     }
     LogCaptureContext(s,c,"complete");
@@ -1111,7 +1136,7 @@ static DWORD WINAPI Worker(LPVOID) {
                 // observations still cannot establish continuous listening.
                 PublishSongDestination(0,L"",{},false,0);
                 listen.eligible=false;quality.Media({},L"",0,0,Now());client_quality.clear();
-                if(!media_unavailable){CancelFilenameChecks();Log("Spotify media snapshot unavailable or stale; listen invalidated");}
+                if(!media_unavailable){CancelFilenameChecks();Log("Spotify media snapshot unavailable or stale; listen invalidated");LogTiming(TimingReason::Failure);}
                 media_unavailable=true;diagnostics.known=false;
             }
             if(!enabled) {

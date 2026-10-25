@@ -112,9 +112,30 @@ void HookBoundaries() {
     FlacErrorHook(context,2);assert(error_calls==1);
     assert(Pop(slot)&&slot.error_source==FlacErrorSource::DecoderCallback&&slot.format==2);
     assert(pcm==42&&!memcmp(frame,original_frame.data(),32)&&!audio_callbacks.Active());
-    diagnostics.clear();LogTiming();assert(Contains("metric=native-read")&&Contains("metric=native-frame")&&Contains("metric=queue-producer-wait")&&Contains("metric=queue-consumer-hold"));
+    diagnostics.clear();LogTiming(TimingReason::Failure);
+    assert(diagnostics.size()==1&&Contains("hook timing reason=error")&&Contains("native_read_ms=")&&Contains("native_frame_ms=")&&Contains("queue_wait_ms=")&&Contains("consumer_hold_ms="));
     diagnostics.clear();LogTiming();assert(diagnostics.empty());
     CloseHandle(event);event=nullptr;delete[] queue;queue=nullptr;
+}
+void TimingVerbosity() {
+    LARGE_INTEGER frequency{};assert(QueryPerformanceFrequency(&frequency)&&frequency.QuadPart>0);
+    const auto ticks=uint64_t(frequency.QuadPart);
+    LogTiming(TimingReason::Failure);diagnostics.clear(); // Drain earlier fixtures.
+    native_read_timing.Add(ticks/1000);native_frame_timing.Add(ticks/500);
+    producer_wait_timing.Add(ticks/1000);
+    LogTiming();assert(diagnostics.empty()); // Routine sub-threshold timing is silent.
+    native_frame_timing.Add(ticks/1000);
+    LogTiming(TimingReason::Pause);
+    assert(diagnostics.size()==1&&Contains("reason=pause")&&Contains("native_frame_ms="));
+    diagnostics.clear();LogTiming();assert(diagnostics.empty());
+    producer_wait_timing.Add(ticks/100+1);
+    LogTiming();assert(diagnostics.size()==1&&Contains("reason=slow")&&Contains("worst=queue-producer-wait"));
+    diagnostics.clear();LogTiming();assert(diagnostics.empty());
+    empty_flac_reads.store(1);LogTiming();
+    assert(diagnostics.size()==1&&Contains("reason=empty-read")&&Contains("empty_reads=1"));
+    diagnostics.clear();InterlockedExchange(&history::debug_enabled,0);
+    LogTiming(TimingReason::Failure);assert(diagnostics.empty());
+    InterlockedExchange(&history::debug_enabled,1);
 }
 void Connectivity() {
     assert(!LastConnectivity().known);
@@ -137,7 +158,7 @@ void EnrichTags(const Media&,Tags&){}
 int wmain() {
     // Use in-memory preferences only. Never read or write the user's INI/music.
     InterlockedExchange(&history::debug_enabled,1);
-    Connectivity();ObservePlayback();CoverageAndFailures();HookBoundaries();
+    Connectivity();ObservePlayback();CoverageAndFailures();HookBoundaries();TimingVerbosity();
     puts("PASS: paused dedup/resume, observed transitions, exact coverage reasons, original callback semantics, bounded hook metrics and NLM observations");
     return 0;
 }

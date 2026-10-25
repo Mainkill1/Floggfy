@@ -1006,3 +1006,25 @@ receipts, artwork HTTP failure timing, prolonged playback, other Spotify/Windows
 versions and pause causality remain unverified. Earlier sections above describe
 historical builds and their limitations. RC1's tag/assets and the running
 installation are unchanged by this revision; no merge or release was performed.
+
+
+## Quiet hook timing summaries (post separate-log deployment)
+
+Routine nonempty counters previously generated one line per metric every ten
+seconds in both diagnostic logs. Routine intervals now drain counters silently
+when all maxima are below 10 ms and there are no zero-byte reads. Pauses,
+timeline jumps, native/capture/media-observation errors, zero-byte reads and
+maxima at/above 10 ms emit one compact summary. The cutoff is a reporting policy,
+not an audio acceptance rule or proof of a pause's cause. Measurements remain
+approximate intervals since the last drain; no additional hook or INI option
+was introduced and the original callbacks/capture predicates are unchanged.
+
+`bash test-playback-diagnostics.sh` **passed in one targeted execution** after
+implementation/static review: Windows original-callback semantics and existing
+pause/coverage checks plus deterministic short-timing suppression, one-line
+pause/error summaries, a threshold-crossing queue wait, empty-read reporting,
+counter drain behavior and debug opt-out. The Node client-observation fixture
+also passed. No full suite or test rerun ran; existing vendor warnings were
+visible. `bash build-native.sh` then passed for the production DLL/launcher.
+The quieter build was not installed, preserving the active playback test;
+no live timing-reduction result is claimed by this gate.

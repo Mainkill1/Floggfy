@@ -221,8 +221,12 @@ for diagnostics.
 FLAC errors distinguish native read/frame return values and decoder callbacks
 from Floggfy's capture-only coverage guard. Coverage diagnostics include expected
 and observed frame fields, covered samples, context, capture epoch and queue lag.
-Debug timing aggregates native callback durations and queue lock wait/hold times;
-hooks record only counters and existing bounded events, and the worker formats
+Debug timing aggregates native callback durations and queue lock wait/hold times.
+Routine values below 10 ms produce no timing lines. A pause, timeline jump, error,
+zero-byte read or maximum at/above 10 ms produces one compact timing summary.
+The threshold controls reporting only; it does not diagnose failure or reject
+audio. These maxima cover the interval since the previous counter drain.
+Hooks record only counters and existing bounded events, and the worker formats
 these summaries. Counters/maxima are approximate interval observations under
 concurrency. Paused playback has no periodic timing/status heartbeat, while new
 errors and state changes remain visible.
