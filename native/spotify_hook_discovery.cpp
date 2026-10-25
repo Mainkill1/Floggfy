@@ -281,4 +281,143 @@ DiscoveryResult DiscoverAacHookTargets(const std::uint8_t* mapped_image,
     targets={ctor.rva,feed.rva,destroy};return DiscoveryResult::Found;
 }
 
+namespace {
+template<std::size_t N> bool ConnectBytes(const Image& image,std::uint32_t at,
+                                        const std::uint8_t (&bytes)[N]) noexcept {
+    return Range(image.image_size,at,N)&&!std::memcmp(image.base+at,bytes,N);
+}
+bool ConnectCall(const Image& image,std::uint32_t at,std::uint32_t owner_begin,
+                 std::uint32_t owner_end,std::uint32_t& target,bool require_entry=true) noexcept {
+    if(at<owner_begin || at>=owner_end || owner_end-at<5 || image.base[at]!=0xe8)return false;
+    std::int32_t displacement=0;
+    if(!Read(image.base,image.image_size,at+1,displacement))return false;
+    const auto destination=std::int64_t(at)+5+displacement;
+    if(destination<0 || destination>=image.image_size)return false;
+    target=std::uint32_t(destination);
+    if(!require_entry)return ExecutableRange(image,target,1);
+    std::uint32_t begin=0,end=0;
+    return RuntimeFunction(image,target,1,begin,end)&&begin==target;
+}
+bool ConnectInflaterConstructor(const Image& image,std::uint32_t at) noexcept {
+    // Audited leaf constructor has no .pdata entry. Its complete body only
+    // installs the native vtable/sink and clears state, then returns this.
+    static constexpr std::uint8_t lea[]={0x48,0x8d,0x05};
+    static constexpr std::uint8_t tail[]={0x48,0x89,0x51,0x08,0x48,0x89,0x01,0x48,0x8b,0xc1,
+        0x48,0xc7,0x41,0x10,0x00,0x00,0x00,0x00,0xc3};
+    std::int32_t displacement=0;
+    if(!ExecutableRange(image,at,26)||!ConnectBytes(image,at,lea)||!ConnectBytes(image,at+7,tail)||
+       !Read(image.base,image.image_size,at+3,displacement))return false;
+    const auto table=std::int64_t(at)+7+displacement;
+    return table>=0&&Range(image.image_size,std::size_t(table),8);
+}
+bool ConnectLiteral(const Image& image,std::uint32_t at,const char* text) noexcept {
+    if(!Range(image.image_size,at,7))return false;
+    const auto* p=image.base+at;
+    // RIP-relative LEA, any destination register; never scan raw pointer values.
+    if((p[0]!=0x48&&p[0]!=0x4c)||p[1]!=0x8d||(p[2]&0xc7)!=0x05)return false;
+    std::int32_t displacement=0;Read(image.base,image.image_size,at+3,displacement);
+    const auto literal=std::int64_t(at)+7+displacement;
+    const auto length=std::strlen(text)+1;
+    return literal>=0&&Range(image.image_size,std::size_t(literal),length)&&
+        !std::memcmp(image.base+literal,text,length);
+}
+bool ConnectHasLiteral(const Image& image,std::uint32_t begin,std::uint32_t end,const char* text) noexcept {
+    for(auto at=begin;end-at>=7;++at)if(ConnectLiteral(image,at,text))return true;
+    return false;
+}
+// This is the audited const-string adapter, not a speculative C++ JSON ABI.
+// It reads size/capacity, selects SSO data, builds a borrowed pointer/length
+// view, calls the lower parser, and returns AL without destroying the input.
+bool ConnectStringAdapter(const Image& image,std::uint32_t wrapper) noexcept {
+    static constexpr std::uint8_t prefix[]={
+        0x48,0x83,0xec,0x38,0x48,0x83,0x7a,0x18,0x0f,0x48,0x8b,0xc2,0x76,0x03,
+        0x48,0x8b,0x02,0x48,0x89,0x44,0x24,0x20,0x48,0x8b,0x42,0x10,0x48,0x8d,0x54,0x24,0x20,
+        0x48,0x89,0x44,0x24,0x28};
+    static constexpr std::uint8_t suffix[]={0x48,0x83,0xc4,0x38,0xc3};
+    std::uint32_t begin=0,end=0,lower=0;
+    return RuntimeFunction(image,wrapper,46,begin,end)&&begin==wrapper&&end-wrapper==46&&
+        ConnectBytes(image,wrapper,prefix)&&ConnectBytes(image,wrapper+41,suffix)&&
+        ConnectCall(image,wrapper+36,begin,end,lower)&&lower!=wrapper;
+}
+}
+
+DiscoveryResult DiscoverConnectDecodeTargets(const std::uint8_t* mapped_image,
+    std::size_t available,ConnectDecodeTargets& targets) noexcept {
+    targets={};Image image;
+    if(!ParseImage(mapped_image,available,image))return DiscoveryResult::InvalidImage;
+    std::uint32_t owner=0,finish=0;unsigned anchors=0;
+    // Runtime entries bound every scan and establish the actual function owner.
+    // No allocations, imports, storage probes or production RVAs are involved.
+    for(std::size_t i=0;i<image.exception_size/kRuntimeFunctionSize;++i) {
+        std::uint32_t begin=0,end=0;
+        Read(image.base,image.image_size,image.exceptions+i*kRuntimeFunctionSize,begin);
+        Read(image.base,image.image_size,image.exceptions+i*kRuntimeFunctionSize+4,end);
+        if(begin>=end||!ExecutableRange(image,begin,end-begin))continue;
+        for(auto at=begin;end-at>=7;++at) {
+            if(!ConnectLiteral(image,at,"Received player command: %s"))continue;
+            if(++anchors>1)return DiscoveryResult::AmbiguousTarget;
+            owner=begin;finish=end;
+        }
+    }
+    if(!anchors)return DiscoveryResult::MissingTarget;
+    if(finish-owner<0x400||finish-owner>0x1000||
+       !ConnectHasLiteral(image,owner,finish,"sent_by_device_id")||
+       !ConnectHasLiteral(image,owner,finish,"Unable to parse connect player command:\n%s"))
+        return DiscoveryResult::InconsistentLayout;
+    static constexpr std::uint8_t input_save[]={0x48,0x8b,0xf2,0x48,0x8b,0xf9};
+    static constexpr std::uint8_t input_body[]={0x48,0x8b,0xca};
+    static constexpr std::uint8_t body_load[]={0x48,0x8b,0x56,0x20};
+    bool input=false,body=false;
+    for(auto at=owner;at<finish;++at) {
+        if(ConnectBytes(image,at,input_save)&&finish-at>=sizeof(input_save))input=true;
+        std::uint32_t compression_check=0;
+        if(finish-at>=12&&ConnectBytes(image,at,input_body)&&
+           ConnectCall(image,at+3,owner,finish,compression_check)&&ConnectBytes(image,at+8,body_load))body=true;
+    }
+    if(!input||!body)return DiscoveryResult::InconsistentLayout;
+    static constexpr std::uint8_t decoded[]={0x48,0x8d,0x55,0x88,0x48,0x8d,0x4c,0x24,0x48};
+    static constexpr std::uint8_t complete[]={0x48,0x8d,0x4c,0x24,0x48};
+    static constexpr std::uint8_t envelope[]={0x48,0x8d,0x4d,0xd0};
+    static constexpr std::uint8_t test[]={0x84,0xc0};
+    std::uint32_t decoded_call=0,plain_call=0,wrapper=0;
+    unsigned decoded_count=0,complete_count=0;
+    for(auto at=owner;finish-at>=16;++at) {
+        std::uint32_t target=0;
+        if(ConnectBytes(image,at,decoded)&&ConnectCall(image,at+9,owner,finish,target)&&
+           ConnectBytes(image,at+14,test)) {
+            if(++decoded_count>1)return DiscoveryResult::InconsistentLayout;
+            decoded_call=at+9;wrapper=target;
+        }
+    }
+    if(decoded_count!=1||!ConnectStringAdapter(image,wrapper))return DiscoveryResult::InconsistentLayout;
+    unsigned envelope_count=0,total_calls=0;
+    for(auto at=owner;finish-at>=5;++at) {
+        std::uint32_t target=0;
+        if(!ConnectCall(image,at,owner,finish,target)||target!=wrapper)continue;
+        ++total_calls;
+        if(at>=owner+5&&finish-at>=7&&ConnectBytes(image,at-5,complete)&&ConnectBytes(image,at+5,test)) {
+            ++complete_count;if(at!=decoded_call)plain_call=at;
+        } else if(at>=owner+4&&finish-at>=7&&ConnectBytes(image,at-4,envelope)&&ConnectBytes(image,at+5,test))++envelope_count;
+    }
+    if(total_calls!=3||complete_count!=2||envelope_count!=1||!plain_call||plain_call<=decoded_call)
+        return DiscoveryResult::InconsistentLayout;
+    // The decoded parse follows feed AND finalization. A feed-return observer
+    // would be incomplete because the finalizer can flush additional bytes.
+    static constexpr std::uint8_t create[]={0x48,0x8d,0x54,0x24,0x38,0x48,0x8d,0x4c,0x24,0x70};
+    static constexpr std::uint8_t feed[]={0x48,0x8d,0x55,0xa8,0x48,0x39,0x5d,0xc0,0x48,0x0f,0x47,0x55,0xa8,
+        0x44,0x8b,0x45,0xb8,0x48,0x8d,0x4c,0x24,0x70};
+    static constexpr std::uint8_t finalize[]={0x48,0x8d,0x4c,0x24,0x70};
+    if(decoded_call<owner+61)return DiscoveryResult::InconsistentLayout;
+    const auto pipeline=decoded_call-61;
+    std::uint32_t ctor=0,push=0,close=0;
+    if(!ConnectBytes(image,pipeline,create)||!ConnectBytes(image,pipeline+15,feed)||
+       !ConnectBytes(image,pipeline+42,finalize)||
+       !ConnectCall(image,pipeline+10,owner,finish,ctor,false)||!ConnectInflaterConstructor(image,ctor)||
+       !ConnectCall(image,pipeline+37,owner,finish,push)||
+       !ConnectCall(image,pipeline+47,owner,finish,close)||
+       ctor==push||ctor==close||push==close||ctor==wrapper||push==wrapper||close==wrapper)
+        return DiscoveryResult::InconsistentLayout;
+    targets={wrapper,plain_call+5,decoded_call+5};return DiscoveryResult::Found;
+}
+
 } // namespace spotify
