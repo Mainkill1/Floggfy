@@ -5,6 +5,18 @@ connectivity repair for the Windows x64 Spotify client. It copies the compressed
 Vorbis or FLAC bytes that Spotify already reads for playback. It does not request
 tracks, run FFmpeg, transcode audio, or require an external runtime helper.
 
+## Requirements and startup
+
+- Use the Windows x64 Spotify desktop app with the x64 Floggfy files.
+- Intel and AMD x64 processors are supported; PE's `AMD64` name refers to the
+  architecture, not an AMD-only build. x86 and native ARM64 Spotify are unsupported.
+- The GCC/C++ runtimes are statically linked. No separate Visual C++ Redistributable
+  is required by Floggfy; its remaining imports are Windows system libraries.
+- Launcher mode checks both adjacent binary headers before stopping existing
+  Spotify processes and reports architecture/header-read errors. This does not
+  validate every loader dependency or guarantee Spotify-version compatibility.
+- A mismatched automatic-mode DLL cannot run its own error-reporting code.
+
 ## Settings
 
 `SpotifyHistory.ini` is included with the release and is created beside

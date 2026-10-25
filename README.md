@@ -1,201 +1,71 @@
 # Floggfy
 
-## Support Development
-
-If you find this project useful, consider supporting its development.
-
-[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20Development-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/mainkill1)
-
-
 Save the music you play in Spotify on Windows.
 
-- Saves fully played tracks as Ogg or FLAC, with cover art and available song details.
-- Sorts music by artist and album.
-- Skips existing audio unless a better-quality version is available; existing FLAC files can also receive lyric upgrades.
-
-### Disable Automix under Edit -> Preferences -> Playback as it trims songs and will fail downloads.
+- Saves fully played songs with available artwork, metadata and lyrics.
+- Organizes music by album artist and album.
+- Skips existing songs unless better audio is available, and can fill in missing metadata.
 
 ## Install
 
-Choose one download from [Releases](https://github.com/Mainkill1/Floggfy/releases):
+- Requires the **Windows x64 Spotify desktop app**.
+- Quit Spotify completely before installing or upgrading.
+- Download your preferred option from [Releases](https://github.com/Mainkill1/Floggfy/releases):
+- **Always on:** put `version.dll` beside `Spotify.exe`, then start Spotify normally.
+- **Launcher:** put `Floggfy.exe` and `Floggfy.dll` beside `Spotify.exe`, then run `Floggfy.exe`.
+- The Spotify folder is usually `%APPDATA%\Spotify`.
+- Use **one installation option**. Remove Floggfy's `version.dll` when switching to the launcher.
+- The launcher closes and restarts Spotify. To run without Floggfy, quit Spotify and start it normally.
 
-| Option | Files to install | How to start |
-| --- | --- | --- |
-| **Always on** | `version.dll` | Open Spotify normally. |
-| **Launcher** | `Floggfy.exe` and `Floggfy.dll` from the Launcher ZIP | `Floggfy.exe` with Floggfy; Spotify normally without it. |
-
-Open your Spotify folder, usually `%APPDATA%\Spotify`.
-Put your chosen files beside `Spotify.exe`.
-
-<img width="670" height="172" alt="image" src="https://github.com/user-attachments/assets/4efec58b-663b-4d3d-af31-4bf9fa04b0e1" />
-
-
-Use only one option. Remove Floggfy's `version.dll` when switching to the launcher.
-The launcher will automatically close and restart Spotify when ran. To return to normal Spotify, quit Spotify completely then launch it like normal.
+<img width="670" height="172" alt="Files beside Spotify.exe" src="https://github.com/user-attachments/assets/4efec58b-663b-4d3d-af31-4bf9fa04b0e1" />
 
 ## Save music
 
-Downloads starts enabled on a new installation. Use Spotify's top-left menu → **To Disk** to pause or resume saving. Existing saved preferences are preserved.
-Play a song from start to finish without skipping or seeking.
+- Downloads are enabled by default. Open Spotify's top-left menu → **To Disk** to change settings.
+- Play songs from beginning to end without skipping or seeking.
+- **Disable Automix** under **Edit → Preferences → Playback**. It trims songs and prevents complete saves.
+- Files save to `Music\Spotify\Artists\Artist\Album` by default. Change this with **Save Location**.
+- For FLAC, select lossless playback in Spotify.
+- Click **Song** to open a saved song's folder. Unsaved songs stay greyed out.
+- **Latest Downloads** lists the last ten songs saved during the current run.
 
-Music saves under `Spotify/Artists/Artist/Album` in your Windows Music folder.
-
-FLAC needs lossless playback in Spotify. Floggfy does not convert Ogg into FLAC.
+<img width="338" height="362" alt="To Disk menu" src="https://github.com/user-attachments/assets/b6294a3d-c09d-4dba-926a-72a1529d1db7" />
 
 ## Settings
 
-**To Disk** includes **Downloads**, **Save Location**, **FLAC**, **Ogg** and **Lyrics** controls.
-Artist folders use the album artist; guest/contributing credits remain in the `ARTIST` tag.
-
-The INI also has `TrackNumberInFilename` for numbered versus title-only new names,
-and `ConvertNumberedFilenames` to remove verified old prefixes when playback starts.
-Both default to `0`. Enabling numbering disables conversion. Restart after INI edits.
-
-The legacy network compatibility patch is optional and disabled by default:
-`NetworkPatch=0` under `[To Disk]`. Missing keys also mean off, including on
-existing installations. Set `NetworkPatch=1` only when you want the compatibility
-patch, then quit Spotify completely and restart. Audio capture, metadata and
-To Disk work independently of this option. The cause of reported playback pauses
-remains unconfirmed.
-
-For playback troubleshooting, `Log=1` and `DebugLog=1` enable diagnostic logging.
-`DebugConnect=1` additionally records cached playback-device changes and local
-client control requests; set it to `0` to disable those basic observations outside
-deep diagnostic mode. Device names
-and IDs are omitted. Playback on this PC can still be controlled by a phone:
-`target=local` describes where audio plays, while an unavailable command sender
-remains `initiator=unknown`. This does not identify a remote Pause sender.
-These client observations require `Metadata=1`; restart after INI edits.
-
-Deep networking diagnostics are separately controlled by **`DebugNetworking=0`**
-under `[To Disk]`. Set `DebugNetworking=1`, `Log=1` and `DebugLog=1`, then fully
-restart Spotify to enable the read-only decoded Connect hook and
-**`Floggfy-networking.log`** in your save location. Set `DebugNetworking=0` and
-restart to disable both. This replaces the earlier experimental
-`DebugConnectMessages` option; that older key no longer enables the hook.
-
-The separate log summarizes known incoming Connect commands, local client
-requests, playback/buffering/error changes, hook timing, and Floggfy's own
-metadata, lyrics and artwork request/results. It includes millisecond UTC,
-monotonic time, process/sequence numbers, operation IDs and anonymous peer labels.
-Enrichment `send` means an API dispatch attempt, and `rejected` is a local error
-observation. Local control requests are not proof of a network send; receipt is not command execution
-or proof of what caused a pause. Unobserved traffic remains unknown. Raw messages,
-media, credentials, URLs, device names and real device IDs are excluded. Renderer
-fields pass an exact allowlist. The log has its own bounded queue and 5 MiB cap;
-oldest complete lines are removed and queue omissions are reported. Unchanged
-paused states do not produce recurring entries.
-
-The native observer is independent of `Metadata` and `NetworkPatch`; client-state
-and enrichment observations require the metadata collector. Unsupported native
-layouts leave the decoded observer disabled without disabling capture. These are
-summaries of the observed paths, not a dump of all Spotify network traffic.
-
-For additional timing investigation, set `DebugHookDiagnostics=1` alongside
-`DebugNetworking=1`, `Log=1` and `DebugLog=1`, then restart. This default-off mode
-records slow menu callbacks and startup-hook activity, plus capture-worker
-progress gaps, in the networking log. Callback scopes record bounded numeric
-state only; the existing logger worker reports it. Completed scopes below 10 ms
-are silent; pending scopes at least 250 ms and capture progress gaps at least
-one second are sampled, with repeat warnings limited to every five seconds.
-Sampling can be delayed by logger/storage/process stalls. It does not capture
-stacks or memory, install crash handlers, suspend threads or diagnose the cause
-of a pause. Set `DebugHookDiagnostics=0` and restart to disable these extra
-measurements; `DebugNetworking=0` disables the entire deep diagnostic system.
-
-Both DLL installation modes require **x64 Spotify**. Our DLL has statically
-linked GCC/C++ runtimes and does not require a separate Visual C++
-Redistributable. The x64 build supports Intel and AMD x64 processors; PE's
-`AMD64` architecture name does not mean AMD-only. x86 (32-bit) and native ARM64
-Spotify are unsupported. The launcher checks both adjacent binary headers before
-stopping an existing Spotify process and reports incompatible architecture or
-header-read errors. This is a header/architecture check, not full loader or
-cross-version compatibility validation.
-
-After a successful download, **Latest Downloads** appears directly below **Save Location**.
-It lists up to ten recently saved songs from this Spotify run; click one to open
-Explorer at its saved folder.
-Song remains visible, and Quality appears when known. Format and Sample rate
-appear only for confirmed FLAC playback; unavailable technical rows are hidden.
-
-The current **Song** row stays visible but greyed out until a matching saved
-FLAC or Ogg file exists. Click it to open the containing folder. If the file was removed,
-an unavailable notice is shown. Folders are created only when saving audio;
-opening a folder does not count as a download.
-
-Lyrics are collected automatically when Spotify provides them; the lyrics panel
-does not need to be open. Timed lyrics are embedded as LRC text in the `LYRICS`
-tag; lyrics without timing use plain text. No separate `.lrc` file is created.
-After a complete replay, existing FLAC and Ogg files can receive missing tags
-and artwork even when no audio replacement is needed. Better validated Spotify
-cover art can replace smaller or legacy thumbnail images without reducing
-resolution; identical images are left alone. Plain lyrics can upgrade
-to synchronized lyrics. Existing values and compressed audio stay intact, including
-when lower-quality playback enriches a saved FLAC. Metadata-only updates are logged
-separately and do not appear in Latest Downloads. Set `UpdateExistingMetadata=0`
-in the INI to leave existing-file metadata and artwork unchanged. The default is
-`1`. Files needing no metadata or artwork changes are not rewritten. Already synchronized lyrics
-are retained. Audio quality upgrades also preserve existing populated tags,
-synchronized lyrics and artwork; a cover changes only when the shared artwork
-policy approves a better incoming image.
-Turn **Lyrics** off in **To Disk**, or set `Lyrics=0` in
-the INI, if a Spotify update causes compatibility problems. Album artwork and
-other available metadata continue to work. Spotify is the only active external
-artwork source; complete audio saves normally when artwork is unavailable.
-`Metadata=0` disables Spotify enrichment while basic Windows track/timeline data
-and recording safeguards remain active. New files may have no cover unless one
-is embedded in the captured source. Existing artwork still survives eligible
-audio quality upgrades, even with `Metadata=0`.
-
-Optional AAC capture is configured only in `SpotifyHistory.ini`:
-
-```ini
-[To Disk]
-; Usually used for low-quality streams. Disabled by default; restart after changing.
-Aac=0
-```
-
-Set `AAC=1` to retain supported SpAC AAC streams as `.m4a` files. Original AAC
-packets and decoder configuration are remuxed without re-encoding; source priming
-and tail trimming are recorded in the file timeline. Regular AAC-LC, HE-AAC and
-HE-AAC v2 are supported; xHE-AAC/USAC and unverified configurations are skipped.
-Existing matching FLAC/Ogg recordings are retained instead of adding an AAC copy.
-Complete AAC files can receive missing metadata, lyrics and better Spotify artwork
-when existing-file updates are enabled. AAC bitrate estimates do not authorize
-replacement of an existing AAC rendition. This option adds no menu toggle.
-
-
-<img width="338" height="362" alt="image" src="https://github.com/user-attachments/assets/b6294a3d-c09d-4dba-926a-72a1529d1db7" />
-
-
-`SpotifyHistory.ini` is created automatically. Keep your existing file when
-upgrading. Settings are stored as Unicode so save locations survive restart;
-older INI files are migrated while preserving their preferences. Use it to disable the menu, extra song details or activity log. At the 5 MiB log limit, the oldest complete
-lines are removed as new entries arrive. Completed saves include the audio quality
-and final file size. Skipped songs are logged with the reason, including an
-existing file of the same or better quality.
+- **To Disk** provides **Downloads**, **Save Location**, **FLAC**, **Ogg** and **Lyrics** controls.
+- `SpotifyHistory.ini` is created automatically. Keep it when upgrading, and fully restart Spotify after editing it.
+- `UpdateExistingMetadata=1` fills missing details and improves artwork on existing songs. Set `0` to leave their metadata unchanged.
+- `TrackNumberInFilename=0` uses title-only filenames. Set `1` to add track numbers.
+- `ConvertNumberedFilenames=0`: set `1` to remove old track-number prefixes. Numbering disables conversion.
+- `AAC=1` enables AAC saving as M4A. It defaults to `0`.
+- `Menu=0` disables the menu; configured saving continues.
+- `Metadata=0` disables Spotify metadata enrichment.
+- `Log=1` writes `Floggfy.log` in your save folder. `DebugLog=1` adds troubleshooting details.
+- `NetworkPatch=1` enables a workaround for Windows incorrectly reporting no Internet. It defaults to `0`.
+- See [settings and troubleshooting](AUDIO-HISTORY.md) for all options, including advanced diagnostics.
 
 ## Having trouble?
 
-- **Floggfy doesn't load:** try the launcher option.
-- **Spotify crashes:** quit it, set `Metadata=0` in `SpotifyHistory.ini`, and restart. If needed, try `Menu=0` too.
-- **Menu missing:** quit Spotify and set `Downloads=1` in the INI to save without it.
+- **Doesn't load:** check that Spotify is x64 and try the launcher option.
+- **Songs aren't saved:** check **Downloads**, play a complete song and disable Automix.
+- **Playback problems:** try `Menu=0`, then `Metadata=0`, restarting after each change.
+- **Need help:** [report an issue](https://github.com/Mainkill1/Floggfy/issues) with your Spotify version and relevant log entries.
+- Spotify updates may require a newer Floggfy release.
+- To uninstall, quit Spotify and remove the Floggfy files you installed.
 
-Tested with Windows x64 Spotify **1.2.93.667** and **1.3.6.1921**. Updates may need a new Floggfy release. [Report a problem](https://github.com/Mainkill1/Floggfy/issues).
+## Support development
 
-To uninstall, quit Spotify and remove the Floggfy files you installed.
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20Development-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/mainkill1)
 
-## Legal Notice
-This software does not decrypt or download music from Spotify.
-To be exact, it simply "records" the music that is being played.
-This software does not promote piracy or music sharing in anyway.
+## Legal notice
 
-Any output this software provides should not to be shared, and is intended for personal use only. 
+This software records music already being played. It does not decrypt or independently download music from Spotify, and does not promote piracy or music sharing.
+
+Output is intended for personal use and should not be shared.
 
 ## Credits
 
-Based on [Soggfy](https://github.com/Rafiuth/Soggfy), with work reviewed from
-[Soggfy-Fixed](https://github.com/SuperSecretEyeball/Soggfy-Fixed) and
-[Spicetify](https://github.com/spicetify/cli).
-
-[MIT license](LICENSE). Not affiliated with Spotify.
+- Based on [Soggfy](https://github.com/Rafiuth/Soggfy).
+- Additional references: [Soggfy-Fixed](https://github.com/SuperSecretEyeball/Soggfy-Fixed) and [Spicetify](https://github.com/spicetify/cli).
+- [MIT license](LICENSE). Not affiliated with Spotify.
