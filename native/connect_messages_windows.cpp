@@ -181,7 +181,8 @@ void StartDecodedConnectMessages(HMODULE spotify_module,bool requested) noexcept
     decoded_init.Activate();
     HistoryLog("decoded Connect observer active: complete messages only; read-only; pause/resume receipt is not execution");
 }
-void DrainDecodedConnectMessages() noexcept {
+namespace {
+__declspec(noinline) void DrainPendingDecodedConnectMessages() noexcept {
     for(unsigned i=0;i<decoded_capacity;++i) {
         DecodedRecord record;
         if(!PopDecodedRecord(record))break;
@@ -210,5 +211,15 @@ void DrainDecodedConnectMessages() noexcept {
     if(omitted&&LoggingEnabled()&&DebugLoggingEnabled()) {
         char line[120];std::snprintf(line,sizeof(line),"Connect decoded observations omitted=%lu; commands unchanged",omitted);HistoryLog(line);
     }
+}
+}
+void DrainDecodedConnectMessages() noexcept {
+    // No 16 KiB record/stack clearing on idle startup polls, including when the
+    // option is off. A producer arriving after this check waits for the next
+    // existing poll; neither its record nor its omission counter is consumed.
+    if(!TryAcquireSRWLockExclusive(&decoded_lock))return;
+    const bool pending=decoded_count!=0;
+    ReleaseSRWLockExclusive(&decoded_lock);
+    if(pending||decoded_omitted.load(std::memory_order_relaxed))DrainPendingDecodedConnectMessages();
 }
 }

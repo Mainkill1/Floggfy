@@ -946,11 +946,19 @@ last error, dispatch and acknowledgements remain with Spotify. A bounded summary
 records actions, message IDs and anonymous sender labels; receipt and execution
 are separate. No message rewrite mode is present.
 
-The single focused `bash test-decoded-connect.sh SPOTIFY_DLL` gate is prepared
-but not yet executed. It combines synthetic capability rejection cases, a static
-mapped copy of the installed client, bounded summary parsing, fake original
-callback forwarding, queue/privacy cases and isolated INI persistence. The older
-network-option fixture has link stubs for the new startup dependency and is not
+The single focused `bash test-decoded-connect.sh SPOTIFY_DLL` gate passed in one
+execution. It combined synthetic capability rejection cases, a static mapped
+copy of the installed Spotify 1.3.6.1921 DLL, bounded summary parsing, fake original
+callback forwarding, AL/last-error preservation, queue contention/overflow and
+redaction, raw-slot clearing, and isolated Unicode INI persistence. Independent
+static review found one exception-specification mismatch in test stubs; it was
+corrected before execution, then the review approved the gate. No test rerun or
+broad regression suite was performed. The production DLL/launcher build passed.
+A subsequent statically reviewed idle-path optimization avoids allocating and
+clearing a 16 KiB record when no observation is pending. The targeted runtime
+gate was not rerun after this final correction; its runtime behavior remains
+unverified. A final production DLL/launcher compilation after that correction
+passed with existing vendor warnings visible. The older network-option fixture has link stubs for the new startup dependency and is not
 rerun. Neither source-level review nor a synthetic callback establishes live
 hook safety, sender authenticity, successful execution or cross-version support.
 RC1's assets/tag and the running installation are unchanged.
