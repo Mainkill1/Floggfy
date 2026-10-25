@@ -929,3 +929,28 @@ no blocker. The subsequent `bash build-native.sh` DLL/launcher build passed;
 existing vendor warnings remained visible. The implementation has not been
 installed for live Connect validation.
 RC1's existing assets/tag and the running installation remain unchanged.
+
+
+## Decoded Connect request observer after RC1
+
+Static analysis located a common complete-JSON boundary for plain and compressed
+Connect requests. The compressed path finalizes its inflater before calling this
+boundary; observing only the feed return can miss trailing plaintext. Capability
+discovery checks the command-parser owner, unique string references, shared
+const-string adapter, input layout and the two complete-message returns. It
+excludes the compressed envelope and uses no fixed production RVAs.
+
+`DebugConnectMessages=0` keeps this optional native detour off. The requested
+implementation is read-only: original arguments, input storage, return value,
+last error, dispatch and acknowledgements remain with Spotify. A bounded summary
+records actions, message IDs and anonymous sender labels; receipt and execution
+are separate. No message rewrite mode is present.
+
+The single focused `bash test-decoded-connect.sh SPOTIFY_DLL` gate is prepared
+but not yet executed. It combines synthetic capability rejection cases, a static
+mapped copy of the installed client, bounded summary parsing, fake original
+callback forwarding, queue/privacy cases and isolated INI persistence. The older
+network-option fixture has link stubs for the new startup dependency and is not
+rerun. Neither source-level review nor a synthetic callback establishes live
+hook safety, sender authenticity, successful execution or cross-version support.
+RC1's assets/tag and the running installation are unchanged.

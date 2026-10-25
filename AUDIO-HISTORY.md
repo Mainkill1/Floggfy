@@ -27,6 +27,7 @@ UpdateExistingMetadata=1
 Log=1
 DebugLog=0
 DebugConnect=1
+DebugConnectMessages=0
 
 [History]
 MaxBufferedMiB=500
@@ -63,6 +64,11 @@ MaxBufferedMiB=500
   `Metadata=1`. Set `0` and restart to disable cached Connect target observations
   and the passive local client action observer. No device discovery, playback
   transfer or additional network request is performed.
+- **DebugConnectMessages:** experimental INI-only, default `0`. Requires `Log=1`
+  and `DebugLog=1`; fully restart after changing it. Observes complete decoded
+  incoming Connect requests, including pause/resume, without changing, suppressing
+  or replaying them. It is independent of `Metadata` and `NetworkPatch`. Client
+  layouts that fail capability checks leave this observer unavailable.
 - **MaxBufferedMiB:** 8–512 MiB, default 500, limits compressed capture allocations.
   There is also an approximately 8 MiB event queue, artwork, and a temporary
   completed-file buffer during native tagging. Oversized tracks are discarded.
@@ -221,6 +227,29 @@ A phone controlling playback on this PC is distinct from playback on the phone.
 Neither a remote target nor absence of a local action proves who sent Pause:
 controller/initiator stays `unknown`. Repeated unchanged paused snapshots stay
 silent. Missing or changed optional APIs leave normal metadata collection intact.
+
+The optional native decoded-message observer checks the command parser's string
+anchors, unwind ownership, const-string ABI and complete-message call sites.
+Plain JSON and finalized decompressed JSON are observed; the compressed envelope
+parse is excluded. It uses one shared JSON-parser detour with a small pass-through
+path for every unrelated caller. There is no TLS/key interception or packet dump.
+The callback copies at most 16 KiB using OS-checked reads and a nonblocking
+16-entry queue, calls the original parser once with the original arguments,
+preserves its AL return and Windows last-error value, and leaves native objects
+and command handling untouched. The existing startup worker drains observations;
+no background thread is added. This optional shared detour's live timing and
+interleavings remain unverified; it is off by default.
+
+Only allowlisted actions, message IDs, receipt times and anonymous process-local
+sender labels are logged. Other fields and raw bodies are not written to disk.
+Queued payload bytes are cleared after consumption; sender correlation retains
+at most 32 bounded identifiers privately for this process. Depth/size limits and
+ambiguous selected JSON fields prevent summaries rather than affecting commands.
+Queue contention/overflow omits observations, never commands. `json_ok=1` means
+that the original JSON parser accepted syntax, not that dispatch succeeded.
+`execution=unobserved` explicitly separates receipt from the playback result.
+Sender fields are reported data, not authenticated human/device attribution.
+No message modification or feature-probe rewriting mode is implemented.
 
 Network context is only the last result of an already intercepted Windows NLM
 query, with its age, HRESULT and original/effective connectivity flags. This

@@ -9,6 +9,7 @@
 #include <cstring>
 #include "audio_history.h"
 #include "connectivity_diagnostics.h"
+#include "connect_messages_windows.h"
 #include "hook_init_state.h"
 #include "hook_startup_minhook.h"
 #include "history_settings.h"
@@ -379,7 +380,9 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
     if (register_notification) register_notification(0, DllNotification, nullptr, &notification_cookie);
 
     history::InitSettings(proxy_module);
-    const bool network_patch_enabled=history::GetSettings().network_patch;
+    const auto startup_settings=history::GetSettings();
+    const bool network_patch_enabled=startup_settings.network_patch;
+    const bool decoded_messages_enabled=startup_settings.debug_connect_messages;
     Log(network_patch_enabled?"NetworkPatch=1; legacy network compatibility patch enabled":
         "NetworkPatch=0; network compatibility hooks disabled");
     Log("version.dll proxy loaded; no Windows settings or signed files changed");
@@ -405,9 +408,13 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
         HMODULE module;
         if (GetModuleHandleExW(0, L"Spotify.dll", &module)) {
             StartConnectivityHook(module,network_patch_enabled);
-            if (i >= 80) StartAudioHistory(module, proxy_module);
+            if (i >= 80) {
+                StartAudioHistory(module, proxy_module);
+                history::StartDecodedConnectMessages(module,decoded_messages_enabled);
+            }
             FreeLibrary(module);
         }
+        history::DrainDecodedConnectMessages();
         if(i==0)startup::SignalReady();
         Sleep(i < 600 ? 25 : 1000);
     }

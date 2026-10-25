@@ -66,6 +66,15 @@ and IDs are omitted. Playback on this PC can still be controlled by a phone:
 remains `initiator=unknown`. This does not identify a remote Pause sender.
 These client observations require `Metadata=1`; restart after INI edits.
 
+Experimental incoming Connect-message logging is available separately through
+`DebugConnectMessages=1`, with `Log=1` and `DebugLog=1`, after a full restart.
+It defaults off and observes complete decoded requests without changing them.
+Logs include an allowlisted action, message ID and anonymous sender label; a
+received Pause request is separate from an observed playback pause. This native
+observer does not require the metadata collector or the network compatibility
+patch. An unsupported client layout leaves it disabled. Live hook behavior has
+not yet been validated.
+
 After a successful download, **Latest Downloads** appears directly below **Save Location**.
 It lists up to ten recently saved songs from this Spotify run; click one to open
 Explorer at its saved folder.

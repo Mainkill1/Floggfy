@@ -60,6 +60,10 @@ static constexpr char default_ini[]=
     "; With DebugLog=1, log playback-device changes and local client control requests.\r\n"
     "; Remote command senders may be unknown. Device names and IDs are not logged.\r\n"
     "DebugConnect=1\r\n"
+    "; Experimental read-only decoded Connect requests, including pause/resume.\r\n"
+    "; Requires Log=1 and DebugLog=1; restart. Default off; changes no commands.\r\n"
+    "; Logs action/message ID and anonymous sender labels, not raw messages.\r\n"
+    "DebugConnectMessages=0\r\n"
     "\r\n"
     "[History]\r\n"
     "; Maximum compressed audio held in RAM for one track.\r\n"
@@ -102,6 +106,12 @@ static bool ReadDebugConnectOption(Settings& target,const std::wstring& path) {
     target.debug_connect=GetPrivateProfileIntW(L"To Disk",L"DebugConnect",1,path.c_str())!=0;
     return !present;
 }
+static bool ReadDecodedConnectOption(Settings& target,const std::wstring& path) {
+    wchar_t value[2]{};
+    const bool present=GetPrivateProfileStringW(L"To Disk",L"DebugConnectMessages",L"",value,2,path.c_str())!=0;
+    target.debug_connect_messages=GetPrivateProfileIntW(L"To Disk",L"DebugConnectMessages",0,path.c_str())!=0;
+    return !present;
+}
 static bool ReachedGeneration(volatile LONG& progress,unsigned expected) {
     return static_cast<LONG>(unsigned(InterlockedCompareExchange(&progress,0,0))-expected)>=0;
 }
@@ -123,6 +133,7 @@ static DWORD WINAPI PersistSettings(LPVOID) {
                 flag(L"UpdateExistingMetadata",snapshot.update_existing_metadata);
                 flag(L"NetworkPatch",snapshot.network_patch);
                 flag(L"DebugConnect",snapshot.debug_connect);
+                flag(L"DebugConnectMessages",snapshot.debug_connect_messages);
                 flag(L"TrackNumberInFilename",snapshot.track_number_in_filename);
                 flag(L"ConvertNumberedFilenames",snapshot.convert_numbered_filenames && !snapshot.track_number_in_filename);
                 settings_file::Set(text,L"Save Location",snapshot.save_location);
@@ -189,7 +200,8 @@ void InitSettings(HMODULE proxy) {
     const bool filename_options_pending=ReadFilenameOptions(settings,ini);
     const bool network_option_pending=ReadNetworkPatchOption(settings,ini);
     const bool connect_option_pending=ReadDebugConnectOption(settings,ini);
-    const bool startup_options_pending=filename_options_pending || network_option_pending || connect_option_pending;
+    const bool decoded_option_pending=ReadDecodedConnectOption(settings,ini);
+    const bool startup_options_pending=filename_options_pending || network_option_pending || connect_option_pending || decoded_option_pending;
     settings.aac=GetPrivateProfileIntW(L"To Disk",L"AAC",0,ini.c_str())!=0;
     settings.metadata=GetPrivateProfileIntW(L"To Disk",L"Metadata",1,ini.c_str())!=0;
     settings.lyrics=GetPrivateProfileIntW(L"To Disk",L"Lyrics",1,ini.c_str())!=0;

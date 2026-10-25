@@ -9,6 +9,8 @@ void FinalizeToDiskMenu(bool){}
 void StartAudioHistory(HMODULE,HMODULE){}
 extern "C" MH_STATUS WINAPI MH_ApplyQueued(){return MH_OK;}
 namespace history {
+void StartDecodedConnectMessages(HMODULE,bool) noexcept{}
+void DrainDecodedConnectMessages() noexcept{}
 bool PrepareMetadataCollector(HMODULE){return false;}
 void FinalizeMetadataCollector(bool){}
 void StartLogger(){}
