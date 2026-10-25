@@ -13,6 +13,7 @@
 #include "hook_init_state.h"
 #include "hook_startup_minhook.h"
 #include "history_settings.h"
+#include "hook_diagnostics.h"
 #include "metadata_bridge.h"
 #include "module_pending.h"
 #include "pe_imports.h"
@@ -396,6 +397,7 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
         if(GetModuleHandleExW(0,L"libcef.dll",&cef)) {
             // Queue all initial observers before one suspension/resume. Enabling
             // either set separately can let CEF construct the other object first.
+            history::HookDiagnosticScope diagnostic(history::diagnostics::Phase::StartupHooks);
             hooks::StartTogether(
                 [&]{return history::PrepareMetadataCollector(cef);},
                 [&]{return PrepareToDiskMenu(cef);},
@@ -407,6 +409,7 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
         }
         HMODULE module;
         if (GetModuleHandleExW(0, L"Spotify.dll", &module)) {
+            history::HookDiagnosticScope diagnostic(history::diagnostics::Phase::StartupHooks);
             StartConnectivityHook(module,network_patch_enabled);
             if (i >= 80) {
                 StartAudioHistory(module, proxy_module);

@@ -18,7 +18,7 @@ static bool IsMusic(std::wstring root) {
     return !music_path.empty() && (_wcsicmp(root.c_str(),music_path.c_str())==0 ||
         _wcsicmp(root.c_str(),(music_path+L"\\Spotify").c_str())==0);
 }
-static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,aac_enabled=0,capture_epoch=0,log_enabled=1,debug_enabled=0,networking_enabled=0;
+static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,aac_enabled=0,capture_epoch=0,log_enabled=1,debug_enabled=0,networking_enabled=0,hook_diagnostics_enabled=0;
 static HANDLE settings_signal=nullptr,persist_done=nullptr;
 // A failed attempt is observable without acknowledging bytes never committed.
 static volatile LONG persisted_generation=-1,failed_generation=-1,persist_failed=0;
@@ -67,6 +67,9 @@ static constexpr char default_ini[]=
     "; No raw messages, media, credentials, URLs, device names or device IDs are logged.\r\n"
     "; Unobserved traffic and command execution remain unknown; no commands are changed.\r\n"
     "DebugNetworking=0\r\n"
+    "; Extra callback/stall diagnostics. Requires DebugNetworking=1, Log=1, DebugLog=1.\r\n"
+    "; Default off; restart. Slow/pending activities only; no dumps or raw payloads.\r\n"
+    "DebugHookDiagnostics=0\r\n"
     "\r\n"
     "[History]\r\n"
     "; Maximum compressed audio held in RAM for one track.\r\n"
@@ -115,6 +118,12 @@ static bool ReadNetworkingOption(Settings& target,const std::wstring& path) {
     target.debug_networking=GetPrivateProfileIntW(L"To Disk",L"DebugNetworking",0,path.c_str())!=0;
     return !present;
 }
+static bool ReadHookDiagnosticsOption(Settings& target,const std::wstring& path) {
+    wchar_t value[2]{};
+    const bool present=GetPrivateProfileStringW(L"To Disk",L"DebugHookDiagnostics",L"",value,2,path.c_str())!=0;
+    target.debug_hook_diagnostics=GetPrivateProfileIntW(L"To Disk",L"DebugHookDiagnostics",0,path.c_str())!=0;
+    return !present;
+}
 static bool ReachedGeneration(volatile LONG& progress,unsigned expected) {
     return static_cast<LONG>(unsigned(InterlockedCompareExchange(&progress,0,0))-expected)>=0;
 }
@@ -137,6 +146,7 @@ static DWORD WINAPI PersistSettings(LPVOID) {
                 flag(L"NetworkPatch",snapshot.network_patch);
                 flag(L"DebugConnect",snapshot.debug_connect);
                 flag(L"DebugNetworking",snapshot.debug_networking);
+                flag(L"DebugHookDiagnostics",snapshot.debug_hook_diagnostics);
                 flag(L"TrackNumberInFilename",snapshot.track_number_in_filename);
                 flag(L"ConvertNumberedFilenames",snapshot.convert_numbered_filenames && !snapshot.track_number_in_filename);
                 settings_file::Set(text,L"Save Location",snapshot.save_location);
@@ -204,7 +214,8 @@ void InitSettings(HMODULE proxy) {
     const bool network_option_pending=ReadNetworkPatchOption(settings,ini);
     const bool connect_option_pending=ReadDebugConnectOption(settings,ini);
     const bool decoded_option_pending=ReadNetworkingOption(settings,ini);
-    const bool startup_options_pending=filename_options_pending || network_option_pending || connect_option_pending || decoded_option_pending;
+    const bool hook_diagnostics_pending=ReadHookDiagnosticsOption(settings,ini);
+    const bool startup_options_pending=filename_options_pending || network_option_pending || connect_option_pending || decoded_option_pending || hook_diagnostics_pending;
     settings.aac=GetPrivateProfileIntW(L"To Disk",L"AAC",0,ini.c_str())!=0;
     settings.metadata=GetPrivateProfileIntW(L"To Disk",L"Metadata",1,ini.c_str())!=0;
     settings.lyrics=GetPrivateProfileIntW(L"To Disk",L"Lyrics",1,ini.c_str())!=0;
@@ -223,7 +234,7 @@ void InitSettings(HMODULE proxy) {
     if(raw[0] && length && length<=4096) {settings.root=expanded;settings.save_location=raw;}
     settings.music_folder=IsMusic(settings.root);
     downloads_enabled=settings.downloads; ogg_enabled=settings.ogg; flac_enabled=settings.flac; aac_enabled=settings.aac;
-    log_enabled=settings.log;debug_enabled=settings.debug_log;networking_enabled=settings.debug_networking;
+    log_enabled=settings.log;debug_enabled=settings.debug_log;networking_enabled=settings.debug_networking;hook_diagnostics_enabled=settings.debug_hook_diagnostics;
     settings_signal=CreateEventW(nullptr,FALSE,FALSE,nullptr);
     persist_done=CreateEventW(nullptr,FALSE,FALSE,nullptr);
     HANDLE thread=settings_signal&&persist_done ? CreateThread(nullptr,0,PersistSettings,nullptr,0,nullptr) : nullptr;
@@ -244,6 +255,7 @@ Settings GetSettings() {
 bool LoggingEnabled() { return log_enabled!=0; }
 bool DebugLoggingEnabled() { return debug_enabled!=0; }
 bool NetworkingLoggingEnabled() { return networking_enabled!=0 && LoggingEnabled() && DebugLoggingEnabled(); }
+bool HookDiagnosticsEnabled() { return hook_diagnostics_enabled!=0 && NetworkingLoggingEnabled(); }
 bool OggEnabled() { return downloads_enabled && ogg_enabled; }
 bool FlacEnabled() { return downloads_enabled && flac_enabled; }
 bool AACEnabled() { return downloads_enabled && aac_enabled; }

@@ -9,6 +9,7 @@
 #include "metadata_bridge.h"
 #include "playback_quality.h"
 #include "async_log.h"
+#include "hook_diagnostics.h"
 #include <string_view>
 #include <array>
 #include "bounded_queue.h"
@@ -1087,6 +1088,7 @@ static DWORD WINAPI Worker(LPVOID) {
     unsigned generation=~0u,epoch=~0u; bool enabled=false;
     try {
         while(workers_running.load(std::memory_order_acquire)) {
+            NoteCaptureProgress();
             double now=Now();
             auto preferences=GetSettings();
             if(preferences.generation!=generation) {
@@ -1115,7 +1117,11 @@ static DWORD WINAPI Worker(LPVOID) {
                 Log("capture queue overflow; streams and listening coverage invalidated");
             }
             Slot s;
-            while(Pop(s)) ProcessCaptureEvent(s,buffers,quality,quality_enabled.load(std::memory_order_relaxed),enabled,epoch);
+            while(Pop(s)) {
+                ProcessCaptureEvent(s,buffers,quality,quality_enabled.load(std::memory_order_relaxed),enabled,epoch);
+                // Draining a continuously busy queue is still forward progress.
+                NoteCaptureProgress();
+            }
             // Start only the basic media observer. All COM/WinRT work stays on
             // its thread; this consumer only try-locks a bounded RAM snapshot.
             // A still-stopping observer must finish before another can start.
@@ -1165,6 +1171,7 @@ static DWORD WINAPI Worker(LPVOID) {
             WaitForSingleObject(event,50);
         }
     } catch(...) { Log("history worker stopped after an exception; playback remains with original parser"); }
+    capture_progress_ms.store(0,std::memory_order_release);
     CancelFilenameChecks();
     reader.Stop(); // Nonblocking even if Windows is still servicing a COM call.
     PublishPlaybackQuality({});

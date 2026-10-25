@@ -28,6 +28,7 @@ Log=1
 DebugLog=0
 DebugConnect=1
 DebugNetworking=0
+DebugHookDiagnostics=0
 
 [History]
 MaxBufferedMiB=500
@@ -82,6 +83,18 @@ MaxBufferedMiB=500
   and `NetworkPatch`; client/enrichment coverage requires `Metadata=1`.
   Unsupported layouts disable native observation; unobserved traffic remains
   unknown. There is no general packet/TLS dump or command modification.
+- **DebugHookDiagnostics:** default `0`; requires `DebugNetworking=1`, `Log=1`
+  and `DebugLog=1`, then a full restart. Tracks bounded numeric menu callback and
+  startup-hook activity, reporting completed spans at least 10 ms, sampled spans
+  still active after 250 ms, and capture-worker progress gaps of at least 1 s.
+  Timing uses Windows tick-count wall time and its clock resolution; these
+  reporting thresholds are approximate. Ongoing warnings repeat at most once
+  per five seconds; dropped diagnostic
+  scopes are counted. The existing logger worker samples up to 32 slots without
+  new hooks, threads, thread suspension, payload logging or memory dumps. Its
+  own I/O/process stalls can delay reports, so this cannot independently detect
+  every hang or prove why Spotify paused. Disabling the setting removes the
+  additional scope/heartbeat measurements. No capture acceptance rule changes.
 - **MaxBufferedMiB:** 8–512 MiB, default 500, limits compressed capture allocations.
   There is also an approximately 8 MiB event queue, artwork, and a temporary
   completed-file buffer during native tagging. Oversized tracks are discarded.

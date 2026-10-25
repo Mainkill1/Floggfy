@@ -5,6 +5,7 @@
 #include "hook_init_state.h"
 #include "hook_startup_minhook.h"
 #include "history_settings.h"
+#include "hook_diagnostics.h"
 #include "playback_quality.h"
 #include "recent_downloads.h"
 #include "song_destination.h"
@@ -170,6 +171,7 @@ static void Populate(Menu* menu) {
     if(inserted) history::HistoryLog("To Disk inserted into Spotify main menu: Downloads, Save Location, FLAC, Ogg, Lyrics");
 }
 static Menu* AddSubmenuHook(Menu* menu,int id,const String* text) {
+    history::HookDiagnosticScope diagnostic(history::diagnostics::Phase::MenuSubmenu);
     auto callback=menu_callbacks.Enter();
     Menu* result=original_add_submenu(menu,id,text);
     // MenuWillShow occurs after CEF has built the visible menu. Insert while
@@ -326,6 +328,7 @@ static void RevealSong(const std::wstring& saved_file) {
     else {delete copy;MessageBoxW(GetActiveWindow(),L"The song folder could not be opened.",L"Song folder",MB_OK|MB_ICONERROR);}
 }
 static void Execute(Delegate* self,Menu* menu,int command,int flags) {
+    history::HookDiagnosticScope diagnostic(history::diagnostics::Phase::MenuExecute);
     MenuReference reference(menu);
     try {
     if(command==song_id) {
@@ -369,6 +372,7 @@ static void Outside(Delegate* self,Menu* menu,const void* point) { auto* o=Self(
 static void Open(Delegate* self,Menu* menu,int rtl) { auto* o=Self(self)->original; if(o && o->open) o->open(o,menu,rtl); else ReleaseMenu(menu); }
 static void Close(Delegate* self,Menu* menu,int rtl) { auto* o=Self(self)->original; if(o && o->close) o->close(o,menu,rtl); else ReleaseMenu(menu); }
 static void WillShow(Delegate* self,Menu* menu) {
+    history::HookDiagnosticScope diagnostic(history::diagnostics::Phase::MenuWillShow);
     MenuReference reference(menu);
     try {
     if(Self(self)->CapableCached(menu) && MenuMethods::IndexOf(menu,root_id)>=0) Self(self)->opening.Show();
@@ -385,6 +389,7 @@ static void WillShow(Delegate* self,Menu* menu) {
     }catch(...) {/* Keep prior labels if allocation fails. */}
 }
 static void Closed(Delegate* self,Menu* menu) {
+    history::HookDiagnosticScope diagnostic(history::diagnostics::Phase::MenuClosed);
     MenuReference reference(menu);
     if(Self(self)->CapableCached(menu) && MenuMethods::IndexOf(menu,root_id)>=0) Self(self)->opening.Close();
     Self(self)->ClearValidation();
@@ -392,6 +397,7 @@ static void Closed(Delegate* self,Menu* menu) {
     if(original && original->closed)original->closed(original,reference.Take());
 }
 static int Format(Delegate* self,Menu* menu,String* label) {
+    history::HookDiagnosticScope diagnostic(history::diagnostics::Phase::MenuFormat);
     MenuReference reference(menu);
     auto* o=Self(self)->original;int changed=0;
     try {
@@ -441,6 +447,7 @@ static int Format(Delegate* self,Menu* menu,String* label) {
     return changed;
 }
 static Menu* Hook(Delegate* delegate) {
+    history::HookDiagnosticScope diagnostic(history::diagnostics::Phase::MenuCreate);
     auto callback=menu_callbacks.Enter();
     if(!delegate || !cef_menu::SupportsDelegate(delegate->base.size) ||
        !Executable(reinterpret_cast<const void*>(delegate->base.add_ref)) ||

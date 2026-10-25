@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <string>
 #include "networking_summary.h"
+#include "hook_diagnostics.h"
 #include <atomic>
 namespace history {namespace {
 constexpr size_t cap=5*1024*1024;
@@ -78,6 +79,7 @@ static void WriteRecord(const Record& record,bool networking) noexcept {
 }
 static DWORD WINAPI Run(LPVOID) {
  for(;;) {
+  PollHookDiagnostics();
   Record record;
   bool got=Take(activity_queue,record);
   if(got)WriteRecord(record,false);
@@ -90,7 +92,7 @@ static DWORD WINAPI Run(LPVOID) {
    char line[120];std::snprintf(line,sizeof(line),"direction=local source=logger observations_omitted=%lu",omitted);
    QueueNetworkingDiagnostic(line);
   }
-  if(!got&&!network)WaitForSingleObject(signal,1000);
+  if(!got&&!network)WaitForSingleObject(signal,HookDiagnosticsEnabled()?500:1000);
  }
 }
 }

@@ -1028,3 +1028,53 @@ also passed. No full suite or test rerun ran; existing vendor warnings were
 visible. `bash build-native.sh` then passed for the production DLL/launcher.
 The quieter build was not installed, preserving the active playback test;
 no live timing-reduction result is claimed by this gate.
+
+
+## Opt-in activity diagnostics and launcher architecture preflight
+
+`DebugHookDiagnostics=0` defaults off. With `DebugNetworking=1`, `Log=1` and
+`DebugLog=1`, setting it to `1` before a full restart enables bounded numeric
+menu/startup activity scopes and capture-worker progress sampling. Producers
+use 32 fixed slots and lock-free integer atomics, never allocating or writing
+logs in these scopes. Existing hooks/CEF callbacks still run normally; no new
+hook, thread, exception handler, thread suspension or memory dump is introduced.
+The existing logger worker reports completed spans >=10 ms, sampled spans still
+active >=250 ms, capture progress gaps >=1 s and recovery. Pending/stall reports
+repeat at most every 5 s and diagnostic-slot omissions are counted. These are
+wall-clock observations, not CPU profiling or proof of a pause cause. Logger,
+storage or whole-process stalls can delay/prevent reports. UI-thread and live
+interleaving behavior have not been validated on Spotify for this revision.
+
+The launcher now inspects both adjacent executable/DLL headers before stopping
+existing Spotify processes. Unsupported x86/ARM64 architectures and bounded
+header/read failures get specific errors. It requires complete architecture-
+specific optional-header reads and a present declared header/section-table
+extent; this is an architecture/header preflight, not full Windows loader or
+Spotify ABI compatibility validation. Automatic DLL mode also requires x64
+Spotify, but an incompatible DLL cannot run its own error-reporting code.
+
+`bash test-deep-diagnostics.sh` **passed once** after static review: deterministic
+short/slow/pending scope timing, repeat suppression, completed-slot reuse,
+stale-token rejection, bounded overflow, backwards-finish handling, progress-gap
+recovery, all diagnostic prerequisites/opt-out, scope `LastError` preservation,
+Unicode/missing-key settings persistence, and synthetic x86/ARM64/truncated/
+undersized PE rejection. Mixed-architecture `Launch()` cases fail before process
+control; no Spotify process or network operation was executed. Review identified
+an undersized optional-header acceptance path and incomplete fixtures; both were
+corrected before that single test execution. No test rerun/full suite occurred.
+Existing playback/capture/CEF suites were not rerun for this change.
+
+Both previously installed and prior built DLL imports were inspected: Windows
+system libraries, including `msvcrt.dll`, with no separate VCRUNTIME/MSVCP/GCC
+runtime DLL import. Build flags statically link libgcc/libstdc++ and do not request
+host-native/Intel-specific instruction extensions. This does not establish
+cross-machine compatibility or explain the issue reporter's startup failure.
+The targeted gate passed before one final static heartbeat-placement correction:
+worker progress now also advances after each processed decoder event, preventing
+an uninterrupted queue drain from looking stalled. That placement correction
+was not retested, respecting the one-execution limit. The production DLL/launcher
+build passed before and after it; final imports still contain no separate VC/GCC
+runtime DLL. Existing vendor warnings were left visible. The new activity timer
+uses Windows tick-count wall time with its native clock resolution; thresholds
+are approximate reporting cutoffs, not microsecond profiling or acceptance rules.
+This revision has not been installed; existing local test playback is preserved.

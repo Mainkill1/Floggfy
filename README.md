@@ -91,6 +91,27 @@ and enrichment observations require the metadata collector. Unsupported native
 layouts leave the decoded observer disabled without disabling capture. These are
 summaries of the observed paths, not a dump of all Spotify network traffic.
 
+For additional timing investigation, set `DebugHookDiagnostics=1` alongside
+`DebugNetworking=1`, `Log=1` and `DebugLog=1`, then restart. This default-off mode
+records slow menu callbacks and startup-hook activity, plus capture-worker
+progress gaps, in the networking log. Callback scopes record bounded numeric
+state only; the existing logger worker reports it. Completed scopes below 10 ms
+are silent; pending scopes at least 250 ms and capture progress gaps at least
+one second are sampled, with repeat warnings limited to every five seconds.
+Sampling can be delayed by logger/storage/process stalls. It does not capture
+stacks or memory, install crash handlers, suspend threads or diagnose the cause
+of a pause. Set `DebugHookDiagnostics=0` and restart to disable these extra
+measurements; `DebugNetworking=0` disables the entire deep diagnostic system.
+
+Both DLL installation modes require **x64 Spotify**. Our DLL has statically
+linked GCC/C++ runtimes and does not require a separate Visual C++
+Redistributable. The x64 build supports Intel and AMD x64 processors; PE's
+`AMD64` architecture name does not mean AMD-only. x86 (32-bit) and native ARM64
+Spotify are unsupported. The launcher checks both adjacent binary headers before
+stopping an existing Spotify process and reports incompatible architecture or
+header-read errors. This is a header/architecture check, not full loader or
+cross-version compatibility validation.
+
 After a successful download, **Latest Downloads** appears directly below **Save Location**.
 It lists up to ten recently saved songs from this Spotify run; click one to open
 Explorer at its saved folder.
