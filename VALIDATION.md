@@ -962,3 +962,47 @@ passed with existing vendor warnings visible. The older network-option fixture h
 rerun. Neither source-level review nor a synthetic callback establishes live
 hook safety, sender authenticity, successful execution or cross-version support.
 RC1's assets/tag and the running installation are unchanged.
+
+
+## Separate deep networking diagnostics (post-RC1)
+
+`DebugNetworking=0` is the default-off, restart-only master switch for the native
+decoded Connect hook and `Floggfy-networking.log`. Enabling it also requires
+`Log=1` and `DebugLog=1`. It supersedes the unshipped `DebugConnectMessages`
+option, which remains inert if retained as an unknown key in an old INI.
+The native observer/caller filters and unchanged original command forwarding
+remain. Known client state/local action summaries, native request summaries,
+our enrichment request/results and numeric capture/timing context go into a
+separate bounded queue on the existing logger worker. Neither raw messages,
+media, credentials, URLs nor real device identifiers are written. Renderer
+input must match exact field/value allowlists. UTC milliseconds, monotonic
+time, process/sequence numbers, operation IDs and anonymous sender labels
+support correlation; they do not establish command execution or pause causality.
+Each log retains at most 5 MiB by removing oldest whole lines. Queue losses
+are counted. Unsupported/unobserved paths stay unknown.
+
+`bash test-networking-log.sh SPOTIFY_DLL` **passed in one combined execution**:
+actual Windows file writing and whole-line eviction, default/missing/explicit
+settings, inert old-key behavior, Unicode/unknown-section persistence, master
+opt-out, logger queue isolation/contention/overflow accounting, timestamps,
+strict field rejection, bounded JSON/capability checks against a statically
+mapped Spotify 1.3.6.1921 DLL, fake callback argument/AL/LastError preservation,
+and Node enrichment request/result/status/latency, privacy, cached Connect,
+local-action cleanup and unchanged-paused-state cases. No Spotify DLL was
+executed or injected by this gate; no network request or playback command was
+sent. The earlier idle-drain optimization is now exercised by this combined
+gate's queue-draining fixture. No full suite or test rerun was performed.
+
+`bash build-native.sh` **passed** afterward for the production DLL and launcher.
+Existing vendor warnings remained visible. Independent static review found two
+fixture problems (shared INI directory and missing `wmain` return), corrected
+before the single test execution, and no production blocker. The only subsequent
+changes were documentation.
+
+The prior decoded-observer revision was installed on Spotify 1.3.6.1921 and
+reported observer activation and a responsive window. This new separate-log
+revision has **not been installed or live-tested**. Actual remote request
+receipts, artwork HTTP failure timing, prolonged playback, other Spotify/Windows
+versions and pause causality remain unverified. Earlier sections above describe
+historical builds and their limitations. RC1's tag/assets and the running
+installation are unchanged by this revision; no merge or release was performed.

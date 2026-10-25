@@ -382,7 +382,7 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
     history::InitSettings(proxy_module);
     const auto startup_settings=history::GetSettings();
     const bool network_patch_enabled=startup_settings.network_patch;
-    const bool decoded_messages_enabled=startup_settings.debug_connect_messages;
+    const bool decoded_messages_enabled=startup_settings.debug_networking;
     Log(network_patch_enabled?"NetworkPatch=1; legacy network compatibility patch enabled":
         "NetworkPatch=0; network compatibility hooks disabled");
     Log("version.dll proxy loaded; no Windows settings or signed files changed");

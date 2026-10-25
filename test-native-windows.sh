@@ -79,7 +79,8 @@ location=subprocess.check_output(['wslpath','-w',str(fixture/'Media')],text=True
 PYFIXTURE
 "$floggfy_test_root/windows-startup-test.exe" "$(wslpath -w "$floggfy_test_root/startup-fixture")"
 
-x86_64-w64-mingw32-g++ "${common[@]}" tests/album_artwork_test.cpp native/album_artwork.cpp native/image_info.cpp -lwinhttp -o "$floggfy_test_root/album-artwork-test.exe"
+x86_64-w64-mingw32-g++ "${common[@]}" tests/album_artwork_test.cpp native/album_artwork.cpp native/image_info.cpp \
+ native/async_log.cpp native/history_settings.cpp -lole32 -luuid -lshell32 -lwinhttp -o "$floggfy_test_root/album-artwork-test.exe"
 "$floggfy_test_root/album-artwork-test.exe"
 
 # Keep defaults fixtures separate from the other tests' explicit settings.

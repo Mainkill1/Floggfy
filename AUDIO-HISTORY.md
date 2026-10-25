@@ -27,7 +27,7 @@ UpdateExistingMetadata=1
 Log=1
 DebugLog=0
 DebugConnect=1
-DebugConnectMessages=0
+DebugNetworking=0
 
 [History]
 MaxBufferedMiB=500
@@ -61,14 +61,27 @@ MaxBufferedMiB=500
 - **Log:** default on; started/failed/finished activity in the save root, capped at 5 MiB.
 - **DebugLog:** default off; opt-in diagnostic detail in the same bounded log.
 - **DebugConnect:** default `1`, active only with `Log=1`, `DebugLog=1` and
-  `Metadata=1`. Set `0` and restart to disable cached Connect target observations
-  and the passive local client action observer. No device discovery, playback
+  `Metadata=1`. Set `0` and restart to disable basic cached Connect observations
+  and the passive local client action observer. Deep `DebugNetworking=1` also
+  enables these observations for its own log. No device discovery, playback
   transfer or additional network request is performed.
-- **DebugConnectMessages:** experimental INI-only, default `0`. Requires `Log=1`
-  and `DebugLog=1`; fully restart after changing it. Observes complete decoded
-  incoming Connect requests, including pause/resume, without changing, suppressing
-  or replaying them. It is independent of `Metadata` and `NetworkPatch`. Client
-  layouts that fail capability checks leave this observer unavailable.
+- **DebugNetworking:** deep diagnostics, default `0`. With `Log=1`, `DebugLog=1`
+  and a full restart, enables the read-only native decoded Connect observer and
+  separate `Floggfy-networking.log`. Set `0` and restart to disable both, even if
+  the previous experimental `DebugConnectMessages` key remains in an old INI.
+  Known incoming commands, local control requests, client playback/error changes,
+  numeric capture/timing observations and our enrichment request/results are
+  summarized. UTC milliseconds, monotonic time, process/sequence numbers and
+  anonymous peers allow correlation; receipt does not prove command execution
+  or identify a pause's cause. Raw payloads, media, credentials, URLs and real
+  device identifiers are excluded. Renderer summaries accept exact field/value
+  allowlists. The separate queue is bounded to 128 records; overflow/contention
+  omissions are counted. The existing logging worker writes both logs fairly;
+  each file is capped at 5 MiB and evicts oldest whole lines. Capture callbacks
+  never perform log-file I/O. Native observation is independent of `Metadata`
+  and `NetworkPatch`; client/enrichment coverage requires `Metadata=1`.
+  Unsupported layouts disable native observation; unobserved traffic remains
+  unknown. There is no general packet/TLS dump or command modification.
 - **MaxBufferedMiB:** 8–512 MiB, default 500, limits compressed capture allocations.
   There is also an approximately 8 MiB event queue, artwork, and a temporary
   completed-file buffer during native tagging. Oversized tracks are discarded.
@@ -192,7 +205,9 @@ are not invented. Audio targets are discovered from invariant decoder instructio
 and Windows x64 function metadata; missing or ambiguous matches disable capture.
 Menu integration checks its supported CEF version and structure sizes.
 
-Activity and opt-in diagnostics are in `Floggfy.log` in the selected save root.
+Activity and ordinary opt-in diagnostics are in `Floggfy.log` in the selected save
+root. Deep `DebugNetworking` observations use `Floggfy-networking.log` there;
+known client/Connect summaries move to that file while deep diagnostics are on.
 Periodic debug status is emitted only during observed playback. Paused or stale
 media snapshots suppress that heartbeat; other diagnostics and activity remain.
 With `DebugLog=1`, transitions include the raw Windows playback state, timeline
@@ -257,10 +272,9 @@ observation is normally unknown with `NetworkPatch=0`, since the NLM hook is not
 installed. It does not perform another network request or establish that Spotify's audio service
 is reachable. A pause observation does not identify its initiator; neither a
 coverage rejection nor a client flag proves corrupted audio, a remote command,
-a service outage or a process crash. These diagnostics add no playback controls,
-new Spotify binary targets or exception handlers.
-At 5 MiB, the log removes the oldest complete lines to make room for each new
-entry. Logging and INI persistence use separate workers.
+a service outage or a process crash. These read-only diagnostics add no playback controls or exception handlers.
+At 5 MiB, each log removes the oldest complete lines to make room for new
+entries. Logging and INI persistence use separate workers.
 Completed saves log the captured audio format/quality and final tagged file size
 in MiB and bytes. Upgrade, metadata-only update, skipped-file, changed-setting and
 failure outcomes are distinct. Equal/better existing audio is identified only

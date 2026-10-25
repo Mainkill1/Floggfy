@@ -31,27 +31,27 @@ bool Has(const char* text) {
     return false;
 }
 void DecodedSettings() {
-    assert(!history::Settings{}.debug_connect_messages);
+    assert(!history::Settings{}.debug_networking);
     wchar_t executable[32768];assert(GetModuleFileNameW(nullptr,executable,32768));
     const std::wstring exe=executable,ini=exe.substr(0,exe.find_last_of(L'\\'))+L"\\SpotifyHistory.ini";
     assert(history::CreateDefaultIni(ini));history::Settings parsed;
-    assert(!history::ReadDecodedConnectOption(parsed,ini)&&!parsed.debug_connect_messages);
-    assert(WritePrivateProfileStringW(L"To Disk",L"DebugConnectMessages",L"1",ini.c_str()));
-    assert(!history::ReadDecodedConnectOption(parsed,ini)&&parsed.debug_connect_messages);
-    assert(WritePrivateProfileStringW(L"To Disk",L"DebugConnectMessages",nullptr,ini.c_str()));
-    assert(history::ReadDecodedConnectOption(parsed,ini)&&!parsed.debug_connect_messages);
+    assert(!history::ReadNetworkingOption(parsed,ini)&&!parsed.debug_networking);
+    assert(WritePrivateProfileStringW(L"To Disk",L"DebugNetworking",L"1",ini.c_str()));
+    assert(!history::ReadNetworkingOption(parsed,ini)&&parsed.debug_networking);
+    assert(WritePrivateProfileStringW(L"To Disk",L"DebugNetworking",nullptr,ini.c_str()));
+    assert(history::ReadNetworkingOption(parsed,ini)&&!parsed.debug_networking);
     assert(WritePrivateProfileStringW(L"Other",L"Keep",L"\u97f3\u697d",ini.c_str()));
-    history::InitSettings(nullptr);assert(!history::GetSettings().debug_connect_messages);
-    assert(history::FlushSettings(5000)&&GetPrivateProfileIntW(L"To Disk",L"DebugConnectMessages",9,ini.c_str())==0);
-    {history::ExclusiveSrw guard(history::lock);history::settings.debug_connect_messages=true;}
+    history::InitSettings(nullptr);assert(!history::GetSettings().debug_networking);
+    assert(history::FlushSettings(5000)&&GetPrivateProfileIntW(L"To Disk",L"DebugNetworking",9,ini.c_str())==0);
+    {history::ExclusiveSrw guard(history::lock);history::settings.debug_networking=true;}
     const auto epoch=history::CaptureEpoch();assert(history::SetLyrics(false)&&history::FlushSettings(5000));
-    assert(GetPrivateProfileIntW(L"To Disk",L"DebugConnectMessages",9,ini.c_str())==1&&history::CaptureEpoch()==epoch);
+    assert(GetPrivateProfileIntW(L"To Disk",L"DebugNetworking",9,ini.c_str())==1&&history::CaptureEpoch()==epoch);
     wchar_t kept[16];assert(GetPrivateProfileStringW(L"Other",L"Keep",L"",kept,16,ini.c_str())==2&&std::wstring(kept)==L"\u97f3\u697d");
 }
 void CallbackBoundary() {
     using namespace history;
     decoded_original=NativeParse;decoded_plain_return=0x1111;decoded_compressed_return=0x2222;
-    decoded_enabled.store(true);InterlockedExchange(&debug_enabled,1);InterlockedExchange(&log_enabled,1);
+    decoded_enabled.store(true);InterlockedExchange(&networking_enabled,1);InterlockedExchange(&debug_enabled,1);InterlockedExchange(&log_enabled,1);
     const std::string pause=R"({"message_id":5,"sent_by_device_id":"PRIVATE_SENDER_A","command":{"endpoint":"pause","logging_params":{"token":"PRIVATE_TOKEN"}}})";
     const auto original_bytes=pause;
     TestString input(pause);const auto before=input;unsigned output=0;
@@ -88,6 +88,9 @@ void CallbackBoundary() {
     assert(ForwardDecodedCall(&output,&input,decoded_plain_return)==1);
     ReleaseSRWLockExclusive(&decoded_lock);DrainDecodedConnectMessages();assert(Has("observations omitted=1"));
     decoded_lines.clear();decoded_enabled.store(false);
+    InterlockedExchange(&networking_enabled,0);
+    StartDecodedConnectMessages(reinterpret_cast<HMODULE>(1),true);
+    assert(decoded_init.State()==hooks::InitState::Waiting);
     const auto prior=decoded_init.State();StartDecodedConnectMessages(reinterpret_cast<HMODULE>(1),false);
     assert(decoded_init.State()==prior); // Default off never inspects even an invalid module.
 }
@@ -116,6 +119,7 @@ void RealDiscovery(const wchar_t* path) {
 namespace history {
 void StartLogger(){}
 void QueueDiagnostic(const char* text){decoded_lines.emplace_back(text);}
+void QueueNetworkingDiagnostic(const char* text) noexcept {decoded_lines.emplace_back(text);}
 void LogActivity(const char*,const std::string&){}
 }
 int wmain(int argc,wchar_t** argv) {

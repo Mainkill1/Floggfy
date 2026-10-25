@@ -60,20 +60,36 @@ remains unconfirmed.
 
 For playback troubleshooting, `Log=1` and `DebugLog=1` enable diagnostic logging.
 `DebugConnect=1` additionally records cached playback-device changes and local
-client control requests; set it to `0` to disable those observations. Device names
+client control requests; set it to `0` to disable those basic observations outside
+deep diagnostic mode. Device names
 and IDs are omitted. Playback on this PC can still be controlled by a phone:
 `target=local` describes where audio plays, while an unavailable command sender
 remains `initiator=unknown`. This does not identify a remote Pause sender.
 These client observations require `Metadata=1`; restart after INI edits.
 
-Experimental incoming Connect-message logging is available separately through
-`DebugConnectMessages=1`, with `Log=1` and `DebugLog=1`, after a full restart.
-It defaults off and observes complete decoded requests without changing them.
-Logs include an allowlisted action, message ID and anonymous sender label; a
-received Pause request is separate from an observed playback pause. This native
-observer does not require the metadata collector or the network compatibility
-patch. An unsupported client layout leaves it disabled. Live hook behavior has
-not yet been validated.
+Deep networking diagnostics are separately controlled by **`DebugNetworking=0`**
+under `[To Disk]`. Set `DebugNetworking=1`, `Log=1` and `DebugLog=1`, then fully
+restart Spotify to enable the read-only decoded Connect hook and
+**`Floggfy-networking.log`** in your save location. Set `DebugNetworking=0` and
+restart to disable both. This replaces the earlier experimental
+`DebugConnectMessages` option; that older key no longer enables the hook.
+
+The separate log summarizes known incoming Connect commands, local client
+requests, playback/buffering/error changes, hook timing, and Floggfy's own
+metadata, lyrics and artwork request/results. It includes millisecond UTC,
+monotonic time, process/sequence numbers, operation IDs and anonymous peer labels.
+Enrichment `send` means an API dispatch attempt, and `rejected` is a local error
+observation. Local control requests are not proof of a network send; receipt is not command execution
+or proof of what caused a pause. Unobserved traffic remains unknown. Raw messages,
+media, credentials, URLs, device names and real device IDs are excluded. Renderer
+fields pass an exact allowlist. The log has its own bounded queue and 5 MiB cap;
+oldest complete lines are removed and queue omissions are reported. Unchanged
+paused states do not produce recurring entries.
+
+The native observer is independent of `Metadata` and `NetworkPatch`; client-state
+and enrichment observations require the metadata collector. Unsupported native
+layouts leave the decoded observer disabled without disabling capture. These are
+summaries of the observed paths, not a dump of all Spotify network traffic.
 
 After a successful download, **Latest Downloads** appears directly below **Save Location**.
 It lists up to ten recently saved songs from this Spotify run; click one to open

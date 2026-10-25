@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include "connect_messages_windows.h"
 #include "connect_message.h"
+#include "async_log.h"
 #include "history_settings.h"
 #include "spotify_hook_discovery.h"
 #include "hook_init_state.h"
@@ -104,7 +105,7 @@ __declspec(noinline) unsigned char ObserveDecodedCall(void* output,const void* i
     return result;
 }
 unsigned char ForwardDecodedCall(void* output,const void* input,std::uintptr_t caller) {
-    if(!decoded_enabled.load(std::memory_order_acquire)||!LoggingEnabled()||!DebugLoggingEnabled())
+    if(!decoded_enabled.load(std::memory_order_acquire)||!NetworkingLoggingEnabled())
         return decoded_original(output,input);
     if(caller==decoded_plain_return)return ObserveDecodedCall(output,input,MessageSource::Plain);
     if(caller==decoded_compressed_return)return ObserveDecodedCall(output,input,MessageSource::Decompressed);
@@ -144,14 +145,14 @@ std::size_t MappedConnectImageSize(HMODULE module) noexcept {
 }
 }
 void StartDecodedConnectMessages(HMODULE spotify_module,bool requested) noexcept {
-    if(!requested||!LoggingEnabled()||!DebugLoggingEnabled())return;
+    if(!requested||!NetworkingLoggingEnabled())return;
     const auto now=static_cast<std::uint64_t>(GetTickCount64());
     if(!decoded_init.TryBegin(now))return;
     spotify::ConnectDecodeTargets found{};
     const auto size=MappedConnectImageSize(spotify_module);
     const auto result=spotify::DiscoverConnectDecodeTargets(reinterpret_cast<const std::uint8_t*>(spotify_module),size,found);
     if(result!=spotify::DiscoveryResult::Found) {
-        HistoryLog("decoded Connect observer unavailable: message layout not verified; commands unchanged");
+        QueueNetworkingDiagnostic("decoded Connect observer unavailable: message layout not verified; commands unchanged");
         decoded_init.MarkUnsupported();return;
     }
     const auto initialized=MH_Initialize();
@@ -176,10 +177,10 @@ void StartDecodedConnectMessages(HMODULE spotify_module,bool requested) noexcept
         // Keep our one created trampoline and module reference. Even an unusual
         // partial activation cannot race a freed trampoline; do not retry/stack.
         decoded_init.MarkUnsupported();
-        HistoryLog("decoded Connect observer unavailable: activation incomplete; observation disabled");return;
+        QueueNetworkingDiagnostic("decoded Connect observer unavailable: activation incomplete; observation disabled");return;
     }
     decoded_init.Activate();
-    HistoryLog("decoded Connect observer active: complete messages only; read-only; pause/resume receipt is not execution");
+    QueueNetworkingDiagnostic("decoded Connect observer active: complete messages only; read-only; pause/resume receipt is not execution");
 }
 namespace {
 __declspec(noinline) void DrainPendingDecodedConnectMessages() noexcept {
@@ -187,8 +188,8 @@ __declspec(noinline) void DrainPendingDecodedConnectMessages() noexcept {
         DecodedRecord record;
         if(!PopDecodedRecord(record))break;
         try {
-            if(LoggingEnabled()&&DebugLoggingEnabled()) {
-                char line[350];const auto* source=record.source==MessageSource::Plain?"plain":"decompressed";
+            if(NetworkingLoggingEnabled()) {
+                char line[420];const auto* source=record.source==MessageSource::Plain?"plain":"decompressed";
                 ConnectMessage message;
                 if(record.json_result==1&&record.copy==CopyState::Copied&&
                    SummarizeConnectMessage({record.bytes.data(),record.length},message)) {
@@ -197,19 +198,19 @@ __declspec(noinline) void DrainPendingDecodedConnectMessages() noexcept {
                     if(label)std::snprintf(sender,sizeof(sender),"peer-%u",label);else std::snprintf(sender,sizeof(sender),"unknown");
                     if(message.has_message_id)std::snprintf(id,sizeof(id),"%u",message.message_id);else std::snprintf(id,sizeof(id),"unknown");
                     std::snprintf(line,sizeof(line),
-                        "Connect decoded request action=%s message_id=%s sender=%s mono=%.3f source=%s json_ok=1 execution=unobserved",
+                        "direction=in service=connect Connect decoded request action=%s message_id=%s sender=%s mono=%.3f source=%s json_ok=1 execution=unobserved",
                         ConnectActionName(message.action),id,sender,double(record.observed_ms)/1000.0,source);
                 } else std::snprintf(line,sizeof(line),
-                    "Connect decoded observation mono=%.3f source=%s json_result=%u copy=%s summary=unavailable; commands unchanged",
+                    "direction=in service=connect Connect decoded observation mono=%.3f source=%s json_result=%u copy=%s summary=unavailable; commands unchanged",
                     double(record.observed_ms)/1000.0,source,unsigned(record.json_result),CopyReason(record.copy));
-                HistoryLog(line);
+                QueueNetworkingDiagnostic(line);
             }
         }catch(...) {/* An enrichment allocation must not terminate the startup worker. */}
         SecureZeroMemory(&record,sizeof(record));
     }
     const auto omitted=decoded_omitted.exchange(0,std::memory_order_relaxed);
-    if(omitted&&LoggingEnabled()&&DebugLoggingEnabled()) {
-        char line[120];std::snprintf(line,sizeof(line),"Connect decoded observations omitted=%lu; commands unchanged",omitted);HistoryLog(line);
+    if(omitted&&NetworkingLoggingEnabled()) {
+        char line[120];std::snprintf(line,sizeof(line),"Connect decoded observations omitted=%lu; commands unchanged",omitted);QueueNetworkingDiagnostic(line);
     }
 }
 }

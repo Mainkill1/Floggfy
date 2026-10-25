@@ -24,4 +24,5 @@ int main(){
  assert(!WriteCappedLog(path,std::string(5*1024*1024+1,'x')));
  assert(!WriteCappedLog(path+L"\\missing","failed test\r\n"));
  DeleteFileW(path.c_str());puts("PASS: actual Windows log oldest-line eviction, oversized record and unwritable destination");
+ return 0;
 }

@@ -9,6 +9,7 @@
 #include "metadata_bridge.h"
 #include "playback_quality.h"
 #include "async_log.h"
+#include <string_view>
 #include "bounded_queue.h"
 #include "srw_guard.h"
 #include "connectivity_diagnostics.h"
@@ -82,6 +83,16 @@ size_t memory_limit=500*1024*1024;
 static double Now() { return double(GetTickCount64())/1000.0; }
 static void Log(const char* message) {
     HistoryLog(message);
+    // Numeric/static worker diagnostics only; never mirror song names, audio,
+    // metadata payloads or filesystem paths into the networking log.
+    if(NetworkingLoggingEnabled()) {
+        const std::string_view text(message);
+        for(const auto prefix:{"playback observation=","FLAC native result ","FLAC observation ",
+            "hook timing ","network observation=","native-read continue-with-zero-bytes ",
+            "Spotify media snapshot unavailable or stale;"}) {
+            if(text.substr(0,std::strlen(prefix))==prefix){QueueNetworkingDiagnostic(message);break;}
+        }
+    }
 }
 // Hooks only record numeric counters/POD events. Formatting and disk queuing
 // belong to the worker. Independent exchanges make interval metrics approximate

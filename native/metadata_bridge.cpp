@@ -11,6 +11,7 @@
 #include "album_artwork.h"
 #include "image_info.h"
 #include "history_settings.h"
+#include "async_log.h"
 #include "srw_guard.h"
 #include "vendor/minhook/include/MinHook.h"
 #include "../build/metadata_script.h"
@@ -66,7 +67,8 @@ static std::wstring CollectorOptions() {
  return std::wstring(L"window.__floggfyConfig={metadata:")+(settings.metadata?L"true":L"false")+
   L",lyrics:"+(settings.lyrics?L"true":L"false")+
   L",debug:"+(settings.debug_log?L"true":L"false")+
-  L",connect:"+(settings.debug_connect&&settings.log?L"true":L"false")+L"};";
+  L",connect:"+((settings.debug_connect||settings.debug_networking)&&settings.log?L"true":L"false")+
+  L",networking:"+(NetworkingLoggingEnabled()?L"true":L"false")+L"};";
 }
 static void PollExecute(Task*) {
  Frame* frame=nullptr;
@@ -239,7 +241,13 @@ static bool CurrentPlayback(const String* text) {
 static int Console(Display* self,Browser* b,int level,const String* text,const String* source,int line) {
  auto callback=metadata_callbacks.Enter();
  if(CurrentPlayback(text)){Release(b);return 1;}
- if(text&&text->length<100&&text->length>=15&&wmemcmp(text->str,L"FLOGGFY_STATUS:",15)==0){
+ if(text&&text->str&&text->length<160&&text->length>=19&&wmemcmp(text->str,L"FLOGGFY_NETWORK_V1:",19)==0) {
+  if(NetworkingLoggingEnabled()) {
+   std::wstring summary(text->str,text->length);QueueDiagnostic(Utf8(summary).c_str());
+  }
+  Release(b);return 1;
+ }
+ if(text&&text->str&&text->length<100&&text->length>=15&&wmemcmp(text->str,L"FLOGGFY_STATUS:",15)==0){
   std::wstring status(text->str,text->length);HistoryLog(Utf8(status).c_str());Release(b);return 1;
  }
  if(Enqueue(text)){Release(b);return 1;}

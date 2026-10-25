@@ -4,6 +4,10 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <winhttp.h>
+#include "async_log.h"
+#include "history_settings.h"
+#include <atomic>
+#include <cstdio>
 #endif
 namespace history {
 bool IsAlbumArtworkUrl(const std::string& url){
@@ -43,26 +47,69 @@ bool AlbumArtworkCache::Get(const std::string& uri,std::vector<uint8_t>& bytes,s
 }
 static bool Fetch(const std::string& url,std::vector<uint8_t>& bytes){
 #ifdef _WIN32
+    // This observes only Floggfy's own fixed-host request. Never log the URL,
+    // response bytes, headers, cookies or user identifiers.
+    struct Observation {
+        bool active=NetworkingLoggingEnabled(),complete=false;
+        DWORD status=0,failure=0;
+        const char* stage="session";
+        ULONGLONG started=0;
+        unsigned long operation=0;
+        void Emit(const char* direction,const char* phase,DWORD error) const noexcept {
+            char line[240];std::snprintf(line,sizeof(line),
+                "direction=%s source=enrichment service=artwork op=%lu phase=%s stage=%s code=%lu winerr=%lu elapsed_ms=%llu",
+                direction,operation,phase,stage,status,error,GetTickCount64()-started);
+            QueueNetworkingDiagnostic(line);
+        }
+        bool Fail() noexcept {failure=GetLastError();return false;}
+        Observation() {
+            if(!active)return;
+            const auto error=GetLastError();
+            static std::atomic<unsigned long> next{0};
+            operation=next.fetch_add(1,std::memory_order_relaxed)+1;started=GetTickCount64();
+            Emit("local","prepare",0);SetLastError(error);
+        }
+        ~Observation() {
+            if(!active)return;
+            const auto error=GetLastError();
+            Emit(status?"in":"local",complete?"complete":"failed",failure);
+            SetLastError(error);
+        }
+    } observation;
     struct Handle {HINTERNET h=nullptr;~Handle(){if(h)WinHttpCloseHandle(h);}};
     Handle session{WinHttpOpen(L"Floggfy artwork",WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,WINHTTP_NO_PROXY_NAME,WINHTTP_NO_PROXY_BYPASS,0)};
-    if(!session.h)return false;
-    if(!WinHttpSetTimeouts(session.h,2000,2000,2000,2000))return false;
+    if(!session.h)return observation.Fail();
+    observation.stage="timeouts";
+    if(!WinHttpSetTimeouts(session.h,2000,2000,2000,2000))return observation.Fail();
+    observation.stage="connect";
     Handle connection{WinHttpConnect(session.h,L"i.scdn.co",INTERNET_DEFAULT_HTTPS_PORT,0)};
+    if(!connection.h)return observation.Fail();
+    observation.stage="open-request";
     // Keep the exact validated /image/ path; never follow a server redirect.
     std::wstring path(url.begin()+17,url.end());
     Handle request{WinHttpOpenRequest(connection.h,L"GET",path.c_str(),nullptr,WINHTTP_NO_REFERER,WINHTTP_DEFAULT_ACCEPT_TYPES,WINHTTP_FLAG_SECURE)};
-    if(!request.h)return false;
+    if(!request.h)return observation.Fail();
+    observation.stage="options";
     DWORD disabled=WINHTTP_DISABLE_COOKIES|WINHTTP_DISABLE_AUTHENTICATION|WINHTTP_DISABLE_REDIRECTS;
-    if(!WinHttpSetOption(request.h,WINHTTP_OPTION_DISABLE_FEATURE,&disabled,sizeof(disabled)))return false;
-    if(!WinHttpSendRequest(request.h,WINHTTP_NO_ADDITIONAL_HEADERS,0,WINHTTP_NO_REQUEST_DATA,0,0,0)||!WinHttpReceiveResponse(request.h,nullptr))return false;
+    if(!WinHttpSetOption(request.h,WINHTTP_OPTION_DISABLE_FEATURE,&disabled,sizeof(disabled)))return observation.Fail();
+    observation.stage="send";
+    if(!WinHttpSendRequest(request.h,WINHTTP_NO_ADDITIONAL_HEADERS,0,WINHTTP_NO_REQUEST_DATA,0,0,0))return observation.Fail();
+    if(observation.active)observation.Emit("out","sent",0);
+    observation.stage="receive";
+    if(!WinHttpReceiveResponse(request.h,nullptr))return observation.Fail();
+    observation.stage="http-status";
     DWORD status=0,size=sizeof(status);
-    if(!WinHttpQueryHeaders(request.h,WINHTTP_QUERY_STATUS_CODE|WINHTTP_QUERY_FLAG_NUMBER,WINHTTP_HEADER_NAME_BY_INDEX,&status,&size,WINHTTP_NO_HEADER_INDEX)||status!=200)return false;
+    if(!WinHttpQueryHeaders(request.h,WINHTTP_QUERY_STATUS_CODE|WINHTTP_QUERY_FLAG_NUMBER,WINHTTP_HEADER_NAME_BY_INDEX,&status,&size,WINHTTP_NO_HEADER_INDEX))return observation.Fail();
+    observation.status=status;
+    if(status!=200)return false;
     auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(8);
     uint8_t chunk[16384];DWORD read=0;
+    observation.stage="read";
     for(;;){
-        if(std::chrono::steady_clock::now()>deadline||!WinHttpReadData(request.h,chunk,sizeof(chunk),&read))return false;
-        if(!read)return !bytes.empty();
-        if(bytes.size()+read>4*1024*1024)return false;
+        if(std::chrono::steady_clock::now()>deadline){observation.stage="deadline";return false;}
+        if(!WinHttpReadData(request.h,chunk,sizeof(chunk),&read))return observation.Fail();
+        if(!read){observation.complete=!bytes.empty();return observation.complete;}
+        if(bytes.size()+read>4*1024*1024){observation.stage="size-limit";return false;}
         bytes.insert(bytes.end(),chunk,chunk+read);
     }
 #else

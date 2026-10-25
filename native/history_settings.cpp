@@ -18,7 +18,7 @@ static bool IsMusic(std::wstring root) {
     return !music_path.empty() && (_wcsicmp(root.c_str(),music_path.c_str())==0 ||
         _wcsicmp(root.c_str(),(music_path+L"\\Spotify").c_str())==0);
 }
-static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,aac_enabled=0,capture_epoch=0,log_enabled=1,debug_enabled=0;
+static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,aac_enabled=0,capture_epoch=0,log_enabled=1,debug_enabled=0,networking_enabled=0;
 static HANDLE settings_signal=nullptr,persist_done=nullptr;
 // A failed attempt is observable without acknowledging bytes never committed.
 static volatile LONG persisted_generation=-1,failed_generation=-1,persist_failed=0;
@@ -60,10 +60,13 @@ static constexpr char default_ini[]=
     "; With DebugLog=1, log playback-device changes and local client control requests.\r\n"
     "; Remote command senders may be unknown. Device names and IDs are not logged.\r\n"
     "DebugConnect=1\r\n"
-    "; Experimental read-only decoded Connect requests, including pause/resume.\r\n"
-    "; Requires Log=1 and DebugLog=1; restart. Default off; changes no commands.\r\n"
-    "; Logs action/message ID and anonymous sender labels, not raw messages.\r\n"
-    "DebugConnectMessages=0\r\n"
+    "; Deep read-only networking diagnostics; default off. Fully restart after edits.\r\n"
+    "; Requires Log=1 and DebugLog=1. 0 disables the decoded-message hook and this log.\r\n"
+    "; 1 writes Floggfy-networking.log in Save Location (5 MiB, oldest lines removed).\r\n"
+    "; Summarizes known Connect/control and enrichment I/O with timing for correlation.\r\n"
+    "; No raw messages, media, credentials, URLs, device names or device IDs are logged.\r\n"
+    "; Unobserved traffic and command execution remain unknown; no commands are changed.\r\n"
+    "DebugNetworking=0\r\n"
     "\r\n"
     "[History]\r\n"
     "; Maximum compressed audio held in RAM for one track.\r\n"
@@ -106,10 +109,10 @@ static bool ReadDebugConnectOption(Settings& target,const std::wstring& path) {
     target.debug_connect=GetPrivateProfileIntW(L"To Disk",L"DebugConnect",1,path.c_str())!=0;
     return !present;
 }
-static bool ReadDecodedConnectOption(Settings& target,const std::wstring& path) {
+static bool ReadNetworkingOption(Settings& target,const std::wstring& path) {
     wchar_t value[2]{};
-    const bool present=GetPrivateProfileStringW(L"To Disk",L"DebugConnectMessages",L"",value,2,path.c_str())!=0;
-    target.debug_connect_messages=GetPrivateProfileIntW(L"To Disk",L"DebugConnectMessages",0,path.c_str())!=0;
+    const bool present=GetPrivateProfileStringW(L"To Disk",L"DebugNetworking",L"",value,2,path.c_str())!=0;
+    target.debug_networking=GetPrivateProfileIntW(L"To Disk",L"DebugNetworking",0,path.c_str())!=0;
     return !present;
 }
 static bool ReachedGeneration(volatile LONG& progress,unsigned expected) {
@@ -133,7 +136,7 @@ static DWORD WINAPI PersistSettings(LPVOID) {
                 flag(L"UpdateExistingMetadata",snapshot.update_existing_metadata);
                 flag(L"NetworkPatch",snapshot.network_patch);
                 flag(L"DebugConnect",snapshot.debug_connect);
-                flag(L"DebugConnectMessages",snapshot.debug_connect_messages);
+                flag(L"DebugNetworking",snapshot.debug_networking);
                 flag(L"TrackNumberInFilename",snapshot.track_number_in_filename);
                 flag(L"ConvertNumberedFilenames",snapshot.convert_numbered_filenames && !snapshot.track_number_in_filename);
                 settings_file::Set(text,L"Save Location",snapshot.save_location);
@@ -200,7 +203,7 @@ void InitSettings(HMODULE proxy) {
     const bool filename_options_pending=ReadFilenameOptions(settings,ini);
     const bool network_option_pending=ReadNetworkPatchOption(settings,ini);
     const bool connect_option_pending=ReadDebugConnectOption(settings,ini);
-    const bool decoded_option_pending=ReadDecodedConnectOption(settings,ini);
+    const bool decoded_option_pending=ReadNetworkingOption(settings,ini);
     const bool startup_options_pending=filename_options_pending || network_option_pending || connect_option_pending || decoded_option_pending;
     settings.aac=GetPrivateProfileIntW(L"To Disk",L"AAC",0,ini.c_str())!=0;
     settings.metadata=GetPrivateProfileIntW(L"To Disk",L"Metadata",1,ini.c_str())!=0;
@@ -220,7 +223,7 @@ void InitSettings(HMODULE proxy) {
     if(raw[0] && length && length<=4096) {settings.root=expanded;settings.save_location=raw;}
     settings.music_folder=IsMusic(settings.root);
     downloads_enabled=settings.downloads; ogg_enabled=settings.ogg; flac_enabled=settings.flac; aac_enabled=settings.aac;
-    log_enabled=settings.log;debug_enabled=settings.debug_log;
+    log_enabled=settings.log;debug_enabled=settings.debug_log;networking_enabled=settings.debug_networking;
     settings_signal=CreateEventW(nullptr,FALSE,FALSE,nullptr);
     persist_done=CreateEventW(nullptr,FALSE,FALSE,nullptr);
     HANDLE thread=settings_signal&&persist_done ? CreateThread(nullptr,0,PersistSettings,nullptr,0,nullptr) : nullptr;
@@ -240,6 +243,7 @@ Settings GetSettings() {
 }
 bool LoggingEnabled() { return log_enabled!=0; }
 bool DebugLoggingEnabled() { return debug_enabled!=0; }
+bool NetworkingLoggingEnabled() { return networking_enabled!=0 && LoggingEnabled() && DebugLoggingEnabled(); }
 bool OggEnabled() { return downloads_enabled && ogg_enabled; }
 bool FlacEnabled() { return downloads_enabled && flac_enabled; }
 bool AACEnabled() { return downloads_enabled && aac_enabled; }

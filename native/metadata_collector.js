@@ -44,6 +44,17 @@
  let connectPrevious,connectPaused,connectPausedTarget,controlBinding,controlQueue=[],controlOmitted=0;
  function connectEnabled(){return own(options(),'debug')===true&&own(options(),'connect')===true;}
  function connectStatus(message){const line='FLOGGFY_STATUS:'+message;if(line.length<100)console.info(line);}
+ // Only our own enrichment operations: no transport monkey-patching, request
+ // URLs, credentials, response bodies or arbitrary exception messages.
+ let networkOperation=0;
+ function networking(){return own(options(),'debug')===true&&own(options(),'networking')===true;}
+ function networkStatus(op,kind,phase,status,started){
+  if(!op||!networking())return;
+  const code=Number.isSafeInteger(status)&&Math.abs(status)<=99999?status:'?';
+  const elapsed=Math.max(0,Math.min(3600000,Math.round(performance.now()-started)));
+  const line='FLOGGFY_NETWORK_V1:request op='+op+' kind='+kind+' phase='+phase+' code='+code+' elapsed_ms='+elapsed;
+  if(line.length<160)try{console.info(line);}catch{/* Diagnostic failures must not affect requests. */}
+ }
  function detachControls(){
   const binding=controlBinding;if(!binding)return true;
   if(!binding.active)return false; // Failed removal: retain at most one inert binding.
@@ -118,6 +129,7 @@
    if(r.pending&&(now-r.started>=12000||config.metadata!==true||(kind==='lyrics'&&config.lyrics===false))){
     // Expire only the logical operation. Abort may be unsupported or ignored;
     // its physical slot belongs to send() until that promise settles.
+    networkStatus(r.operation,kind,'expired',undefined,r.started);
     r.pending=false;r.generation++;try{if(r.controller)r.controller.abort();}catch{}
     r.retryAt=now+5000;if(config.metadata!==true||(kind==='lyrics'&&config.lyrics===false))r.attempts=Math.max(0,r.attempts-1);
    }
@@ -130,6 +142,8 @@
    const albumId=text(own(own(entry.metadata.data,'album'),'gid'));if(kind==='album'&&!/^[a-f0-9]{32}$/.test(albumId||''))continue;
    const hex=kind==='metadata'&&hexId(id);if(kind==='metadata'&&!hex)continue;
    r.pending=true;r.started=now;r.attempts++;r.generation=(r.generation||0)+1;const generation=r.generation;activeRequests++;
+   const operation=networking()?(networkOperation=networkOperation%1000000+1):0,started=now;
+   r.operation=operation;
    const settled=()=>{
     activeRequests--;
     if(r.generation===generation){r.pending=false;r.controller=undefined;}
@@ -138,11 +152,13 @@
     let request=method(builder,'build').call(builder);
     request=request.withHost('https://spclient.wg.spotify.com').withPath(kind==='metadata'?'/metadata/4/track/'+hex:kind==='album'?'/metadata/4/album/'+albumId:'/color-lyrics/v2/track/'+id).withQueryParameters({format:'json',vocalRemoval:false});
     if(typeof AbortController==='function'&&method(request,'withAbortSignal')){r.controller=new AbortController();request=request.withAbortSignal(r.controller.signal);}
+    networkStatus(operation,kind,'send',undefined,started);
     Promise.resolve(request.send()).then(response=>{
+     networkStatus(operation,kind,'response',own(response,'status'),started);
      if(r.generation!==generation)return;
      const data=own(response,'body');if(object(data)){r.data=kind==='album'?{album:data}:data;r.done=true;}else r.retryAt=performance.now()+5000;
-    },error=>{if(r.generation!==generation)return;const status=own(error,'status');r.done=status===400||status===401||status===403||status===404;r.retryAt=performance.now()+5000;}).then(settled,settled);
-   }catch{r.pending=false;activeRequests--;r.retryAt=now+5000;}
+    },error=>{const status=own(error,'status');networkStatus(operation,kind,'rejected',status,started);if(r.generation!==generation)return;r.done=status===400||status===401||status===403||status===404;r.retryAt=performance.now()+5000;}).then(settled,settled);
+   }catch{networkStatus(operation,kind,'setup_error',undefined,started);r.pending=false;activeRequests--;r.retryAt=now+5000;}
   }
  }
  function scan(){
