@@ -8,9 +8,12 @@
 #include <cstdio>
 #include <cstring>
 #include "audio_history.h"
+#include "connectivity_diagnostics.h"
+#include "connect_messages_windows.h"
 #include "hook_init_state.h"
 #include "hook_startup_minhook.h"
 #include "history_settings.h"
+#include "hook_diagnostics.h"
 #include "metadata_bridge.h"
 #include "module_pending.h"
 #include "pe_imports.h"
@@ -213,6 +216,7 @@ static HRESULT STDMETHODCALLTYPE ConnectionConnectivity(INetworkConnection* self
     Method original = Original<Method>(self, 10);
     if (!original) return E_UNEXPECTED;
     HRESULT result = original(self, out);
+    const DWORD observed_flags=SUCCEEDED(result)&&out?static_cast<DWORD>(*out):0;
     if (SUCCEEDED(result) && out && !(*out & (NLM_CONNECTIVITY_IPV4_INTERNET | NLM_CONNECTIVITY_IPV6_INTERNET))) {
         GUID adapter;
         if (SUCCEEDED(self->GetAdapterId(&adapter))) {
@@ -228,6 +232,11 @@ static HRESULT STDMETHODCALLTYPE ConnectionConnectivity(INetworkConnection* self
                 }
             }
         }
+    }
+    if(history::DebugLoggingEnabled()) {
+        const bool valid=SUCCEEDED(result)&&out;
+        history::RecordConnectivity({true,valid,static_cast<std::int32_t>(result),
+            observed_flags,valid?static_cast<DWORD>(*out):0,GetTickCount64()});
     }
     return result;
 }
@@ -328,7 +337,10 @@ static VOID CALLBACK DllNotification(ULONG reason, const NotificationData* data,
         pending_spotify.Publish(reinterpret_cast<std::uintptr_t>(data->base));
 }
 
-static void StartConnectivityHook(HMODULE module) {
+static void StartConnectivityHook(HMODULE module,bool enabled) {
+    // Restart-only: disabled startup performs no import discovery, IAT/vtable
+    // writes or retry work. Never try to detach live COM hooks during playback.
+    if(!enabled)return;
     // Delay-import resolution can replace an IAT slot after our first patch.
     // Keep verifying the live slots from this normal worker context; an
     // already-patched slot is a no-op and does not emit another log record.
@@ -369,6 +381,11 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
     if (register_notification) register_notification(0, DllNotification, nullptr, &notification_cookie);
 
     history::InitSettings(proxy_module);
+    const auto startup_settings=history::GetSettings();
+    const bool network_patch_enabled=startup_settings.network_patch;
+    const bool decoded_messages_enabled=startup_settings.debug_networking;
+    Log(network_patch_enabled?"NetworkPatch=1; legacy network compatibility patch enabled":
+        "NetworkPatch=0; network compatibility hooks disabled");
     Log("version.dll proxy loaded; no Windows settings or signed files changed");
     // Polling also covers clients that loaded Spotify.dll before notification
     // registration. Stay alive at low frequency so late loads and temporary
@@ -380,6 +397,7 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
         if(GetModuleHandleExW(0,L"libcef.dll",&cef)) {
             // Queue all initial observers before one suspension/resume. Enabling
             // either set separately can let CEF construct the other object first.
+            history::HookDiagnosticScope diagnostic(history::diagnostics::Phase::StartupHooks);
             hooks::StartTogether(
                 [&]{return history::PrepareMetadataCollector(cef);},
                 [&]{return PrepareToDiskMenu(cef);},
@@ -391,10 +409,15 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
         }
         HMODULE module;
         if (GetModuleHandleExW(0, L"Spotify.dll", &module)) {
-            StartConnectivityHook(module);
-            if (i >= 80) StartAudioHistory(module, proxy_module);
+            history::HookDiagnosticScope diagnostic(history::diagnostics::Phase::StartupHooks);
+            StartConnectivityHook(module,network_patch_enabled);
+            if (i >= 80) {
+                StartAudioHistory(module, proxy_module);
+                history::StartDecodedConnectMessages(module,decoded_messages_enabled);
+            }
             FreeLibrary(module);
         }
+        history::DrainDecodedConnectMessages();
         if(i==0)startup::SignalReady();
         Sleep(i < 600 ? 25 : 1000);
     }

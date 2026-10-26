@@ -5,7 +5,7 @@
  window.__floggfyMetadata=true;
  const prefix='FLOGGFY_METADATA_V1:',seenPayload=new Map(),records=[];
  const serviceCache=new Map();
- let builder,activeRequests=0;
+ let builder,activeRequests=0,connectDevices;
  let reported=false,player,root,queue=[],seen=new Set(),walked=0,lastPlayback='',playbackTime=-Infinity;
  function playback(data){
   const payload=Object.entries(data).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&');
@@ -19,6 +19,97 @@
  function remember(o){if(!records.includes(o)){if(records.length>=96)records.shift();records.push(o);}}
  function method(o,k){for(let i=0;object(o)&&i<4;i++,o=Object.getPrototypeOf(o)){const v=own(o,k);if(typeof v==='function')return v;}return undefined;}
  function options(){return own(window,'__floggfyConfig')||{};}
+ // Debug observations are raw local flags, never a diagnosis of their cause.
+ let debugPrevious;
+ function debugObservation(state,item){
+  if(own(options(),'debug')!==true||!object(state)||!object(item)){debugPrevious=undefined;return;}
+  const boolean=v=>typeof v==='boolean'?Number(v):'?';
+  const number=v=>Number.isSafeInteger(v)&&Math.abs(v)<=99999?v:'?';
+  const identity=v=>typeof v==='string'&&v.length>0&&v.length<=256?v:undefined;
+  const error=own(state,'error');
+  const current={paused:boolean(own(state,'isPaused')),buffer:boolean(own(state,'isBuffering')),
+   active:boolean(own(state,'isActiveDevice')),code:number(own(error,'code')??own(state,'errorCode')),
+   status:number(own(error,'status')??own(state,'errorStatus')),
+   instance:identity(own(state,'playbackId')),device:identity(own(own(state,'device'),'id'))};
+  if(debugPrevious&&Object.keys(current).every(key=>Object.is(current[key],debugPrevious[key])))return;
+  const changed=key=>current[key]===undefined?'?':debugPrevious&&debugPrevious[key]!==undefined?Number(current[key]!==debugPrevious[key]):0;
+  const message='FLOGGFY_STATUS:client obs paused='+current.paused+' buf='+current.buffer+' active='+current.active+
+   ' code='+current.code+' status='+current.status+' inst='+changed('instance')+' dev='+changed('device');
+  debugPrevious=current;
+  if(message.length<100)console.info(message);
+ }
+ // ConnectDevicesAPI supplies the playback target, not the sender of Pause.
+ // Observe only already-created services. Never discover/transfer devices or
+ // infer a remote command from the absence of a local client action.
+ let connectPrevious,connectPaused,connectPausedTarget,controlBinding,controlQueue=[],controlOmitted=0;
+ function connectEnabled(){return own(options(),'debug')===true&&own(options(),'connect')===true;}
+ function connectStatus(message){const line='FLOGGFY_STATUS:'+message;if(line.length<100)console.info(line);}
+ // Only our own enrichment operations: no transport monkey-patching, request
+ // URLs, credentials, response bodies or arbitrary exception messages.
+ let networkOperation=0;
+ function networking(){return own(options(),'debug')===true&&own(options(),'networking')===true;}
+ function networkStatus(op,kind,phase,status,started){
+  if(!op||!networking())return;
+  const code=Number.isSafeInteger(status)&&Math.abs(status)<=99999?status:'?';
+  const elapsed=Math.max(0,Math.min(3600000,Math.round(performance.now()-started)));
+  const line='FLOGGFY_NETWORK_V1:request op='+op+' kind='+kind+' phase='+phase+' code='+code+' elapsed_ms='+elapsed;
+  if(line.length<160)try{console.info(line);}catch{/* Diagnostic failures must not affect requests. */}
+ }
+ function detachControls(){
+  const binding=controlBinding;if(!binding)return true;
+  if(!binding.active)return false; // Failed removal: retain at most one inert binding.
+  binding.active=false;
+  try{binding.remove.call(binding.events,'action',binding.listener);controlBinding=undefined;return true;}catch{return false;}
+ }
+ function syncControls(){
+  if(controlBinding&&controlBinding.player===player&&controlBinding.active)return;
+  if(!detachControls()||!player)return;
+  try{
+   const getEvents=method(player,'getEvents');if(!getEvents)return;
+   const events=getEvents.call(player),add=method(events,'addListener'),remove=method(events,'removeListener');
+   if(!add||!remove)return;
+   const binding={player,events,remove,active:true};
+   binding.listener=event=>{
+    try{
+     if(!binding.active||!connectEnabled())return;
+     const action=own(own(event,'data'),'action');
+     if(!['play','pause','resume','skipToNext','skipToPrevious'].includes(action))return;
+     if(controlQueue.length<16)controlQueue.push(action);else controlOmitted=Math.min(1000000,controlOmitted+1);
+    }catch{/* A diagnostic observer must never affect command dispatch. */}
+   };
+   controlBinding=binding; // Own cleanup even if addListener throws after attaching.
+   try{add.call(events,'action',binding.listener);}catch{detachControls();}
+  }catch{/* Changed event APIs leave commands untouched. */}
+ }
+ function connectDiagnostics(state){
+  if(!connectEnabled()){
+   detachControls();connectDevices=undefined;connectPrevious=undefined;connectPaused=undefined;connectPausedTarget=undefined;
+   controlQueue=[];controlOmitted=0;return;
+  }
+  syncControls();
+  let cached;
+  try{const getter=method(connectDevices,'getConnectState');if(getter)cached=getter.call(connectDevices);}catch{}
+  const raw=own(cached,'connectionStatus'),device=own(cached,'activeDevice');
+  const status=typeof raw==='string'&&['NOT_CONNECTED','CONNECTING','CONNECTED','NO_DEVICES_AVAILABLE'].includes(raw)?
+   (raw==='NO_DEVICES_AVAILABLE'?'no_devices':raw.toLowerCase()):'unknown';
+  const local=own(device,'isLocal'),target=local===true?'local':local===false?'remote':'unknown';
+  const value=own(device,'id'),id=typeof value==='string'&&value.length>0&&value.length<=256?value:undefined;
+  const current={status,target,id};
+  if(!connectPrevious||Object.keys(current).some(key=>current[key]!==connectPrevious[key])){
+   const changed=id===undefined?'?':connectPrevious&&connectPrevious.id!==undefined?Number(id!==connectPrevious.id):0;
+   connectStatus('connect state='+status+' target='+target+' device_changed='+changed+' controller=unknown');
+  }
+  connectPrevious=current;
+  for(const action of controlQueue)connectStatus('control request='+action+' source=local-client');
+  controlQueue=[];
+  if(controlOmitted){connectStatus('control observations_omitted='+controlOmitted);controlOmitted=0;}
+  const paused=own(state,'isPaused');
+  if(typeof paused==='boolean'&&(paused!==connectPaused||target!==connectPausedTarget)){
+   connectStatus('control state='+(paused?'paused':'playing')+' target='+target+' initiator=unknown');
+  }
+  connectPaused=typeof paused==='boolean'?paused:undefined;
+  connectPausedTarget=target;
+ }
  function requestState(uri){
   let entry=serviceCache.get(uri);
   if(!entry){entry={metadata:{attempts:0},album:{attempts:0},lyrics:{attempts:0}};serviceCache.set(uri,entry);}
@@ -38,6 +129,7 @@
    if(r.pending&&(now-r.started>=12000||config.metadata!==true||(kind==='lyrics'&&config.lyrics===false))){
     // Expire only the logical operation. Abort may be unsupported or ignored;
     // its physical slot belongs to send() until that promise settles.
+    networkStatus(r.operation,kind,'expired',undefined,r.started);
     r.pending=false;r.generation++;try{if(r.controller)r.controller.abort();}catch{}
     r.retryAt=now+5000;if(config.metadata!==true||(kind==='lyrics'&&config.lyrics===false))r.attempts=Math.max(0,r.attempts-1);
    }
@@ -50,6 +142,8 @@
    const albumId=text(own(own(entry.metadata.data,'album'),'gid'));if(kind==='album'&&!/^[a-f0-9]{32}$/.test(albumId||''))continue;
    const hex=kind==='metadata'&&hexId(id);if(kind==='metadata'&&!hex)continue;
    r.pending=true;r.started=now;r.attempts++;r.generation=(r.generation||0)+1;const generation=r.generation;activeRequests++;
+   const operation=networking()?(networkOperation=networkOperation%1000000+1):0,started=now;
+   r.operation=operation;
    const settled=()=>{
     activeRequests--;
     if(r.generation===generation){r.pending=false;r.controller=undefined;}
@@ -58,15 +152,22 @@
     let request=method(builder,'build').call(builder);
     request=request.withHost('https://spclient.wg.spotify.com').withPath(kind==='metadata'?'/metadata/4/track/'+hex:kind==='album'?'/metadata/4/album/'+albumId:'/color-lyrics/v2/track/'+id).withQueryParameters({format:'json',vocalRemoval:false});
     if(typeof AbortController==='function'&&method(request,'withAbortSignal')){r.controller=new AbortController();request=request.withAbortSignal(r.controller.signal);}
+    networkStatus(operation,kind,'send',undefined,started);
     Promise.resolve(request.send()).then(response=>{
+     networkStatus(operation,kind,'response',own(response,'status'),started);
      if(r.generation!==generation)return;
      const data=own(response,'body');if(object(data)){r.data=kind==='album'?{album:data}:data;r.done=true;}else r.retryAt=performance.now()+5000;
-    },error=>{if(r.generation!==generation)return;const status=own(error,'status');r.done=status===400||status===401||status===403||status===404;r.retryAt=performance.now()+5000;}).then(settled,settled);
-   }catch{r.pending=false;activeRequests--;r.retryAt=now+5000;}
+    },error=>{const status=own(error,'status');networkStatus(operation,kind,'rejected',status,started);if(r.generation!==generation)return;r.done=status===400||status===401||status===403||status===404;r.retryAt=performance.now()+5000;}).then(settled,settled);
+   }catch{networkStatus(operation,kind,'setup_error',undefined,started);r.pending=false;activeRequests--;r.retryAt=now+5000;}
   }
  }
  function scan(){
   const sp=own(window,'Spicetify'),p=own(sp,'Player');if(method(p,'getState'))player=p;
+  const observeConnect=connectEnabled();
+  if(observeConnect)try{
+   const candidate=own(own(sp,'Platform'),'ConnectDevicesAPI');
+   if(method(candidate,'getConnectState'))connectDevices=candidate;
+  }catch{}
   const main=document.querySelector('#main');
   const key=main&&Object.keys(main).find(k=>k.startsWith('__reactContainer$'));
   const current=key&&own(main,key);
@@ -86,6 +187,7 @@
     if(++n>160)break;
     if(String(key)==='Symbol(RequestBuilder)'){const candidate=own(value,'instance');if(method(candidate,'build'))builder=candidate;}
     if(String(key)==='Symbol(PlayerAPI)'){const candidate=own(value,'instance');if(method(candidate,'getState'))player=candidate;}
+    if(observeConnect&&String(key)==='Symbol(ConnectDevicesAPI)'){const candidate=own(value,'instance');if(method(candidate,'getConnectState'))connectDevices=candidate;}
    }}catch{}
    if(own(o,'uri')||own(o,'trackUri')||own(o,'queryKey'))remember(o);
    try{let count=0;for(const v of Map.prototype.values.call(o)){if(++count>80||queue.length>=8192)break;if(object(v))queue.push(v);}}catch{}
@@ -181,9 +283,10 @@
  }
  function tick(){
   try{
-   automatic();scan();if(!player){playback({v:1});return;}
+   automatic();scan();if(!player){debugObservation();connectDiagnostics();playback({v:1});return;}
    if(!reported){console.info('FLOGGFY_STATUS:cached player found');reported=true;}
    const state=method(player,'getState').call(player),item=own(state,'item'),m=own(item,'metadata')||{},uri=text(own(item,'uri'));
+   debugObservation(state,item);connectDiagnostics(state);
    if(!/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')){playback({v:1});return;}
    const track=uri.startsWith('spotify:track:'),show=own(item,'show')||{};
    const data={v:1,title:text(own(m,'title')||own(item,'name')),
@@ -215,7 +318,7 @@
    if(payload.length>131072||(last&&last.payload===payload&&now-last.time<15000))return;
    seenPayload.set(uri,{payload,time:now});if(seenPayload.size>64)seenPayload.delete(seenPayload.keys().next().value);
    console.info(prefix+payload);
-  }catch{/* Missing or changed caches leave ordinary tags intact. */}
+  }catch{debugPrevious=undefined;/* Missing or changed caches leave ordinary tags intact. */}
  }
  window.__floggfyPoll=tick;
  console.info('FLOGGFY_STATUS:metadata collector started');

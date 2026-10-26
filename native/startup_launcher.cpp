@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include "startup_launcher.h"
 #include "startup_ready.h"
+#include "launcher_architecture.h"
 #include <tlhelp32.h>
 #include <cstdint>
 namespace startup { namespace {
@@ -190,6 +191,7 @@ bool Launch(const std::wstring& folder,PROCESS_INFORMATION& out,std::wstring& er
   out={};error.clear();const auto exe=folder+L"\\Spotify.exe",dll=folder+L"\\Floggfy.dll";
   if(!File(exe) || !File(dll)){error=L"Place Floggfy.exe and Floggfy.dll beside Spotify.exe.";return false;}
   if(File(folder+L"\\version.dll")){error=L"Launcher mode requires removing the automatic version.dll first. Install only one Floggfy mode.";return false;}
+  if(!RequireX64(exe,L"Spotify.exe",error)||!RequireX64(dll,L"Floggfy.dll",error))return false;
   if(!StopExisting(exe,error))return false;
   auto command=L"\""+exe+L"\"";STARTUPINFOW startup{};startup.cb=sizeof(startup);
   Child child;auto& process=child.process;

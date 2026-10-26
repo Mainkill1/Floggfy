@@ -9,8 +9,12 @@
 #include "metadata_bridge.h"
 #include "playback_quality.h"
 #include "async_log.h"
+#include "hook_diagnostics.h"
+#include <string_view>
+#include <array>
 #include "bounded_queue.h"
 #include "srw_guard.h"
+#include "connectivity_diagnostics.h"
 #include <optional>
 #include <atomic>
 #include "library_layout.h"
@@ -64,8 +68,11 @@ void* aac_targets[3]={};
 hooks::CallbackCounter audio_callbacks;
 enum class AudioEventKind : unsigned { OggPage,FormatDetected,FlacBegin,FlacBytes,FlacFrame,FlacError,FlacEnd,
     AacBegin,AacBytes,AacError,AacDestroy };
+enum class FlacErrorSource : unsigned { None,ReadCallback,FrameCallback,DecoderCallback };
 struct Slot { uintptr_t context; unsigned length; double time; AudioEventKind kind;unsigned epoch; uint64_t input_length;
-    uint32_t format; bool matched,capture; unsigned char bytes[65307]; };
+    uint32_t format; bool matched,capture;
+    FlacErrorSource error_source;
+    uint64_t requested,returned; unsigned char bytes[65307]; };
 constexpr unsigned capacity=128;
 Slot* queue;
 unsigned head=0,tail=0,count=0;
@@ -78,6 +85,151 @@ size_t memory_limit=500*1024*1024;
 static double Now() { return double(GetTickCount64())/1000.0; }
 static void Log(const char* message) {
     HistoryLog(message);
+    // Numeric/static worker diagnostics only; never mirror song names, audio,
+    // metadata payloads or filesystem paths into the networking log.
+    if(NetworkingLoggingEnabled()) {
+        const std::string_view text(message);
+        for(const auto prefix:{"playback observation=","FLAC native result ","FLAC observation ",
+            "hook timing ","network observation=","native-read continue-with-zero-bytes ",
+            "Spotify media snapshot unavailable or stale;"}) {
+            if(text.substr(0,std::strlen(prefix))==prefix){QueueNetworkingDiagnostic(message);break;}
+        }
+    }
+}
+// Hooks only record numeric counters/POD events. Formatting and disk queuing
+// belong to the worker. Independent exchanges make interval metrics approximate
+// under concurrency; maxima are latency evidence, not a tracing profiler.
+struct TimingSample {
+    std::atomic<uint64_t> count{0},maximum{0};
+    void Add(uint64_t ticks) noexcept {
+        count.fetch_add(1,std::memory_order_relaxed);
+        auto prior=maximum.load(std::memory_order_relaxed);
+        for(unsigned attempt=0;attempt<4 && prior<ticks;++attempt)
+            if(maximum.compare_exchange_weak(prior,ticks,std::memory_order_relaxed))break;
+    }
+};
+static TimingSample native_read_timing,native_frame_timing,native_error_timing,native_init_timing,native_ogg_timing;
+static TimingSample producer_wait_timing,producer_hold_timing,consumer_hold_timing;
+static std::atomic<uint64_t> empty_flac_reads{0};
+static uint64_t DiagnosticTick() noexcept {
+    LARGE_INTEGER value{};
+    return QueryPerformanceCounter(&value)?uint64_t(value.QuadPart):0;
+}
+struct NativeTimer {
+    TimingSample& sample;
+    uint64_t began;
+    explicit NativeTimer(TimingSample& target):sample(target),began(DebugLoggingEnabled()?DiagnosticTick():0) {}
+    void Finish() noexcept {
+        if(began) {const auto end=DiagnosticTick();if(end>=began)sample.Add(end-began);began=0;}
+    }
+};
+struct QueueGuard {
+    uint64_t began,acquired;
+    bool producer;
+    explicit QueueGuard(bool writing=true):began(DebugLoggingEnabled()?DiagnosticTick():0),acquired(0),producer(writing) {
+        AcquireSRWLockExclusive(&queue_lock);
+        if(began)acquired=DiagnosticTick();
+    }
+    ~QueueGuard() {
+        const auto end=acquired?DiagnosticTick():0;
+        ReleaseSRWLockExclusive(&queue_lock);
+        // Count after releasing: metric updates never extend the critical section.
+        if(acquired>=began && began && end>=acquired) {
+            if(producer) {producer_wait_timing.Add(acquired-began);producer_hold_timing.Add(end-acquired);}
+            else consumer_hold_timing.Add(end-acquired);
+        }
+    }
+    QueueGuard(const QueueGuard&)=delete;
+    QueueGuard& operator=(const QueueGuard&)=delete;
+};
+enum class TimingReason { Routine,Pause,Discontinuity,Failure };
+static void LogTiming(TimingReason reason=TimingReason::Routine) {
+    if(!DebugLoggingEnabled())return;
+    LARGE_INTEGER frequency{};
+    if(!QueryPerformanceFrequency(&frequency)||frequency.QuadPart<=0)return;
+    const double milliseconds=1000.0/double(frequency.QuadPart);
+    struct Metric {
+        const char* name;
+        TimingSample* sample;
+        uint64_t count=0;
+        double maximum_ms=0;
+    };
+    std::array<Metric,8> metrics{{
+        {"native-read",&native_read_timing},{"native-frame",&native_frame_timing},
+        {"native-error",&native_error_timing},{"native-init",&native_init_timing},
+        {"native-ogg",&native_ogg_timing},{"queue-producer-wait",&producer_wait_timing},
+        {"queue-producer-hold",&producer_hold_timing},{"queue-consumer-hold",&consumer_hold_timing}
+    }};
+    size_t worst=0;
+    for(size_t i=0;i<metrics.size();++i) {
+        auto& metric=metrics[i];
+        metric.count=metric.sample->count.exchange(0,std::memory_order_relaxed);
+        metric.maximum_ms=double(metric.sample->maximum.exchange(0,std::memory_order_relaxed))*milliseconds;
+        if(metric.maximum_ms>metrics[worst].maximum_ms)worst=i;
+    }
+    const auto empty=empty_flac_reads.exchange(0,std::memory_order_relaxed);
+    // Reporting threshold only: this neither rejects audio nor diagnoses a pause.
+    // Normal polling still drains counters but emits no per-metric heartbeat.
+    constexpr double report_ms=10;
+    if(reason==TimingReason::Routine&&metrics[worst].maximum_ms<report_ms&&!empty)return;
+    const char* context=reason==TimingReason::Pause?"pause":
+        reason==TimingReason::Discontinuity?"timeline-jump":reason==TimingReason::Failure?"error":
+        metrics[worst].maximum_ms>=report_ms?"slow":"empty-read";
+    char line[600];snprintf(line,sizeof(line),
+        "hook timing reason=%s worst=%s count=%llu max_ms=%.3f threshold_ms=10 native_read_ms=%.3f native_frame_ms=%.3f native_error_ms=%.3f native_init_ms=%.3f native_ogg_ms=%.3f queue_wait_ms=%.3f producer_hold_ms=%.3f consumer_hold_ms=%.3f empty_reads=%llu callbacks_now=%u",
+        context,metrics[worst].maximum_ms>0?metrics[worst].name:"none",
+        static_cast<unsigned long long>(metrics[worst].count),metrics[worst].maximum_ms,
+        metrics[0].maximum_ms,metrics[1].maximum_ms,metrics[2].maximum_ms,metrics[3].maximum_ms,
+        metrics[4].maximum_ms,metrics[5].maximum_ms,metrics[6].maximum_ms,metrics[7].maximum_ms,
+        static_cast<unsigned long long>(empty),audio_callbacks.Active());
+    Log(line);
+}
+static void LogConnectivity() {
+    if(!DebugLoggingEnabled())return;
+    const auto value=LastConnectivity();
+    if(!value.known){Log("network observation=NLM-unknown; stream reachability unknown");return;}
+    const auto now=GetTickCount64();
+    char line[240];snprintf(line,sizeof(line),
+        "network observation=last-NLM age_ms=%llu hr=0x%08lX flags_known=%d original=0x%lX effective=0x%lX; stream reachability unknown",
+        static_cast<unsigned long long>(now>=value.observed_ms?now-value.observed_ms:0),
+        static_cast<unsigned long>(uint32_t(value.result)),value.flags_valid,
+        static_cast<unsigned long>(value.original),static_cast<unsigned long>(value.effective));Log(line);
+}
+static const char* PlaybackStatus(int value) {
+    switch(value) {
+        case 0:return "closed";case 1:return "opened";case 2:return "changing";
+        case 3:return "stopped";case 4:return "playing";case 5:return "paused";
+        default:return "unknown";
+    }
+}
+struct PlaybackDiagnostics {
+    bool known=false,playing=false;
+    int status=-1;
+    std::string key;
+    double position=0,observed=0;
+    void Observe(const Media& media,double at,uint64_t sequence) {
+        if(!DebugLoggingEnabled()){known=false;return;}
+        const auto next_key=media.Key();
+        const bool changed=known && next_key!=key;
+        const double elapsed=known?at-observed:0;
+        const double movement=known?media.position-position:0;
+        const bool jump=known&&!changed&&(movement<-.75 || movement>std::max(0.0,elapsed)+2);
+        if(!known||changed||media.playing!=playing||media.playback_status!=status||jump) {
+            char line[380];snprintf(line,sizeof(line),
+                "playback observation=%s state=%s raw=%d playing=%d pos=%.3f/%.3f movement=%.3f elapsed=%.3f mono=%.3f seq=%llu track_changed=%d; initiator=unknown",
+                !known?"baseline":jump?"timeline-jump":"transition",PlaybackStatus(media.playback_status),media.playback_status,
+                media.playing,media.position,media.duration,movement,elapsed,at,
+                static_cast<unsigned long long>(sequence),changed);Log(line);
+            LogConnectivity();
+            LogTiming(known&&playing&&!media.playing?TimingReason::Pause:
+                jump?TimingReason::Discontinuity:TimingReason::Routine);
+        }
+        known=true;playing=media.playing;status=media.playback_status;
+        key=next_key;position=media.position;observed=at;
+    }
+};
+static bool StatusDue(double now,double deadline,const Media& current,bool unavailable) {
+    return DebugLoggingEnabled()&&now>=deadline&&current.playing&&!unavailable;
 }
 static bool Directories(const std::wstring& path) {
     return EnsureDirectory(path);
@@ -111,7 +263,8 @@ static void* DiscoveredTarget(HMODULE module,const spotify::HookTargets& targets
 }
 static int32_t Hook(void* sync,OggPage* page) {
     auto callback=audio_callbacks.Enter();
-    int32_t result=original(sync,page);
+    NativeTimer timing(native_ogg_timing);
+    int32_t result=original(sync,page);timing.Finish();
     InterlockedIncrement(&calls);
     const bool capture=OggEnabled();
     if(!capture && !quality_enabled.load(std::memory_order_relaxed)) return result;
@@ -119,16 +272,18 @@ static int32_t Hook(void* sync,OggPage* page) {
        page->body_length<0 || page->body_length>65025 ||
        page->header_length+page->body_length!=result || result>65307) return result;
     InterlockedIncrement(&pages);
-    AcquireSRWLockExclusive(&queue_lock);
-    if(count==capacity) InterlockedIncrement(&dropped);
-    else {
-        Slot& s=queue[tail]; s.context=reinterpret_cast<uintptr_t>(sync);
-        s.length=unsigned(result); s.time=Now(); s.kind=AudioEventKind::OggPage; s.epoch=CaptureEpoch(); s.capture=capture;
-        std::memcpy(s.bytes,page->header,page->header_length);
-        if(page->body_length) std::memcpy(s.bytes+page->header_length,page->body,page->body_length);
-        tail=(tail+1)%capacity; ++count;
+    {
+        QueueGuard guard;
+        if(count==capacity) InterlockedIncrement(&dropped);
+        else {
+            Slot& s=queue[tail]; s.context=reinterpret_cast<uintptr_t>(sync);
+            s.length=unsigned(result); s.time=Now(); s.kind=AudioEventKind::OggPage; s.epoch=CaptureEpoch(); s.capture=capture;
+            std::memcpy(s.bytes,page->header,page->header_length);
+            if(page->body_length) std::memcpy(s.bytes+page->header_length,page->body,page->body_length);
+            tail=(tail+1)%capacity; ++count;
+        }
     }
-    ReleaseSRWLockExclusive(&queue_lock); SetEvent(event); return result;
+    SetEvent(event); return result;
 }
 static void* FormatHook(void* out,const void* input) {
     auto callback=audio_callbacks.Enter();
@@ -137,77 +292,94 @@ static void* FormatHook(void* out,const void* input) {
     void* result=original_sniff(out,input);
     const auto* view=static_cast<const uintptr_t*>(input);
     unsigned n=unsigned(std::min<uintptr_t>(view[1],16));
-    AcquireSRWLockExclusive(&queue_lock);
-    if(count==capacity) InterlockedIncrement(&dropped);
-    else {
-        Slot& s=queue[tail]; s.kind=AudioEventKind::FormatDetected; s.length=n; s.input_length=view[1]; s.time=Now();
-        std::memcpy(&s.format,out,4); s.matched=static_cast<unsigned char*>(out)[4]!=0;
-        if(n) std::memcpy(s.bytes,reinterpret_cast<const void*>(view[0]),n);
-        tail=(tail+1)%capacity; ++count;
+    {
+        QueueGuard guard;
+        if(count==capacity) InterlockedIncrement(&dropped);
+        else {
+            Slot& s=queue[tail]; s.kind=AudioEventKind::FormatDetected; s.length=n; s.input_length=view[1]; s.time=Now();
+            std::memcpy(&s.format,out,4); s.matched=static_cast<unsigned char*>(out)[4]!=0;
+            if(n) std::memcpy(s.bytes,reinterpret_cast<const void*>(view[0]),n);
+            tail=(tail+1)%capacity; ++count;
+        }
     }
-    ReleaseSRWLockExclusive(&queue_lock); SetEvent(event); return result;
+    SetEvent(event); return result;
 }
 static bool Pop(Slot& s) {
-    AcquireSRWLockExclusive(&queue_lock);
-    bool ready=count!=0;
-    if(ready) { s=queue[head]; head=(head+1)%capacity; --count; }
-    ReleaseSRWLockExclusive(&queue_lock); return ready;
+    bool ready=false;
+    {
+        QueueGuard guard(false);
+        ready=count!=0;
+        if(ready) { s=queue[head]; head=(head+1)%capacity; --count; }
+    }
+    return ready;
 }
-static void FlacEvent(void* context,AudioEventKind kind,const void* bytes=nullptr,size_t n=0,unsigned status=0) {
+static void FlacEvent(void* context,AudioEventKind kind,const void* bytes=nullptr,size_t n=0,unsigned status=0,
+                      FlacErrorSource source=FlacErrorSource::None,size_t requested=0,size_t returned=0) {
     const bool capture=FlacEnabled();
     if(!capture && !quality_enabled.load(std::memory_order_relaxed)) return;
-    AcquireSRWLockExclusive(&queue_lock);
-    do {
-        unsigned amount=unsigned(std::min(n,size_t(65307)));
-        if(count==capacity) { InterlockedIncrement(&dropped); break; }
-        Slot& s=queue[tail]; s.context=reinterpret_cast<uintptr_t>(context); s.kind=kind;
-        s.capture=capture; s.input_length=amount;
-        s.length=(!capture && kind==AudioEventKind::FlacBytes) ? std::min(amount,42u) : amount;
-        s.time=Now(); s.format=status; s.epoch=CaptureEpoch();
-        if(s.length) memcpy(s.bytes,bytes,s.length);
-        tail=(tail+1)%capacity; ++count;
-        n-=amount;
-        if(n) bytes=static_cast<const unsigned char*>(bytes)+amount;
-    } while(n);
-    ReleaseSRWLockExclusive(&queue_lock); SetEvent(event);
+    {
+        QueueGuard guard;
+        do {
+            unsigned amount=unsigned(std::min(n,size_t(65307)));
+            if(count==capacity) { InterlockedIncrement(&dropped); break; }
+            Slot& s=queue[tail]; s.context=reinterpret_cast<uintptr_t>(context); s.kind=kind;
+            s.capture=capture; s.input_length=amount;
+            s.length=(!capture && kind==AudioEventKind::FlacBytes) ? std::min(amount,42u) : amount;
+            s.time=Now(); s.format=status; s.epoch=CaptureEpoch();
+            s.error_source=source;s.requested=requested;s.returned=returned;
+            if(s.length) memcpy(s.bytes,bytes,s.length);
+            tail=(tail+1)%capacity; ++count;
+            n-=amount;
+            if(n) bytes=static_cast<const unsigned char*>(bytes)+amount;
+        } while(n);
+    }
+    SetEvent(event);
 }
 static void* FlacInitHook(void* context,void* result) {
     auto callback=audio_callbacks.Enter();
     FlacEvent(context,AudioEventKind::FlacBegin);
-    return original_flac_init(context,result);
+    NativeTimer timing(native_init_timing);
+    auto native_result=original_flac_init(context,result);timing.Finish();
+    return native_result;
 }
 static int FlacReadHook(void* context,unsigned char* buffer,size_t* length) {
     auto callback=audio_callbacks.Enter();
     size_t requested=*length;
-    int status=original_flac_read(context,buffer,length);
+    NativeTimer timing(native_read_timing);
+    int status=original_flac_read(context,buffer,length);timing.Finish();
+    if(status==0 && !*length && DebugLoggingEnabled())empty_flac_reads.fetch_add(1,std::memory_order_relaxed);
     if(status==0 && *length && *length<=requested) FlacEvent(context,AudioEventKind::FlacBytes,buffer,*length);
     else if(status==1 && !*length) FlacEvent(context,AudioEventKind::FlacEnd);
-    else if(status!=0 || *length>requested) FlacEvent(context,AudioEventKind::FlacError,nullptr,0,unsigned(status));
+    else if(status!=0 || *length>requested) FlacEvent(context,AudioEventKind::FlacError,nullptr,0,unsigned(status),FlacErrorSource::ReadCallback,requested,*length);
     return status;
 }
 static int FlacFrameHook(void* context,const void* frame,const void* pcm) {
     auto callback=audio_callbacks.Enter();
-    int status=original_flac_frame(context,frame,pcm);
+    NativeTimer timing(native_frame_timing);
+    int status=original_flac_frame(context,frame,pcm);timing.Finish();
     if(status==0) FlacEvent(context,AudioEventKind::FlacFrame,frame,32);
-    else FlacEvent(context,AudioEventKind::FlacError,nullptr,0,unsigned(status));
+    else FlacEvent(context,AudioEventKind::FlacError,nullptr,0,unsigned(status),FlacErrorSource::FrameCallback);
     return status;
 }
 static void FlacErrorHook(void* context,unsigned error) {
     auto callback=audio_callbacks.Enter();
-    original_flac_error(context,error);
-    FlacEvent(context,AudioEventKind::FlacError,nullptr,0,error);
+    NativeTimer timing(native_error_timing);
+    original_flac_error(context,error);timing.Finish();
+    FlacEvent(context,AudioEventKind::FlacError,nullptr,0,error,FlacErrorSource::DecoderCallback);
 }
 static void QueueAac(void* context,AudioEventKind kind,const unsigned char* bytes,size_t size,
                      double time,unsigned epoch,unsigned status=0) {
-    AcquireSRWLockExclusive(&queue_lock);
-    if(count==capacity)InterlockedIncrement(&dropped);
-    else {
-        auto& s=queue[tail];s.context=reinterpret_cast<uintptr_t>(context);s.kind=kind;
-        s.capture=true;s.epoch=epoch;s.time=time;s.length=unsigned(size);s.format=status;
-        if(size)memcpy(s.bytes,bytes,size);
-        tail=(tail+1)%capacity;++count;
+    {
+        QueueGuard guard;
+        if(count==capacity)InterlockedIncrement(&dropped);
+        else {
+            auto& s=queue[tail];s.context=reinterpret_cast<uintptr_t>(context);s.kind=kind;
+            s.capture=true;s.epoch=epoch;s.time=time;s.length=unsigned(size);s.format=status;
+            if(size)memcpy(s.bytes,bytes,size);
+            tail=(tail+1)%capacity;++count;
+        }
     }
-    ReleaseSRWLockExclusive(&queue_lock);SetEvent(event);
+    SetEvent(event);
 }
 static void* AacInitializeHook(void* context,bool mode) {
     auto callback=audio_callbacks.Enter();
@@ -637,16 +809,44 @@ static void ObserveCodecQuality(const Slot& s,PlaybackQualityTracker& quality) {
         default:break;
     }
 }
+static const char* ErrorOrigin(FlacErrorSource source) {
+    switch(source) {
+        case FlacErrorSource::ReadCallback:return "native-read-return";
+        case FlacErrorSource::FrameCallback:return "native-frame-return";
+        case FlacErrorSource::DecoderCallback:return "native-error-callback";
+        default:return "unknown";
+    }
+}
+static void LogCaptureContext(const Slot& s,const Capture& capture,const char* origin) {
+    if(!DebugLoggingEnabled())return;
+    char line[430];snprintf(line,sizeof(line),
+        "FLAC observation origin=%s ctx=%llx mono=%.3f age=%.3f queue_lag_ms=%.1f epoch=%u metadata=%d frames=%u covered=%llu total=%llu bytes=%llu dropped=%ld",
+        origin,static_cast<unsigned long long>(s.context),s.time,s.time-capture.born,std::max(0.0,Now()-s.time)*1000,s.epoch,capture.metadata,
+        capture.coverage.frames,static_cast<unsigned long long>(capture.coverage.samples),
+        static_cast<unsigned long long>(capture.flac.total_samples),static_cast<unsigned long long>(capture.bytes),dropped);Log(line);
+}
 static void ProcessFlacCapture(const Slot& s,CaptureBuffers& buffers) {
     auto& active=buffers.active;auto& ready=buffers.ready;
     auto found=active.find(s.context);
+    if(s.kind==AudioEventKind::FlacError && DebugLoggingEnabled()) {
+        char line[240];snprintf(line,sizeof(line),
+            "FLAC native result ctx=%llx origin=%s code=%u requested=%llu returned=%llu mono=%.3f epoch=%u",
+            static_cast<unsigned long long>(s.context),ErrorOrigin(s.error_source),s.format,
+            static_cast<unsigned long long>(s.requested),static_cast<unsigned long long>(s.returned),s.time,s.epoch);Log(line);
+        LogConnectivity();LogTiming(TimingReason::Failure);
+    }
     if(s.kind==AudioEventKind::FlacBegin) {
+        if(found!=active.end())LogCaptureContext(s,*found->second,"context-reinitialized");
         auto c=std::make_unique<Capture>(); c->lossless=true; c->born=s.time;
+        LogCaptureContext(s,*c,"begin");
         active[s.context]=std::move(c); Log("FLAC decoder initialized; capture begins at compressed offset zero"); return;
     }
     if(found==active.end() || !found->second->lossless) return;
     Capture& c=*found->second;
-    if(s.kind==AudioEventKind::FlacError) { active.erase(found); Log("FLAC decoder error; stream discarded"); return; }
+    if(s.kind==AudioEventKind::FlacError) {
+        LogCaptureContext(s,c,ErrorOrigin(s.error_source));
+        active.erase(found); Log("FLAC decoder error; stream discarded"); return;
+    }
     if(s.kind==AudioEventKind::FlacBytes) {
         size_t reserved=publishing_reserved.load(); for(const auto& item:active) reserved+=item.second->Capacity();
         for(const auto& item:ready) reserved+=item->Capacity();
@@ -665,11 +865,25 @@ static void ProcessFlacCapture(const Slot& s,CaptureBuffers& buffers) {
     if(s.kind==AudioEventKind::FlacFrame) {
         uint32_t frame[6]; uint64_t number; memcpy(frame,s.bytes,24); memcpy(&number,s.bytes+24,8);
         if(frame[5]==0) number=uint32_t(number);
-        if(!c.metadata || !c.coverage.Frame(c.flac,frame[0],frame[1],frame[2],frame[4],frame[5],number)) {
+        const char* reason="metadata-not-ready";
+        if(!c.metadata || !c.coverage.Frame(c.flac,frame[0],frame[1],frame[2],frame[4],frame[5],number,&reason)) {
+            LogCaptureContext(s,c,"capture-coverage-guard");
+            if(DebugLoggingEnabled()) {
+                char line[430];snprintf(line,sizeof(line),
+                    "FLAC coverage ctx=%llx reason=%s native_frame_result=0 expected_rate=%u got_rate=%u expected_channels=%u got_channels=%u expected_bits=%u got_bits=%u block=%u min_block=%u max_block=%u number_type=%u number=%llu expected_sample=%llu",
+                    static_cast<unsigned long long>(s.context),reason,c.flac.rate,frame[1],c.flac.channels,frame[2],c.flac.bits,frame[4],
+                    frame[0],c.flac.min_block,c.flac.max_block,frame[5],static_cast<unsigned long long>(number),
+                    static_cast<unsigned long long>(c.coverage.samples));Log(line);
+                LogConnectivity();LogTiming(TimingReason::Failure);
+            }
             active.erase(found); Log("FLAC decoded-frame gap or format mismatch; stream discarded"); return;
         }
         if(!c.coverage.Complete(c.flac)) return;
-    } else if(s.kind!=AudioEventKind::FlacEnd || !c.coverage.Complete(c.flac)) { active.erase(found); Log("FLAC truncated before total samples; discarded"); return; }
+    } else if(s.kind!=AudioEventKind::FlacEnd || !c.coverage.Complete(c.flac)) {
+        LogCaptureContext(s,c,"end-before-coverage");LogConnectivity();LogTiming(TimingReason::Failure);
+        active.erase(found); Log("FLAC truncated before total samples; discarded"); return;
+    }
+    LogCaptureContext(s,c,"complete");
     c.finished=s.time;
     char line[180]; snprintf(line,sizeof(line),"FLAC COMPLETE frames=%u samples=%llu bytes=%llu duration=%.6f",c.coverage.frames,static_cast<unsigned long long>(c.coverage.samples),static_cast<unsigned long long>(c.bytes),c.Duration()); Log(line);
     ready.push_back(std::move(found->second)); active.erase(found); return;
@@ -868,11 +1082,13 @@ static DWORD WINAPI Worker(LPVOID) {
     std::vector<Heard> heard;
     Listen listen; MediaSnapshotReader reader; Media current; PlaybackQualityTracker quality; std::string client_quality;
     uint64_t media_sequence=0;
+    PlaybackDiagnostics diagnostics;
     double last_media=Now(),minimum_media_time=last_media,next_log=0;
     bool observer_started=false,media_unavailable=false;
     unsigned generation=~0u,epoch=~0u; bool enabled=false;
     try {
         while(workers_running.load(std::memory_order_acquire)) {
+            NoteCaptureProgress();
             double now=Now();
             auto preferences=GetSettings();
             if(preferences.generation!=generation) {
@@ -882,7 +1098,7 @@ static DWORD WINAPI Worker(LPVOID) {
                 bool capture=preferences.downloads && (preferences.ogg || preferences.flac || preferences.aac);
                 if(capture!=enabled || initial || preferences.capture_epoch!=epoch) {
                     active.clear(); ready.clear(); heard.clear(); listen={}; current={};
-                    last_media=minimum_media_time=now;media_unavailable=false;CancelFilenameChecks();
+                    last_media=minimum_media_time=now;media_unavailable=false;diagnostics.known=false;CancelFilenameChecks();
                     if(!enabled && capture) saved_count=0;
                     enabled=capture;
                     Log(enabled ? "To Disk capture enabled" : "To Disk capture disabled");
@@ -901,7 +1117,11 @@ static DWORD WINAPI Worker(LPVOID) {
                 Log("capture queue overflow; streams and listening coverage invalidated");
             }
             Slot s;
-            while(Pop(s)) ProcessCaptureEvent(s,buffers,quality,quality_enabled.load(std::memory_order_relaxed),enabled,epoch);
+            while(Pop(s)) {
+                ProcessCaptureEvent(s,buffers,quality,quality_enabled.load(std::memory_order_relaxed),enabled,epoch);
+                // Draining a continuously busy queue is still forward progress.
+                NoteCaptureProgress();
+            }
             // Start only the basic media observer. All COM/WinRT work stays on
             // its thread; this consumer only try-locks a bounded RAM snapshot.
             // A still-stopping observer must finish before another can start.
@@ -912,6 +1132,7 @@ static DWORD WINAPI Worker(LPVOID) {
                 observation=MediaRead::Pending; // Never reuse an earlier capture epoch.
             if(observation==MediaRead::Ready) {
                 last_media=observed_at;media_unavailable=false;
+                diagnostics.Observe(media,observed_at,media_sequence);
                 PublishCurrentDestination(media,preferences);
                 quality.Media(media.Key(),media.title,media.position,media.duration,observed_at,media.playing);
                 client_quality=ReadClientPlaybackQuality(media);
@@ -921,8 +1142,8 @@ static DWORD WINAPI Worker(LPVOID) {
                 // observations still cannot establish continuous listening.
                 PublishSongDestination(0,L"",{},false,0);
                 listen.eligible=false;quality.Media({},L"",0,0,Now());client_quality.clear();
-                if(!media_unavailable){CancelFilenameChecks();Log("Spotify media snapshot unavailable or stale; listen invalidated");}
-                media_unavailable=true;
+                if(!media_unavailable){CancelFilenameChecks();Log("Spotify media snapshot unavailable or stale; listen invalidated");LogTiming(TimingReason::Failure);}
+                media_unavailable=true;diagnostics.known=false;
             }
             if(!enabled) {
                 PublishPlaybackQuality(quality.Snapshot(client_quality));
@@ -938,16 +1159,19 @@ static DWORD WINAPI Worker(LPVOID) {
             for(auto it=active.begin();it!=active.end();) {
                 if(now-it->second->born>21600) it=active.erase(it); else ++it;
             }
-            if(now>=next_log) {
+            // A paused/stale timeline adds no useful periodic status. Leave an
+            // overdue deadline intact so resumed playback logs immediately.
+            if(StatusDue(now,next_log,current,media_unavailable)) {
                 size_t buffered=0;
                 for(const auto& item:active) buffered+=item.second->Capacity();
                 for(const auto& item:ready) buffered+=item->Capacity();
                 char line[350]; snprintf(line,sizeof(line),"status calls=%ld pages=%ld dropped=%ld active=%zu ready=%zu saved=%u pos=%.3f/%.3f eligible=%d buffered=%zu",
-                  calls,pages,dropped,active.size(),ready.size(),saved_count.load(),current.position,current.duration,listen.eligible,buffered); Log(line); next_log=now+10;
+                  calls,pages,dropped,active.size(),ready.size(),saved_count.load(),current.position,current.duration,listen.eligible,buffered); Log(line); LogTiming(); next_log=now+10;
             }
             WaitForSingleObject(event,50);
         }
     } catch(...) { Log("history worker stopped after an exception; playback remains with original parser"); }
+    capture_progress_ms.store(0,std::memory_order_release);
     CancelFilenameChecks();
     reader.Stop(); // Nonblocking even if Windows is still servicing a COM call.
     PublishPlaybackQuality({});

@@ -3,12 +3,14 @@
 #include <shobjidl.h>
 #include <shlobj.h>
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cwchar>
 #include <cstring>
 #include "async_log.h"
 #include "srw_guard.h"
 #include "settings_file.h"
+#include "networking_summary.h"
 namespace history {
 static SRWLOCK lock=SRWLOCK_INIT;
 static Settings settings;
@@ -18,7 +20,7 @@ static bool IsMusic(std::wstring root) {
     return !music_path.empty() && (_wcsicmp(root.c_str(),music_path.c_str())==0 ||
         _wcsicmp(root.c_str(),(music_path+L"\\Spotify").c_str())==0);
 }
-static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,aac_enabled=0,capture_epoch=0,log_enabled=1,debug_enabled=0;
+static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,aac_enabled=0,capture_epoch=0,log_enabled=1,debug_enabled=0,networking_enabled=0,hook_diagnostics_enabled=0;
 static HANDLE settings_signal=nullptr,persist_done=nullptr;
 // A failed attempt is observable without acknowledging bytes never committed.
 static volatile LONG persisted_generation=-1,failed_generation=-1,persist_failed=0;
@@ -28,6 +30,14 @@ static constexpr char default_ini[]=
     "Downloads=1\r\n"
     "; Set Menu=0 before starting Spotify to disable native menu integration.\r\n"
     "Menu=1\r\n"
+    "; Workaround when disabled/blocked Microsoft online checks (Windows NCSI)\r\n"
+    "; make Windows report \"No Internet\" despite a working connection.\r\n"
+    "; Reports an active adapter with a usable IP as Internet-connected to Spotify,\r\n"
+    "; helping it avoid false-offline restrictions on playback/quality selection.\r\n"
+    "; Spotify-only: does not change Windows network status or re-enable the checks.\r\n"
+    "; Does not test connection speed or force highest quality; choose it in Spotify.\r\n"
+    "; 0=off (default), 1=on. Fully quit and restart Spotify after changing.\r\n"
+    "NetworkPatch=0\r\n"
     "; Empty uses the Windows Music folder plus \\Spotify.\r\n"
     "Save Location=\r\n"
     "; Prefix new filenames with the track number when known.\r\n"
@@ -46,9 +56,28 @@ static constexpr char default_ini[]=
     "Lyrics=1\r\n"
     "; Allows metadata-only upgrades to existing saved files.\r\n"
     "UpdateExistingMetadata=1\r\n"
-    "; Activity log in Save Location, capped at 5 MiB.\r\n"
+    "\r\n"
+    "; Logging: writes Floggfy.log in Save Location, capped at 5 MiB.\r\n"
+    "; Log=0 also disables ALL debug output, hooks and timing instrumentation below.\r\n"
     "Log=1\r\n"
+    "\r\n"
+    "; Debug options require Log=1. Fully restart Spotify after INI edits.\r\n"
+    "; Adds troubleshooting details to Floggfy.log. Normal activity needs no debug mode.\r\n"
     "DebugLog=0\r\n"
+    "; Requires DebugLog=1 and Metadata=1: cached playback target and local actions.\r\n"
+    "; Use exactly 1 to enable. Device names/IDs are omitted; senders may be unknown.\r\n"
+    "DebugConnect=1\r\n"
+    "; Deep read-only networking diagnostics; default off. Fully restart after edits.\r\n"
+    "; Requires Log=1 and DebugLog=1. Use exactly 1 to enable; 0/invalid values disable.\r\n"
+    "; Disabled means no decoded-message hook and no networking log.\r\n"
+    "; 1 writes Floggfy-networking.log in Save Location (5 MiB, oldest lines removed).\r\n"
+    "; Summarizes known Connect/control and enrichment I/O with timing for correlation.\r\n"
+    "; No raw messages, media, credentials, URLs, device names or device IDs are logged.\r\n"
+    "; Unobserved traffic and command execution remain unknown; no commands are changed.\r\n"
+    "DebugNetworking=0\r\n"
+    "; Extra callback/stall diagnostics. Requires DebugNetworking=1, Log=1, DebugLog=1.\r\n"
+    "; Default off; exactly 1 enables. Slow/pending activities only; no dumps or raw payloads.\r\n"
+    "DebugHookDiagnostics=0\r\n"
     "\r\n"
     "[History]\r\n"
     "; Maximum compressed audio held in RAM for one track.\r\n"
@@ -77,6 +106,42 @@ static bool ReadFilenameOptions(Settings& target,const std::wstring& path) {
     }
     return needs_persist;
 }
+// INI-only preferences are read once. Persistence inserts missing defaults,
+// but never writes a stale startup snapshot over values edited before restart.
+struct RestartFlag {
+    const wchar_t* key;
+    bool Settings::* member;
+    bool default_value;
+};
+static constexpr std::array<RestartFlag,4> restart_flags{{
+    {L"NetworkPatch",&Settings::network_patch,false},
+    {L"DebugConnect",&Settings::debug_connect,true},
+    {L"DebugNetworking",&Settings::debug_networking,false},
+    {L"DebugHookDiagnostics",&Settings::debug_hook_diagnostics,false}
+}};
+static bool ReadRestartOptionsText(Settings& target,std::wstring_view text) {
+    bool missing=false;
+    for(const auto& flag:restart_flags) {
+        const auto value=settings_file::Find(text,flag.key);
+        missing=missing||!value.present;
+        target.*(flag.member)=!value.present?flag.default_value:
+            !value.duplicate&&value.value==L"1";
+    }
+    return missing;
+}
+static bool ReadRestartOptions(Settings& target,const std::wstring& path) {
+    std::wstring text;bool unicode=false;
+    if(!settings_file::Read(path,text,unicode)) {
+        for(const auto& flag:restart_flags)target.*(flag.member)=false;
+        return false;
+    }
+    return ReadRestartOptionsText(target,text);
+}
+static void InsertMissingRestartDefaults(std::wstring& text) {
+    for(const auto& flag:restart_flags)
+        if(!settings_file::Find(text,flag.key).present)
+            settings_file::Set(text,flag.key,flag.default_value?L"1":L"0");
+}
 static bool ReachedGeneration(volatile LONG& progress,unsigned expected) {
     return static_cast<LONG>(unsigned(InterlockedCompareExchange(&progress,0,0))-expected)>=0;
 }
@@ -96,6 +161,7 @@ static DWORD WINAPI PersistSettings(LPVOID) {
                 auto flag=[&](const wchar_t* key,bool value){settings_file::Set(text,key,value?L"1":L"0");};
                 flag(L"Downloads",snapshot.downloads);flag(L"Ogg",snapshot.ogg);flag(L"FLAC",snapshot.flac);flag(L"AAC",snapshot.aac);flag(L"Lyrics",snapshot.lyrics);
                 flag(L"UpdateExistingMetadata",snapshot.update_existing_metadata);
+                InsertMissingRestartDefaults(text);
                 flag(L"TrackNumberInFilename",snapshot.track_number_in_filename);
                 flag(L"ConvertNumberedFilenames",snapshot.convert_numbered_filenames && !snapshot.track_number_in_filename);
                 settings_file::Set(text,L"Save Location",snapshot.save_location);
@@ -138,6 +204,12 @@ bool EnsureDirectory(const std::wstring& path) {
     return CreateDirectoryW(p.c_str(),nullptr) || GetLastError()==ERROR_ALREADY_EXISTS;
 }
 void HistoryLog(const char* message) {
+    if(!message)return;
+    // Renderer statuses are untrusted even when a caller uses this generic API.
+    // Validate and return before native failure-keyword classification can run.
+    if(IsRendererDiagnostic(std::string_view(message,strnlen(message,768)))) {
+        QueueDiagnostic(message);return;
+    }
     QueueDiagnostic(message);
     if(std::strstr(message,"failed") || std::strstr(message,"discarded") ||
        std::strstr(message,"rejected") || std::strstr(message,"overflow") ||
@@ -160,6 +232,8 @@ void InitSettings(HMODULE proxy) {
     settings.ogg=GetPrivateProfileIntW(L"To Disk",L"Ogg",1,ini.c_str())!=0;
     settings.flac=GetPrivateProfileIntW(L"To Disk",L"FLAC",1,ini.c_str())!=0;
     const bool filename_options_pending=ReadFilenameOptions(settings,ini);
+    const bool restart_options_pending=ReadRestartOptions(settings,ini);
+    const bool startup_options_pending=filename_options_pending||restart_options_pending;
     settings.aac=GetPrivateProfileIntW(L"To Disk",L"AAC",0,ini.c_str())!=0;
     settings.metadata=GetPrivateProfileIntW(L"To Disk",L"Metadata",1,ini.c_str())!=0;
     settings.lyrics=GetPrivateProfileIntW(L"To Disk",L"Lyrics",1,ini.c_str())!=0;
@@ -178,7 +252,7 @@ void InitSettings(HMODULE proxy) {
     if(raw[0] && length && length<=4096) {settings.root=expanded;settings.save_location=raw;}
     settings.music_folder=IsMusic(settings.root);
     downloads_enabled=settings.downloads; ogg_enabled=settings.ogg; flac_enabled=settings.flac; aac_enabled=settings.aac;
-    log_enabled=settings.log;debug_enabled=settings.debug_log;
+    log_enabled=settings.log;debug_enabled=settings.debug_log;networking_enabled=settings.debug_networking;hook_diagnostics_enabled=settings.debug_hook_diagnostics;
     settings_signal=CreateEventW(nullptr,FALSE,FALSE,nullptr);
     persist_done=CreateEventW(nullptr,FALSE,FALSE,nullptr);
     HANDLE thread=settings_signal&&persist_done ? CreateThread(nullptr,0,PersistSettings,nullptr,0,nullptr) : nullptr;
@@ -189,15 +263,17 @@ void InitSettings(HMODULE proxy) {
         settings_signal=nullptr;persist_done=nullptr;
     }
     // Missing options/conflict normalization are pending until Write succeeds.
-    InterlockedExchange(&persisted_generation,filename_options_pending?-1:LONG(settings.generation));
-    if(filename_options_pending && settings_signal)SetEvent(settings_signal);
+    InterlockedExchange(&persisted_generation,startup_options_pending?-1:LONG(settings.generation));
+    if(startup_options_pending && settings_signal)SetEvent(settings_signal);
     StartLogger();
 }
 Settings GetSettings() {
     SharedSrw guard(lock);return settings;
 }
 bool LoggingEnabled() { return log_enabled!=0; }
-bool DebugLoggingEnabled() { return debug_enabled!=0; }
+bool DebugLoggingEnabled() { return DiagnosticsEnabled(log_enabled!=0,debug_enabled!=0); }
+bool NetworkingLoggingEnabled() { return networking_enabled!=0 && DebugLoggingEnabled(); }
+bool HookDiagnosticsEnabled() { return hook_diagnostics_enabled!=0 && NetworkingLoggingEnabled(); }
 bool OggEnabled() { return downloads_enabled && ogg_enabled; }
 bool FlacEnabled() { return downloads_enabled && flac_enabled; }
 bool AACEnabled() { return downloads_enabled && aac_enabled; }

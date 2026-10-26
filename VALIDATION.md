@@ -840,3 +840,298 @@ This is an episode-title correction, not evidence of a new live Ogg quality test
 The native and full Windows suites passed; the additional same-title identity
 regression failed before its fix and passed afterward on Windows. Private
 diagnostics were removed and the original personal INI restored for final use.
+
+
+## Playback pause diagnostics (post-1.2.4)
+
+The reported playback pause has not been reproduced or assigned a cause. The
+reported FLAC frame-gap line comes from the capture coverage guard, after the
+native frame callback returned success; it does not establish a Spotify crash.
+
+The focused `bash test-playback-diagnostics.sh` gate covers unchanged paused
+observations, immediate resumed status, raw playback transitions, exact FLAC
+coverage reasons without altered acceptance, native callback return/data
+preservation, bounded timing summaries, last-observed NLM context, and guarded
+client diagnostics with identifier privacy. It passed in one execution: the
+Windows executable and Node VM test both completed successfully. No test was
+rerun and no broad Linux/Windows regression suite was executed. Existing vendor
+warnings were not suppressed. Independent static review found no blocker.
+The subsequent `bash build-native.sh` production DLL/launcher build passed.
+
+The Windows media-service provider and NLM interception require live validation;
+synthetic callbacks cannot establish the cause of issue #12 or prove the absence
+of hook interference. At that initial gate the new DLL had not been installed;
+the subsequent release-candidate installation is documented below.
+
+
+## Default-off network compatibility patch
+
+`NetworkPatch=0` disables the legacy NLM patch at process startup, including when
+an older INI omits the key. Opting in with `1` requires a full Spotify restart.
+The disabled path returns before import inspection, IAT writes or initialization
+retry state; normal audio, menu and metadata startup remain separate. The
+existing atomic settings writer adds missing keys and preserves explicit choices,
+Unicode and unrelated sections. No live hook-detachment path was added.
+
+The focused `bash test-network-patch.sh` gate passed in one execution. It verified
+default/missing/explicit INI values, startup migration and Unicode/unknown-section
+preservation, disabled invalid-pointer/import bypass, normal/delay import opt-in
+and active delay-slot repair. It uses synthetic import tables and an isolated
+Unicode INI; it does not launch Spotify or contact a network service. No previous
+test gate or full suite was rerun for this follow-up. The subsequent
+`bash build-native.sh` production DLL/launcher build passed with existing vendor
+warnings visible. The current Windows release's compatibility with the enabled
+patch and the cause of issue #12 remain unverified. Subsequent startup
+installation evidence is documented below.
+
+
+## 1.2.5-RC1 prerelease
+
+The candidate's native code matches the test build from `63d5eb6`. A production
+DLL/launcher build after the final INI explanation change passed. On installed
+Spotify 1.3.6.1921, Launcher mode loaded the exact candidate DLL, exposed its
+startup-ready signal and a visible window. With `NetworkPatch=1`, `Log=1` and
+`DebugLog=1`, startup logs confirmed the delay-import patch and NetworkListManager
+hook installation. Other saved preferences were preserved.
+
+This is installation/startup evidence. Sustained playback reliability, the cause
+of the reported pauses and compatibility across Windows versions remain
+unverified. The published sample INI keeps `NetworkPatch=0`; opt-in requires a
+full Spotify restart. The two earlier targeted gates each passed once, and no
+test gate or broad regression suite was repeated for prerelease packaging.
+
+Prerelease artifact checks verified that the standalone DLL and Launcher ZIP's
+DLL exactly match the installed native build. The ZIP's 12-entry allowlist,
+CRC checks, binary hashes, default INI, six vendor licenses and both checksum
+manifests were verified. The package includes no personal INI, music, logs or
+private deployment scripts. These packaging checks do not extend playback or
+codec validation coverage.
+
+
+## Connect diagnostic context after RC1
+
+Static inspection of Spotify 1.3.6.1921 identified the cached
+`ConnectDevicesAPI.getConnectState()` shape and the PlayerAPI `action` event.
+Connect state describes the playback target; PlayerAPI's mapped snapshot omits
+an incoming command's sender. Logs therefore keep controller attribution unknown
+and only mark directly observed local client requests as local. They do not infer
+remote control from a device list or a missing local action.
+
+`DebugConnect=1` is gated by debug logging and the existing metadata collector.
+The focused `bash test-connect-diagnostics.sh` gate passed in one execution:
+the Windows INI fixture covered defaults, explicit opt-out, missing-key migration,
+Unicode/unknown-section preservation and capture-independent persistence. The
+Node VM fixture covered cached local/remote/unknown targets, honest unknown
+initiators, passive local requests, paused deduplication, bounded observations,
+opt-out and cleanup failure, accessor privacy and no additional network/control
+calls. No earlier gate or broad suite was rerun. Independent static review found
+no blocker. The subsequent `bash build-native.sh` DLL/launcher build passed;
+existing vendor warnings remained visible. The implementation has not been
+installed for live Connect validation.
+RC1's existing assets/tag and the running installation remain unchanged.
+
+
+## Decoded Connect request observer after RC1
+
+Static analysis located a common complete-JSON boundary for plain and compressed
+Connect requests. The compressed path finalizes its inflater before calling this
+boundary; observing only the feed return can miss trailing plaintext. Capability
+discovery checks the command-parser owner, unique string references, shared
+const-string adapter, input layout and the two complete-message returns. It
+excludes the compressed envelope and uses no fixed production RVAs.
+
+`DebugConnectMessages=0` keeps this optional native detour off. The requested
+implementation is read-only: original arguments, input storage, return value,
+last error, dispatch and acknowledgements remain with Spotify. A bounded summary
+records actions, message IDs and anonymous sender labels; receipt and execution
+are separate. No message rewrite mode is present.
+
+The single focused `bash test-decoded-connect.sh SPOTIFY_DLL` gate passed in one
+execution. It combined synthetic capability rejection cases, a static mapped
+copy of the installed Spotify 1.3.6.1921 DLL, bounded summary parsing, fake original
+callback forwarding, AL/last-error preservation, queue contention/overflow and
+redaction, raw-slot clearing, and isolated Unicode INI persistence. Independent
+static review found one exception-specification mismatch in test stubs; it was
+corrected before execution, then the review approved the gate. No test rerun or
+broad regression suite was performed. The production DLL/launcher build passed.
+A subsequent statically reviewed idle-path optimization avoids allocating and
+clearing a 16 KiB record when no observation is pending. The targeted runtime
+gate was not rerun after this final correction; its runtime behavior remains
+unverified. A final production DLL/launcher compilation after that correction
+passed with existing vendor warnings visible. The older network-option fixture has link stubs for the new startup dependency and is not
+rerun. Neither source-level review nor a synthetic callback establishes live
+hook safety, sender authenticity, successful execution or cross-version support.
+RC1's assets/tag and the running installation are unchanged.
+
+
+## Separate deep networking diagnostics (post-RC1)
+
+`DebugNetworking=0` is the default-off, restart-only master switch for the native
+decoded Connect hook and `Floggfy-networking.log`. Enabling it also requires
+`Log=1` and `DebugLog=1`. It supersedes the unshipped `DebugConnectMessages`
+option, which remains inert if retained as an unknown key in an old INI.
+The native observer/caller filters and unchanged original command forwarding
+remain. Known client state/local action summaries, native request summaries,
+our enrichment request/results and numeric capture/timing context go into a
+separate bounded queue on the existing logger worker. Neither raw messages,
+media, credentials, URLs nor real device identifiers are written. Renderer
+input must match exact field/value allowlists. UTC milliseconds, monotonic
+time, process/sequence numbers, operation IDs and anonymous sender labels
+support correlation; they do not establish command execution or pause causality.
+Each log retains at most 5 MiB by removing oldest whole lines. Queue losses
+are counted. Unsupported/unobserved paths stay unknown.
+
+`bash test-networking-log.sh SPOTIFY_DLL` **passed in one combined execution**:
+actual Windows file writing and whole-line eviction, default/missing/explicit
+settings, inert old-key behavior, Unicode/unknown-section persistence, master
+opt-out, logger queue isolation/contention/overflow accounting, timestamps,
+strict field rejection, bounded JSON/capability checks against a statically
+mapped Spotify 1.3.6.1921 DLL, fake callback argument/AL/LastError preservation,
+and Node enrichment request/result/status/latency, privacy, cached Connect,
+local-action cleanup and unchanged-paused-state cases. No Spotify DLL was
+executed or injected by this gate; no network request or playback command was
+sent. The earlier idle-drain optimization is now exercised by this combined
+gate's queue-draining fixture. No full suite or test rerun was performed.
+
+`bash build-native.sh` **passed** afterward for the production DLL and launcher.
+Existing vendor warnings remained visible. Independent static review found two
+fixture problems (shared INI directory and missing `wmain` return), corrected
+before the single test execution, and no production blocker. The only subsequent
+changes were documentation.
+
+The prior decoded-observer revision was installed on Spotify 1.3.6.1921 and
+reported observer activation and a responsive window. This new separate-log
+revision has **not been installed or live-tested**. Actual remote request
+receipts, artwork HTTP failure timing, prolonged playback, other Spotify/Windows
+versions and pause causality remain unverified. Earlier sections above describe
+historical builds and their limitations. RC1's tag/assets and the running
+installation are unchanged by this revision; no merge or release was performed.
+
+
+## Quiet hook timing summaries (post separate-log deployment)
+
+Routine nonempty counters previously generated one line per metric every ten
+seconds in both diagnostic logs. Routine intervals now drain counters silently
+when all maxima are below 10 ms and there are no zero-byte reads. Pauses,
+timeline jumps, native/capture/media-observation errors, zero-byte reads and
+maxima at/above 10 ms emit one compact summary. The cutoff is a reporting policy,
+not an audio acceptance rule or proof of a pause's cause. Measurements remain
+approximate intervals since the last drain; no additional hook or INI option
+was introduced and the original callbacks/capture predicates are unchanged.
+
+`bash test-playback-diagnostics.sh` **passed in one targeted execution** after
+implementation/static review: Windows original-callback semantics and existing
+pause/coverage checks plus deterministic short-timing suppression, one-line
+pause/error summaries, a threshold-crossing queue wait, empty-read reporting,
+counter drain behavior and debug opt-out. The Node client-observation fixture
+also passed. No full suite or test rerun ran; existing vendor warnings were
+visible. `bash build-native.sh` then passed for the production DLL/launcher.
+The quieter build was not installed, preserving the active playback test;
+no live timing-reduction result is claimed by this gate.
+
+
+## Opt-in activity diagnostics and launcher architecture preflight
+
+`DebugHookDiagnostics=0` defaults off. With `DebugNetworking=1`, `Log=1` and
+`DebugLog=1`, setting it to `1` before a full restart enables bounded numeric
+menu/startup activity scopes and capture-worker progress sampling. Producers
+use 32 fixed slots and lock-free integer atomics, never allocating or writing
+logs in these scopes. Existing hooks/CEF callbacks still run normally; no new
+hook, thread, exception handler, thread suspension or memory dump is introduced.
+The existing logger worker reports completed spans >=10 ms, sampled spans still
+active >=250 ms, capture progress gaps >=1 s and recovery. Pending/stall reports
+repeat at most every 5 s and diagnostic-slot omissions are counted. These are
+wall-clock observations, not CPU profiling or proof of a pause cause. Logger,
+storage or whole-process stalls can delay/prevent reports. UI-thread and live
+interleaving behavior have not been validated on Spotify for this revision.
+
+The launcher now inspects both adjacent executable/DLL headers before stopping
+existing Spotify processes. Unsupported x86/ARM64 architectures and bounded
+header/read failures get specific errors. It requires complete architecture-
+specific optional-header reads and a present declared header/section-table
+extent; this is an architecture/header preflight, not full Windows loader or
+Spotify ABI compatibility validation. Automatic DLL mode also requires x64
+Spotify, but an incompatible DLL cannot run its own error-reporting code.
+
+`bash test-deep-diagnostics.sh` **passed once** after static review: deterministic
+short/slow/pending scope timing, repeat suppression, completed-slot reuse,
+stale-token rejection, bounded overflow, backwards-finish handling, progress-gap
+recovery, all diagnostic prerequisites/opt-out, scope `LastError` preservation,
+Unicode/missing-key settings persistence, and synthetic x86/ARM64/truncated/
+undersized PE rejection. Mixed-architecture `Launch()` cases fail before process
+control; no Spotify process or network operation was executed. Review identified
+an undersized optional-header acceptance path and incomplete fixtures; both were
+corrected before that single test execution. No test rerun/full suite occurred.
+Existing playback/capture/CEF suites were not rerun for this change.
+
+Both previously installed and prior built DLL imports were inspected: Windows
+system libraries, including `msvcrt.dll`, with no separate VCRUNTIME/MSVCP/GCC
+runtime DLL import. Build flags statically link libgcc/libstdc++ and do not request
+host-native/Intel-specific instruction extensions. This does not establish
+cross-machine compatibility or explain the issue reporter's startup failure.
+The targeted gate passed before one final static heartbeat-placement correction:
+worker progress now also advances after each processed decoder event, preventing
+an uninterrupted queue drain from looking stalled. That placement correction
+was not retested, respecting the one-execution limit. The production DLL/launcher
+build passed before and after it; final imports still contain no separate VC/GCC
+runtime DLL. Existing vendor warnings were left visible. The new activity timer
+uses Windows tick-count wall time with its native clock resolution; thresholds
+are approximate reporting cutoffs, not microsecond profiling or acceptance rules.
+This revision has not been installed; existing local test playback is preserved.
+
+
+## PR #13 review corrections: startup INI and diagnostic gating
+
+Ordinary menu persistence inserts missing startup defaults but preserves existing
+`NetworkPatch`, `DebugConnect`, `DebugNetworking` and `DebugHookDiagnostics`
+entries from the INI text read for that save. It does not copy the old in-memory
+startup values over those entries. The startup reader shares the INI section/key
+syntax, reads the bounded file once for these four flags, and requires an exact
+unquoted `1` after trimming spaces/tabs. Blank/malformed/duplicate entries fail
+closed; missing keys retain documented defaults. This does not provide a
+transaction against an editor modifying the file concurrently with replacement.
+Unknown sections, Unicode and the existing staged settings writer are retained.
+
+One effective `Log && DebugLog` condition now gates native callback/queue timers,
+diagnostic enqueueing, networking activity and the injected renderer options.
+The renderer option builder is shared with its targeted fixture. The shipped and
+generated INI group the dependent debug switches directly below logging and
+explain their prerequisites. README remains a short getting-started guide.
+
+Connect discovery is organized into named command-owner, input, parser-call and
+inflater-pipeline checks, with named layout constants/instruction comments.
+Byte patterns, rejection statuses, scan bounds, caller counts/order, validated
+adapter ABI and output return addresses are retained. No new Spotify layout or
+version capability is claimed.
+
+The focused review gate is `bash test-pr13-review.sh SPOTIFY_DLL`: isolated
+external-edit persistence/migration/Unicode/strict parsing and renderer-option
+fixtures, actual callback/queue timing opt-out, the existing native forwarding
+checks, bounded synthetic/mapped-client discovery, and the JavaScript debug
+fixture. It sends no playback command or network request and never executes the
+mapped Spotify DLL. Its execution result and tested commit are recorded in
+PR #13. No full regression suite is implied. Off/on live playback remains a
+separate required user validation before merge; the pause cause is unconfirmed.
+
+
+## Renderer diagnostic privacy follow-up
+
+The renderer status gateway validates before selecting a log or invoking the
+ordinary native failure classifier. Every reserved diagnostic prefix is claimed,
+including invalid/disabled/oversized input; it cannot fall back to raw console
+logging. Known status fields are sanitized both with and without deep networking.
+Two exact metadata lifecycle literals remain accepted; unknown status text is
+rejected. Embedded NULs and non-ASCII statuses are not truncated or converted
+lossily, and the temporary ASCII copy is cleared. Generic diagnostic/activity/
+networking APIs defensively route reserved prefixes through the same validator.
+This correction adds no hook, thread, network request or payload logging.
+
+The focused regression command is `bash test-renderer-privacy.sh`. It uses the
+actual renderer gateway, HistoryLog, every logger queue entry point, and actual
+file writing in an isolated directory. Cases cover all Log/DebugLog/networking
+mode combinations; malformed connect/control/unknown statuses containing native
+failure keywords; oversized, Unicode, NUL and numeric/enum rejection; positive
+canonical routing; two fixed startup messages; and normal native failure logging
+without DebugLog. Exact commit and execution results are recorded in PR #13.
+No Spotify/CEF process or network operation is used by this fixture, and no full
+regression suite or live renderer integration is implied by that result.

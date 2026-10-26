@@ -11,6 +11,8 @@
 #include "album_artwork.h"
 #include "image_info.h"
 #include "history_settings.h"
+#include "collector_config.h"
+#include "async_log.h"
 #include "srw_guard.h"
 #include "vendor/minhook/include/MinHook.h"
 #include "../build/metadata_script.h"
@@ -62,8 +64,7 @@ static int PollDrop(Base* b){auto t=reinterpret_cast<PollTask*>(b);if(--t->refs)
 static int PollOne(Base* b){return reinterpret_cast<PollTask*>(b)->refs==1;}
 static int PollAny(Base* b){return reinterpret_cast<PollTask*>(b)->refs>0;}
 static std::wstring CollectorOptions() {
- const auto settings=GetSettings();
- return std::wstring(L"window.__floggfyConfig={metadata:")+(settings.metadata?L"true":L"false")+L",lyrics:"+(settings.lyrics?L"true":L"false")+L"};";
+ return BuildCollectorOptions(GetSettings());
 }
 static void PollExecute(Task*) {
  Frame* frame=nullptr;
@@ -236,8 +237,8 @@ static bool CurrentPlayback(const String* text) {
 static int Console(Display* self,Browser* b,int level,const String* text,const String* source,int line) {
  auto callback=metadata_callbacks.Enter();
  if(CurrentPlayback(text)){Release(b);return 1;}
- if(text&&text->length<100&&text->length>=15&&wmemcmp(text->str,L"FLOGGFY_STATUS:",15)==0){
-  std::wstring status(text->str,text->length);HistoryLog(Utf8(status).c_str());Release(b);return 1;
+ if(text&&text->str&&QueueRendererDiagnostic({text->str,text->length})) {
+  Release(b);return 1; // Reserved diagnostics never fall through to raw console logging.
  }
  if(Enqueue(text)){Release(b);return 1;}
  return console_callback.Original<int(*)(Display*,Browser*,int,const String*,const String*,int)>()(self,b,level,text,source,line);
