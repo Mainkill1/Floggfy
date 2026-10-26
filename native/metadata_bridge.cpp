@@ -237,14 +237,8 @@ static bool CurrentPlayback(const String* text) {
 static int Console(Display* self,Browser* b,int level,const String* text,const String* source,int line) {
  auto callback=metadata_callbacks.Enter();
  if(CurrentPlayback(text)){Release(b);return 1;}
- if(text&&text->str&&text->length<160&&text->length>=19&&wmemcmp(text->str,L"FLOGGFY_NETWORK_V1:",19)==0) {
-  if(NetworkingLoggingEnabled()) {
-   std::wstring summary(text->str,text->length);QueueDiagnostic(Utf8(summary).c_str());
-  }
-  Release(b);return 1;
- }
- if(text&&text->str&&text->length<100&&text->length>=15&&wmemcmp(text->str,L"FLOGGFY_STATUS:",15)==0){
-  std::wstring status(text->str,text->length);HistoryLog(Utf8(status).c_str());Release(b);return 1;
+ if(text&&text->str&&QueueRendererDiagnostic({text->str,text->length})) {
+  Release(b);return 1; // Reserved diagnostics never fall through to raw console logging.
  }
  if(Enqueue(text)){Release(b);return 1;}
  return console_callback.Original<int(*)(Display*,Browser*,int,const String*,const String*,int)>()(self,b,level,text,source,line);

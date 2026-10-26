@@ -47,6 +47,18 @@ static void Push(LogQueue& queue,const char* event,const char* text,bool network
  ReleaseSRWLockExclusive(&queue.lock);
  SetEvent(signal);
 }
+// Every renderer-origin path uses this before selecting a log. Nothing raw
+// reaches the ordinary failure classifier or either queue, even with deep mode off.
+static void RouteRendererDiagnostic(std::string_view text) noexcept {
+ if(!DebugLoggingEnabled())return;
+ std::string summary;
+ const auto kind=SanitizeRendererDiagnostic(text,summary);
+ if(kind==RendererDiagnosticKind::Invalid)return;
+ if(kind==RendererDiagnosticKind::Network&&NetworkingLoggingEnabled())
+  Push(network_queue,"network",summary.c_str(),true);
+ else if(text.substr(0,19)!="FLOGGFY_NETWORK_V1:")
+  Push(activity_queue,"debug",summary.c_str());
+}
 static bool Take(LogQueue& queue,Record& record) noexcept {
  AcquireSRWLockExclusive(&queue.lock);
  const bool ready=queue.count!=0;
@@ -122,20 +134,38 @@ bool WriteCappedLog(const std::wstring& path,const std::string& line){
 void StartLogger(){if(signal)return;signal=CreateEventW(nullptr,FALSE,FALSE,nullptr);if(!signal)return;auto thread=CreateThread(nullptr,0,Run,nullptr,0,nullptr);if(thread){SetThreadPriority(thread,THREAD_PRIORITY_BELOW_NORMAL);CloseHandle(thread);
  QueueNetworkingDiagnostic("direction=local source=session coverage=decoded-connect,client-state,local-actions,own-enrichment unknown=other-traffic,command-execution mode=read-only raw-payloads=excluded credentials=excluded media=excluded");
 }else{CloseHandle(signal);signal=nullptr;}}
-void LogActivity(const char* event,const std::string& detail){if(LoggingEnabled())Push(activity_queue,event,detail.c_str());}
+void LogActivity(const char* event,const std::string& detail) {
+ if(!LoggingEnabled())return;
+ if(IsRendererDiagnostic(std::string_view(detail))) {RouteRendererDiagnostic(detail);return;}
+ Push(activity_queue,event,detail.c_str());
+}
 void QueueNetworkingDiagnostic(const char* message) noexcept {
- if(message&&NetworkingLoggingEnabled())Push(network_queue,"network",message,true);
+ if(!message||!NetworkingLoggingEnabled())return;
+ const std::string_view text(message,strnlen(message,768));
+ if(IsRendererDiagnostic(text)) {RouteRendererDiagnostic(text);return;}
+ Push(network_queue,"network",message,true);
+}
+bool QueueRendererDiagnostic(std::wstring_view message) noexcept {
+ if(!IsRendererDiagnostic(message))return false;
+ if(!DebugLoggingEnabled())return true;
+ const bool request=message.substr(0,19)==L"FLOGGFY_NETWORK_V1:";
+ if(message.size()>(request?159u:99u))return true;
+ char ascii[160]{};
+ for(size_t i=0;i<message.size();++i) {
+  if(message[i]==0||message[i]>127) {
+   SecureZeroMemory(ascii,sizeof(ascii));return true; // No NUL truncation or lossy conversion.
+  }
+  ascii[i]=char(message[i]);
+ }
+ RouteRendererDiagnostic({ascii,message.size()});
+ SecureZeroMemory(ascii,sizeof(ascii));
+ return true;
 }
 void QueueDiagnostic(const char* message) {
  if(!message||!DebugLoggingEnabled())return;
  const std::string_view text(message,strnlen(message,768));
- const bool explicit_network=text.substr(0,19)=="FLOGGFY_NETWORK_V1:";
- if(explicit_network||(NetworkingLoggingEnabled()&&IsClientNetworking(text))) {
-  if(NetworkingLoggingEnabled()) {
-   std::string summary;
-   if(SummarizeClientNetworking(text,summary))QueueNetworkingDiagnostic(summary.c_str());
-  }
-  return;
+ if(IsRendererDiagnostic(text)) {
+  RouteRendererDiagnostic(text);return;
  }
  Push(activity_queue,"debug",message);
 }

@@ -1112,3 +1112,26 @@ fixture. It sends no playback command or network request and never executes the
 mapped Spotify DLL. Its execution result and tested commit are recorded in
 PR #13. No full regression suite is implied. Off/on live playback remains a
 separate required user validation before merge; the pause cause is unconfirmed.
+
+
+## Renderer diagnostic privacy follow-up
+
+The renderer status gateway validates before selecting a log or invoking the
+ordinary native failure classifier. Every reserved diagnostic prefix is claimed,
+including invalid/disabled/oversized input; it cannot fall back to raw console
+logging. Known status fields are sanitized both with and without deep networking.
+Two exact metadata lifecycle literals remain accepted; unknown status text is
+rejected. Embedded NULs and non-ASCII statuses are not truncated or converted
+lossily, and the temporary ASCII copy is cleared. Generic diagnostic/activity/
+networking APIs defensively route reserved prefixes through the same validator.
+This correction adds no hook, thread, network request or payload logging.
+
+The focused regression command is `bash test-renderer-privacy.sh`. It uses the
+actual renderer gateway, HistoryLog, every logger queue entry point, and actual
+file writing in an isolated directory. Cases cover all Log/DebugLog/networking
+mode combinations; malformed connect/control/unknown statuses containing native
+failure keywords; oversized, Unicode, NUL and numeric/enum rejection; positive
+canonical routing; two fixed startup messages; and normal native failure logging
+without DebugLog. Exact commit and execution results are recorded in PR #13.
+No Spotify/CEF process or network operation is used by this fixture, and no full
+regression suite or live renderer integration is implied by that result.

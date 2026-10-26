@@ -10,6 +10,7 @@
 #include "async_log.h"
 #include "srw_guard.h"
 #include "settings_file.h"
+#include "networking_summary.h"
 namespace history {
 static SRWLOCK lock=SRWLOCK_INIT;
 static Settings settings;
@@ -203,6 +204,12 @@ bool EnsureDirectory(const std::wstring& path) {
     return CreateDirectoryW(p.c_str(),nullptr) || GetLastError()==ERROR_ALREADY_EXISTS;
 }
 void HistoryLog(const char* message) {
+    if(!message)return;
+    // Renderer statuses are untrusted even when a caller uses this generic API.
+    // Validate and return before native failure-keyword classification can run.
+    if(IsRendererDiagnostic(std::string_view(message,strnlen(message,768)))) {
+        QueueDiagnostic(message);return;
+    }
     QueueDiagnostic(message);
     if(std::strstr(message,"failed") || std::strstr(message,"discarded") ||
        std::strstr(message,"rejected") || std::strstr(message,"overflow") ||

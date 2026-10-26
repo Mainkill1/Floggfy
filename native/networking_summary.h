@@ -46,10 +46,11 @@ inline bool Prefix(std::string_view& text,std::string_view prefix) {
     text.remove_prefix(prefix.size());return true;
 }
 }
-inline bool IsClientNetworking(std::string_view text) {
-    using networking_summary::Prefix;
-    return Prefix(text,"FLOGGFY_NETWORK_V1:")||Prefix(text,"FLOGGFY_STATUS:connect ")||
-        Prefix(text,"FLOGGFY_STATUS:control ")||Prefix(text,"FLOGGFY_STATUS:client obs ");
+inline bool IsRendererDiagnostic(std::string_view text) noexcept {
+    return text.substr(0,15)=="FLOGGFY_STATUS:"||text.substr(0,19)=="FLOGGFY_NETWORK_V1:";
+}
+inline bool IsRendererDiagnostic(std::wstring_view text) noexcept {
+    return text.substr(0,15)==L"FLOGGFY_STATUS:"||text.substr(0,19)==L"FLOGGFY_NETWORK_V1:";
 }
 inline bool SummarizeClientNetworking(std::string_view text,std::string& summary) noexcept {
     using namespace networking_summary;
@@ -85,5 +86,23 @@ inline bool SummarizeClientNetworking(std::string_view text,std::string& summary
         }
     }catch(...) {summary.clear();}
     return false;
+}
+enum class RendererDiagnosticKind {Invalid,Status,Network};
+inline RendererDiagnosticKind SanitizeRendererDiagnostic(std::string_view text,std::string& summary) noexcept {
+    summary.clear();
+    const bool request=text.substr(0,19)=="FLOGGFY_NETWORK_V1:";
+    if(!IsRendererDiagnostic(text)||text.size()>(request?159u:99u))return RendererDiagnosticKind::Invalid;
+    try {
+        // Fixed lifecycle messages are the only free-form statuses accepted.
+        // Never append renderer text to either literal.
+        if(text=="FLOGGFY_STATUS:metadata collector started") {
+            summary="metadata collector started";return RendererDiagnosticKind::Status;
+        }
+        if(text=="FLOGGFY_STATUS:cached player found") {
+            summary="cached player found";return RendererDiagnosticKind::Status;
+        }
+        if(SummarizeClientNetworking(text,summary))return RendererDiagnosticKind::Network;
+    }catch(...) {summary.clear();}
+    return RendererDiagnosticKind::Invalid;
 }
 }

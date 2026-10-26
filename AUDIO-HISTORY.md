@@ -242,6 +242,17 @@ are not invented. Audio targets are discovered from invariant decoder instructio
 and Windows x64 function metadata; missing or ambiguous matches disable capture.
 Menu integration checks its supported CEF version and structure sizes.
 
+Renderer console diagnostics use a dedicated bounded entry point. Reserved
+`FLOGGFY_STATUS:` / `FLOGGFY_NETWORK_V1:` messages are consumed even when rejected,
+and validated before log routing or native failure-keyword classification.
+Known client status fields use the same allowlist with deep networking on or off;
+only two fixed metadata lifecycle messages are accepted as plain status text.
+Unknown/malformed/oversized, embedded-NUL and non-ASCII renderer statuses are
+dropped. Direct generic logger calls with these reserved prefixes also use the
+same sanitizer, so failure words cannot copy a rejected payload into activity
+logs. Explicit enrichment request summaries still require deep mode. Native
+capture failures continue to log normally when `DebugLog=0` and `Log=1`.
+
 Activity and ordinary opt-in diagnostics are in `Floggfy.log` in the selected save
 root. Deep `DebugNetworking` observations use `Floggfy-networking.log` there;
 known client/Connect summaries move to that file while deep diagnostics are on.
