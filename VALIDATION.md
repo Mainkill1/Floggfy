@@ -1078,3 +1078,37 @@ runtime DLL. Existing vendor warnings were left visible. The new activity timer
 uses Windows tick-count wall time with its native clock resolution; thresholds
 are approximate reporting cutoffs, not microsecond profiling or acceptance rules.
 This revision has not been installed; existing local test playback is preserved.
+
+
+## PR #13 review corrections: startup INI and diagnostic gating
+
+Ordinary menu persistence inserts missing startup defaults but preserves existing
+`NetworkPatch`, `DebugConnect`, `DebugNetworking` and `DebugHookDiagnostics`
+entries from the INI text read for that save. It does not copy the old in-memory
+startup values over those entries. The startup reader shares the INI section/key
+syntax, reads the bounded file once for these four flags, and requires an exact
+unquoted `1` after trimming spaces/tabs. Blank/malformed/duplicate entries fail
+closed; missing keys retain documented defaults. This does not provide a
+transaction against an editor modifying the file concurrently with replacement.
+Unknown sections, Unicode and the existing staged settings writer are retained.
+
+One effective `Log && DebugLog` condition now gates native callback/queue timers,
+diagnostic enqueueing, networking activity and the injected renderer options.
+The renderer option builder is shared with its targeted fixture. The shipped and
+generated INI group the dependent debug switches directly below logging and
+explain their prerequisites. README remains a short getting-started guide.
+
+Connect discovery is organized into named command-owner, input, parser-call and
+inflater-pipeline checks, with named layout constants/instruction comments.
+Byte patterns, rejection statuses, scan bounds, caller counts/order, validated
+adapter ABI and output return addresses are retained. No new Spotify layout or
+version capability is claimed.
+
+The focused review gate is `bash test-pr13-review.sh SPOTIFY_DLL`: isolated
+external-edit persistence/migration/Unicode/strict parsing and renderer-option
+fixtures, actual callback/queue timing opt-out, the existing native forwarding
+checks, bounded synthetic/mapped-client discovery, and the JavaScript debug
+fixture. It sends no playback command or network request and never executes the
+mapped Spotify DLL. Its execution result and tested commit are recorded in
+PR #13. No full regression suite is implied. Off/on live playback remains a
+separate required user validation before merge; the pause cause is unconfirmed.

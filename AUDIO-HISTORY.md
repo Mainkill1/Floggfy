@@ -56,7 +56,9 @@ MaxBufferedMiB=500
   audio capture, metadata and menu startup remain independent. The option is
   loaded once at startup; no live detachment of COM hooks is attempted. Missing
   keys are added through the existing atomic settings writer, preserving other
-  INI content.
+  INI content. Ordinary menu saves preserve existing restart-only entries
+  (`NetworkPatch`, `DebugConnect`, `DebugNetworking`, `DebugHookDiagnostics`),
+  including edits made after startup; only missing keys receive defaults.
 - **Save Location:** empty defaults to the Windows Music known folder's `Spotify`
   subfolder, including redirected Music folders. A custom directory is accepted.
 - **FLAC/Ogg:** select which original source formats to retain. Enabling FLAC does
@@ -72,7 +74,9 @@ MaxBufferedMiB=500
   use the menu toggle to stop lyric discovery, cancel pending lyric work, and
   disable lyric enrichment while retaining other metadata and artwork.
 - **Log:** default on; started/failed/finished activity in the save root, capped at 5 MiB.
-- **DebugLog:** default off; opt-in diagnostic detail in the same bounded log.
+- **DebugLog:** default off; requires `Log=1`. With `Log=0`, native debug timers,
+  diagnostic queues and renderer debug observations stay disabled even when
+  `DebugLog=1`. Logging and debug options are grouped together in the INI.
 - **DebugConnect:** default `1`, active only with `Log=1`, `DebugLog=1` and
   `Metadata=1`. Set `0` and restart to disable basic cached Connect observations
   and the passive local client action observer. Deep `DebugNetworking=1` also
@@ -110,6 +114,14 @@ MaxBufferedMiB=500
 - **MaxBufferedMiB:** 8–512 MiB, default 500, limits compressed capture allocations.
   There is also an approximately 8 MiB event queue, artwork, and a temporary
   completed-file buffer during native tagging. Oversized tracks are discarded.
+
+The four restart-only switches above accept only an unquoted `1` (surrounding
+spaces/tabs are allowed). `0`, blank, malformed and duplicate entries disable
+the corresponding observation/patch; invalid existing entries are not rewritten
+by menu saves. Missing keys use their documented defaults (`DebugConnect=1`,
+the other three `0`). Changes still require a full restart. Preservation applies
+to the INI text read for that save; simultaneous writes from an external editor
+are not a cross-process transaction.
 
 ## Files and duplicates
 

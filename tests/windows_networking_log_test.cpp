@@ -72,10 +72,10 @@ static void QueueAndSettings() {
 
     const std::wstring path=root+L"\\SpotifyHistory.ini";
     assert(CreateDefaultIni(path));Settings parsed;
-    assert(!ReadNetworkingOption(parsed,path)&&!parsed.debug_networking);
+    assert(!ReadRestartOptions(parsed,path)&&!parsed.debug_networking);
     assert(WritePrivateProfileStringW(L"To Disk",L"DebugNetworking",nullptr,path.c_str()));
     assert(WritePrivateProfileStringW(L"To Disk",L"DebugConnectMessages",L"1",path.c_str()));
-    assert(ReadNetworkingOption(parsed,path)&&!parsed.debug_networking);
+    assert(ReadRestartOptions(parsed,path)&&!parsed.debug_networking);
     assert(WritePrivateProfileStringW(L"Other",L"Keep",L"\u97f3\u697d",path.c_str()));
     assert(WritePrivateProfileStringW(L"To Disk",L"Save Location",exe.substr(0,exe.find_last_of(L'\\')).c_str(),path.c_str()));
     InitSettings(nullptr);assert(!NetworkingLoggingEnabled()&&FlushSettings(5000));

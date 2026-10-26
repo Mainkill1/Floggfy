@@ -11,6 +11,7 @@
 #include "album_artwork.h"
 #include "image_info.h"
 #include "history_settings.h"
+#include "collector_config.h"
 #include "async_log.h"
 #include "srw_guard.h"
 #include "vendor/minhook/include/MinHook.h"
@@ -63,12 +64,7 @@ static int PollDrop(Base* b){auto t=reinterpret_cast<PollTask*>(b);if(--t->refs)
 static int PollOne(Base* b){return reinterpret_cast<PollTask*>(b)->refs==1;}
 static int PollAny(Base* b){return reinterpret_cast<PollTask*>(b)->refs>0;}
 static std::wstring CollectorOptions() {
- const auto settings=GetSettings();
- return std::wstring(L"window.__floggfyConfig={metadata:")+(settings.metadata?L"true":L"false")+
-  L",lyrics:"+(settings.lyrics?L"true":L"false")+
-  L",debug:"+(settings.debug_log?L"true":L"false")+
-  L",connect:"+((settings.debug_connect||settings.debug_networking)&&settings.log?L"true":L"false")+
-  L",networking:"+(NetworkingLoggingEnabled()?L"true":L"false")+L"};";
+ return BuildCollectorOptions(GetSettings());
 }
 static void PollExecute(Task*) {
  Frame* frame=nullptr;

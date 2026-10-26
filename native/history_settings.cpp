@@ -3,6 +3,7 @@
 #include <shobjidl.h>
 #include <shlobj.h>
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cwchar>
 #include <cstring>
@@ -54,21 +55,27 @@ static constexpr char default_ini[]=
     "Lyrics=1\r\n"
     "; Allows metadata-only upgrades to existing saved files.\r\n"
     "UpdateExistingMetadata=1\r\n"
-    "; Activity log in Save Location, capped at 5 MiB.\r\n"
+    "\r\n"
+    "; Logging: writes Floggfy.log in Save Location, capped at 5 MiB.\r\n"
+    "; Log=0 also disables ALL debug output, hooks and timing instrumentation below.\r\n"
     "Log=1\r\n"
+    "\r\n"
+    "; Debug options require Log=1. Fully restart Spotify after INI edits.\r\n"
+    "; Adds troubleshooting details to Floggfy.log. Normal activity needs no debug mode.\r\n"
     "DebugLog=0\r\n"
-    "; With DebugLog=1, log playback-device changes and local client control requests.\r\n"
-    "; Remote command senders may be unknown. Device names and IDs are not logged.\r\n"
+    "; Requires DebugLog=1 and Metadata=1: cached playback target and local actions.\r\n"
+    "; Use exactly 1 to enable. Device names/IDs are omitted; senders may be unknown.\r\n"
     "DebugConnect=1\r\n"
     "; Deep read-only networking diagnostics; default off. Fully restart after edits.\r\n"
-    "; Requires Log=1 and DebugLog=1. 0 disables the decoded-message hook and this log.\r\n"
+    "; Requires Log=1 and DebugLog=1. Use exactly 1 to enable; 0/invalid values disable.\r\n"
+    "; Disabled means no decoded-message hook and no networking log.\r\n"
     "; 1 writes Floggfy-networking.log in Save Location (5 MiB, oldest lines removed).\r\n"
     "; Summarizes known Connect/control and enrichment I/O with timing for correlation.\r\n"
     "; No raw messages, media, credentials, URLs, device names or device IDs are logged.\r\n"
     "; Unobserved traffic and command execution remain unknown; no commands are changed.\r\n"
     "DebugNetworking=0\r\n"
     "; Extra callback/stall diagnostics. Requires DebugNetworking=1, Log=1, DebugLog=1.\r\n"
-    "; Default off; restart. Slow/pending activities only; no dumps or raw payloads.\r\n"
+    "; Default off; exactly 1 enables. Slow/pending activities only; no dumps or raw payloads.\r\n"
     "DebugHookDiagnostics=0\r\n"
     "\r\n"
     "[History]\r\n"
@@ -98,31 +105,41 @@ static bool ReadFilenameOptions(Settings& target,const std::wstring& path) {
     }
     return needs_persist;
 }
-// Old installations without the key also default off. Queue an atomic write
-// to make the opt-in discoverable without replacing unrelated INI preferences.
-static bool ReadNetworkPatchOption(Settings& target,const std::wstring& path) {
-    wchar_t value[2]{};
-    const bool present=GetPrivateProfileStringW(L"To Disk",L"NetworkPatch",L"",value,2,path.c_str())!=0;
-    target.network_patch=GetPrivateProfileIntW(L"To Disk",L"NetworkPatch",0,path.c_str())!=0;
-    return !present;
+// INI-only preferences are read once. Persistence inserts missing defaults,
+// but never writes a stale startup snapshot over values edited before restart.
+struct RestartFlag {
+    const wchar_t* key;
+    bool Settings::* member;
+    bool default_value;
+};
+static constexpr std::array<RestartFlag,4> restart_flags{{
+    {L"NetworkPatch",&Settings::network_patch,false},
+    {L"DebugConnect",&Settings::debug_connect,true},
+    {L"DebugNetworking",&Settings::debug_networking,false},
+    {L"DebugHookDiagnostics",&Settings::debug_hook_diagnostics,false}
+}};
+static bool ReadRestartOptionsText(Settings& target,std::wstring_view text) {
+    bool missing=false;
+    for(const auto& flag:restart_flags) {
+        const auto value=settings_file::Find(text,flag.key);
+        missing=missing||!value.present;
+        target.*(flag.member)=!value.present?flag.default_value:
+            !value.duplicate&&value.value==L"1";
+    }
+    return missing;
 }
-static bool ReadDebugConnectOption(Settings& target,const std::wstring& path) {
-    wchar_t value[2]{};
-    const bool present=GetPrivateProfileStringW(L"To Disk",L"DebugConnect",L"",value,2,path.c_str())!=0;
-    target.debug_connect=GetPrivateProfileIntW(L"To Disk",L"DebugConnect",1,path.c_str())!=0;
-    return !present;
+static bool ReadRestartOptions(Settings& target,const std::wstring& path) {
+    std::wstring text;bool unicode=false;
+    if(!settings_file::Read(path,text,unicode)) {
+        for(const auto& flag:restart_flags)target.*(flag.member)=false;
+        return false;
+    }
+    return ReadRestartOptionsText(target,text);
 }
-static bool ReadNetworkingOption(Settings& target,const std::wstring& path) {
-    wchar_t value[2]{};
-    const bool present=GetPrivateProfileStringW(L"To Disk",L"DebugNetworking",L"",value,2,path.c_str())!=0;
-    target.debug_networking=GetPrivateProfileIntW(L"To Disk",L"DebugNetworking",0,path.c_str())!=0;
-    return !present;
-}
-static bool ReadHookDiagnosticsOption(Settings& target,const std::wstring& path) {
-    wchar_t value[2]{};
-    const bool present=GetPrivateProfileStringW(L"To Disk",L"DebugHookDiagnostics",L"",value,2,path.c_str())!=0;
-    target.debug_hook_diagnostics=GetPrivateProfileIntW(L"To Disk",L"DebugHookDiagnostics",0,path.c_str())!=0;
-    return !present;
+static void InsertMissingRestartDefaults(std::wstring& text) {
+    for(const auto& flag:restart_flags)
+        if(!settings_file::Find(text,flag.key).present)
+            settings_file::Set(text,flag.key,flag.default_value?L"1":L"0");
 }
 static bool ReachedGeneration(volatile LONG& progress,unsigned expected) {
     return static_cast<LONG>(unsigned(InterlockedCompareExchange(&progress,0,0))-expected)>=0;
@@ -143,10 +160,7 @@ static DWORD WINAPI PersistSettings(LPVOID) {
                 auto flag=[&](const wchar_t* key,bool value){settings_file::Set(text,key,value?L"1":L"0");};
                 flag(L"Downloads",snapshot.downloads);flag(L"Ogg",snapshot.ogg);flag(L"FLAC",snapshot.flac);flag(L"AAC",snapshot.aac);flag(L"Lyrics",snapshot.lyrics);
                 flag(L"UpdateExistingMetadata",snapshot.update_existing_metadata);
-                flag(L"NetworkPatch",snapshot.network_patch);
-                flag(L"DebugConnect",snapshot.debug_connect);
-                flag(L"DebugNetworking",snapshot.debug_networking);
-                flag(L"DebugHookDiagnostics",snapshot.debug_hook_diagnostics);
+                InsertMissingRestartDefaults(text);
                 flag(L"TrackNumberInFilename",snapshot.track_number_in_filename);
                 flag(L"ConvertNumberedFilenames",snapshot.convert_numbered_filenames && !snapshot.track_number_in_filename);
                 settings_file::Set(text,L"Save Location",snapshot.save_location);
@@ -211,11 +225,8 @@ void InitSettings(HMODULE proxy) {
     settings.ogg=GetPrivateProfileIntW(L"To Disk",L"Ogg",1,ini.c_str())!=0;
     settings.flac=GetPrivateProfileIntW(L"To Disk",L"FLAC",1,ini.c_str())!=0;
     const bool filename_options_pending=ReadFilenameOptions(settings,ini);
-    const bool network_option_pending=ReadNetworkPatchOption(settings,ini);
-    const bool connect_option_pending=ReadDebugConnectOption(settings,ini);
-    const bool decoded_option_pending=ReadNetworkingOption(settings,ini);
-    const bool hook_diagnostics_pending=ReadHookDiagnosticsOption(settings,ini);
-    const bool startup_options_pending=filename_options_pending || network_option_pending || connect_option_pending || decoded_option_pending || hook_diagnostics_pending;
+    const bool restart_options_pending=ReadRestartOptions(settings,ini);
+    const bool startup_options_pending=filename_options_pending||restart_options_pending;
     settings.aac=GetPrivateProfileIntW(L"To Disk",L"AAC",0,ini.c_str())!=0;
     settings.metadata=GetPrivateProfileIntW(L"To Disk",L"Metadata",1,ini.c_str())!=0;
     settings.lyrics=GetPrivateProfileIntW(L"To Disk",L"Lyrics",1,ini.c_str())!=0;
@@ -253,8 +264,8 @@ Settings GetSettings() {
     SharedSrw guard(lock);return settings;
 }
 bool LoggingEnabled() { return log_enabled!=0; }
-bool DebugLoggingEnabled() { return debug_enabled!=0; }
-bool NetworkingLoggingEnabled() { return networking_enabled!=0 && LoggingEnabled() && DebugLoggingEnabled(); }
+bool DebugLoggingEnabled() { return DiagnosticsEnabled(log_enabled!=0,debug_enabled!=0); }
+bool NetworkingLoggingEnabled() { return networking_enabled!=0 && DebugLoggingEnabled(); }
 bool HookDiagnosticsEnabled() { return hook_diagnostics_enabled!=0 && NetworkingLoggingEnabled(); }
 bool OggEnabled() { return downloads_enabled && ogg_enabled; }
 bool FlacEnabled() { return downloads_enabled && flac_enabled; }

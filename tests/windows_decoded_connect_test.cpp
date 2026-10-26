@@ -35,15 +35,15 @@ void DecodedSettings() {
     wchar_t executable[32768];assert(GetModuleFileNameW(nullptr,executable,32768));
     const std::wstring exe=executable,ini=exe.substr(0,exe.find_last_of(L'\\'))+L"\\SpotifyHistory.ini";
     assert(history::CreateDefaultIni(ini));history::Settings parsed;
-    assert(!history::ReadNetworkingOption(parsed,ini)&&!parsed.debug_networking);
+    assert(!history::ReadRestartOptions(parsed,ini)&&!parsed.debug_networking);
     assert(WritePrivateProfileStringW(L"To Disk",L"DebugNetworking",L"1",ini.c_str()));
-    assert(!history::ReadNetworkingOption(parsed,ini)&&parsed.debug_networking);
+    assert(!history::ReadRestartOptions(parsed,ini)&&parsed.debug_networking);
     assert(WritePrivateProfileStringW(L"To Disk",L"DebugNetworking",nullptr,ini.c_str()));
-    assert(history::ReadNetworkingOption(parsed,ini)&&!parsed.debug_networking);
+    assert(history::ReadRestartOptions(parsed,ini)&&!parsed.debug_networking);
     assert(WritePrivateProfileStringW(L"Other",L"Keep",L"\u97f3\u697d",ini.c_str()));
     history::InitSettings(nullptr);assert(!history::GetSettings().debug_networking);
     assert(history::FlushSettings(5000)&&GetPrivateProfileIntW(L"To Disk",L"DebugNetworking",9,ini.c_str())==0);
-    {history::ExclusiveSrw guard(history::lock);history::settings.debug_networking=true;}
+    assert(WritePrivateProfileStringW(L"To Disk",L"DebugNetworking",L"1",ini.c_str()));
     const auto epoch=history::CaptureEpoch();assert(history::SetLyrics(false)&&history::FlushSettings(5000));
     assert(GetPrivateProfileIntW(L"To Disk",L"DebugNetworking",9,ini.c_str())==1&&history::CaptureEpoch()==epoch);
     wchar_t kept[16];assert(GetPrivateProfileStringW(L"Other",L"Keep",L"",kept,16,ini.c_str())==2&&std::wstring(kept)==L"\u97f3\u697d");

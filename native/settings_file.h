@@ -2,7 +2,9 @@
 #include <windows.h>
 #include <cstdint>
 #include <cstring>
+#include <cwchar>
 #include <string>
+#include <string_view>
 #include <vector>
 namespace history { namespace settings_file {
 inline constexpr size_t max_text_units=1024*1024;
@@ -77,6 +79,40 @@ inline std::wstring Trim(std::wstring text) {
     const auto first=text.find_first_not_of(L" \t\r");
     if(first==std::wstring::npos)return {};
     return text.substr(first,text.find_last_not_of(L" \t\r")-first+1);
+}
+struct IniValue {
+    bool present=false,duplicate=false;
+    std::wstring_view value;
+};
+inline std::wstring_view TrimView(std::wstring_view text) noexcept {
+    const auto first=text.find_first_not_of(L" \t\r");
+    if(first==std::wstring_view::npos)return {};
+    return text.substr(first,text.find_last_not_of(L" \t\r")-first+1);
+}
+inline bool EqualKey(std::wstring_view text,const wchar_t* key) noexcept {
+    const auto length=std::wcslen(key);
+    return text.size()==length&&_wcsnicmp(text.data(),key,length)==0;
+}
+// Read the same section/key syntax used by Set, including empty values. Views
+// borrow text; duplicate startup opt-ins are ambiguous and must not enable hooks.
+inline IniValue Find(std::wstring_view text,const wchar_t* key) noexcept {
+    bool inside=false;IniValue result;
+    for(size_t position=0;position<text.size();) {
+        const auto end=text.find(L'\n',position);
+        const auto finish=end==std::wstring_view::npos?text.size():end;
+        const auto line=TrimView(text.substr(position,finish-position));
+        if(!line.empty()&&line.front()==L'['&&line.back()==L']') {
+            inside=EqualKey(line,L"[To Disk]");
+        }else if(inside&&!line.empty()&&line.front()!=L';') {
+            const auto equal=line.find(L'=');
+            if(equal!=std::wstring_view::npos&&EqualKey(TrimView(line.substr(0,equal)),key)) {
+                if(result.present)result.duplicate=true;
+                else {result.present=true;result.value=TrimView(line.substr(equal+1));}
+            }
+        }
+        position=end==std::wstring_view::npos?text.size():end+1;
+    }
+    return result;
 }
 inline void Set(std::wstring& text,const wchar_t* key,const std::wstring& value) {
     bool inside=false,found_section=false,found_key=false;

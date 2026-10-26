@@ -13,6 +13,7 @@ struct Settings {
     unsigned max_buffered_mib=500,generation=0,capture_epoch=0;
     std::wstring root,save_location;
 };
+inline bool DiagnosticsEnabled(bool log,bool debug_log) noexcept {return log&&debug_log;}
 void InitSettings(HMODULE proxy);
 Settings GetSettings();
 bool SetDownloads(bool enabled);

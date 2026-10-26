@@ -50,11 +50,11 @@ static void GatingAndSettings() {
     wchar_t exe[32768];assert(GetModuleFileNameW(nullptr,exe,32768));
     const std::wstring full=exe,path=full.substr(0,full.find_last_of(L'\\'))+L"\\SpotifyHistory.ini";
     assert(CreateDefaultIni(path));Settings parsed;
-    assert(!ReadHookDiagnosticsOption(parsed,path)&&!parsed.debug_hook_diagnostics);
+    assert(!ReadRestartOptions(parsed,path)&&!parsed.debug_hook_diagnostics);
     assert(WritePrivateProfileStringW(L"To Disk",L"DebugHookDiagnostics",L"1",path.c_str()));
-    assert(!ReadHookDiagnosticsOption(parsed,path)&&parsed.debug_hook_diagnostics);
+    assert(!ReadRestartOptions(parsed,path)&&parsed.debug_hook_diagnostics);
     assert(WritePrivateProfileStringW(L"To Disk",L"DebugHookDiagnostics",nullptr,path.c_str()));
-    assert(ReadHookDiagnosticsOption(parsed,path)&&!parsed.debug_hook_diagnostics);
+    assert(ReadRestartOptions(parsed,path)&&!parsed.debug_hook_diagnostics);
     assert(WritePrivateProfileStringW(L"Other",L"Keep",L"\u97f3\u697d",path.c_str()));
     InitSettings(nullptr);assert(!HookDiagnosticsEnabled()&&FlushSettings(5000));
     assert(GetPrivateProfileIntW(L"To Disk",L"DebugHookDiagnostics",9,path.c_str())==0);

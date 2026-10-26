@@ -137,6 +137,19 @@ void TimingVerbosity() {
     LogTiming(TimingReason::Failure);assert(diagnostics.empty());
     InterlockedExchange(&history::debug_enabled,1);
 }
+void LoggingDisabled() {
+    InterlockedExchange(&history::log_enabled,0);InterlockedExchange(&history::debug_enabled,1);
+    diagnostics.clear();
+    {
+        NativeTimer timer(native_read_timing);assert(timer.began==0);timer.Finish();
+        QueueGuard guard;assert(guard.began==0&&guard.acquired==0);
+    }
+    assert(native_read_timing.count.load()==0&&producer_wait_timing.count.load()==0);
+    PlaybackDiagnostics playback;Media media;media.title=L"Song";media.playing=true;media.playback_status=4;
+    playback.Observe(media,10,1);LogTiming(TimingReason::Failure);
+    assert(diagnostics.empty()&&!playback.known&&!StatusDue(10,0,media,false));
+    InterlockedExchange(&history::log_enabled,1);
+}
 void Connectivity() {
     assert(!LastConnectivity().known);
     RecordConnectivity({true,true,0,0x20,0x40,10});auto value=LastConnectivity();
@@ -158,7 +171,7 @@ void EnrichTags(const Media&,Tags&){}
 int wmain() {
     // Use in-memory preferences only. Never read or write the user's INI/music.
     InterlockedExchange(&history::debug_enabled,1);
-    Connectivity();ObservePlayback();CoverageAndFailures();HookBoundaries();TimingVerbosity();
+    Connectivity();ObservePlayback();CoverageAndFailures();HookBoundaries();TimingVerbosity();LoggingDisabled();
     puts("PASS: paused dedup/resume, observed transitions, exact coverage reasons, original callback semantics, bounded hook metrics and NLM observations");
     return 0;
 }

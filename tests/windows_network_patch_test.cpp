@@ -62,20 +62,20 @@ void Settings() {
     assert(history::CreateDefaultIni(path));
     assert(GetPrivateProfileIntW(L"To Disk",L"NetworkPatch",9,path.c_str())==0);
     history::Settings parsed;
-    assert(!history::ReadNetworkPatchOption(parsed,path)&&!parsed.network_patch);
+    assert(!history::ReadRestartOptions(parsed,path)&&!parsed.network_patch);
     assert(WritePrivateProfileStringW(L"To Disk",L"NetworkPatch",L"1",path.c_str()));
-    assert(!history::ReadNetworkPatchOption(parsed,path)&&parsed.network_patch);
+    assert(!history::ReadRestartOptions(parsed,path)&&parsed.network_patch);
     assert(WritePrivateProfileStringW(L"To Disk",L"NetworkPatch",L"0",path.c_str()));
-    assert(!history::ReadNetworkPatchOption(parsed,path)&&!parsed.network_patch);
+    assert(!history::ReadRestartOptions(parsed,path)&&!parsed.network_patch);
     assert(WritePrivateProfileStringW(L"To Disk",L"NetworkPatch",nullptr,path.c_str()));
-    assert(history::ReadNetworkPatchOption(parsed,path)&&!parsed.network_patch);
+    assert(history::ReadRestartOptions(parsed,path)&&!parsed.network_patch);
     assert(WritePrivateProfileStringW(L"Other",L"Keep",L"\u97f3\u697d",path.c_str()));
     history::InitSettings(nullptr);
     assert(!history::GetSettings().network_patch&&history::GetSettings().downloads);
     assert(history::FlushSettings(5000));
     assert(GetPrivateProfileIntW(L"To Disk",L"NetworkPatch",9,path.c_str())==0);
-    // Simulate the startup snapshot from an explicitly opted-in installation.
-    {history::ExclusiveSrw guard(history::lock);history::settings.network_patch=true;}
+    // An external restart-only edit must survive an unrelated menu save.
+    assert(WritePrivateProfileStringW(L"To Disk",L"NetworkPatch",L"1",path.c_str()));
     const auto epoch=history::CaptureEpoch();assert(history::SetLyrics(false)&&history::FlushSettings(5000));
     assert(GetPrivateProfileIntW(L"To Disk",L"NetworkPatch",9,path.c_str())==1);
     assert(history::CaptureEpoch()==epoch&&history::GetSettings().downloads);
