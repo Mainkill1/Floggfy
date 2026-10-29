@@ -1,3 +1,7 @@
+The current consolidated diagnostics regression entry point is
+`bash test-diagnostics.sh [SPOTIFY_DLL]`. Earlier dated sections below preserve
+historical evidence and may name wrappers that this entry point has replaced.
+
 ## Release 1.2.4 handoff
 
 The maintainer approved merge and release after controlled use on Windows x64

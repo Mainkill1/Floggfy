@@ -28,7 +28,6 @@ static INIT_ONCE version_once = INIT_ONCE_STATIC_INIT;
 static HMODULE real_version;
 static bool spotify_main;
 static HMODULE proxy_module;
-static volatile LONG logged_results;
 static hooks::PendingModule pending_spotify;
 static hooks::InitController connectivity_init;
 
@@ -223,14 +222,7 @@ static HRESULT STDMETHODCALLTYPE ConnectionConnectivity(INetworkConnection* self
         if (SUCCEEDED(self->GetAdapterId(&adapter))) {
             DWORD flags = SyntheticAdapterConnectivity(adapter);
             if (flags) {
-                DWORD previous = static_cast<DWORD>(*out);
                 *out = static_cast<NLM_CONNECTIVITY>(previous | flags);
-                if (InterlockedIncrement(&logged_results) <= 16) {
-                    char message[160];
-                    snprintf(message, sizeof(message), "NLM compatibility override original=0x%lX synthetic=0x%lX; adapter has a usable address",
-                        static_cast<unsigned long>(previous), static_cast<unsigned long>(*out));
-                    Log(message);
-                }
             }
         }
     }

@@ -42,7 +42,7 @@ Save the music you play in Spotify on Windows.
 - `Menu=0` disables the menu; configured saving continues.
 - Playback tracking uses Spotify app state and track URIs, with Windows media sessions as a fallback.
 - `Metadata=0` disables enrichment while retaining app playback tracking.
-- `Log=1` writes `Floggfy.log` in your save folder. `DebugLog=1` adds troubleshooting details.
+- `Log=1` writes normal activity, warnings and failures to `Floggfy.log`. `DebugLog=1` writes optional detail only to `Floggfy-diagnostics.log`. Each file is capped at 5 MiB.
 - `NetworkPatch=1` enables a workaround for Windows incorrectly reporting no Internet. It defaults to `0`.
 - See [settings and troubleshooting](AUDIO-HISTORY.md) for all options, including advanced diagnostics.
 

@@ -131,7 +131,7 @@ static void Populate(Menu* menu) {
     if(MenuMethods::IndexOf(menu,root_id)>=0) return;
     if(!Main(menu)) {
         static volatile LONG logged=0;
-        if(InterlockedIncrement(&logged)<=3)
+        if(InterlockedCompareExchange(&logged,1,0)==0)
             history::LogEvent(history::LogKind::Warning,"warning","To Disk menu capability: top-level submenu structure not recognized");
         return;
     }

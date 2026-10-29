@@ -32,15 +32,12 @@ x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/wind
  native/async_log.cpp native/library_layout.cpp native/ogg_history_core.cpp native/image_info.cpp \
  native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp build/windows-tests/history-ogg.o \
  -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-history-test.exe"
-x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_log_test.cpp native/async_log.cpp \
- native/history_settings.cpp -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-log-test.exe"
 x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/windows-tests/metadata-ogg.o
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_metadata_identity_test.cpp -I native/vendor/libogg/include \
  native/rich_metadata.cpp native/cached_metadata.cpp native/cached_metadata_windows.cpp native/history_settings.cpp native/async_log.cpp \
  native/media_session.cpp native/album_artwork.cpp native/playback_quality_windows.cpp native/playback_quality.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/windows-tests/metadata-ogg.o build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 \
  -lruntimeobject -lwinhttp -o "$floggfy_test_root/windows-metadata-identity-test.exe"
 "$floggfy_test_root/windows-history-test.exe"
-"$floggfy_test_root/windows-log-test.exe"
 "$floggfy_test_root/windows-metadata-identity-test.exe"
 
 x86_64-w64-mingw32-g++ "${common[@]}" tests/cached_metadata_test.cpp native/cached_metadata.cpp native/rich_metadata.cpp -o "$floggfy_test_root/cached-metadata-test.exe"
@@ -146,4 +143,4 @@ bash test-album-artists.sh
 
 # Media-session recovery/diagnostics must not regress when publication changes.
 bash test-media-observer.sh
-bash test-playback-diagnostics.sh
+bash test-diagnostics.sh

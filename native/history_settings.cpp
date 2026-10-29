@@ -19,7 +19,7 @@ static bool IsMusic(std::wstring root) {
     return !music_path.empty() && (_wcsicmp(root.c_str(),music_path.c_str())==0 ||
         _wcsicmp(root.c_str(),(music_path+L"\\Spotify").c_str())==0);
 }
-static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,aac_enabled=0,capture_epoch=0,log_enabled=1,debug_enabled=0,networking_enabled=0,hook_diagnostics_enabled=0;
+static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,aac_enabled=0,capture_epoch=0,log_enabled=1,debug_enabled=0,networking_enabled=0,connect_logging_enabled=1,hook_diagnostics_enabled=0;
 static HANDLE settings_signal=nullptr,persist_done=nullptr;
 // A failed attempt is observable without acknowledging bytes never committed.
 static volatile LONG persisted_generation=-1,failed_generation=-1,persist_failed=0;
@@ -48,7 +48,7 @@ static constexpr char default_ini[]=
     "; Captures native FLAC when Spotify supplies lossless audio.\r\n"
     "Flac=1\r\n"
     "; AAC is usually a low-quality source; opt in explicitly.\r\n"
-    "AAC=0\r\n"
+    "Aac=0\r\n"
     "; Enables metadata enrichment using the local Spotify client.\r\n"
     "Metadata=1\r\n"
     "; Automatically obtains lyrics; Metadata=0 disables all enrichment.\r\n"
@@ -56,26 +56,28 @@ static constexpr char default_ini[]=
     "; Allows metadata-only upgrades to existing saved files.\r\n"
     "UpdateExistingMetadata=1\r\n"
     "\r\n"
-    "; Logging: writes Floggfy.log in Save Location, capped at 5 MiB.\r\n"
+    "; Normal activity, warnings and failures: Floggfy.log in Save Location (5 MiB).\r\n"
     "; Log=0 also disables ALL debug output, hooks and timing instrumentation below.\r\n"
     "Log=1\r\n"
     "\r\n"
     "; Debug options require Log=1. Fully restart Spotify after INI edits.\r\n"
-    "; Adds troubleshooting details to Floggfy.log. Normal activity needs no debug mode.\r\n"
+    "; Optional details go only to Floggfy-diagnostics.log (5 MiB), never Floggfy.log.\r\n"
     "DebugLog=0\r\n"
-    "; Requires DebugLog=1 and Metadata=1: cached playback target and local actions.\r\n"
+    "; Requires DebugLog=1: cached playback target and local actions.\r\n"
+    "; Set 0 to opt out, including when DebugNetworking=1.\r\n"
     "; Use exactly 1 to enable. Device names/IDs are omitted; senders may be unknown.\r\n"
     "DebugConnect=1\r\n"
     "; Deep read-only networking diagnostics; default off. Fully restart after edits.\r\n"
     "; Requires Log=1 and DebugLog=1. Use exactly 1 to enable; 0/invalid values disable.\r\n"
-    "; Disabled means no decoded-message hook and no networking log.\r\n"
-    "; 1 writes Floggfy-networking.log in Save Location (5 MiB, oldest lines removed).\r\n"
+    "; Disabled means no decoded-message hook or enrichment network observations.\r\n"
+    "; 1 adds networking observations to Floggfy-diagnostics.log.\r\n"
     "; Summarizes known Connect/control and enrichment I/O with timing for correlation.\r\n"
     "; No raw messages, media, credentials, URLs, device names or device IDs are logged.\r\n"
     "; Unobserved traffic and command execution remain unknown; no commands are changed.\r\n"
     "DebugNetworking=0\r\n"
     "; Extra callback/stall diagnostics. Requires DebugNetworking=1, Log=1, DebugLog=1.\r\n"
-    "; Default off; exactly 1 enables. Slow/pending activities only; no dumps or raw payloads.\r\n"
+    "; Default off; exactly 1 enables callback profiling and slow/pending activities.\r\n"
+    "; Basic DebugLog does no per-callback profiling; no dumps or raw payloads.\r\n"
     "DebugHookDiagnostics=0\r\n"
     "\r\n"
     "[History]\r\n"
@@ -237,7 +239,7 @@ void InitSettings(HMODULE proxy) {
     if(raw[0] && length && length<=4096) {settings.root=expanded;settings.save_location=raw;}
     settings.music_folder=IsMusic(settings.root);
     downloads_enabled=settings.downloads; ogg_enabled=settings.ogg; flac_enabled=settings.flac; aac_enabled=settings.aac;
-    log_enabled=settings.log;debug_enabled=settings.debug_log;networking_enabled=settings.debug_networking;hook_diagnostics_enabled=settings.debug_hook_diagnostics;
+    log_enabled=settings.log;debug_enabled=settings.debug_log;networking_enabled=settings.debug_networking;connect_logging_enabled=settings.debug_connect;hook_diagnostics_enabled=settings.debug_hook_diagnostics;
     StartLogger();
     settings_signal=CreateEventW(nullptr,FALSE,FALSE,nullptr);
     persist_done=CreateEventW(nullptr,FALSE,FALSE,nullptr);
@@ -260,6 +262,7 @@ Settings GetSettings() {
 }
 bool LoggingEnabled() { return log_enabled!=0; }
 bool DebugLoggingEnabled() { return DiagnosticsEnabled(log_enabled!=0,debug_enabled!=0); }
+bool ConnectLoggingEnabled() { return connect_logging_enabled!=0 && DebugLoggingEnabled(); }
 bool NetworkingLoggingEnabled() { return networking_enabled!=0 && DebugLoggingEnabled(); }
 bool HookDiagnosticsEnabled() { return hook_diagnostics_enabled!=0 && NetworkingLoggingEnabled(); }
 bool OggEnabled() { return downloads_enabled && ogg_enabled; }

@@ -73,44 +73,51 @@ MaxBufferedMiB=500
   existing client service, even with the lyrics panel closed. Set 0 in the INI or
   use the menu toggle to stop lyric discovery, cancel pending lyric work, and
   disable lyric enrichment while retaining other metadata and artwork.
-- **Log:** default on; started/failed/finished activity in the save root, capped at 5 MiB.
-- **DebugLog:** default off; requires `Log=1`. With `Log=0`, native debug timers,
-  diagnostic queues and renderer debug observations stay disabled even when
-  `DebugLog=1`. Logging and debug options are grouped together in the INI.
-- **DebugConnect:** default `1`, active only with `Log=1`, `DebugLog=1` and
-  `Metadata=1`. Set `0` and restart to disable basic cached Connect observations
-  and the passive local client action observer. Deep `DebugNetworking=1` also
-  enables these observations for its own log. No device discovery, playback
-  transfer or additional network request is performed.
-- **DebugNetworking:** deep diagnostics, default `0`. With `Log=1`, `DebugLog=1`
-  and a full restart, enables the read-only native decoded Connect observer and
-  separate `Floggfy-networking.log`. Set `0` and restart to disable both, even if
-  the previous experimental `DebugConnectMessages` key remains in an old INI.
-  Known incoming commands, local control requests, client playback/error changes,
-  numeric capture/timing observations and our enrichment request/results are
-  summarized. UTC milliseconds, monotonic time, process/sequence numbers and
-  anonymous peers allow correlation; receipt does not prove command execution
-  or identify a pause's cause. Raw payloads, media, credentials, URLs and real
-  device identifiers are excluded. Renderer summaries accept exact field/value
-  allowlists. The separate queue is bounded to 128 records; overflow/contention
-  omissions are counted. The existing logging worker writes both logs fairly;
-  each file is capped at 5 MiB and evicts oldest whole lines. Capture callbacks
-  never perform log-file I/O. Native observation is independent of `Metadata`
-  and `NetworkPatch`; client/enrichment coverage requires `Metadata=1`.
-  Unsupported layouts disable native observation; unobserved traffic remains
-  unknown. There is no general packet/TLS dump or command modification.
+- **Log:** default `1`; the master switch for both logs and all optional diagnostics.
+  `Floggfy.log` contains normal activity, warnings and actionable failures.
+- **DebugLog:** default `0`; requires `Log=1`. Optional playback, metadata and
+  troubleshooting detail goes only to `Floggfy-diagnostics.log`.
+- **DebugConnect:** default `1`; requires `Log=1` and `DebugLog=1`. Enables cached
+  Connect target observations and passive local action requests. `0` opts out of
+  those observations even with deep networking enabled. No discovery, playback
+  transfer or extra network request is performed. Basic playback identification
+  remains independent of this diagnostic option and of `Metadata`.
+- **DebugNetworking:** default `0`; requires `Log=1` and `DebugLog=1`. Enables the
+  read-only decoded Connect observer and allowlisted enrichment I/O observations
+  in the same diagnostics file. No raw payloads, media, credentials, URLs or
+  real device identifiers are written. Receipt is distinct from command execution;
+  unobserved traffic and initiators remain unknown. This optional decoded-message
+  hook is independent of `NetworkPatch` and the `DebugConnect` cached-state option.
 - **DebugHookDiagnostics:** default `0`; requires `DebugNetworking=1`, `Log=1`
-  and `DebugLog=1`, then a full restart. Tracks bounded numeric menu callback and
-  startup-hook activity, reporting completed spans at least 10 ms, sampled spans
-  still active after 250 ms, and capture-worker progress gaps of at least 1 s.
-  Timing uses Windows tick-count wall time and its clock resolution; these
-  reporting thresholds are approximate. Ongoing warnings repeat at most once
-  per five seconds; dropped diagnostic
-  scopes are counted. The existing logger worker samples up to 32 slots without
-  new hooks, threads, thread suspension, payload logging or memory dumps. Its
-  own I/O/process stalls can delay reports, so this cannot independently detect
-  every hang or prove why Spotify paused. Disabling the setting removes the
-  additional scope/heartbeat measurements. No capture acceptance rule changes.
+  and `DebugLog=1`. Enables callback and queue-lock profiling, interval timing
+  drains, slow/pending menu and startup spans, and capture-worker progress checks.
+  Basic debug mode performs no per-callback profiling. Completed spans at least
+  10 ms, pending spans after 250 ms, and worker progress gaps after 1 s are sampled
+  with bounded repeat reporting. These observations do not establish a crash or
+  change capture acceptance. There are no dumps or additional suspension hooks.
+  Launcher Windows Debug APIs remain required for startup/DLL-load synchronization.
+
+All debug keys retain their defaults and require a full Spotify restart after
+INI edits. `NetworkPatch` remains a separate startup option.
+
+| Effective settings | Normal file | Diagnostics file | Optional callback profiling |
+| --- | --- | --- | --- |
+| `Log=0` (any debug keys) | Off | Off | Off |
+| `Log=1`, `DebugLog=0` | Activity, warnings, failures | Off | Off |
+| `Log=1`, `DebugLog=1` | Same normal events | Playback and metadata detail | Off |
+| Above + `DebugConnect=1` | Same normal events | Adds cached Connect/local action observations | Off |
+| Above + `DebugNetworking=1` | Same normal events | Adds decoded command receipts and enrichment I/O | Off |
+| Above + `DebugHookDiagnostics=1` | Same normal events | Adds timing, slow/pending activity and progress observations | On |
+
+`DebugConnect=0` always disables its cached Connect/action observations;
+`DebugHookDiagnostics=0` always disables callback profiling. An unavailable save
+root is an operational failure, but cannot guarantee disk delivery into that same
+unavailable destination. Each current output has a 5 MiB cap. Normal and optional
+records use separate bounded 128-entry queues, so diagnostic saturation cannot use
+normal queue slots. One worker drains bounded batches fairly. Records retain their
+enqueue-time timestamps; per-queue omission summaries report contention/overflow
+without globally deduplicating real events.
+
 - **MaxBufferedMiB:** 8–512 MiB, default 500, limits compressed capture allocations.
   There is also an approximately 8 MiB event queue, artwork, and a temporary
   completed-file buffer during native tagging. Oversized tracks are discarded.
@@ -246,38 +253,29 @@ Renderer console diagnostics use a dedicated bounded entry point. Reserved
 `FLOGGFY_STATUS:` / `FLOGGFY_NETWORK_V1:` messages are consumed even when rejected,
 and validated before log routing or native failure-keyword classification.
 Known client status fields use the same allowlist with deep networking on or off;
-only two fixed metadata lifecycle messages are accepted as plain status text.
+retired readiness messages remain reserved and are consumed without output.
 Unknown/malformed/oversized, embedded-NUL and non-ASCII renderer statuses are
 dropped. Direct generic logger calls with these reserved prefixes also use the
 same sanitizer, so failure words cannot copy a rejected payload into activity
 logs. Explicit enrichment request summaries still require deep mode. Native
 capture failures continue to log normally when `DebugLog=0` and `Log=1`.
 
-Activity and ordinary opt-in diagnostics are in `Floggfy.log` in the selected save
-root. Deep `DebugNetworking` observations use `Floggfy-networking.log` there;
-known client/Connect summaries move to that file while deep diagnostics are on.
-Periodic debug status is emitted only during observed playback. Paused or stale
-media snapshots suppress that heartbeat; other diagnostics and activity remain.
-With `DebugLog=1`, transitions include the raw Windows playback state, timeline
-movement, observation time and sequence. The existing client collector also
-reports changes in available pause/buffering flags and bounded numeric error
-fields. Playback-instance/device identifiers are represented only as change
-flags; identifiers, response bodies and tokens are not logged. Missing or changed
-client fields appear as unknown. `Metadata=0` does not enable the collector just
-for diagnostics.
+Activity and outcomes have one producer-selected category and one destination.
+Message wording, track titles and paths never determine severity. Successful
+saves containing words such as “failed” or “unsupported” remain successful events.
+Normal save/upgrade/skip/metadata/start outcomes are not mirrored as diagnostic
+`SAVED`, `UPGRADED`, `SKIP`, `METADATA UPDATED` or `TRACK` confirmations.
+Supplemental diagnostic records contain additional facts such as source, timeline
+movement, raw status, capture epoch and queue lag. Optional private client fields
+are reduced to change flags or rejected by the renderer allowlists.
 
-FLAC errors distinguish native read/frame return values and decoder callbacks
-from Floggfy's capture-only coverage guard. Coverage diagnostics include expected
-and observed frame fields, covered samples, context, capture epoch and queue lag.
-Debug timing aggregates native callback durations and queue lock wait/hold times.
-Routine values below 10 ms produce no timing lines. A pause, timeline jump, error,
-zero-byte read or maximum at/above 10 ms produces one compact timing summary.
-The threshold controls reporting only; it does not diagnose failure or reject
-audio. These maxima cover the interval since the previous counter drain.
-Hooks record only counters and existing bounded events, and the worker formats
-these summaries. Counters/maxima are approximate interval observations under
-concurrency. Paused playback has no periodic timing/status heartbeat, while new
-errors and state changes remain visible.
+There is no routine ten-second status heartbeat and no diagnostic format-sniff
+capture detour. The FormatSniff discovery anchor and structural validation remain.
+FLAC errors emit one normal failure and, when enabled, one useful context record.
+Basic `DebugLog` does not measure native callbacks, queue-lock times or empty FLAC
+reads. With profiling explicitly enabled, counters and maxima are drained by a
+separate periodic timing interval, including during pauses; empty intervals stay
+silent. The logger performs file work; audio callbacks never do.
 
 Connect diagnostics read the already-created `ConnectDevicesAPI` snapshot and
 report `target=local`, `remote` or `unknown`, plus connection state and a device
@@ -312,7 +310,10 @@ sender labels are logged. Other fields and raw bodies are not written to disk.
 Queued payload bytes are cleared after consumption; sender correlation retains
 at most 32 bounded identifiers privately for this process. Depth/size limits and
 ambiguous selected JSON fields prevent summaries rather than affecting commands.
-Queue contention/overflow omits observations, never commands. `json_ok=1` means
+Unknown or unsummarizable decoded messages and omissions use bounded five-second
+aggregate counters instead of one line per message. Real identical command
+receipts remain distinct. Queue contention/overflow omits observations, never
+commands. `json_ok=1` means
 that the original JSON parser accepted syntax, not that dispatch succeeded.
 `execution=unobserved` explicitly separates receipt from the playback result.
 Sender fields are reported data, not authenticated human/device attribution.
@@ -325,8 +326,11 @@ installed. It does not perform another network request or establish that Spotify
 is reachable. A pause observation does not identify its initiator; neither a
 coverage rejection nor a client flag proves corrupted audio, a remote command,
 a service outage or a process crash. These read-only diagnostics add no playback controls or exception handlers.
-At 5 MiB, each log removes the oldest complete lines to make room for new
-entries. Logging and INI persistence use separate workers.
+At 5 MiB, compaction retains approximately 4 MiB of newest complete lines before
+adding the bounded incoming batch. This reclaims headroom rather than rewriting
+nearly 5 MiB for each line. Whole-line boundaries preserve UTF-8, and slow or
+unwritable destinations affect only the existing log worker. Logging and INI
+persistence use separate workers.
 Completed saves log the captured audio format/quality and final tagged file size
 in MiB and bytes. Upgrade, metadata-only update, skipped-file, changed-setting and
 failure outcomes are distinct. Equal/better existing audio is identified only
@@ -562,3 +566,49 @@ unsupported AAC input. None of these checks transcode, downsample or truncate au
 The bounded minimp4 muxer retains its upstream license in
 `native/vendor/minimp4`; no external player, decoder or network service is required
 for production AAC capture.
+
+## Logging cleanup regression gate
+
+Run `bash test-diagnostics.sh [SPOTIFY_DLL]` from WSL with the MinGW toolchain and
+Windows executable interop available. It covers explicit categories, queue/file
+isolation and saturation, renderer privacy and opt-outs, capped-log I/O counts,
+read-only decoded command handling and aggregation, basic/profiling callback work,
+format-detour removal, playback/quality guards, and exact embedded INI defaults.
+The optional DLL is mapped read-only for current-build discovery; it is not
+executed. Omit it to run synthetic discovery with an explicit skip of that check.
+Native portable regressions remain `bash test-native.sh`; the full Windows and
+startup/publication regressions remain `bash test-native-windows.sh`.
+
+Illustrative before/after output (synthetic names, timestamps omitted):
+
+Before, `Floggfy.log` with debug enabled:
+
+```text
+started Example Artist - Song
+debug TRACK Example Artist - Song
+debug SAVED ...Song.ogg
+finished Ogg Vorbis ... | Example Artist - Song
+debug FLAC decoder error; stream discarded
+failed FLAC decoder error; stream discarded
+```
+
+After, `Floggfy.log`:
+
+```text
+started Example Artist - Song
+finished Ogg Vorbis ... | Example Artist - Song
+failed FLAC decoder error; stream discarded
+```
+
+After, optional `Floggfy-diagnostics.log` adds facts rather than the save outcome:
+
+```text
+... source=spotify ... pos=0.018/231.000 ...
+... FLAC observation ... epoch=2 ... queue_lag_ms=0.5 ...
+... direction=local source=client-control request=pause source=local-client
+... direction=in service=connect ... action=pause ... execution=unobserved
+... direction=local source=client-state paused=1 buf=0 ...
+```
+
+Local action requests, received commands and observed playback states describe
+separate events. None alone identifies why playback paused.

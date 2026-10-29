@@ -35,8 +35,10 @@ static void EffectiveDebug() {
     }
     InterlockedExchange(&log_enabled,0);InterlockedExchange(&debug_enabled,1);
     signal=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(signal);
+    Settings opted_out;opted_out.log=true;opted_out.debug_log=true;opted_out.debug_networking=true;opted_out.debug_connect=false;
+    assert(BuildCollectorOptions(opted_out).find(L",connect:false,")!=std::wstring::npos);
     QueueDiagnostic("disabled debug");QueueNetworkingDiagnostic("disabled networking");
-    assert(activity_queue.count==0&&network_queue.count==0);
+    assert(activity_queue.count==0&&diagnostic_queue.count==0);
     CloseHandle(signal);signal=nullptr;
 }
 static void PreserveExternalEdits() {
