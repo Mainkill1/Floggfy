@@ -120,7 +120,7 @@ namespace history {
 void StartLogger(){}
 void QueueDiagnostic(const char* text){decoded_lines.emplace_back(text);}
 void QueueNetworkingDiagnostic(const char* text) noexcept {decoded_lines.emplace_back(text);}
-void LogActivity(const char*,const std::string&){}
+void LogEvent(LogKind,const char*,const std::string&){}
 }
 int wmain(int argc,wchar_t** argv) {
     assert(argc==2);TestConnectMessages();TestConnectHookDiscovery();RealDiscovery(argv[1]);DecodedSettings();CallbackBoundary();

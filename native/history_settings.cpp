@@ -10,7 +10,6 @@
 #include "async_log.h"
 #include "srw_guard.h"
 #include "settings_file.h"
-#include "networking_summary.h"
 namespace history {
 static SRWLOCK lock=SRWLOCK_INIT;
 static Settings settings;
@@ -176,7 +175,7 @@ static DWORD WINAPI PersistSettings(LPVOID) {
         if(ok)InterlockedExchange(&persisted_generation,LONG(generation));
         else InterlockedExchange(&failed_generation,LONG(generation));
         SetEvent(persist_done);
-        if(!ok)try{LogActivity("failed","settings persistence");}catch(...) {/* A logging allocation must not kill persistence retries. */}
+        if(!ok)try{LogEvent(LogKind::Failure,"failed","settings persistence; edits remain queued for retry");}catch(...) {/* A logging allocation must not kill persistence retries. */}
     }
 }
 bool FlushSettings(unsigned timeout_ms) {
@@ -203,30 +202,16 @@ bool EnsureDirectory(const std::wstring& path) {
     if(slash!=std::wstring::npos && slash>2 && !EnsureDirectory(path.substr(0,slash))) return false;
     return CreateDirectoryW(p.c_str(),nullptr) || GetLastError()==ERROR_ALREADY_EXISTS;
 }
-void HistoryLog(const char* message) {
-    if(!message)return;
-    // Renderer statuses are untrusted even when a caller uses this generic API.
-    // Validate and return before native failure-keyword classification can run.
-    if(IsRendererDiagnostic(std::string_view(message,strnlen(message,768)))) {
-        QueueDiagnostic(message);return;
-    }
-    QueueDiagnostic(message);
-    if(std::strstr(message,"failed") || std::strstr(message,"discarded") ||
-       std::strstr(message,"rejected") || std::strstr(message,"overflow") ||
-       std::strstr(message,"unsupported") || std::strstr(message,"stopped after"))
-        LogActivity("failed",message);
-}
 void InitSettings(HMODULE proxy) {
     wchar_t path[2048]; DWORD n=GetModuleFileNameW(proxy,path,2048);
     if(!n || n>=2048) return;
     wchar_t* slash=wcsrchr(path,L'\\'); if(!slash) return; *slash=0;
     ini=std::wstring(path)+L"\\SpotifyHistory.ini";
     DWORD attributes=GetFileAttributesW(ini.c_str());
-    if(attributes==INVALID_FILE_ATTRIBUTES &&
+    const bool default_ini_failed=attributes==INVALID_FILE_ATTRIBUTES &&
        (GetLastError()==ERROR_FILE_NOT_FOUND || GetLastError()==ERROR_PATH_NOT_FOUND) &&
-       !CreateDefaultIni(ini))
-        QueueDiagnostic("failed to create default SpotifyHistory.ini; using built-in settings");
-    if(!settings_file::Unicode(ini))QueueDiagnostic("failed to migrate settings; original file retained");
+       !CreateDefaultIni(ini);
+    const bool migration_failed=!settings_file::Unicode(ini);
     settings.downloads=GetPrivateProfileIntW(L"To Disk",L"Downloads",GetPrivateProfileIntW(L"History",L"Enabled",1,ini.c_str()),ini.c_str())!=0;
     settings.menu=GetPrivateProfileIntW(L"To Disk",L"Menu",1,ini.c_str())!=0;
     settings.ogg=GetPrivateProfileIntW(L"To Disk",L"Ogg",1,ini.c_str())!=0;
@@ -253,6 +238,7 @@ void InitSettings(HMODULE proxy) {
     settings.music_folder=IsMusic(settings.root);
     downloads_enabled=settings.downloads; ogg_enabled=settings.ogg; flac_enabled=settings.flac; aac_enabled=settings.aac;
     log_enabled=settings.log;debug_enabled=settings.debug_log;networking_enabled=settings.debug_networking;hook_diagnostics_enabled=settings.debug_hook_diagnostics;
+    StartLogger();
     settings_signal=CreateEventW(nullptr,FALSE,FALSE,nullptr);
     persist_done=CreateEventW(nullptr,FALSE,FALSE,nullptr);
     HANDLE thread=settings_signal&&persist_done ? CreateThread(nullptr,0,PersistSettings,nullptr,0,nullptr) : nullptr;
@@ -265,7 +251,9 @@ void InitSettings(HMODULE proxy) {
     // Missing options/conflict normalization are pending until Write succeeds.
     InterlockedExchange(&persisted_generation,startup_options_pending?-1:LONG(settings.generation));
     if(startup_options_pending && settings_signal)SetEvent(settings_signal);
-    StartLogger();
+    if(default_ini_failed)LogEvent(LogKind::Warning,"warning","default SpotifyHistory.ini could not be created; using built-in settings");
+    if(migration_failed)LogEvent(LogKind::Warning,"warning","settings Unicode migration could not be completed; original file retained");
+    if(!thread)LogEvent(LogKind::Failure,"failed","settings persistence worker unavailable; changes cannot be saved");
 }
 Settings GetSettings() {
     SharedSrw guard(lock);return settings;

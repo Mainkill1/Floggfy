@@ -4,7 +4,7 @@
 namespace history {
 void StartLogger(){}
 void QueueDiagnostic(const char*){}
-void LogActivity(const char*,const std::string&){}
+void LogEvent(LogKind,const char*,const std::string&){}
 }
 int wmain() {
     assert(history::Settings{}.debug_connect&&!history::Settings{}.debug_log);

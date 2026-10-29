@@ -59,7 +59,7 @@ struct CallbackHook {
   ReleaseSRWLockExclusive(&lock);
   if(status==MH_OK)status=MH_EnableHook(address);
   if(status==MH_OK||status==MH_ERROR_ENABLED){enabled.store(true,std::memory_order_release);return true;}
-  char line[180];snprintf(line,sizeof(line),"metadata callback %s unavailable: %s",name,MH_StatusToString(status));HistoryLog(line);
+  char line[180];snprintf(line,sizeof(line),"metadata callback %s unavailable: %s",name,MH_StatusToString(status));QueueDiagnostic(line);
   return false;
  }
  template<class F> F Original()const{return reinterpret_cast<F>(original.load(std::memory_order_acquire));}
@@ -143,9 +143,9 @@ static DWORD WINAPI EnrichmentWorker(LPVOID) {
    auto& metadata=job.metadata;
    auto preferences=GetSettings();
    if(!preferences.metadata || preferences.generation!=job.generation)continue;
-   try {EnrichStoredMetadata(metadata);}catch(...){HistoryLog("cached metadata unavailable; ordinary tags retained");}
+   try {EnrichStoredMetadata(metadata);}catch(...){QueueDiagnostic("cached metadata unavailable; ordinary tags retained");}
    if(!metadata.artwork_url.empty()) {
-    try {CacheAlbumArtwork(metadata.uri,metadata.artwork_url);}catch(...){HistoryLog("Spotify artwork unavailable; audio publication remains enabled");}
+    try {CacheAlbumArtwork(metadata.uri,metadata.artwork_url);}catch(...){QueueDiagnostic("Spotify artwork unavailable; audio publication remains enabled");}
    }
    preferences=GetSettings();
    if(!preferences.metadata || preferences.generation!=job.generation)continue;
@@ -157,7 +157,7 @@ static DWORD WINAPI EnrichmentWorker(LPVOID) {
      if(!preferences.lyrics)merged.fields.erase("LYRICS");
      cache.Put(merged);
     }}
-  }catch(...) {HistoryLog("metadata enrichment failed; current client metadata retained");}
+  }catch(...) {QueueDiagnostic("metadata enrichment failed; current client metadata retained");}
  }
  return 0;
 }
@@ -206,7 +206,7 @@ static DWORD WINAPI MetadataWorker(LPVOID) {
     if(!preferences.lyrics)metadata.fields.erase("LYRICS");
     cache.Put(metadata);}
    QueueEnrichment(metadata,preferences.generation);
-  }catch(...) {HistoryLog("metadata message failed; next client snapshot will retry");}
+  }catch(...) {QueueDiagnostic("metadata message failed; next client snapshot will retry");}
  }
  return 0;
 }
@@ -292,7 +292,6 @@ static void Inject(Frame* frame) {
  String code={const_cast<wchar_t*>(code_text.c_str()),code_text.size(),nullptr};
  const wchar_t name[]=L"floggfy-metadata.js";String source={const_cast<wchar_t*>(name),wcslen(name),nullptr};
  reinterpret_cast<void(*)(Frame*,const String*,const String*,int)>(frame->methods[14])(frame,&code,&source,1);
- HistoryLog("metadata script injected into main frame");
 }
 static void Loading(Load* self,Browser* b,int loading,int back,int forward){
  auto callback=metadata_callbacks.Enter();
@@ -317,10 +316,10 @@ static Load* GetLoad(Client* self){
  return result;
 }
 static Client* ObserveClient(Client* client){
- if(!client||client->base.size!=sizeof(Client)){HistoryLog("metadata client ABI unsupported; collector not attached");return client;}
+ if(!client||client->base.size!=sizeof(Client)){LogEvent(LogKind::Warning,"warning","metadata client ABI unsupported; collector not attached");return client;}
  const bool display=display_getter.Install(client->methods[4],reinterpret_cast<void*>(GetDisplay),"display getter");
  const bool load=load_getter.Install(client->methods[14],reinterpret_cast<void*>(GetLoad),"load getter");
- HistoryLog(display&&load?"metadata browser callbacks attached; original client preserved":"metadata browser callbacks unavailable; original client preserved");
+ if(!display||!load)LogEvent(LogKind::Warning,"warning","Spotify app observer callbacks unavailable; Windows media fallback may be required");
  return client;
 }
 using Create=int(*)(const void*,Client*,const String*,const void*,void*,void*);
@@ -408,7 +407,6 @@ void EnrichTags(const Media& media,Tags& tags) {
    // never to a cached text record or an unchanged embedded cover.
    tags.fields.erase(std::remove_if(tags.fields.begin(),tags.fields.end(),[](const auto& field){return field.first=="FLOGGFY_ARTWORK_SOURCE";}),tags.fields.end());
    tags.fields.push_back({"FLOGGFY_ARTWORK_SOURCE","spotify-client"});
-   HistoryLog(("artwork source=album width="+std::to_string(original.width)+" height="+std::to_string(original.height)).c_str());
   }
  }
 }
@@ -419,7 +417,7 @@ static void FinishMetadataStartup(bool applied,bool activation_attempted) {
  if(applied){
   metadata_polling.store(true,std::memory_order_release);SetEvent(message_event);
   CloseHandle(metadata_preparation_thread);metadata_preparation_thread=nullptr;metadata_init.Activate();
-  char line[160];snprintf(line,sizeof(line),"metadata collector active: found=%u created=%u enabled=%u",metadata_startup_counts.found,metadata_startup_counts.created,metadata_startup_counts.created);HistoryLog(line);
+  QueueDiagnostic("Spotify app observer ready");
   return;
  }
  // ApplyQueued can return after enabling only a prefix and resuming threads.
@@ -437,10 +435,10 @@ static void FinishMetadataStartup(bool applied,bool activation_attempted) {
   metadata_polling.store(false,std::memory_order_release);metadata_running.store(false,std::memory_order_release);SetEvent(message_event);
   const bool stopped=WaitForSingleObject(metadata_preparation_thread,5000)==WAIT_OBJECT_0;
   CloseHandle(metadata_preparation_thread);metadata_preparation_thread=nullptr;
-  if(stopped){CloseHandle(message_event);message_event=nullptr;HistoryLog("metadata startup activation failed; rollback complete; retry scheduled");metadata_init.Retry(now);return;}
+  if(stopped){CloseHandle(message_event);message_event=nullptr;LogEvent(LogKind::Warning,"warning","metadata startup activation failed; rollback complete; retry scheduled");metadata_init.Retry(now);return;}
  }
  if(metadata_preparation_thread){CloseHandle(metadata_preparation_thread);metadata_preparation_thread=nullptr;}
- HistoryLog("metadata startup activation failed or rollback unsafe; trampoline and worker state preserved and retries disabled");metadata_init.MarkUnsupported();
+ LogEvent(LogKind::Warning,"warning","metadata startup activation failed or rollback unsafe; trampoline and worker state preserved and retries disabled");metadata_init.MarkUnsupported();
 }
 void FinalizeMetadataCollector(bool applied) {FinishMetadataStartup(applied,true);}
 bool PrepareMetadataCollector(HMODULE cef) {
@@ -449,19 +447,19 @@ bool PrepareMetadataCollector(HMODULE cef) {
  // Basic app playback observation stays active when optional enrichment is disabled.
  auto address=GetProcAddress(cef,"cef_version_info");int(*version)(int)=nullptr;static_assert(sizeof(version)==sizeof(address));memcpy(&version,&address,sizeof(version));
  if(!version||!cef_compat::IsSupported({version(0),version(1),version(2),version(3)})){
-  HistoryLog("metadata CEF identity unsupported; revision is not in the audited compatibility table");metadata_init.MarkUnsupported();return false;
+  LogEvent(LogKind::Warning,"warning","metadata CEF identity unsupported; revision is not in the audited compatibility table");metadata_init.MarkUnsupported();return false;
  }
  auto post_address=GetProcAddress(cef,"cef_post_task");memcpy(&post_task,&post_address,sizeof(post_task));
- if(!post_task){HistoryLog("metadata collector unsupported: cef_post_task missing");metadata_init.MarkUnsupported();return false;}
+ if(!post_task){LogEvent(LogKind::Warning,"warning","metadata collector unsupported: cef_post_task missing");metadata_init.MarkUnsupported();return false;}
  message_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);
- if(!message_event){HistoryLog("metadata event allocation failed; retry scheduled");metadata_init.Retry(now);return false;}
+ if(!message_event){LogEvent(LogKind::Warning,"warning","metadata event allocation failed; retry scheduled");metadata_init.Retry(now);return false;}
  head=tail=count=0;
  metadata_polling.store(false,std::memory_order_release);metadata_running.store(true,std::memory_order_release);
  metadata_preparation_thread=CreateThread(nullptr,0,MetadataWorker,nullptr,0,nullptr);
- if(!metadata_preparation_thread){metadata_running.store(false,std::memory_order_release);CloseHandle(message_event);message_event=nullptr;HistoryLog("metadata worker startup failed; retry scheduled");metadata_init.Retry(now);return false;}
+ if(!metadata_preparation_thread){metadata_running.store(false,std::memory_order_release);CloseHandle(message_event);message_event=nullptr;LogEvent(LogKind::Warning,"warning","metadata worker startup failed; retry scheduled");metadata_init.Retry(now);return false;}
  metadata_prepared=true;metadata_startup_counts={};
  auto status=MH_Initialize();if(status==MH_ERROR_ALREADY_INITIALIZED)status=MH_OK;
- if(status!=MH_OK){HistoryLog("metadata MinHook initialization failed");FinishMetadataStartup(false,false);return false;}
+ if(status!=MH_OK){QueueDiagnostic("metadata MinHook initialization failed");FinishMetadataStartup(false,false);return false;}
  const char* names[]={"cef_browser_host_create_browser","cef_browser_host_create_browser_sync","cef_browser_view_create"};
  void* callbacks[]={reinterpret_cast<void*>(CreateHook),reinterpret_cast<void*>(SyncHook),reinterpret_cast<void*>(ViewHook)};
  void** originals[]={reinterpret_cast<void**>(&original_create),reinterpret_cast<void**>(&original_sync),reinterpret_cast<void**>(&original_view)};
@@ -469,11 +467,11 @@ bool PrepareMetadataCollector(HMODULE cef) {
  for(unsigned i=0;i<3;i++){
   auto target=reinterpret_cast<void*>(GetProcAddress(cef,names[i]));if(!target)continue;
   metadata_startup_counts.Found();status=MH_CreateHook(target,callbacks[i],originals[i]);metadata_startup_counts.Created(status==MH_OK);
-  if(status!=MH_OK){char line[200];snprintf(line,sizeof(line),"metadata hook %s create failed: %s",names[i],MH_StatusToString(status));HistoryLog(line);complete=false;continue;}
+  if(status!=MH_OK){char line[200];snprintf(line,sizeof(line),"metadata hook %s create failed: %s",names[i],MH_StatusToString(status));QueueDiagnostic(line);complete=false;continue;}
   metadata_startup_hooks.Add(target);
  }
  if(!complete||!metadata_startup_hooks.Size()||!hooks::QueueStartupHooks(metadata_startup_hooks)){
-  HistoryLog("metadata startup hook preparation unavailable");FinishMetadataStartup(false,false);return false;
+  LogEvent(LogKind::Warning,"warning","metadata startup hook preparation unavailable");FinishMetadataStartup(false,false);return false;
  }
  return true;
 }

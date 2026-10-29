@@ -6,7 +6,7 @@
  const prefix='FLOGGFY_METADATA_V1:',seenPayload=new Map(),records=[];
  const serviceCache=new Map();
  let builder,activeRequests=0,connectDevices;
- let reported=false,player,root,queue=[],seen=new Set(),walked=0,lastPlayback='',playbackTime=-Infinity;
+ let player,root,queue=[],seen=new Set(),walked=0,lastPlayback='',playbackTime=-Infinity;
  let timelineBinding;
  let timelineSeen=false,lastTimeline='',timelineTime=-Infinity,timelineBlocked='',timelineLocal='unknown';
  function playback(data){
@@ -361,7 +361,6 @@
   timelineBlocked='';
   try{
    automatic();scan();bindTimeline();if(!player){debugObservation();connectDiagnostics();playback({v:1});unavailableTimeline('player-unavailable');return;}
-   if(!reported){console.info('FLOGGFY_STATUS:cached player found');reported=true;}
    const state=method(player,'getState').call(player),item=own(state,'item'),m=own(item,'metadata')||{},uri=text(own(item,'uri'));
    debugObservation(state,item);connectDiagnostics(state);emitTimelineState(state);
    if(!/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')){playback({v:1});unavailableTimeline('track-unavailable');return;}
@@ -398,7 +397,6 @@
   }catch{debugPrevious=undefined;unavailableTimeline('player-exception');/* Missing caches leave ordinary tags intact. */}
  }
  window.__floggfyPoll=tick;
- console.info('FLOGGFY_STATUS:metadata collector started');
  tick();
  // The native metadata worker owns the only heartbeat (and supplies settings).
 })();

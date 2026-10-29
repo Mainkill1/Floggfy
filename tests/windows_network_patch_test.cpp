@@ -15,7 +15,7 @@ bool PrepareMetadataCollector(HMODULE){return false;}
 void FinalizeMetadataCollector(bool){}
 void StartLogger(){}
 void QueueDiagnostic(const char*){}
-void LogActivity(const char*,const std::string&){}
+void LogEvent(LogKind,const char*,const std::string&){}
 }
 namespace {
 template<class T> void Put(std::vector<BYTE>& image,size_t offset,T value) {

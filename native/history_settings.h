@@ -35,5 +35,4 @@ bool DebugLoggingEnabled();
 bool NetworkingLoggingEnabled();
 bool HookDiagnosticsEnabled();
 bool FlushSettings(unsigned timeout_ms);
-void HistoryLog(const char* message);
 }

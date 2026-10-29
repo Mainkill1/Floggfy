@@ -93,14 +93,6 @@ inline RendererDiagnosticKind SanitizeRendererDiagnostic(std::string_view text,s
     const bool request=text.substr(0,19)=="FLOGGFY_NETWORK_V1:";
     if(!IsRendererDiagnostic(text)||text.size()>(request?159u:99u))return RendererDiagnosticKind::Invalid;
     try {
-        // Fixed lifecycle messages are the only free-form statuses accepted.
-        // Never append renderer text to either literal.
-        if(text=="FLOGGFY_STATUS:metadata collector started") {
-            summary="metadata collector started";return RendererDiagnosticKind::Status;
-        }
-        if(text=="FLOGGFY_STATUS:cached player found") {
-            summary="cached player found";return RendererDiagnosticKind::Status;
-        }
         if(SummarizeClientNetworking(text,summary))return RendererDiagnosticKind::Network;
     }catch(...) {summary.clear();}
     return RendererDiagnosticKind::Invalid;

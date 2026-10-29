@@ -3,7 +3,7 @@
 #include <cassert>
 namespace history {
 void StartLogger() {}
-void LogActivity(const char*,const std::string&) {}
+void LogEvent(LogKind,const char*,const std::string&) {}
 void QueueDiagnostic(const char*) {}
 }
 int main(int argc,char** argv) {

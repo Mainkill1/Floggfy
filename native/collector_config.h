@@ -4,7 +4,7 @@
 namespace history {
 inline std::wstring BuildCollectorOptions(const Settings& settings) {
     const bool debug=DiagnosticsEnabled(settings.log,settings.debug_log);
-    const bool connect=debug&&(settings.debug_connect||settings.debug_networking);
+    const bool connect=debug&&settings.debug_connect;
     const bool networking=debug&&settings.debug_networking;
     return std::wstring(L"window.__floggfyConfig={metadata:")+(settings.metadata?L"true":L"false")+
         L",lyrics:"+(settings.lyrics?L"true":L"false")+
