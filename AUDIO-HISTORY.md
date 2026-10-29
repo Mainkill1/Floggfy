@@ -410,8 +410,11 @@ or `source=windows`, the failed stage, reason, HRESULT, session/candidate counts
 and numeric timeline values. Persistent failures are summarized at most every
 30 seconds; recovery and source changes are reported immediately. These summaries
 contain no track titles, URIs, device identifiers or raw renderer payloads.
-The ordinary activity log reports when audio is being captured but playback
-verification is unavailable, and when a completed capture cannot be saved.
+The ordinary activity log warns when playback verification remains unavailable
+for three seconds during active capture; brief app-start buffering stays in
+diagnostics. This grace period affects reporting only: coverage invalidation is
+immediate. Completed-only captures have a separate final failure outcome when
+they cannot be saved.
 Saved files include `HISTORY_PLAYBACK_SOURCE` so validation can identify the source.
 A five-song history retains app identities, playback instances, timing, completion
 state and refreshed labels. Up to five completed compressed streams remain in RAM

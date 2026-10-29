@@ -261,13 +261,25 @@ void MissingPlaybackWarning() {
     assert(Contains("Show desktop overlay when using media keys"));
     const auto once=diagnostic_lines.size();
     ReportUnverifiedCaptures(buffers,true,diagnostic,50);assert(diagnostic_lines.size()==once);
-    bool warned=false;diagnostic_lines.clear();
-    ReportMediaUnavailable(buffers,true,diagnostic,warned);
-    assert(warned&&Contains("playback verification unavailable")&&Contains("Show desktop overlay when using media keys"));
+    MediaWarningState warning;diagnostic_lines.clear();
+    ReportMediaUnavailable(buffers,true,diagnostic,100,warning);
+    assert(diagnostic_lines.empty()); // Completed-only outcome already owns its failure.
+    buffers.active[1]=std::make_unique<Capture>();
+    ReportMediaUnavailable(buffers,true,diagnostic,100,warning);
+    ReportMediaUnavailable(buffers,true,diagnostic,100.328,warning);
+    assert(!warning.reported&&diagnostic_lines.empty());
+    ReportMediaUnavailable(buffers,false,diagnostic,100.5,warning);
+    assert(warning.since<0); // Normal startup recovered; no warning was needed.
+    ReportMediaUnavailable(buffers,true,diagnostic,110,warning);
+    ReportMediaUnavailable(buffers,true,diagnostic,112.9,warning);assert(diagnostic_lines.empty());
+    ReportMediaUnavailable(buffers,true,diagnostic,113,warning);
+    assert(warning.reported&&Contains("playback verification unavailable")&&Contains("Show desktop overlay when using media keys"));
     const auto outage=diagnostic_lines.size();
-    ReportMediaUnavailable(buffers,true,diagnostic,warned);assert(diagnostic_lines.size()==outage);
-    ReportMediaUnavailable(buffers,false,diagnostic,warned);assert(!warned);
-    ReportMediaUnavailable(buffers,true,diagnostic,warned);assert(diagnostic_lines.size()>outage);
+    ReportMediaUnavailable(buffers,true,diagnostic,150,warning);assert(diagnostic_lines.size()==outage);
+    ReportMediaUnavailable(buffers,false,diagnostic,151,warning);assert(!warning.reported);
+    ReportMediaUnavailable(buffers,true,diagnostic,160,warning);
+    ReportMediaUnavailable(buffers,true,diagnostic,163,warning);assert(diagnostic_lines.size()==outage+1);
+
 }
 void Connectivity() {
     assert(!LastConnectivity().known);

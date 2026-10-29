@@ -1107,12 +1107,18 @@ static void SchedulePublications(std::vector<Heard>& heard,CaptureBuffers& buffe
         return capture->retained_until&&capture->finished>capture->retained_until;
     }),ready.end());
 }
+struct MediaWarningState {double since=-1;bool reported=false;};
 static void ReportMediaUnavailable(const CaptureBuffers& buffers,bool unavailable,
-                                   const MediaDiagnostic& diagnostic,bool& reported) {
-    if(!unavailable){reported=false;return;}
-    if(std::strcmp(diagnostic.reason,"client-buffering-transition")==0)return;
-    if(reported || (buffers.active.empty()&&buffers.ready.empty()))return;
-    reported=true;
+                                   const MediaDiagnostic& diagnostic,double now,MediaWarningState& warning) {
+    // App state can settle just after the first decoder pages arrive. Give the
+    // warning a grace period; coverage invalidation above remains immediate.
+    // Completed-only captures have their own final failure outcome below.
+    if(!unavailable || buffers.active.empty() || std::strcmp(diagnostic.reason,"client-buffering-transition")==0) {
+        warning={};return;
+    }
+    if(warning.since<0){warning.since=now;return;}
+    if(warning.reported || now-warning.since<3)return;
+    warning.reported=true;
     const auto message=std::string("playback verification unavailable while audio is being captured; ")+MediaRecoveryHint(diagnostic);
     Log(LogKind::Warning,message.c_str());
 }
@@ -1136,7 +1142,7 @@ static DWORD WINAPI Worker(LPVOID) {
     PlaybackDiagnostics diagnostics;
     MediaDiagnostic media_diagnostic;MediaDiagnosticReporter media_reporter;
     double last_media=Now(),minimum_media_time=last_media,next_timing=0;
-    bool observer_started=false,media_unavailable=false,media_failure_reported=false;
+    bool observer_started=false,media_unavailable=false;MediaWarningState media_warning;
     unsigned generation=~0u,epoch=~0u; bool enabled=false;
     try {
         while(workers_running.load(std::memory_order_acquire)) {
@@ -1151,7 +1157,7 @@ static DWORD WINAPI Worker(LPVOID) {
                 bool capture=preferences.downloads && (preferences.ogg || preferences.flac || preferences.aac);
                 if(capture!=enabled || initial || preferences.capture_epoch!=epoch) {
                     buffers={}; heard.clear();recent.Clear(); listen={}; current={};
-                    last_media=minimum_media_time=now;media_unavailable=false;diagnostics.known=false;CancelFilenameChecks();
+                    last_media=minimum_media_time=now;media_unavailable=false;media_warning={};diagnostics.known=false;CancelFilenameChecks();
                     enabled=capture;
                     LogEvent(LogKind::Activity,"capture",enabled ? "enabled" : "disabled");
                 }
@@ -1209,7 +1215,7 @@ static DWORD WINAPI Worker(LPVOID) {
                 if(!media_unavailable){CancelFilenameChecks();Log(LogKind::Diagnostic,"Spotify media snapshot unavailable or stale; listen invalidated");}
                 media_unavailable=true;diagnostics.known=false;
             }
-            ReportMediaUnavailable(buffers,media_unavailable,media_diagnostic,media_failure_reported);
+            ReportMediaUnavailable(buffers,media_unavailable,media_diagnostic,Now(),media_warning);
             if(!enabled) {
                 PublishPlaybackQuality(quality.Snapshot(client_quality));
                 WaitForSingleObject(event,50);continue;
