@@ -372,6 +372,9 @@ Spotify's cached PlayerAPI is the primary playback source. Track identity uses t
 Spotify URI and playback instance rather than a Windows title/artist snapshot. Progress comes from the
 app's position-at-timestamp, timestamp and pause state, following the model used
 by [Spicetify's Player wrapper](https://github.com/spicetify/cli/blob/main/src/jsHelper/spicetifyWrapper/core.js).
+The native heartbeat requests `PlayerAPI.getState()` roughly every 500 ms through
+the renderer. This reads the app's cached state without a Web API request; it
+continues working when the optional update-event listener is unavailable.
 PlayerAPI update events preserve short transitions between the native heartbeat
 polls. A bounded queue retains those observations in order; overflow invalidates
 coverage rather than silently dropping a buffering or remote-playback guard.
