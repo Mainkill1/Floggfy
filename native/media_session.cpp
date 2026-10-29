@@ -146,7 +146,7 @@ bool BoundedMedia(const Media& media) {
 }
 namespace {
 struct ClientSnapshot {
-    Media media;double observed=0;uint64_t sequence=0;
+    Media media;double observed=0,sampled_utc_ms=0;uint64_t sequence=0;
     ClientMediaRead status=ClientMediaRead::Unavailable;
     const char* reason="client-not-discovered";
 };
@@ -164,6 +164,16 @@ void StoreClientSnapshot(std::shared_ptr<ClientSnapshot> next) {
         retired.swap(client_pending);client_head=client_count=0;
         next->status=ClientMediaRead::Blocked;next->reason="client-observation-overflow";
     }
+    // Independent UTC/uptime samples can round a later renderer observation
+    // slightly backwards. Preserve the renderer's proven ordering for this same
+    // playback instance, without adding elapsed coverage or hiding a source-clock
+    // regression. Transitions/guards and larger discontinuities stay untouched.
+    if(client_media && next->status==ClientMediaRead::Ready && client_media->status==ClientMediaRead::Ready &&
+       next->sampled_utc_ms>0 && client_media->sampled_utc_ms>0 && next->sampled_utc_ms>=client_media->sampled_utc_ms &&
+       next->media.spotify_uri==client_media->media.spotify_uri &&
+       next->media.playback_instance==client_media->media.playback_instance &&
+       next->observed<client_media->observed && client_media->observed-next->observed<=.250)
+        next->observed=client_media->observed;
     next->sequence=++client_media_sequence;
     client_pending[(client_head+client_count)%client_pending.size()]=next;++client_count;
     std::shared_ptr<const ClientSnapshot> previous;previous.swap(client_media);client_media=std::move(next);
@@ -186,7 +196,8 @@ bool PublishClientMedia(Media media,double sampled_utc_ms) {
         PublishClientMediaUnavailable("client-stale-or-invalid");return false;
     }
     auto next=std::make_shared<ClientSnapshot>();media.source=MediaSource::Spotify;
-    next->media=std::move(media);next->observed=double(GetTickCount64())/1000-std::max(0.0,age)/1000;
+    next->media=std::move(media);next->sampled_utc_ms=sampled_utc_ms;
+    next->observed=double(GetTickCount64())/1000-std::max(0.0,age)/1000;
     next->status=ClientMediaRead::Ready;next->reason="client-timeline-ready";
     StoreClientSnapshot(std::move(next));return true;
 }

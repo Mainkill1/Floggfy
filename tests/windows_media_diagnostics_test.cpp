@@ -63,8 +63,43 @@ void Setup(){
 }
 }
 static HRESULT FakeFactory(HSTRING,REFIID,void** out){++factory_calls;return Return(factory,out);}
+static void AppClockOrdering() {
+    using namespace history;
+    const double base=double(GetTickCount64())/1000-1;
+    auto sample=[&](double observed){
+        auto value=std::make_shared<ClientSnapshot>();value->status=ClientMediaRead::Ready;
+        value->observed=observed;value->sampled_utc_ms=1000;value->media.source=MediaSource::Spotify;
+        value->media.title=L"Clock fixture";value->media.spotify_uri="spotify:track:0000000000000000000001";
+        value->media.playback_instance="play-1";value->media.duration=180;return value;
+    };
+    auto pair=[&](std::shared_ptr<ClientSnapshot> next,bool ordered){
+        PublishClientMediaUnavailable("test-reset");
+        Media media;MediaDiagnostic diagnostic;double first=0,second=0;uint64_t sequence=0;
+        assert(TryReadClientMedia(media,first,sequence,diagnostic)==ClientMediaRead::Unavailable);
+        StoreClientSnapshot(sample(base));StoreClientSnapshot(std::move(next));
+        assert(TryReadClientMedia(media,first,sequence,diagnostic)==ClientMediaRead::Ready);
+        assert(TryReadClientMedia(media,second,sequence,diagnostic)==ClientMediaRead::Ready);
+        assert(ordered?second==first:second<first);
+    };
+    pair(sample(std::nextafter(base,0.0)),true); // Reproduces the single-ULP live regression.
+    auto later=sample(base-.015);later->sampled_utc_ms=1005;pair(later,true);
+    pair(sample(base-.250),true);
+    auto backwards=sample(base-.015);backwards->sampled_utc_ms=999;pair(backwards,false);
+    auto different=sample(base-.015);different->media.playback_instance="play-2";pair(different,false);
+    different=sample(base-.015);different->media.spotify_uri="spotify:track:0000000000000000000002";pair(different,false);
+    pair(sample(base-.251),false); // Larger discontinuity still reaches the coverage guard.
+    StoreClientSnapshot(sample(base));
+    Media media;MediaDiagnostic diagnostic;double first=0,observed=0;uint64_t sequence=0;
+    assert(TryReadClientMedia(media,first,sequence,diagnostic)==ClientMediaRead::Ready);
+    auto transition=sample(base-.015);transition->status=ClientMediaRead::Transition;
+    StoreClientSnapshot(transition);
+    assert(TryReadClientMedia(media,observed,sequence,diagnostic)==ClientMediaRead::Transition&&observed<first);
+    auto guard=sample(base-.015);guard->status=ClientMediaRead::Blocked;StoreClientSnapshot(guard);
+    assert(TryReadClientMedia(media,observed,sequence,diagnostic)==ClientMediaRead::Blocked&&observed<first);
+
+}
 int main(){
-    Setup();
+    Setup();AppClockOrdering();
     // A dropped guard under real SRW contention must leave durable invalidation.
     AcquireSRWLockExclusive(&history::client_media_lock);
     history::PublishClientMediaUnavailable("remote-playback",true);

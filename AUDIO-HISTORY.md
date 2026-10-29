@@ -390,7 +390,12 @@ The app source requires a confirmed local playback device. Remote playback and
 buffering invalidate coverage instead of falling through to a possibly stale
 Windows session. Renderer snapshots are bounded, strictly parsed and rejected
 when older than three seconds. Clock differences up to 250 ms are tolerated
-without moving an observation into the future. Seeks, missing observations and
+without moving an observation into the future. For the same URI and playback
+instance, fresh Ready samples with nondecreasing renderer timestamps cannot
+regress solely through UTC/uptime rounding within that 250 ms bound: their mapped
+time is held at the preceding observation, adding no elapsed coverage. Actual
+source-clock regressions, identity changes, larger discontinuities and transition
+event times retain the existing guards. Seeks, missing observations and
 source changes cannot be stitched into a complete listen.
 
 When app observations are unavailable or incompatible, public Windows media
