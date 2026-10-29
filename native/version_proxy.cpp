@@ -222,7 +222,7 @@ static HRESULT STDMETHODCALLTYPE ConnectionConnectivity(INetworkConnection* self
         if (SUCCEEDED(self->GetAdapterId(&adapter))) {
             DWORD flags = SyntheticAdapterConnectivity(adapter);
             if (flags) {
-                *out = static_cast<NLM_CONNECTIVITY>(previous | flags);
+                *out = static_cast<NLM_CONNECTIVITY>(observed_flags | flags);
             }
         }
     }
