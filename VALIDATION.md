@@ -1139,3 +1139,67 @@ canonical routing; two fixed startup messages; and normal native failure logging
 without DebugLog. Exact commit and execution results are recorded in PR #13.
 No Spotify/CEF process or network operation is used by this fixture, and no full
 regression suite or live renderer integration is implied by that result.
+
+## Logging cleanup and app-clock verification (2026-10-29)
+
+Before implementing, compared pre-cleanup HEAD `a67c3ae` with reviewed main
+`7f99fa51698f80c802418d0ab00e33ae6e27b616`. The existing app-source/recent-song
+changes are retained. Logging cleanup uses explicit producer categories, two
+bounded queues and the existing worker; all optional output has one diagnostics
+file. Seven overlapping shell wrappers are replaced by `test-diagnostics.sh`.
+
+Passed checks:
+
+- `bash test-native.sh`.
+- `bash test-native-windows.sh`: all stages passed via the initial prefix and
+  resumed menu-through-final stages after removing an unused diagnostic local
+  caught by `-Werror`. This was not one uninterrupted run at the final HEAD.
+- `bash test-diagnostics.sh SPOTIFY_DLL` against Spotify x64 1.3.6.1921, repeated
+  after the reporting-grace and app-clock fixes.
+- `bash test-media-observer.sh` after the final clock change, covering the
+  deterministic single-ULP regression and existing freshness, identity,
+  transitions, queue contention and disconnected-manager checks.
+- `bash test-network-patch.sh`.
+- Focused Windows menu fixture after the final one-line menu-only routing change.
+- `bash build-native.sh` after the final source change; x64 PE outputs verified.
+- Source/embedded-INI checks, `git diff --check`, exact-range/tracked-tree privacy
+  scans and independent review. Existing vendor warnings remain visible.
+
+Actual Windows file-operation instrumentation for 10,000 one-KiB appends measured
+5 compactions, 5 reads, 10,005 writes, 20,971,525 read bytes and 31,211,520 written
+bytes. Eight queued records drained as one WriteFile. The old cap-minus-incoming
+retention policy calculates to 4,880 compactions in that workload; no old runtime
+or wall-clock speedup is claimed. Retained files stay within 5 MiB and preserve
+complete UTF-8 lines.
+
+Live Windows/Spotify validation used `Log=1`, `DebugLog=1`, `Metadata=0`, optional
+decoded/profiling hooks off, and Windows media controls disabled. A natural
+137.297-second Ogg saved once with `HISTORY_PLAYBACK_SOURCE=spotify`. Independent
+Xiph verification accepted all 1,288 pages, CRC/BOS/EOS and decoded all 6,054,816
+samples with zero errors; final tagged size was 5,569,075 bytes. Polling confirmed
+local app state at roughly 500 ms intervals. Separate normal/diagnostic files,
+no status heartbeat, no obsolete format/duplicate-outcome producers and no
+basic-mode profiling were verified. The full capture used the final capture/media
+code; the subsequent menu-only logging change received a separate startup smoke
+check with its latest build. The normal startup log contained only capture enable;
+ordinary menu probe detail was diagnostic-only.
+
+Live testing exposed two additional cases now covered by deterministic tests:
+brief startup buffering no longer warns to replay before state can settle, and
+fresh ordered app observations cannot invalidate a listen solely through bounded
+UTC/uptime rounding. The reporting grace does not delay coverage invalidation;
+clock ordering adds zero elapsed coverage and leaves genuine regressions,
+identity changes, freshness, larger discontinuities and transitions guarded.
+
+Original INI values, Lossless preferences and Windows media controls were
+restored. The latest DLL and normal launcher are installed; private test launchers
+and the test debugging listener were removed.
+
+Remaining live coverage: long-running remote Connect/decoded-hook interleavings,
+explicit profiling runs and live FLAC/AAC captures. Deterministic suites cover
+their original callback results, lifetime/rollback, validation, completeness,
+quality and publication guards. A manual early skip logged both a skipped listen
+and a separate Ogg page-gap capture rejection. Those are distinct observed facts;
+whether cancellation caused the discontinuity remains unproven. The conservative
+integrity guard and its explicit failure remain, without attributing Spotify
+playback failure or corruption to the user action.
