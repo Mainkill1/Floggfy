@@ -453,7 +453,6 @@ static Menu* Hook(Delegate* delegate) {
        !Executable(reinterpret_cast<const void*>(delegate->base.add_ref)) ||
        !Executable(reinterpret_cast<const void*>(delegate->base.release)))
         return original_create(delegate);
-    size_t delegate_size=delegate->base.size;
     auto* w=new(std::nothrow) Wrapped;
     if(!w) return original_create(delegate);
     w->api={{sizeof(Delegate),Add,Release,One,Any},Execute,Outside,Open,Close,WillShow,Closed,Format};
