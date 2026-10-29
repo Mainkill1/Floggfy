@@ -183,16 +183,19 @@ static void TestLyricsPublication() {
   std::vector<RecentDownload> metadata_recent;assert(ReadRecentDownloads(metadata_recent)&&metadata_recent.empty());
   DeleteFileW(path.c_str());assert(SetDownloads(false));
 }
+static std::string ReadActivityLog() {
+  const auto path=WindowsPath(GetSettings().root+L"\\Floggfy.log");
+  HANDLE f=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,0,nullptr);
+  if(f==INVALID_HANDLE_VALUE)return {};
+  DWORD size=GetFileSize(f,nullptr),n=0;std::string text;
+  if(size!=INVALID_FILE_SIZE&&size<=5*1024*1024){text.resize(size);if(!ReadFile(f,text.data(),size,&n,nullptr))text.clear();else text.resize(n);}
+  CloseHandle(f);return text;
+}
 static void WaitLog(const std::string& prefix,const std::string& suffix) {
-  const auto path=WindowsPath(GetSettings().root+L"\\Floggfy.log");const auto deadline=GetTickCount64()+5000;
+  const auto deadline=GetTickCount64()+5000;
   while(GetTickCount64()<deadline){
-    HANDLE f=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,0,nullptr);
-    if(f!=INVALID_HANDLE_VALUE){
-      DWORD size=GetFileSize(f,nullptr),n=0;std::string text;
-      if(size!=INVALID_FILE_SIZE && size<=5*1024*1024){text.resize(size);if(!ReadFile(f,text.data(),size,&n,nullptr))text.clear();else text.resize(n);}
-      CloseHandle(f);std::istringstream lines(text);std::string line;
-      while(std::getline(lines,line))if(line.find(prefix)!=std::string::npos && line.find(suffix)!=std::string::npos)return;
-    }
+    std::istringstream lines(ReadActivityLog());std::string line;
+    while(std::getline(lines,line))if(line.find(prefix)!=std::string::npos&&line.find(suffix)!=std::string::npos)return;
     Sleep(10);
   }
   std::fprintf(stderr,"Missing activity log: %s ... %s\n",prefix.c_str(),suffix.c_str());assert(false);
@@ -251,8 +254,24 @@ static void TestPublicationLogging() {
   assert(Publish(*capture,heard,CaptureEpoch())==Publication::Failed);
   WaitLog("failed tagging failed:","Log Artist - Log Track");
   assert(ReadRecentDownloads(recent)&&recent.size()==2); // Only the two actual publication paths add entries.
+  // Real publication paths and labels may contain every old classifier word.
+  // Each successful save must have just its normal finished outcome.
+  for(const wchar_t* word:{L"failed",L"discarded",L"rejected",L"overflow",L"unsupported",L"stopped after"}) {
+    Heard named=heard;named.media.title=std::wstring(word)+L" recording";
+    auto named_capture=make(44100,16);assert(Publish(*named_capture,named,CaptureEpoch())==Publication::Saved);
+    const auto identity=Utf8(named.media.artist)+" - "+Utf8(named.media.title);
+    WaitLog("finished FLAC 16-bit, 44,100 Hz",identity);
+    std::istringstream lines(ReadActivityLog());std::string line;unsigned outcomes=0;
+    while(std::getline(lines,line))if(line.find(identity)!=std::string::npos){
+      assert(line.find(" finished FLAC ")!=std::string::npos);++outcomes;
+    }
+    assert(outcomes==1);
+    const auto named_path=OutputPath(GetSettings().root,CatalogFor(named.media),L".flac",GetSettings().music_folder);
+    Quality quality;assert(ReadQuality(named_path,quality)&&quality.codec==Codec::Flac);
+    assert(DeleteFileW(named_path.c_str()));
+  }
   assert(SetDownloads(false));
-  std::puts("PASS: normal publication logs contain final quality/size and accurate same/better/unverified/settings skip reasons");
+  std::puts("PASS: normal publication quality/size, accurate skip reasons and six classifier words in successful save paths/titles");
 }
 int main(int argc,char** argv) {
   if(argc==2&&std::string(argv[1])=="--association"){TestLateAssociation();return 0;}

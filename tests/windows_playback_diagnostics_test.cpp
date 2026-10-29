@@ -1,19 +1,22 @@
 // Exercise real hooks/worker diagnostics without patching or controlling Spotify.
-#define HistoryLog CaptureHistoryLog
+#include "../native/async_log.h"
+namespace history {void CaptureLogEvent(LogKind,const char*,const std::string&);}
+#define LogEvent CaptureLogEvent
 #include "../native/audio_history.cpp"
-#undef HistoryLog
+#undef LogEvent
 #include "../native/history_settings.cpp"
 #include "recording_fixture.h"
 #include <cassert>
 
 namespace {
 std::vector<std::string> diagnostic_lines;
+unsigned failure_events=0;
 bool Contains(const char* text) {
     return std::any_of(diagnostic_lines.begin(),diagnostic_lines.end(),[text](const auto& line){return line.find(text)!=std::string::npos;});
 }
 unsigned init_calls=0,read_calls=0,frame_calls=0,error_calls=0;
 int read_status=0,frame_status=0;
-bool oversized_read=false;
+bool oversized_read=false,empty_read=false;
 const void* expected_frame=nullptr;
 const void* expected_pcm=nullptr;
 void* Init(void* context,void* result) {
@@ -23,6 +26,7 @@ void* Init(void* context,void* result) {
 int Read(void* context,unsigned char* buffer,size_t* size) {
     ++read_calls;assert(context==reinterpret_cast<void*>(0x1234));
     if(oversized_read){++*size;return read_status;}
+    if(empty_read){*size=0;return 0;}
     if(read_status){*size=0;return read_status;}
     const unsigned char source[]={1,2,3,4};assert(*size>=sizeof(source));
     memcpy(buffer,source,sizeof(source));*size=sizeof(source);return 0;
@@ -38,21 +42,19 @@ void ObservePlayback() {
     PlaybackDiagnostics state;Media media;media.title=L"Song";media.artist=L"Artist";
     media.position=1;media.duration=100;media.playing=true;media.playback_status=4;
     diagnostic_lines.clear();state.Observe(media,10,1);assert(Contains("baseline")&&Contains("initiator=unknown"));
-    assert(StatusDue(10,0,media,false));assert(!StatusDue(10,20,media,false));assert(!StatusDue(10,0,media,true));
     media.position=1.5;state.Observe(media,10.5,2);const auto before=diagnostic_lines.size();
     state.Observe(media,11,3);assert(diagnostic_lines.size()==before);
     media.playing=false;media.playback_status=5;state.Observe(media,11.5,4);assert(Contains("state=paused"));
     const auto paused=diagnostic_lines.size();
     for(unsigned i=0;i<12;++i)state.Observe(media,12+i,5+i);
-    assert(diagnostic_lines.size()==paused&&!StatusDue(1000,0,media,false));
+    assert(diagnostic_lines.size()==paused);
     media.playback_status=3;state.Observe(media,25,18);assert(Contains("state=stopped"));
     media.playback_status=2;state.Observe(media,25.5,19);assert(Contains("state=changing"));
     media.playing=true;media.playback_status=4;state.Observe(media,26,20);
-    assert(StatusDue(26,20,media,false)); // Deadline stayed overdue during pause.
     media.position=0;state.Observe(media,26.5,21);assert(Contains("timeline-jump"));
     media.title=L"Next";state.Observe(media,27,22);assert(Contains("track_changed=1"));
     InterlockedExchange(&history::debug_enabled,0);const auto off=diagnostic_lines.size();
-    state.Observe(media,27.5,23);assert(diagnostic_lines.size()==off&&!StatusDue(30,0,media,false));
+    state.Observe(media,27.5,23);assert(diagnostic_lines.size()==off);
     InterlockedExchange(&history::debug_enabled,1);
 }
 void CoverageAndFailures() {
@@ -73,13 +75,14 @@ void CoverageAndFailures() {
     const auto bytes=recording_fixture::fixture();slot.kind=AudioEventKind::FlacBytes;slot.length=unsigned(bytes.size());
     memcpy(slot.bytes,bytes.data(),bytes.size());ProcessFlacCapture(slot,buffers);assert(buffers.active.at(slot.context)->metadata);
     uint32_t frame[8]={16,48000,2,0,16,0,0,0};slot.kind=AudioEventKind::FlacFrame;slot.length=32;memcpy(slot.bytes,frame,32);
-    diagnostic_lines.clear();ProcessFlacCapture(slot,buffers);
+    diagnostic_lines.clear();const auto prior_failures=failure_events;ProcessFlacCapture(slot,buffers);
     assert(buffers.active.empty()&&buffers.ready.empty());
+    assert(diagnostic_lines.size()==2&&failure_events==prior_failures+1); // One context plus one normal outcome.
     assert(Contains("origin=capture-coverage-guard")&&Contains("reason=format")&&Contains("native_frame_result=0"));
     assert(Contains("expected_rate=44100 got_rate=48000")&&Contains("ctx=1234")&&Contains("queue_lag_ms="));
     // Native errors remain visible even after our capture has already ended.
     slot.kind=AudioEventKind::FlacError;slot.error_source=FlacErrorSource::ReadCallback;slot.format=2;slot.requested=8192;
-    diagnostic_lines.clear();ProcessFlacCapture(slot,buffers);assert(Contains("origin=native-read-return code=2 requested=8192 returned=0"));
+    diagnostic_lines.clear();ProcessFlacCapture(slot,buffers);assert(Contains("origin=native-read-return")&&Contains("code=2 requested=8192 returned=0"));
     slot.kind=AudioEventKind::FlacBegin;ProcessFlacCapture(slot,buffers);
     slot.kind=AudioEventKind::FlacFrame;memcpy(slot.bytes,frame,32);diagnostic_lines.clear();ProcessFlacCapture(slot,buffers);
     assert(Contains("reason=metadata-not-ready"));
@@ -112,30 +115,54 @@ void HookBoundaries() {
     FlacErrorHook(context,2);assert(error_calls==1);
     assert(Pop(slot)&&slot.error_source==FlacErrorSource::DecoderCallback&&slot.format==2);
     assert(pcm==42&&!memcmp(frame,original_frame.data(),32)&&!audio_callbacks.Active());
-    diagnostic_lines.clear();LogTiming(TimingReason::Failure);
-    assert(diagnostic_lines.size()==1&&Contains("hook timing reason=error")&&Contains("native_read_ms=")&&Contains("native_frame_ms=")&&Contains("queue_wait_ms=")&&Contains("consumer_hold_ms="));
+    diagnostic_lines.clear();LogTiming();
+    assert(diagnostic_lines.empty()&&native_read_timing.count.load()==0&&native_frame_timing.count.load()==0&&producer_wait_timing.count.load()==0);
     diagnostic_lines.clear();LogTiming();assert(diagnostic_lines.empty());
+    oversized_read=false;empty_read=true;read_status=0;n=sizeof(buffer);
+    assert(FlacReadHook(context,buffer,&n)==0&&n==0&&!Pop(slot)&&empty_flac_reads.load()==0);
+    InterlockedExchange(&history::networking_enabled,1);InterlockedExchange(&history::hook_diagnostics_enabled,1);
+    n=sizeof(buffer);assert(FlacReadHook(context,buffer,&n)==0&&n==0&&!Pop(slot));
+    assert(empty_flac_reads.load()==1&&native_read_timing.count.load()==1);
+    LogTiming();assert(Contains("hook timing")&&Contains("empty_reads=1")&&empty_flac_reads.load()==0);
+    diagnostic_lines.clear();empty_read=false;
+    InterlockedExchange(&history::networking_enabled,0);InterlockedExchange(&history::hook_diagnostics_enabled,0);
     CloseHandle(event);event=nullptr;delete[] queue;queue=nullptr;
 }
 void TimingVerbosity() {
     LARGE_INTEGER frequency{};assert(QueryPerformanceFrequency(&frequency)&&frequency.QuadPart>0);
     const auto ticks=uint64_t(frequency.QuadPart);
-    LogTiming(TimingReason::Failure);diagnostic_lines.clear(); // Drain earlier fixtures.
+    InterlockedExchange(&history::networking_enabled,1);InterlockedExchange(&history::hook_diagnostics_enabled,1);
+    LogTiming();diagnostic_lines.clear(); // Drain earlier fixtures.
     native_read_timing.Add(ticks/1000);native_frame_timing.Add(ticks/500);
     producer_wait_timing.Add(ticks/1000);
     LogTiming();assert(diagnostic_lines.empty()); // Routine sub-threshold timing is silent.
     native_frame_timing.Add(ticks/1000);
-    LogTiming(TimingReason::Pause);
-    assert(diagnostic_lines.size()==1&&Contains("reason=pause")&&Contains("native_frame_ms="));
-    diagnostic_lines.clear();LogTiming();assert(diagnostic_lines.empty());
+    double deadline=20;DrainTiming(19,deadline);assert(native_frame_timing.count.load()==1&&deadline==20);
+    DrainTiming(20,deadline);assert(native_frame_timing.count.load()==0&&deadline==30&&diagnostic_lines.empty());
+    DrainTiming(21,deadline);assert(deadline==30&&diagnostic_lines.empty());
     producer_wait_timing.Add(ticks/100+1);
     LogTiming();assert(diagnostic_lines.size()==1&&Contains("reason=slow")&&Contains("worst=queue-producer-wait"));
     diagnostic_lines.clear();LogTiming();assert(diagnostic_lines.empty());
     empty_flac_reads.store(1);LogTiming();
     assert(diagnostic_lines.size()==1&&Contains("reason=empty-read")&&Contains("empty_reads=1"));
     diagnostic_lines.clear();InterlockedExchange(&history::debug_enabled,0);
-    LogTiming(TimingReason::Failure);assert(diagnostic_lines.empty());
+    LogTiming();assert(diagnostic_lines.empty());
     InterlockedExchange(&history::debug_enabled,1);
+    InterlockedExchange(&history::networking_enabled,0);InterlockedExchange(&history::hook_diagnostics_enabled,0);
+}
+void BasicModeProfiling() {
+    InterlockedExchange(&history::log_enabled,1);InterlockedExchange(&history::debug_enabled,1);
+    InterlockedExchange(&history::networking_enabled,0);InterlockedExchange(&history::hook_diagnostics_enabled,0);
+    for(auto* sample:{&native_read_timing,&native_frame_timing,&native_error_timing,&native_init_timing,
+                     &native_ogg_timing,&producer_wait_timing,&producer_hold_timing,&consumer_hold_timing}) {
+        sample->count.store(0);sample->maximum.store(0);
+    }
+    {
+        NativeTimer timer(native_read_timing);assert(timer.began==0);timer.Finish();
+        QueueGuard guard;assert(guard.began==0&&guard.acquired==0);
+    }
+    assert(native_read_timing.count.load()==0&&producer_wait_timing.count.load()==0&&producer_hold_timing.count.load()==0);
+    diagnostic_lines.clear();LogTiming();assert(diagnostic_lines.empty());
 }
 void LoggingDisabled() {
     InterlockedExchange(&history::log_enabled,0);InterlockedExchange(&history::debug_enabled,1);
@@ -146,8 +173,8 @@ void LoggingDisabled() {
     }
     assert(native_read_timing.count.load()==0&&producer_wait_timing.count.load()==0);
     PlaybackDiagnostics playback;Media media;media.title=L"Song";media.playing=true;media.playback_status=4;
-    playback.Observe(media,10,1);LogTiming(TimingReason::Failure);
-    assert(diagnostic_lines.empty()&&!playback.known&&!StatusDue(10,0,media,false));
+    playback.Observe(media,10,1);LogTiming();
+    assert(diagnostic_lines.empty()&&!playback.known);
     InterlockedExchange(&history::log_enabled,1);
 }
 void AppIdentityAndSourceChanges() {
@@ -230,13 +257,13 @@ void MissingPlaybackWarning() {
     ReportUnverifiedCaptures(buffers,false,diagnostic,20);assert(diagnostic_lines.empty());
     ReportUnverifiedCaptures(buffers,true,diagnostic,12);assert(diagnostic_lines.empty());
     ReportUnverifiedCaptures(buffers,true,diagnostic,13);
-    assert(Contains("complete Ogg capture")&&Contains("no-spotify-session")&&Contains("not saved"));
+    assert(Contains("complete Ogg capture")&&Contains("not saved"));
     assert(Contains("Show desktop overlay when using media keys"));
     const auto once=diagnostic_lines.size();
     ReportUnverifiedCaptures(buffers,true,diagnostic,50);assert(diagnostic_lines.size()==once);
     bool warned=false;diagnostic_lines.clear();
     ReportMediaUnavailable(buffers,true,diagnostic,warned);
-    assert(warned&&Contains("playback verification failed")&&Contains("Show desktop overlay when using media keys"));
+    assert(warned&&Contains("playback verification unavailable")&&Contains("Show desktop overlay when using media keys"));
     const auto outage=diagnostic_lines.size();
     ReportMediaUnavailable(buffers,true,diagnostic,warned);assert(diagnostic_lines.size()==outage);
     ReportMediaUnavailable(buffers,false,diagnostic,warned);assert(!warned);
@@ -252,10 +279,18 @@ void Connectivity() {
     assert(!LastConnectivity().known);RecordConnectivity({}); // Contention never blocks.
     connectivity_observation_lock.clear();assert(LastConnectivity().known);
     diagnostic_lines.clear();LogConnectivity();assert(Contains("flags_known=0")&&Contains("stream reachability unknown"));
+    const auto unchanged=diagnostic_lines.size();LogConnectivity();assert(diagnostic_lines.size()==unchanged);
+    RecordConnectivity({true,false,std::int32_t(0x80004005u),0,0,30});
+    LogConnectivity();assert(diagnostic_lines.size()==unchanged); // Fresh query, same result: no repeated evidence.
+    connectivity_observation_lock.test_and_set();LogConnectivity();connectivity_observation_lock.clear();
+    assert(diagnostic_lines.size()==unchanged); // Unknown/contended snapshots are not new network facts.
 }
 }
 namespace history {
-void CaptureHistoryLog(const char* message){diagnostic_lines.emplace_back(message);}
+void CaptureLogEvent(LogKind kind,const char*,const std::string& message){
+    if(!LoggingEnabled()||(kind==LogKind::Diagnostic&&!DebugLoggingEnabled()))return;
+    diagnostic_lines.push_back(message);if(kind==LogKind::Failure)++failure_events;
+}
 std::string ReadClientPlaybackQuality(const Media&){return {};}
 void EnrichCatalog(const Media&,Catalog&){}
 void EnrichTags(const Media&,Tags&){}
@@ -263,7 +298,7 @@ void EnrichTags(const Media&,Tags&){}
 int wmain() {
     // Use in-memory preferences only. Never read or write the user's INI/music.
     InterlockedExchange(&history::debug_enabled,1);
-    Connectivity();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();DurableAssociationEvidence();AppTailDeadline();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();HookBoundaries();TimingVerbosity();LoggingDisabled();
-    puts("PASS: paused dedup/resume, observed transitions, exact coverage reasons, original callback semantics, bounded hook metrics and NLM observations");
+    Connectivity();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();DurableAssociationEvidence();AppTailDeadline();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();HookBoundaries();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
+    puts("PASS: observed transitions, one FLAC failure context/outcome, original callback semantics, profiling-only intervals, basic-mode zero profiling and changed-only NLM observations");
     return 0;
 }
