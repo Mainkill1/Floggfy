@@ -424,9 +424,12 @@ static bool CaptureTimingMatchesListen(const Capture& capture,const Heard& heard
            capture.born>=heard.start-20 && capture.born<=heard.start+3 && capture.born<heard.finish;
 }
 static double PendingCaptureDeadline(const Capture& capture,const std::vector<Heard>& heard) {
-    for(const auto& pending:heard)
-        if(CaptureTimingMatchesListen(capture,pending))return pending.finish+completion_wait;
-    return 0;
+    double deadline=0;
+    for(const auto& pending:heard)if(CaptureTimingMatchesListen(capture,pending)) {
+        const auto candidate=pending.finish+completion_wait;
+        deadline=deadline?std::min(deadline,candidate):candidate;
+    }
+    return deadline;
 }
 static Catalog CatalogFor(const Media& media) {
     Catalog c; c.spotify_uri=media.spotify_uri; c.title=media.title; c.album=media.album; c.track=media.track;c.duration=media.duration;
@@ -940,6 +943,23 @@ static void LogCompletedListen(const Heard& heard) {
         heard.media.source==MediaSource::Spotify?"spotify":"windows");
     Log(LogKind::Diagnostic,line);
 }
+static void BoundCompletedCaptureTails(CaptureBuffers& buffers,const std::vector<Heard>& heard) {
+    const auto bound=[&](Capture& capture) {
+        const auto deadline=PendingCaptureDeadline(capture,heard);
+        if(deadline)capture.retained_until=capture.retained_until?std::min(capture.retained_until,deadline):deadline;
+    };
+    for(auto& item:buffers.active)bound(*item.second);
+    for(auto& item:buffers.ready)bound(*item);
+}
+static void RecordCompletedListen(const Media& media,const Listen& listen,std::vector<Heard>& heard,
+                                  CaptureBuffers& buffers,RecentPlaybackHistory* recent) {
+    heard.push_back({media,listen.completed_start,listen.completed_time,listen.completed_generation});
+    // Completion, including a same-identity terminal pause, fixes the original
+    // decoder deadline independently of the completed-buffer reconciliation age.
+    BoundCompletedCaptureTails(buffers,heard);
+    if(recent)recent->Complete(heard.back());
+    LogCompletedListen(heard.back());
+}
 static void AssociateListen(Media media,Listen& listen,Media& current,std::vector<Heard>& heard,
                             CaptureBuffers& buffers,double time,RecentPlaybackHistory* recent=nullptr) {
     auto& active=buffers.active;auto& ready=buffers.ready;
@@ -958,7 +978,7 @@ static void AssociateListen(Media media,Listen& listen,Media& current,std::vecto
         char line[300]; snprintf(line,sizeof(line),"listen invalidated old=%.6f/%.6f new=%.6f/%.6f delta=%.3f playing=%d",
             prior_position,prior_duration,media.position,media.duration,time-prior_time,media.playing); Log(LogKind::Diagnostic,line);
     }
-    if(!done.empty()) { heard.push_back({current,listen.completed_start,listen.completed_time,listen.completed_generation}); if(recent)recent->Complete(heard.back()); LogCompletedListen(heard.back()); }
+    if(!done.empty())RecordCompletedListen(current,listen,heard,buffers,recent);
     if(previous_generation!=listen.generation && listen.eligible) LogEvent(LogKind::Activity,"started",Utf8(media.artist)+" - "+Utf8(media.title));
     if(was_eligible && !listen.eligible && done.empty()) LogEvent(LogKind::Activity,"skipped",Utf8(current.artist)+" - "+Utf8(current.title)+" (incomplete listen)");
     if(previous_generation!=listen.generation) {
@@ -1007,22 +1027,14 @@ static bool FinishAppTransition(const Media& next,Listen& listen,const Media& cu
         }
     }
     if(!done.empty()) {
-        heard.push_back({current,ending.completed_start,ending.completed_time,ending.completed_generation});
-        if(recent)recent->Complete(heard.back());
-        const auto deadline=heard.back().finish+completion_wait;
-        const auto bound=[&](Capture& capture) {
-            if(CaptureTimingMatchesListen(capture,heard.back()))
-                capture.retained_until=capture.retained_until?std::min(capture.retained_until,deadline):deadline;
-        };
-        for(auto& item:buffers.active)bound(*item.second);
-        for(auto& item:buffers.ready)bound(*item);
-        LogCompletedListen(heard.back());
+        RecordCompletedListen(current,ending,heard,buffers,recent);
     } else if(listen.eligible)LogEvent(LogKind::Activity,"skipped",Utf8(current.artist)+" - "+Utf8(current.title)+" (incomplete app transition)");
     listen.identity.clear();listen.eligible=false;listen.playing=false;
     return false;
 }
 static bool CaptureEvidenceMatchesListen(const Capture& capture,const Heard& heard) {
     return CaptureTimingMatchesListen(capture,heard) &&
+           capture.finished<=heard.finish+completion_wait &&
            (!capture.retained_until || capture.finished<=capture.retained_until) &&
            std::fabs(capture.Duration()-heard.media.duration)<=1.0;
 }
@@ -1051,6 +1063,8 @@ static std::string AssociationFailure(const Heard& heard,const CaptureBuffers& b
 }
 static void SchedulePublications(std::vector<Heard>& heard,CaptureBuffers& buffers,unsigned epoch,double now) {
     auto& ready=buffers.ready;
+    // Late-discovered captures inherit the same cutoff before they can match.
+    BoundCompletedCaptureTails(buffers,heard);
     // Assess every alternative before expiry/pressure can remove evidence.
     std::vector<size_t> listen_matches(heard.size()),capture_matches(ready.size());
     std::vector<std::pair<size_t,size_t>> links;
