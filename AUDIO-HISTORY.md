@@ -366,10 +366,15 @@ download history entries.
 
 Tagging, quality checks and publication run in a bounded background worker;
 pending compressed save buffers count against the configured allocation budget.
-A natural playback transition retains a matching unfinished capture for the
-completed listen's existing ten-second completion window, allowing a late final
-codec callback. It must still pass completeness, duration and unique-association
-checks before publication. Retention ends when the listen is handled or expires.
+Every completed listen fixes a matching unfinished capture's deadline at ten
+seconds after completion, including the same track paused at its duration. A
+provider switch restarts only current listening coverage: previously completed
+listens and their existing decoder-tail deadlines survive. Late-discovered
+captures inherit those deadlines; repeated paused polls and later observations
+cannot extend them. A capture finished after its deadline cannot be published.
+Already completed audio that arrived on time may still use the separate ten-minute
+reconciliation window. Completeness, duration, identity and unique-association
+checks remain required, and the five-song/memory limits still apply.
 Existing-file inspection uses checked reads with a separate temporary buffer
 capped at 512 MiB; storage errors reject the inspection without stalling capture.
 Spotify's cached PlayerAPI is the primary playback source. Track identity uses the

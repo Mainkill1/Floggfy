@@ -1203,3 +1203,44 @@ and a separate Ogg page-gap capture rejection. Those are distinct observed facts
 whether cancellation caused the discontinuity remains unproven. The conservative
 integrity guard and its explicit failure remain, without attributing Spotify
 playback failure or corruption to the user action.
+
+## PR #15 association follow-up
+
+Both playback findings at reviewed commit `dedc83b` were reproduced with the
+production association/scheduling functions and native Ogg/FLAC event handlers.
+The provider-switch case failed because completed-listen evidence was removed;
+the terminal-pause case queued a tail completed at 122 after a listen completed
+at 110. Each test was observed failing before its corresponding fix.
+
+Source corrections are `631edf5` (preserve completed pending listens across both
+provider directions) and `2002496` (apply the original decoder-tail deadline to
+every completion, including same-identity terminal pauses and late-discovered
+captures). Pending captures use the earliest applicable deadline and cannot
+extend an existing earlier cutoff. Completed on-time buffers still reconcile
+within their separate ten-minute window.
+
+`bash test-capture-association.sh` passed the new cases and existing repeats,
+epochs, ambiguity, invalid-stream and skip checks. New coverage includes Ogg/FLAC
+across both provider-switch directions and 36 terminal-pause cases across both
+providers/codecs: inside/exact/outside ten seconds, scheduling before the late
+tail, late-discovered captures, existing earlier cutoffs and on-time completed
+buffers reconciled at 500 after a completion at 110.
+
+Fresh validation on source commit `2002496`:
+
+- `bash test-native.sh`: exit 0.
+- `bash test-native-windows.sh "$TEST_ROOT"`: exit 0, with a fresh isolated
+  Windows TEMP fixture root and one complete start-to-finish execution.
+  Includes the new production association regressions, production build,
+  startup, capture/quality/publication, settings, media and diagnostics gates.
+- `python3 tests/diagnostics_source_test.py`: passed.
+- Independent review: approved with no unresolved findings.
+- `git diff --check` and publication privacy scans: passed.
+
+Existing vendor warnings remain visible. The optional current-Spotify-DLL
+static discovery check was skipped by the full suite because no DLL argument
+was supplied; discovery code did not change. No new live Spotify capture was
+performed for these two association corrections, and the existing installation
+and preferences were left as previously restored. The earlier live evidence is
+historical coverage of the preceding revision, not a claim that these fixes
+were reproduced live.
