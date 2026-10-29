@@ -368,18 +368,53 @@ codec callback. It must still pass completeness, duration and unique-association
 checks before publication. Retention ends when the listen is handled or expires.
 Existing-file inspection uses checked reads with a separate temporary buffer
 capped at 512 MiB; storage errors reject the inspection without stalling capture.
-Basic Windows track/timeline reads run on a dedicated media observer, including
-their WinRT waits. Capture consumes one sequenced RAM snapshot at a time without
-waiting for that observer. Normal position/timestamp refreshes are accepted when
-their movement agrees with uninterrupted playback, allowing 250 ms of rounding
-difference and clamping at the track end. Session, timeline-bound or playback-state
-changes, regressing clocks, discontinuous jumps and wraps require a fresh read rather than being
-paired with stale properties. Snapshots keep their observation timestamp; they
-are not replayed as fresh listens. More than three seconds without a usable
-observation still invalidates listening coverage, while decoder events continue
-to drain. Stopping an observer does not wait for a stalled COM operation, and
-another observer cannot start until the stopped one has finished. This worker
-does not fetch artwork.
+Spotify's cached PlayerAPI is the primary playback source. Track identity uses the
+Spotify URI and playback instance rather than a Windows title/artist snapshot. Progress comes from the
+app's position-at-timestamp, timestamp and pause state, following the model used
+by [Spicetify's Player wrapper](https://github.com/spicetify/cli/blob/main/src/jsHelper/spicetifyWrapper/core.js).
+PlayerAPI update events preserve short transitions between the native heartbeat
+polls. A bounded queue retains those observations in order; overflow invalidates
+coverage rather than silently dropping a buffering or remote-playback guard.
+A buffering transition carries the app's event timestamp, so time spent buffering
+cannot manufacture the missing tail of a listen. Spicetify does not need to be installed. Basic playback observation remains active
+with `Metadata=0`; that setting controls optional enrichment only.
+
+The app source requires a confirmed local playback device. Remote playback and
+buffering invalidate coverage instead of falling through to a possibly stale
+Windows session. Renderer snapshots are bounded, strictly parsed and rejected
+when older than three seconds. Clock differences up to 250 ms are tolerated
+without moving an observation into the future. Seeks, missing observations and
+source changes cannot be stitched into a complete listen.
+
+When app observations are unavailable or incompatible, public Windows media
+sessions provide a fallback on a dedicated observer thread. An empty first
+Spotify session no longer masks another usable session, and a disconnected
+session manager is recreated. Windows fallback requires Spotify's **Settings >
+Display > Show desktop overlay when using media keys** to be enabled.
+Normal position/timestamp refreshes are accepted when movement agrees with
+uninterrupted playback, allowing 250 ms of rounding difference and clamping at
+the track end. Source/session changes, discontinuous jumps, regressing clocks
+and observation gaps invalidate coverage. Capture consumes sequenced RAM
+snapshots without waiting for COM, disk, enrichment or network work. Stopping an
+observer does not wait for a stalled COM operation. No Windows artwork is fetched.
+
+With `Log=1` and `DebugLog=1`, `media-session` diagnostics report `source=spotify`
+or `source=windows`, the failed stage, reason, HRESULT, session/candidate counts,
+and numeric timeline values. Persistent failures are summarized at most every
+30 seconds; recovery and source changes are reported immediately. These summaries
+contain no track titles, URIs, device identifiers or raw renderer payloads.
+The ordinary activity log reports when audio is being captured but playback
+verification is unavailable, and when a completed capture cannot be saved.
+Saved files include `HISTORY_PLAYBACK_SOURCE` so validation can identify the source.
+A five-song history retains app identities, playback instances, timing, completion
+state and refreshed labels. Up to five completed compressed streams remain in RAM
+for matching, within `MaxBufferedMiB`; unmatched records expire after ten minutes.
+Matching must be unique in both directions across streams and completed listens.
+Ambiguous matches stay rejected after expiry or eviction; removing an alternative
+is never treated as evidence of ownership. Observation loss under lock contention
+also invalidates coverage instead of losing a guard silently.
+Incomplete decoder tails retain their original ten-second deadline. Audio is
+published as a final file only after complete-listen and integrity checks pass.
 Destination resolution returns a verified matching-file snapshot or an explicit
 vacant/blocked outcome. Publication reuses that snapshot for quality and missing
 metadata decisions; replacement still revalidates the locked object. The bounded
@@ -390,11 +425,16 @@ matching recording, rather than scanning directories or maintaining another cach
 
 1. Quit Spotify and set **Metadata=0**, then restart. This isolates client metadata
    service/cache discovery changes while retaining basic Windows media tags and
-   timeline observations. Audio still saves without a cover.
+   app playback observations. Audio still saves without a cover.
 2. If menu integration crashes or disappears, set **Menu=0** and restart. Configure
    Downloads, FLAC and Ogg directly in the INI.
 3. Enable **Log=1** and, temporarily, **DebugLog=1**. Inspect `Floggfy.log` in the
-   configured save root. Turn debug logging off afterward.
+   configured save root. Check `media-session` lines for the selected source,
+   failure stage, reason and HRESULT. `source=spotify` works independently of
+   Windows media controls. For `source=windows` with `no-spotify-session`, enable
+   Spotify's **Settings > Display > Show desktop overlay when using media keys**.
+   Replay a fresh track from its beginning after observation recovers. Turn
+   debug logging off afterward.
 4. Confirm Downloads is on and the actual source format is enabled. Lossless
    playback produces FLAC; its Ogg parser is unused. Enabling FLAC cannot turn a
    lossy Spotify stream into lossless audio.

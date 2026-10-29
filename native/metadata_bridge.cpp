@@ -6,6 +6,7 @@
 #include "hook_rollback.h"
 #include "hook_startup_minhook.h"
 #include "rich_metadata.h"
+#include "client_playback.h"
 #include "playback_quality.h"
 #include "cached_metadata.h"
 #include "album_artwork.h"
@@ -22,7 +23,16 @@
 #include <cstdio>
 #include <cstring>
 #include <new>
-namespace history { namespace {
+namespace history {
+static std::wstring MetadataWide(const std::string& text) {
+ if(text.empty()||text.size()>4096)return {};
+ const auto length=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,text.data(),int(text.size()),nullptr,0);
+ if(!length)return {};
+ std::wstring result(size_t(length),L'\0');
+ if(MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,text.data(),int(text.size()),result.data(),length)!=length)return {};
+ return result;
+}
+namespace {
 struct Base {size_t size;void(*add)(Base*);int(*release)(Base*);int(*one)(Base*);int(*any)(Base*);};
 struct String {wchar_t* str;size_t length;void(*dtor)(wchar_t*);};
 template<size_t N> struct Object {Base base;void* methods[N];};
@@ -200,6 +210,35 @@ static DWORD WINAPI MetadataWorker(LPVOID) {
  }
  return 0;
 }
+static bool CurrentTimeline(const String* text) {
+ constexpr wchar_t prefix[]=L"FLOGGFY_TIMELINE_V1:";
+ constexpr size_t n=sizeof(prefix)/sizeof(*prefix)-1;
+ if(!text||!text->str||text->length<n||wmemcmp(text->str,prefix,n))return false;
+ try {
+  if(text->length>n+16384){PublishClientMediaUnavailable("client-payload-too-large");return true;}
+  std::string payload;payload.reserve(text->length-n);
+  for(size_t i=n;i<text->length;++i){if(text->str[i]>127){PublishClientMediaUnavailable("client-invalid-encoding");return true;}payload+=char(text->str[i]);}
+  if(payload=="v=1&blocked=buffering"||payload.rfind("v=1&blocked=buffering&",0)==0){
+   ClientTransition transition;
+   if(ParseClientTransition(payload,transition)) {
+    Media next;next.source=MediaSource::Spotify;next.spotify_uri=transition.uri;next.playback_instance=transition.instance;next.position=transition.position;
+    PublishClientBufferingTransition(std::move(next),transition.sampled_ms,transition.transition_ms);
+   }else PublishClientMediaUnavailable("client-buffering",true);
+   return true;
+  }
+  if(payload=="v=1&blocked=remote-playback"||payload.rfind("v=1&blocked=remote-playback&",0)==0){PublishClientMediaUnavailable("remote-playback",true);return true;}
+  ClientPlaybackRecord record;std::string error;
+  if(!ParseClientPlayback(payload,record,error)){PublishClientMediaUnavailable("client-timeline-unavailable");return true;}
+  if(record.local==0){PublishClientMediaUnavailable("remote-playback",true);return true;}
+  if(record.buffering){PublishClientMediaUnavailable("client-buffering",true);return true;}
+  if(record.local<0){PublishClientMediaUnavailable("client-device-unknown");return true;}
+  Media media;media.source=MediaSource::Spotify;media.spotify_uri=record.metadata.uri;media.playback_instance=record.instance;
+  media.title=MetadataWide(record.metadata.title);media.artist=MetadataWide(record.metadata.artist);media.album=MetadataWide(record.metadata.album);
+  media.position=record.position;media.duration=record.metadata.duration;media.playing=record.playing;media.playback_status=record.playing?4:5;
+  PublishClientMedia(std::move(media),record.sampled_ms);
+ }catch(...){InvalidateClientMedia();try{PublishClientMediaUnavailable("client-timeline-exception");}catch(...){}}
+ return true;
+}
 static bool CurrentPlayback(const String* text) {
  constexpr wchar_t prefix[]=L"FLOGGFY_PLAYBACK_V1:";
  constexpr size_t n=sizeof(prefix)/sizeof(*prefix)-1;
@@ -236,7 +275,7 @@ static bool CurrentPlayback(const String* text) {
 }
 static int Console(Display* self,Browser* b,int level,const String* text,const String* source,int line) {
  auto callback=metadata_callbacks.Enter();
- if(CurrentPlayback(text)){Release(b);return 1;}
+ if(CurrentTimeline(text)||CurrentPlayback(text)){Release(b);return 1;}
  if(text&&text->str&&QueueRendererDiagnostic({text->str,text->length})) {
   Release(b);return 1; // Reserved diagnostics never fall through to raw console logging.
  }
@@ -295,7 +334,7 @@ static void* ViewHook(Client* client,const String* url,const void* settings,void
 static bool ReadCachedMetadata(const Media& media,RichMetadata& metadata) {
  const auto title=Utf8(media.title),artist=Utf8(media.artist),album=Utf8(media.album);
  SharedSrw guard(cache_lock);
- const auto record=cache.Find(title,artist,album,media.duration);
+ const auto record=media.spotify_uri.empty()?cache.Find(title,artist,album,media.duration):cache.FindUri(media.spotify_uri);
  if(!record)return false;
  metadata=*record;
  return true;
@@ -304,17 +343,9 @@ std::string ReadClientPlaybackQuality(const Media& media) {
  if(!GetSettings().metadata)return {};
  const auto title=Utf8(media.title),artist=Utf8(media.artist),album=Utf8(media.album);
  SharedSrw guard(cache_lock);
- const auto record=cache.Find(title,artist,album,media.duration);
+ const auto record=media.spotify_uri.empty()?cache.Find(title,artist,album,media.duration):cache.FindUri(media.spotify_uri);
  const auto now=GetTickCount64();
  return record && record->quality_time && now>=record->quality_time && now-record->quality_time<=20000 ? record->playback_quality : std::string{};
-}
-static std::wstring MetadataWide(const std::string& text) {
- if(text.empty()||text.size()>4096)return {};
- const auto length=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,text.data(),int(text.size()),nullptr,0);
- if(!length)return {};
- std::wstring result(size_t(length),L'\0');
- if(MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,text.data(),int(text.size()),result.data(),length)!=length)return {};
- return result;
 }
 static unsigned MetadataNumber(const std::string& text) {
  if(text.empty()||text.size()>6)return 0;
@@ -328,7 +359,7 @@ void EnrichCatalog(const Media& media,Catalog& catalog) {
  const char* keys[]={"TITLE","ALBUM","ALBUMARTIST","ARTIST","TRACKNUMBER","DISCNUMBER"};
  std::array<std::string,6> fields;std::string uri;
  {SharedSrw guard(cache_lock);
-  const auto record=cache.Find(title,artist,album,media.duration);
+  const auto record=media.spotify_uri.empty()?cache.Find(title,artist,album,media.duration):cache.FindUri(media.spotify_uri);
   if(!record)return;
   uri=record->uri;
   for(size_t i=0;i<fields.size();++i){const auto value=record->fields.find(keys[i]);if(value!=record->fields.end())fields[i]=value->second;}}
@@ -415,7 +446,7 @@ void FinalizeMetadataCollector(bool applied) {FinishMetadataStartup(applied,true
 bool PrepareMetadataCollector(HMODULE cef) {
  const auto now=static_cast<std::uint64_t>(GetTickCount64());
  if(!metadata_init.TryBegin(now))return false;
- if(!GetSettings().metadata){HistoryLog("metadata collector disabled by INI Metadata=0");metadata_init.MarkUnsupported();return false;}
+ // Basic app playback observation stays active when optional enrichment is disabled.
  auto address=GetProcAddress(cef,"cef_version_info");int(*version)(int)=nullptr;static_assert(sizeof(version)==sizeof(address));memcpy(&version,&address,sizeof(version));
  if(!version||!cef_compat::IsSupported({version(0),version(1),version(2),version(3)})){
   HistoryLog("metadata CEF identity unsupported; revision is not in the audited compatibility table");metadata_init.MarkUnsupported();return false;

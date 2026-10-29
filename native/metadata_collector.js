@@ -7,12 +7,87 @@
  const serviceCache=new Map();
  let builder,activeRequests=0,connectDevices;
  let reported=false,player,root,queue=[],seen=new Set(),walked=0,lastPlayback='',playbackTime=-Infinity;
+ let timelineBinding;
+ let timelineSeen=false,lastTimeline='',timelineTime=-Infinity,timelineBlocked='',timelineLocal='unknown';
  function playback(data){
   const payload=Object.entries(data).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&');
   const now=performance.now();
   if(payload.length<=4096&&(payload!==lastPlayback||now-playbackTime>=1000)){
    console.info('FLOGGFY_PLAYBACK_V1:'+payload);lastPlayback=payload;playbackTime=now;
   }
+ }
+ function timeline(data){
+  const payload=Object.entries(data).map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&'),now=performance.now();
+  if(payload.length<=16384&&(payload!==lastTimeline||now-timelineTime>=500)){
+   console.info('FLOGGFY_TIMELINE_V1:'+payload);lastTimeline=payload;timelineTime=now;
+  }
+ }
+ function unavailableTimeline(reason){if(timelineSeen&&!timelineBlocked)timeline({v:1,unavailable:reason});}
+ function guardTimeline(state){
+  timelineLocal='unknown';
+  try{const get=method(connectDevices,'getConnectState');const active=own(get&&get.call(connectDevices),'activeDevice');
+   const flag=own(active,'isLocal');if(typeof flag==='boolean')timelineLocal=Number(flag);}catch{}
+  timelineBlocked=timelineLocal===0?'remote-playback':own(state,'isBuffering')===true?'buffering':'';
+  if(timelineBlocked){
+   timelineSeen=true;const blocked={v:1,blocked:timelineBlocked};
+   const uri=own(own(state,'item'),'uri'),stamp=own(state,'timestamp'),instance=own(state,'playbackId');
+   if(timelineBlocked==='buffering'&&/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')&&typeof stamp==='number'&&Number.isFinite(stamp)){
+    blocked.uri=uri;blocked.instance=typeof instance==='string'&&instance.length<=128?instance:'';
+    blocked.sampled_ms=Date.now();blocked.transition_ms=stamp;
+    const position=own(state,'positionAsOfTimestamp');if(typeof position==='number'&&Number.isFinite(position)&&position>=0)blocked.position_ms=position;
+   }
+   timeline(blocked);
+  }
+ }
+ function observeTimeline(state,data){
+  if(timelineBlocked)return;
+  const stamp=own(state,'timestamp'),position=own(state,'positionAsOfTimestamp'),duration=own(state,'duration');
+  const paused=own(state,'isPaused'),buffering=own(state,'isBuffering'),speed=own(state,'speed');
+  const sampled=Date.now(),elapsed=sampled-stamp;
+  if(typeof stamp!=='number'||!Number.isFinite(stamp)||typeof position!=='number'||!Number.isFinite(position)||position<0||
+     typeof duration!=='number'||!Number.isFinite(duration)||duration<=0||duration>86400000||position>duration||
+     typeof paused!=='boolean'||typeof buffering!=='boolean'||elapsed< -250||elapsed>86400000||(speed!==undefined&&speed!==1)){
+   unavailableTimeline('timeline-fields');return;
+  }
+
+  // Spicetify's Player.getProgress uses the same PlayerAPI clock/position.
+  // Buffering is sent separately so native coverage cannot credit stalled audio.
+  const seconds=Math.min(duration,position+(paused||buffering?0:Math.max(0,elapsed)))/1000;
+  timelineSeen=true;
+  timeline({v:1,title:data.title,artist:data.artist||'',album:data.album||'',uri:data.uri,
+   duration:duration/1000,position:seconds,sampled_ms:sampled,instance:typeof own(state,'playbackId')==='string'?own(state,'playbackId'):'',paused:Number(paused),buffering:Number(buffering),local:timelineLocal});
+ }
+ function emitTimelineState(state){
+  timelineBlocked='';
+  const item=own(state,'item'),m=own(item,'metadata')||{},uri=text(own(item,'uri'));
+  guardTimeline(state);
+  if(!/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')){unavailableTimeline('track-unavailable');return;}
+  const show=own(item,'show')||{};
+  const data={title:text(own(m,'title')||own(item,'name')),
+   artist:text(own(m,'artist_name'))||artists(own(item,'artists'))[0]||text(own(m,'show.publisher')||own(m,'show_name')||own(show,'publisher')),
+   album:text(own(m,'album_title')||own(show,'name')||own(m,'show_name')),uri};
+  if(!data.title||(uri.startsWith('spotify:track:')&&(!data.artist||!data.album))){unavailableTimeline('identity-unavailable');return;}
+  observeTimeline(state,data);
+ }
+ function bindTimeline(){
+  if(timelineBinding?.player===player&&timelineBinding.active)return;
+  if(timelineBinding){
+   if(!timelineBinding.active)return;
+   timelineBinding.active=false;
+   try{timelineBinding.remove.call(timelineBinding.events,'update',timelineBinding.listener);timelineBinding=undefined;}catch{return;}
+  }
+  try{
+   const get=method(player,'getEvents'),events=get&&get.call(player),add=method(events,'addListener'),remove=method(events,'removeListener');
+   if(!add||!remove)return;
+   const binding={player,events,remove,active:true};
+   binding.listener=event=>{
+    if(!binding.active)return;
+    try{const state=own(event,'data');emitTimelineState(object(state)?state:method(binding.player,'getState').call(binding.player));}
+    catch{unavailableTimeline('player-exception');}
+   };
+   timelineBinding=binding;
+   try{add.call(events,'update',binding.listener);}catch{binding.active=false;}
+  }catch{/* A changed event API leaves bounded native polling available. */}
  }
  const own=(o,k)=>{try{const d=Object.getOwnPropertyDescriptor(o,k);return d&&'value' in d?d.value:undefined;}catch{return undefined;}};
  const object=o=>o&&typeof o==='object';
@@ -83,7 +158,7 @@
  }
  function connectDiagnostics(state){
   if(!connectEnabled()){
-   detachControls();connectDevices=undefined;connectPrevious=undefined;connectPaused=undefined;connectPausedTarget=undefined;
+   detachControls();connectPrevious=undefined;connectPaused=undefined;connectPausedTarget=undefined;
    controlQueue=[];controlOmitted=0;return;
   }
   syncControls();
@@ -162,8 +237,9 @@
   }
  }
  function scan(){
-  const sp=own(window,'Spicetify'),p=own(sp,'Player');if(method(p,'getState'))player=p;
-  const observeConnect=connectEnabled();
+  const sp=own(window,'Spicetify'),wrapper=own(sp,'Player');
+  const p=own(own(sp,'Platform'),'PlayerAPI')||own(wrapper,'origin')||wrapper;if(method(p,'getState'))player=p;
+  const observeConnect=true; // Cached local-device identity is required even with diagnostics off.
   if(observeConnect)try{
    const candidate=own(own(sp,'Platform'),'ConnectDevicesAPI');
    if(method(candidate,'getConnectState'))connectDevices=candidate;
@@ -282,18 +358,19 @@
   }
  }
  function tick(){
+  timelineBlocked='';
   try{
-   automatic();scan();if(!player){debugObservation();connectDiagnostics();playback({v:1});return;}
+   automatic();scan();bindTimeline();if(!player){debugObservation();connectDiagnostics();playback({v:1});unavailableTimeline('player-unavailable');return;}
    if(!reported){console.info('FLOGGFY_STATUS:cached player found');reported=true;}
    const state=method(player,'getState').call(player),item=own(state,'item'),m=own(item,'metadata')||{},uri=text(own(item,'uri'));
-   debugObservation(state,item);connectDiagnostics(state);
-   if(!/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')){playback({v:1});return;}
+   debugObservation(state,item);connectDiagnostics(state);emitTimelineState(state);
+   if(!/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')){playback({v:1});unavailableTimeline('track-unavailable');return;}
    const track=uri.startsWith('spotify:track:'),show=own(item,'show')||{};
    const data={v:1,title:text(own(m,'title')||own(item,'name')),
     artist:text(own(m,'artist_name'))||artists(own(item,'artists'))[0]||text(own(m,'show.publisher')||own(m,'show_name')||own(show,'publisher')),
     album:text(own(m,'album_title')||own(show,'name')||own(m,'show_name')),uri,
     duration:Number(text(own(m,'duration')||own(own(item,'duration'),'milliseconds')||own(state,'duration')))/1000,SPOTIFY_URI:uri};
-   if(!data.title||(track&&(!data.artist||!data.album))||!Number.isFinite(data.duration)||data.duration<=0){playback({v:1});return;}
+   if(!data.title||(track&&(!data.artist||!data.album))||!Number.isFinite(data.duration)||data.duration<=0){playback({v:1});unavailableTimeline('identity-unavailable');return;}
    // Actual current playback quality, never targetBitrateLevel (the preference).
    const quality=own(state,'playbackQuality')||own(state,'playback_quality');
    const raw=own(quality,'bitrateLevel')||own(quality,'bitrate_level');
@@ -318,7 +395,7 @@
    if(payload.length>131072||(last&&last.payload===payload&&now-last.time<15000))return;
    seenPayload.set(uri,{payload,time:now});if(seenPayload.size>64)seenPayload.delete(seenPayload.keys().next().value);
    console.info(prefix+payload);
-  }catch{debugPrevious=undefined;/* Missing or changed caches leave ordinary tags intact. */}
+  }catch{debugPrevious=undefined;unavailableTimeline('player-exception');/* Missing caches leave ordinary tags intact. */}
  }
  window.__floggfyPoll=tick;
  console.info('FLOGGFY_STATUS:metadata collector started');

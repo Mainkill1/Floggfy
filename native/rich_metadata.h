@@ -20,6 +20,7 @@ class MetadataCache {
  std::deque<RichMetadata> records_;
 public:
  void Put(const RichMetadata&);
+ const RichMetadata* FindUri(const std::string&) const;
  const RichMetadata* Find(const std::string&,const std::string&,const std::string&,double) const;
 };
 }

@@ -95,7 +95,10 @@ static void TestLateCapture(bool flac,bool repeat,LateCapture outcome) {
   if(outcome==LateCapture::Complete) {
     assert(saves.Pop(job)&&job.heard.generation==1&&job.capture->Duration()==10);
     publishing_reserved.fetch_sub(job.reserved);
-  } else assert(!saves.Pop(job));
+  } else {
+    assert(!saves.Pop(job)&&heard.size()==1);
+    SchedulePublications(heard,buffers,7,711); // Recent completed records expire after ten minutes.
+  }
   assert(heard.empty()&&!buffers.active.count(1)&&buffers.active.count(2));
 }
 static void TestAssociationRejection() {
@@ -109,13 +112,14 @@ static void TestAssociationRejection() {
   assert(!CaptureMatchesListen(*buffers.ready[0],heard));
   assert(AssociationFailure(heard,buffers,0).find("timing_ready=1 duration_ready=0")!=std::string::npos);
   std::vector<Heard> pending{heard};SchedulePublications(pending,buffers,7,121);
-  SaveJob job;assert(pending.empty()&&!saves.Pop(job));
+  SaveJob job;assert(pending.size()==1&&!saves.Pop(job));
+  SchedulePublications(pending,buffers,7,711);assert(pending.empty()&&!saves.Pop(job));
   buffers.ready.clear();buffers.ready.push_back(complete(10));buffers.ready.push_back(complete(10));
   assert(AssociationFailure(heard,buffers,2).find("ambiguous completed captures")!=std::string::npos);
   pending={heard};SchedulePublications(pending,buffers,7,111);
   assert(pending.empty()&&!saves.Pop(job));
   // A later short/abandoned track must not erase the pending prior ready file.
-  buffers.ready.pop_back();pending={heard};Listen listen;Media current,media;
+  buffers={};buffers.ready.push_back(complete(10));pending={heard};Listen listen;Media current,media;
   media.title=L"Short next";media.duration=5;media.playing=true;
   AssociateListen(media,listen,current,pending,buffers,108);
   media.title=L"Skipped onward";AssociateListen(media,listen,current,pending,buffers,113);

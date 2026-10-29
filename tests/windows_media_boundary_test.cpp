@@ -8,7 +8,7 @@
 namespace {
 struct Source {
     std::atomic<unsigned> calls{0},track{1};
-    std::atomic<bool> block{false},fail{false};
+    std::atomic<bool> block{false},fail{false},invalid{false};
     HANDLE entered=CreateEventW(nullptr,TRUE,FALSE,nullptr),release=CreateEventW(nullptr,TRUE,FALSE,nullptr);
     Source(){assert(entered&&release);}
     ~Source(){CloseHandle(entered);CloseHandle(release);}
@@ -21,7 +21,7 @@ bool Fetch(history::Media& media,double& observed,void* context) {
     }
     if(source.fail.load())return false;
     media.title=L"Track "+std::to_wstring(source.track.load());
-    media.artist=L"Artist";media.duration=180;media.position=1;media.playing=true;
+    media.artist=L"Artist";media.duration=source.invalid.load()?0:180;media.position=1;media.playing=true;
     observed=double(GetTickCount64())/1000;return true;
 }
 template<class Predicate> void Wait(Predicate ready) {
@@ -66,10 +66,51 @@ void TimelineContinuity() {
     assert(ending.ContinuesTo(after)); // Natural clamping at the end.
     after.position=0;assert(!ending.ContinuesTo(after)); // Equal-duration next track or repeat.
 }
+void ClientSnapshots() {
+    using namespace history;
+    Media media;double observed=0;uint64_t sequence=0;MediaDiagnostic diagnostic;
+    assert(TryReadClientMedia(media,observed,sequence,diagnostic)==ClientMediaRead::Unavailable);
+    Media client;client.source=MediaSource::Spotify;client.spotify_uri="spotify:track:0000000000000000000001";
+    client.title=L"App track";client.artist=L"Artist";client.album=L"Album";client.duration=180;client.position=1;client.playing=true;
+    FILETIME time;GetSystemTimeAsFileTime(&time);
+    const double utc=double(((uint64_t(time.dwHighDateTime)<<32)|time.dwLowDateTime)-116444736000000000ULL)/10000;
+    assert(PublishClientMedia(client,utc));
+    assert(TryReadClientMedia(media,observed,sequence,diagnostic)==ClientMediaRead::Ready);
+    assert(media.spotify_uri==client.spotify_uri&&media.source==MediaSource::Spotify&&std::string(diagnostic.source)=="spotify");
+    assert(media.ListenKey()=="spotify:track:0000000000000000000001");
+    assert(TryReadClientMedia(media,observed,sequence,diagnostic)==ClientMediaRead::Pending);
+    PublishClientMediaUnavailable("remote-playback",true);
+    assert(TryReadClientMedia(media,observed,sequence,diagnostic)==ClientMediaRead::Blocked);
+    assert(std::string(diagnostic.reason)=="remote-playback");
+    assert(!PublishClientMedia(client,utc-10000));
+    assert(TryReadClientMedia(media,observed,sequence,diagnostic)==ClientMediaRead::Unavailable);
+    assert(!PublishClientMedia(client,utc+10000));
+    assert(TryReadClientMedia(media,observed,sequence,diagnostic)==ClientMediaRead::Unavailable);
+    // The real selector must prefer app state without even starting WinRT.
+    Source fallback;PlaybackSnapshotReader reader(Fetch,&fallback);assert(reader.Start());
+    GetSystemTimeAsFileTime(&time);
+    const double fresh=double(((uint64_t(time.dwHighDateTime)<<32)|time.dwLowDateTime)-116444736000000000ULL)/10000;
+    assert(PublishClientMedia(client,fresh));sequence=0;
+    assert(reader.TryRead(media,observed,sequence,&diagnostic)==MediaRead::Ready&&media.source==MediaSource::Spotify);
+    assert(fallback.calls==0);
+    // Chromium's millisecond clock can lead coarse Windows FILETIME briefly.
+    assert(PublishClientMedia(client,fresh+100));
+    assert(reader.TryRead(media,observed,sequence,&diagnostic)==MediaRead::Ready);
+    // A short remote/buffering event must survive a following ready update.
+    PublishClientMediaUnavailable("remote-playback",true);
+    assert(PublishClientMedia(client,fresh));
+    assert(reader.TryRead(media,observed,sequence,&diagnostic)==MediaRead::Failed&&fallback.calls==0);
+    assert(reader.TryRead(media,observed,sequence,&diagnostic)==MediaRead::Ready);
+    PublishClientMediaUnavailable("client-unavailable",false);
+    Wait([&]{return reader.TryRead(media,observed,sequence,&diagnostic)==MediaRead::Ready;});
+    assert(media.source==MediaSource::Windows&&fallback.calls>0);
+    reader.Stop();Wait([&]{return reader.IsStopped();});
+}
+
 }
 int RunMediaSnapshotTests() {
     using namespace history;
-    TimelineContinuity();
+    TimelineContinuity();ClientSnapshots();
     Source source;MediaSnapshotReader reader(Fetch,&source);
     Media out;out.title=L"untouched";double observed=0;uint64_t sequence=0;
     assert(reader.TryRead(out,observed,sequence)==MediaRead::Pending&&out.title==L"untouched"&&sequence==0);
@@ -96,9 +137,14 @@ int RunMediaSnapshotTests() {
     Wait([&]{return reader.TryRead(out,observed,sequence)==MediaRead::Ready;});
     assert(out.title==L"Track 2"&&sequence>first_sequence&&observed-first_time>=3);
     const auto second=sequence;
-    source.fail=true;
-    Wait([&]{return reader.TryRead(out,observed,sequence)==MediaRead::Failed;});
+    source.fail=true;MediaDiagnostic diagnostic;
+    Wait([&]{return reader.TryRead(out,observed,sequence,&diagnostic)==MediaRead::Failed;});
     assert(sequence>second&&out.title==L"Track 2");
+    assert(std::string(diagnostic.stage)=="provider"&&std::string(diagnostic.reason)=="provider-failed");
+    source.fail=false;source.invalid=true;
+    Wait([&]{return reader.TryRead(out,observed,sequence,&diagnostic)==MediaRead::Failed;});
+    assert(std::string(diagnostic.stage)=="snapshot-validation"&&std::string(diagnostic.reason)=="invalid-provider-media");
+    source.invalid=false;
     reader.Stop();Wait([&]{return reader.IsStopped();});
     assert(reader.TryRead(out,observed,sequence)==MediaRead::Pending);
     // A stopped observer cannot start a second live thread behind a blocked

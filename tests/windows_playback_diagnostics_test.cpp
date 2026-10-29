@@ -150,6 +150,98 @@ void LoggingDisabled() {
     assert(diagnostic_lines.empty()&&!playback.known&&!StatusDue(10,0,media,false));
     InterlockedExchange(&history::log_enabled,1);
 }
+void AppIdentityAndSourceChanges() {
+    CaptureBuffers buffers;std::vector<Heard> heard;Listen listen;Media current,media;
+    media.source=MediaSource::Spotify;media.spotify_uri="spotify:track:0000000000000000000001";
+    media.title=L"Same title";media.artist=L"Artist";media.album=L"Album";media.duration=10;media.playing=true;
+    for(unsigned i=0;i<10;++i){media.position=i;AssociateListen(media,listen,current,heard,buffers,100+i);}
+    // Metadata differences do not change URI identity, and different URIs do.
+    media.title=L"Refreshed label";media.position=9.5;AssociateListen(media,listen,current,heard,buffers,109.5);
+    assert(listen.eligible&&heard.empty());
+    media.spotify_uri="spotify:track:0000000000000000000002";media.position=0;
+    AssociateListen(media,listen,current,heard,buffers,110);
+    assert(heard.size()==1&&heard[0].media.spotify_uri=="spotify:track:0000000000000000000001");
+    heard.clear();listen={};current={};media={};media.title=L"Windows track";media.duration=10;media.playing=true;
+    for(unsigned i=0;i<10;++i){media.position=i;AssociateListen(media,listen,current,heard,buffers,200+i);}
+    media.source=MediaSource::Spotify;media.spotify_uri="spotify:track:0000000000000000000001";media.position=9.9;
+    AssociateListen(media,listen,current,heard,buffers,210);
+    assert(heard.empty()&&!listen.eligible); // Never stitch a source change into a complete listen.
+}
+void NaturalAppBufferingTransition() {
+    const auto run=[](double transition_time,bool expected) {
+        CaptureBuffers buffers;std::vector<Heard> heard;Listen listen;Media current,media;
+        media.source=MediaSource::Spotify;media.spotify_uri="spotify:track:0000000000000000000001";
+        media.playback_instance="first";media.title=L"Previous";media.duration=10;media.playing=true;
+        for(unsigned i=0;i<=19;++i){media.position=i*.5;AssociateListen(media,listen,current,heard,buffers,100+i*.5);}
+        Media next;next.source=MediaSource::Spotify;next.spotify_uri="spotify:track:0000000000000000000002";next.playback_instance="second";
+        FinishAppTransition(next,listen,current,heard,buffers,transition_time);
+        assert(heard.size()==size_t(expected)&&!listen.eligible);
+        FinishAppTransition(next,listen,current,heard,buffers,transition_time+.2);assert(heard.size()==size_t(expected));
+        next.title=L"Next";next.duration=20;next.position=.2;next.playing=true;
+        AssociateListen(next,listen,current,heard,buffers,transition_time+.2);assert(listen.eligible);
+    };
+    run(110,true);run(109.6,false); // Time spent buffering cannot manufacture the missing tail.
+}
+void RecentPlaybackMatching() {
+    RecentPlaybackHistory history;Media media;media.source=MediaSource::Spotify;
+    media.spotify_uri="spotify:track:0000000000000000000001";media.playback_instance="one";media.duration=10;
+    Listen listen;listen.identity=media.ListenKey();listen.generation=1;listen.start_time=100;
+    history.Observe(media,listen);Heard completed{media,100,110,1};history.Complete(completed);
+    media.title=L"Delayed title";media.artist=L"Artist";media.album=L"Album";
+    history.Observe(media,listen);history.Refresh(completed);assert(completed.media.title==L"Delayed title");
+    for(unsigned i=2;i<=7;++i){media.playback_instance=std::to_string(i);listen.identity=media.ListenKey();listen.generation=i;listen.start_time=100+i*10;history.Observe(media,listen);}
+    assert(history.Size()==5&&!history.Find(1,completed.media.ListenKey()));
+    history.Clear();assert(history.Size()==0);
+}
+void DurableAssociationEvidence() {
+    const auto capture=[](double born,double finished) {
+        auto value=std::make_unique<Capture>();value->lossless=true;value->born=born;value->finished=finished;
+        value->flac.rate=1;value->coverage.samples=10;return value;
+    };
+    Heard one;one.media.title=L"One";one.media.duration=10;one.start=100;one.finish=110;one.generation=1;
+    Heard two=one;two.media.title=L"Two";two.start=101;two.finish=111;two.generation=2;
+    CaptureBuffers buffers;buffers.ready.push_back(capture(100,110));std::vector<Heard> pending{one,two};
+    SchedulePublications(pending,buffers,0,112);SaveJob job;assert(!saves.Pop(job));
+    SchedulePublications(pending,buffers,0,711);assert(!saves.Pop(job)); // Expiry must not prove ownership.
+    buffers={};pending={one};buffers.ready.push_back(capture(100,110));buffers.ready.push_back(capture(100,111));
+    SchedulePublications(pending,buffers,0,112);assert(!saves.Pop(job));
+    buffers.ready.erase(buffers.ready.begin());SchedulePublications(pending,buffers,0,113);assert(!saves.Pop(job));
+    buffers={};pending.clear();for(unsigned i=0;i<6;++i)buffers.ready.push_back(capture(100+i*100,110+i*100));
+    SchedulePublications(pending,buffers,0,112);assert(buffers.ready.size()==5);
+    one.start=110;one.finish=120;pending={one};SchedulePublications(pending,buffers,0,121);assert(!saves.Pop(job));
+}
+void AppTailDeadline() {
+    CaptureBuffers buffers;std::vector<Heard> heard;Listen listen;Media current,media;
+    media.source=MediaSource::Spotify;media.spotify_uri="spotify:track:0000000000000000000001";
+    media.title=L"Previous";media.duration=10;media.playing=true;
+    for(unsigned i=0;i<=19;++i){media.position=i*.5;AssociateListen(media,listen,current,heard,buffers,100+i*.5);}
+    auto active=std::make_unique<Capture>();active->lossless=true;active->born=100;active->flac.rate=1;active->coverage.samples=9;buffers.active[1]=std::move(active);
+    Media next;next.source=MediaSource::Spotify;next.spotify_uri="spotify:track:0000000000000000000002";
+    FinishAppTransition(next,listen,current,heard,buffers,110);
+    assert(heard.size()==1&&buffers.active[1]->retained_until==120);
+    auto late=std::move(buffers.active[1]);buffers.active.erase(1);late->finished=121;late->coverage.samples=10;buffers.ready.push_back(std::move(late));
+    SchedulePublications(heard,buffers,0,121);SaveJob job;assert(!saves.Pop(job));
+}
+void MissingPlaybackWarning() {
+    CaptureBuffers buffers;auto complete=std::make_unique<Capture>();complete->finished=10;
+    buffers.ready.push_back(std::move(complete));MediaDiagnostic diagnostic;
+    diagnostic.stage="select-session";diagnostic.reason="no-spotify-session";
+    diagnostic_lines.clear();
+    ReportUnverifiedCaptures(buffers,false,diagnostic,20);assert(diagnostic_lines.empty());
+    ReportUnverifiedCaptures(buffers,true,diagnostic,12);assert(diagnostic_lines.empty());
+    ReportUnverifiedCaptures(buffers,true,diagnostic,13);
+    assert(Contains("complete Ogg capture")&&Contains("no-spotify-session")&&Contains("not saved"));
+    assert(Contains("Show desktop overlay when using media keys"));
+    const auto once=diagnostic_lines.size();
+    ReportUnverifiedCaptures(buffers,true,diagnostic,50);assert(diagnostic_lines.size()==once);
+    bool warned=false;diagnostic_lines.clear();
+    ReportMediaUnavailable(buffers,true,diagnostic,warned);
+    assert(warned&&Contains("playback verification failed")&&Contains("Show desktop overlay when using media keys"));
+    const auto outage=diagnostic_lines.size();
+    ReportMediaUnavailable(buffers,true,diagnostic,warned);assert(diagnostic_lines.size()==outage);
+    ReportMediaUnavailable(buffers,false,diagnostic,warned);assert(!warned);
+    ReportMediaUnavailable(buffers,true,diagnostic,warned);assert(diagnostic_lines.size()>outage);
+}
 void Connectivity() {
     assert(!LastConnectivity().known);
     RecordConnectivity({true,true,0,0x20,0x40,10});auto value=LastConnectivity();
@@ -171,7 +263,7 @@ void EnrichTags(const Media&,Tags&){}
 int wmain() {
     // Use in-memory preferences only. Never read or write the user's INI/music.
     InterlockedExchange(&history::debug_enabled,1);
-    Connectivity();ObservePlayback();CoverageAndFailures();HookBoundaries();TimingVerbosity();LoggingDisabled();
+    Connectivity();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();DurableAssociationEvidence();AppTailDeadline();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();HookBoundaries();TimingVerbosity();LoggingDisabled();
     puts("PASS: paused dedup/resume, observed transitions, exact coverage reasons, original callback semantics, bounded hook metrics and NLM observations");
     return 0;
 }

@@ -143,3 +143,7 @@ bash test-directory-lookup.sh
 
 # Album-artist precedence remains separate from guest/contributing credits.
 bash test-album-artists.sh
+
+# Media-session recovery/diagnostics must not regress when publication changes.
+bash test-media-observer.sh
+bash test-playback-diagnostics.sh
