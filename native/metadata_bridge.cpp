@@ -471,7 +471,7 @@ bool PrepareMetadataCollector(HMODULE cef) {
   metadata_startup_hooks.Add(target);
  }
  if(!complete||!metadata_startup_hooks.Size()||!hooks::QueueStartupHooks(metadata_startup_hooks)){
-  LogEvent(LogKind::Warning,"warning","metadata startup hook preparation unavailable");FinishMetadataStartup(false,false);return false;
+  QueueDiagnostic("metadata startup hook preparation unavailable");FinishMetadataStartup(false,false);return false;
  }
  return true;
 }

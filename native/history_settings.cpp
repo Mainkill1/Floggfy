@@ -213,7 +213,7 @@ void InitSettings(HMODULE proxy) {
     const bool default_ini_failed=attributes==INVALID_FILE_ATTRIBUTES &&
        (GetLastError()==ERROR_FILE_NOT_FOUND || GetLastError()==ERROR_PATH_NOT_FOUND) &&
        !CreateDefaultIni(ini);
-    const bool migration_failed=!settings_file::Unicode(ini);
+    const bool migration_failed=!default_ini_failed&&!settings_file::Unicode(ini);
     settings.downloads=GetPrivateProfileIntW(L"To Disk",L"Downloads",GetPrivateProfileIntW(L"History",L"Enabled",1,ini.c_str()),ini.c_str())!=0;
     settings.menu=GetPrivateProfileIntW(L"To Disk",L"Menu",1,ini.c_str())!=0;
     settings.ogg=GetPrivateProfileIntW(L"To Disk",L"Ogg",1,ini.c_str())!=0;
