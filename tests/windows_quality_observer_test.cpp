@@ -53,9 +53,11 @@ static void TestRepeatScheduling() {
   std::puts("PASS: named codec events honor capture epochs; same-title repeat jobs retain distinct completed generations and old boundaries");
 }
 enum class LateCapture { Complete,Timeout,Invalid,PastDeadline };
-static void TestLateCapture(bool flac,bool repeat,LateCapture outcome) {
+static void TestLateCapture(bool flac,bool repeat,LateCapture outcome,bool switch_provider=false,MediaSource provider=MediaSource::Windows) {
   CaptureBuffers buffers;Listen listen;Media current;std::vector<Heard> heard;
   Media media;media.title=L"Late ending";media.artist=L"Artist";media.album=L"Album";media.duration=10;media.playing=true;
+  media.source=provider;
+  if(switch_provider)media.spotify_uri="spotify:track:0000000000000000000001";
   auto sample=[&](double position,double time){media.position=position;AssociateListen(media,listen,current,heard,buffers,time);};
   sample(0,100);
   Slot slot{};slot.context=1;slot.time=100;
@@ -69,17 +71,25 @@ static void TestLateCapture(bool flac,bool repeat,LateCapture outcome) {
     buffers.active[1]=std::move(c);
   } else {page(0,2,0);slot.time=109;page(1,0,396900);}
   for(unsigned i=1;i<=19;++i)sample(i*.5,100+i*.5);
-  if(!repeat)media.title=L"Next song";
+  if(!repeat){media.title=L"Next song";if(switch_provider)media.spotify_uri="spotify:track:0000000000000000000002";}
   sample(.1,110.1);
   if(repeat)sample(1.2,111.2);
   assert(heard.size()==1&&heard[0].media.title==L"Late ending");
   assert(buffers.active.count(1)&&buffers.active[1]->retained_until==120);
   // The next decoder is unrelated to retention and must survive its cleanup.
   auto next=std::make_unique<Capture>();next->born=110;buffers.active[2]=std::move(next);
-  SchedulePublications(heard,buffers,7,111.2);
+  if(switch_provider) {
+    media.source=provider==MediaSource::Spotify?MediaSource::Windows:MediaSource::Spotify;
+    sample(4,114);
+    assert(heard.size()==1&&heard[0].media.title==L"Late ending");
+    assert(buffers.active.count(1)&&buffers.active[1]->retained_until==120);
+    assert(!listen.eligible); // Current B coverage restarts; completed A evidence survives.
+  }
+  const double tail_time=switch_provider?115:111.3;
+  SchedulePublications(heard,buffers,7,switch_provider?114:111.2);
   SaveJob job;assert(!saves.Pop(job)&&buffers.active.count(1));
   if(outcome!=LateCapture::Timeout) {
-    slot.time=outcome==LateCapture::PastDeadline?120.1:111.3;
+    slot.time=outcome==LateCapture::PastDeadline?120.1:tail_time;
     if(flac) {
       slot.kind=AudioEventKind::FlacFrame;
       const uint32_t frame[]={44100,44100,2,0,16,0};
@@ -91,9 +101,10 @@ static void TestLateCapture(bool flac,bool repeat,LateCapture outcome) {
   const auto diagnostic=AssociationFailure(heard[0],buffers,0);
   assert(diagnostic.find("no matching complete capture")!=std::string::npos);
   assert(diagnostic.find("Artist - Late ending")!=std::string::npos);
-  SchedulePublications(heard,buffers,7,outcome==LateCapture::Complete?111.3:121);
+  SchedulePublications(heard,buffers,7,outcome==LateCapture::Complete?tail_time:121);
   if(outcome==LateCapture::Complete) {
     assert(saves.Pop(job)&&job.heard.generation==1&&job.capture->Duration()==10);
+    if(switch_provider)assert(job.heard.media.source==provider);
     publishing_reserved.fetch_sub(job.reserved);
   } else {
     assert(!saves.Pop(job)&&heard.size()==1);
@@ -144,6 +155,9 @@ static void TestLateAssociation() {
     TestLateCapture(flac,false,LateCapture::PastDeadline);
   }
   TestAssociationRejection();
+  for(bool flac:{false,true})for(auto provider:{MediaSource::Windows,MediaSource::Spotify})
+    TestLateCapture(flac,false,LateCapture::Complete,true,provider);
+  puts("PASS: both provider-switch directions preserve a prior completed Ogg/FLAC listen and its original tail deadline");
   CloseHandle(save_event);save_event=nullptr;
   puts("PASS: late Ogg/FLAC completion survives natural transitions and repeats; original deadlines, invalid/mismatched/ambiguous capture rejection and skip cleanup remain intact");
 }

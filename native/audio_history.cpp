@@ -948,7 +948,9 @@ static void AssociateListen(Media media,Listen& listen,Media& current,std::vecto
     bool was_eligible=listen.eligible;
     double prior_position=listen.last_position,prior_duration=listen.duration,prior_time=listen.last_time;
     if(!listen.identity.empty() && current.source!=media.source) {
-        listen.eligible=false;heard.clear();
+        // Restart current coverage without revoking independently completed
+        // listens or their decoder-tail deadlines.
+        listen.eligible=false;
         Log(LogKind::Diagnostic,"playback source changed; listening coverage restarted");
     }
     std::string done=listen.Observe(media.ListenKey(),media.position,media.duration,media.playing,time);
