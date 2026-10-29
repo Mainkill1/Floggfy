@@ -132,7 +132,7 @@ static void Populate(Menu* menu) {
     if(!Main(menu)) {
         static volatile LONG logged=0;
         if(InterlockedCompareExchange(&logged,1,0)==0)
-            history::LogEvent(history::LogKind::Warning,"warning","To Disk menu capability: top-level submenu structure not recognized");
+            history::QueueDiagnostic("To Disk menu probe: non-main model ignored");
         return;
     }
     auto state=history::GetSettings();
