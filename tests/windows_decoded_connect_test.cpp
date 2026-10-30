@@ -48,6 +48,19 @@ void DecodedSettings() {
     assert(GetPrivateProfileIntW(L"To Disk",L"DebugNetworking",9,ini.c_str())==1&&history::CaptureEpoch()==epoch);
     wchar_t kept[16];assert(GetPrivateProfileStringW(L"Other",L"Keep",L"",kept,16,ini.c_str())==2&&std::wstring(kept)==L"\u97f3\u697d");
 }
+void ZeroStorageDefaults() {
+    using namespace history;
+    DecodedRecord record;
+    assert(record.copy==CopyState::Unreadable);
+    // Ring slots are cleared after consumption. Zeroed or partially filled
+    // records must never imply that native message bytes were copied safely.
+    SecureZeroMemory(&record,sizeof(record));
+    assert(record.copy==CopyState::Unreadable);
+    record.json_result=1;
+    decoded_summary={};CountUnsummarized(record);
+    assert(decoded_summary.unreadable==1&&decoded_summary.no_summary==0);
+    decoded_summary={};
+}
 void CallbackBoundary() {
     using namespace history;
     decoded_original=NativeParse;decoded_plain_return=0x1111;decoded_compressed_return=0x2222;
@@ -138,7 +151,7 @@ void QueueNetworkingDiagnostic(const char* text) noexcept {decoded_lines.emplace
 void LogEvent(LogKind,const char*,const std::string&){}
 }
 int wmain(int argc,wchar_t** argv) {
-    assert(argc==1||argc==2);TestConnectMessages();TestConnectHookDiscovery();
+    assert(argc==1||argc==2);ZeroStorageDefaults();TestConnectMessages();TestConnectHookDiscovery();
     if(argc==2)RealDiscovery(argv[1]);else puts("SKIP: current Spotify DLL discovery (no binary supplied)");
     DecodedSettings();CallbackBoundary();
     puts("PASS: bounded decoded summaries, synthetic/current-client capability checks, read-only callback/LastError forwarding, redaction, queue limits and optional settings");

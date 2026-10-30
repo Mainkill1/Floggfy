@@ -31,6 +31,15 @@ Save the music you play in Spotify on Windows.
 
 <img width="338" height="362" alt="To Disk menu" src="https://github.com/user-attachments/assets/b6294a3d-c09d-4dba-926a-72a1529d1db7" />
 
+## Build and package
+
+Run `bash build-native.sh` and `python3 package-release.py` from WSL with the
+existing MinGW toolchain. The DLL uses `-O2` with link-time optimization (`-flto`);
+the launcher retains its existing build settings. ASLR, NX, exception unwinding
+and the existing Windows APIs remain enabled. Release ZIPs use DEFLATE level 9;
+the extracted DLL loads directly without a runtime unpacker or new dependencies.
+See [development checks](AUDIO-HISTORY.md#development-checks) for validation.
+
 ## Settings
 
 - **To Disk** provides **Downloads**, **Save Location**, **FLAC**, **Ogg** and **Lyrics** controls.

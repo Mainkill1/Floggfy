@@ -38,6 +38,6 @@ with zipfile.ZipFile(path, 'w') as archive:
         info = zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0))
         info.compress_type = zipfile.ZIP_DEFLATED
         info.external_attr = 0o100644 << 16
-        archive.writestr(info, data)
+        archive.writestr(info, data, compresslevel=9)
 print('Automatic: version.dll')
 print(f'Launcher: {path.name}')
