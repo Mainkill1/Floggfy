@@ -2,20 +2,23 @@
 set -euo pipefail
 cd -- "$(dirname -- "$0")"
 mkdir -p build
-x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vendor/minimp4/minimp4.c -o build/minimp4.o
+# Keep capture code optimized for speed; link-time optimization removes
+# cross-file duplication without size-oriented code-generation tradeoffs.
+dll_optimization=(-O2 -flto)
+x86_64-w64-mingw32-gcc -std=c11 "${dll_optimization[@]}" -Wall -Wextra -c native/vendor/minimp4/minimp4.c -o build/minimp4.o
 python3 - <<'PY'
 from pathlib import Path
 script='window.__floggfyNative=true;\n'+Path('native/metadata_collector.js').read_text()
 Path('build/metadata_script.h').write_text('static constexpr wchar_t metadata_script[]=LR"FLOGGFY('+script+')FLOGGFY";\n')
 PY
 for source in buffer hook trampoline hde/hde64; do
-    x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c \
+    x86_64-w64-mingw32-gcc -std=c11 "${dll_optimization[@]}" -Wall -Wextra -c \
         "native/vendor/minhook/src/$source.c" -o "build/minhook-${source//\//-}.o"
 done
-x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include \
+x86_64-w64-mingw32-gcc -std=c11 "${dll_optimization[@]}" -I native/vendor/libogg/include \
     -c native/vendor/libogg/src/framing.c -o build/ogg-framing.o
-x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vorbis_headers_stb.c -o build/vorbis-headers-stb.o
-x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -shared \
+x86_64-w64-mingw32-gcc -std=c11 "${dll_optimization[@]}" -Wall -Wextra -c native/vorbis_headers_stb.c -o build/vorbis-headers-stb.o
+x86_64-w64-mingw32-g++ -std=c++17 "${dll_optimization[@]}" -Wall -Wextra -shared \
     -static-libgcc -static-libstdc++ \
     -Wl,--no-insert-timestamp,--dynamicbase,--nxcompat \
     native/version_proxy.cpp native/pe_imports.cpp native/spotify_hook_discovery.cpp native/connect_message.cpp native/connect_messages_windows.cpp native/audio_history.cpp native/playback_quality.cpp native/playback_quality_windows.cpp native/ogg_history_core.cpp \

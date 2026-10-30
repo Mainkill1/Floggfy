@@ -21,7 +21,10 @@ std::uintptr_t decoded_plain_return=0,decoded_compressed_return=0;
 hooks::InitController decoded_init;
 hooks::CallbackCounter decoded_callbacks;
 HMODULE decoded_module=nullptr; // Retained while the optional detour can exist.
-enum class CopyState { Copied,Oversized,Unreadable,InvalidString };
+// Zeroed storage must fail closed. Keeping this default zero also lets the
+// large, initially empty ring live in BSS rather than occupy DLL file bytes.
+enum class CopyState { Unreadable,Copied,Oversized,InvalidString };
+static_assert(CopyState{}==CopyState::Unreadable,"cleared records are unreadable");
 enum class MessageSource { Plain,Decompressed };
 struct DecodedRecord {
     std::uint64_t observed_ms=0;
