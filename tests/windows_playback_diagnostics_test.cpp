@@ -89,8 +89,63 @@ void CoverageAndFailures() {
     slot.kind=AudioEventKind::FlacBegin;ProcessFlacCapture(slot,buffers);
     InterlockedExchange(&history::debug_enabled,0);diagnostic_lines.clear();
     slot.kind=AudioEventKind::FlacFrame;ProcessFlacCapture(slot,buffers);
-    assert(diagnostic_lines.size()==1&&Contains("stream discarded")); // Keep normal failure activity.
+    assert(diagnostic_lines.size()==1&&Contains("stream discarded")); // Debug-off normal failure remains visible.
     InterlockedExchange(&history::debug_enabled,1);
+}
+void OggRejectionEvidence() {
+    const auto exercise=[&](const char* reason,const std::vector<std::vector<uint8_t>>& prefix,const std::vector<uint8_t>& rejected,bool inactive=false) {
+        for(unsigned mode=0;mode<3;++mode) {
+            InterlockedExchange(&history::log_enabled,mode!=0);InterlockedExchange(&history::debug_enabled,mode!=1);
+            CaptureBuffers buffers;Slot slot{};slot.kind=AudioEventKind::OggPage;slot.context=0x5678;slot.time=Now();slot.epoch=9;
+            auto send=[&](const std::vector<uint8_t>& bytes){slot.length=unsigned(bytes.size());memcpy(slot.bytes,bytes.data(),bytes.size());ProcessOggCapture(slot,buffers);};
+            if(inactive)buffers.active[slot.context]=std::make_unique<Capture>();
+            for(const auto& page:prefix)send(page);
+            diagnostic_lines.clear();const auto failures=failure_events;send(rejected);
+            assert(buffers.active.empty()&&buffers.ready.empty()); // No invalid capture becomes publishable.
+            assert(failure_events==failures+unsigned(mode!=0));
+            assert(diagnostic_lines.size()==(mode==0?0u:mode==1?1u:2u));
+            if(mode)assert(Contains(reason));
+            if(mode==2) {
+                assert(Contains("Ogg observation")&&Contains("ctx=5678 epoch=9"));
+                assert(Contains("expected_seq=")&&Contains("actual_seq=")&&Contains("previous_granule="));
+                assert(!Contains("spotify:track:")&&!Contains("FLOGGFY_METADATA"));
+                if(std::string(reason)=="sequence-discontinuity"&&prefix.size()==1)
+                    assert(Contains("expected_seq=1 actual_seq=2")&&Contains("expected_serial=42 actual_serial=42"));
+                if(std::string(reason)=="sequence-discontinuity"&&prefix.size()==2)assert(Contains("expected_seq=2 actual_seq=1"));
+                if(std::string(reason)=="serial-change")assert(Contains("expected_serial=42 actual_serial=43"));
+                if(std::string(reason)=="invalid Ogg page rejected")assert(Contains("reason=invalid-page")&&Contains("page_known=0"));
+            }
+        }
+    };
+    const auto bos=recording_fixture::page(recording_fixture::identification(),0,2,0);
+    const auto middle=recording_fixture::page({0},1,0,44100);
+    exercise("sequence-discontinuity",{bos},recording_fixture::page({0},2,4,441000));
+    exercise("sequence-discontinuity",{bos,middle},middle); // Backtrack/duplicate, not necessarily missing data.
+    exercise("serial-change",{bos},recording_fixture::page({0},1,0,44100,43));
+    exercise("unexpected-bos",{bos},recording_fixture::page({0},1,2,0));
+    exercise("invalid-granule",{bos},recording_fixture::page({0},1,0,uint64_t(-2)));
+    exercise("granule-regression",{bos,middle},recording_fixture::page({0},2,0,100));
+    exercise("invalid-eos-granule",{bos},recording_fixture::page({0},1,4,0));
+    exercise("inactive-stream",{},middle,true);
+    auto corrupt=middle;corrupt.back()^=1;exercise("invalid Ogg page rejected",{bos},corrupt);
+    InterlockedExchange(&history::log_enabled,1);InterlockedExchange(&history::debug_enabled,1);
+}
+void IncompleteAppTransitionEvidence() {
+    for(unsigned variant=0;variant<3;++variant) {
+        const bool same_uri=variant!=0,known_instance=variant!=2;
+        CaptureBuffers buffers;Listen listen;Media current,media;std::vector<Heard> heard;
+        media.source=MediaSource::Spotify;media.spotify_uri="spotify:track:0000000000000000000001";
+        media.playback_instance="old-instance";media.title=L"Current";media.duration=168.801;media.playing=true;
+        for(unsigned i=0;i<=16;++i){media.position=i;AssociateListen(media,listen,current,heard,buffers,100+i);}
+        Media next=media;next.playback_instance=known_instance?"new-instance":"";next.position=same_uri?16.5:0;
+        if(!same_uri)next.spotify_uri="spotify:track:0000000000000000000002";
+        diagnostic_lines.clear();const auto failures=failure_events;
+        assert(!FinishAppTransition(next,listen,current,heard,buffers,116.5));
+        assert(heard.empty()&&!listen.eligible&&failure_events==failures);
+        assert(Contains(same_uri?"same_uri=1":"same_uri=0")&&Contains(known_instance?"instance_changed=1":"instance_changed=-1"));
+        assert(Contains("last_pos=16.000/168.801")&&Contains("elapsed=0.500"));
+        assert(diagnostic_lines.size()==2&&!Contains("spotify:track:")&&!Contains("old-instance")&&!Contains("new-instance"));
+    }
 }
 void HookBoundaries() {
     queue=new Slot[capacity];event=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(event);
@@ -310,7 +365,7 @@ void EnrichTags(const Media&,Tags&){}
 int wmain() {
     // Use in-memory preferences only. Never read or write the user's INI/music.
     InterlockedExchange(&history::debug_enabled,1);
-    Connectivity();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();DurableAssociationEvidence();AppTailDeadline();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();HookBoundaries();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
+    Connectivity();OggRejectionEvidence();IncompleteAppTransitionEvidence();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();DurableAssociationEvidence();AppTailDeadline();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();HookBoundaries();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
     puts("PASS: observed transitions, one FLAC failure context/outcome, original callback semantics, profiling-only intervals, basic-mode zero profiling and changed-only NLM observations");
     return 0;
 }

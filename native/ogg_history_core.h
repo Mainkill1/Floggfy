@@ -12,8 +12,12 @@ struct Page {
 };
 bool ParsePage(const uint8_t* bytes, size_t length, Page& out);
 enum class Result { Ignore, Begin, Append, Complete, Invalid };
+// The guard result remains unchanged; this records why a page was rejected.
+enum class OggRejection : uint8_t { None,InvalidPage,Inactive,Serial,Sequence,Bos,Granule,GranuleRegression,EosGranule };
+const char* OggRejectionName(OggRejection reason) noexcept;
 struct Stream {
     bool active = false, complete = false;
+    OggRejection rejection=OggRejection::None;
     uint32_t serial = 0, next = 0, rate = 0, pages = 0, bitrate = 0;
     uint8_t channels = 0;
     int64_t samples = -1;
