@@ -36,23 +36,41 @@ bool ParsePage(const uint8_t* b, size_t n, Page& out) {
     }
     return true;
 }
+const char* OggRejectionName(OggRejection reason) noexcept {
+    switch(reason) {
+        case OggRejection::None:return "none";
+        case OggRejection::InvalidPage:return "invalid-page";
+        case OggRejection::Inactive:return "inactive-stream";
+        case OggRejection::Serial:return "serial-change";
+        case OggRejection::Sequence:return "sequence-discontinuity";
+        case OggRejection::Bos:return "unexpected-bos";
+        case OggRejection::Granule:return "invalid-granule";
+        case OggRejection::GranuleRegression:return "granule-regression";
+        case OggRejection::EosGranule:return "invalid-eos-granule";
+    }
+    return "unknown";
+}
 Result Stream::Push(const uint8_t* b, size_t n) {
     Page p;
-    if(!ParsePage(b,n,p)) { active=false; complete=false; return Result::Invalid; }
+    const auto invalid=[&](OggRejection reason) {
+        rejection=reason;active=false;complete=false;return Result::Invalid;
+    };
+    if(!ParsePage(b,n,p))return invalid(OggRejection::InvalidPage);
     if(p.vorbis_start) {
         *this={}; active=true; serial=p.serial; next=p.sequence+1;
         rate=p.rate; channels=p.channels; bitrate=p.bitrate; pages=1; samples=p.granule;
         return Result::Begin;
     }
-    if(!active) return Result::Ignore;
-    if(p.serial!=serial || p.sequence!=next || (p.flags&2) || p.granule < -1
-       || (p.granule>=0 && samples>=0 && p.granule<samples)) {
-        active=false; complete=false; return Result::Invalid;
-    }
+    if(!active){rejection=OggRejection::Inactive;return Result::Ignore;}
+    if(p.serial!=serial)return invalid(OggRejection::Serial);
+    if(p.sequence!=next)return invalid(OggRejection::Sequence);
+    if(p.flags&2)return invalid(OggRejection::Bos);
+    if(p.granule < -1)return invalid(OggRejection::Granule);
+    if(p.granule>=0 && samples>=0 && p.granule<samples)return invalid(OggRejection::GranuleRegression);
     ++next; ++pages; if(p.granule>=0) samples=p.granule;
     if(p.flags&4) {
         active=false; complete=samples>0 && p.granule>0;
-        return complete ? Result::Complete : Result::Invalid;
+        return complete ? Result::Complete : invalid(OggRejection::EosGranule);
     }
     return Result::Append;
 }

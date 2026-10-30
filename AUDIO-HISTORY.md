@@ -625,3 +625,32 @@ After, optional `Floggfy-diagnostics.log` adds facts rather than the save outcom
 
 Local action requests, received commands and observed playback states describe
 separate events. None alone identifies why playback paused.
+
+## Diagnosing an Ogg capture rejected mid-song
+
+An Ogg capture rejection reports a specific reason in normal activity, including
+`serial-change`, `sequence-discontinuity`, `unexpected-bos`, `invalid-granule`,
+`granule-regression`, `invalid-eos-granule` or `inactive-stream`. A malformed page
+is reported separately as `invalid Ogg page rejected`. These are capture-guard
+outcomes, not proof that Spotify's playback failed or that a disk write failed.
+
+With `Log=1` and `DebugLog=1`, one additional `Ogg observation` record includes the
+capture context/epoch, expected and received stream serial/page sequence, previous
+and incoming granule, flags, rate/channels, captured page/byte counts, decoder
+capture age and cumulative audio-drop count. `capture_known` and `page_known`
+distinguish missing context from a valid zero. A sequence mismatch may be a
+forward gap or a reread/backtrack; the numeric values distinguish those cases.
+Header/checksum failures do not print guessed raw header fields.
+
+An incomplete app buffering transition also records the last playback position,
+reported next position, observation interval, and whether URI/instance equality
+is known and changed. Only equality flags are logged; raw URIs and playback
+instance identifiers are excluded. `-1` means unknown. Formatting stays on the
+existing worker, with no new detour or callback-side diagnostic sampling. These
+records change neither codec acceptance nor listening/identity/tail safeguards.
+
+For an intermittent missing file, provide both complete logs spanning about thirty
+seconds before the rejection through playback recovery/the next track, and say
+whether Spotify played the missing track to its end or stopped/changed early.
+Song names and paths can be redacted; retain timestamps, numeric fields and
+identity-change flags. Missing lyrics (HTTP 404) is separate from audio capture.

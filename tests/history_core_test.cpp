@@ -144,12 +144,13 @@ int main(int argc,char** argv) {
     check(push(s,middle)==Result::Append,"contiguous page appended");
     check(push(s,end)==Result::Complete && s.pages==3 && s.Duration()==2,"EOS publishes full stream");
     Stream gap; push(gap,first);
-    check(push(gap,end)==Result::Invalid && !gap.complete,"page gap cannot publish");
-    Stream partial; check(push(partial,middle)==Result::Ignore,"partial listen without BOS ignored");
+    check(push(gap,end)==Result::Invalid && !gap.complete && gap.rejection==OggRejection::Sequence,"page gap cannot publish and has a sequence reason");
+    Stream partial; check(push(partial,middle)==Result::Ignore && partial.rejection==OggRejection::Inactive,"partial listen without BOS ignored with inactive reason");
     Stream corrupt; push(corrupt,first);
-    check(push(corrupt,bad)==Result::Invalid,"CRC failure invalidates stream");
+    check(push(corrupt,bad)==Result::Invalid && corrupt.rejection==OggRejection::InvalidPage,"CRC failure invalidates stream with invalid-page reason");
     Stream backwards; push(backwards,first); push(backwards,middle);
-    check(push(backwards,page(3,4,100))==Result::Invalid,"backward granule rejected");
+    check(push(backwards,page(3,4,100))==Result::Invalid && backwards.rejection==OggRejection::GranuleRegression,"backward granule rejected with precise reason");
+    check(push(backwards,first)==Result::Begin && backwards.rejection==OggRejection::None,"new valid stream clears a previous rejection");
     Listen listen; listen.Observe("one",0,10,true,0);
     for(int i=1;i<10;i++) check(listen.Observe("one",i,10,true,i).empty(),"read-ahead not a completed listen");
     check(listen.Observe("two",0,10,true,10)=="one","natural track completion retained");

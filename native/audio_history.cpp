@@ -853,9 +853,24 @@ static void ProcessFlacCapture(const Slot& s,CaptureBuffers& buffers) {
     char line[180]; snprintf(line,sizeof(line),"FLAC COMPLETE frames=%u samples=%llu bytes=%llu duration=%.6f",c.coverage.frames,static_cast<unsigned long long>(c.coverage.samples),static_cast<unsigned long long>(c.bytes),c.Duration()); Log(LogKind::Diagnostic,line);
     ready.push_back(std::move(found->second)); active.erase(found); return;
 }
+static void LogOggRejection(const Slot& slot,const Capture* capture,const Stream* previous,const Page* page,OggRejection reason) {
+    if(!DebugLoggingEnabled())return;
+    // Existing worker only. No raw bytes, new detour or callback-side sampling.
+    const Stream empty{};const auto& stream=previous?*previous:empty;
+    char line[640];snprintf(line,sizeof(line),
+        "Ogg observation reason=%s ctx=%llx epoch=%u capture_known=%d codec=%s page_known=%d expected_serial=%u actual_serial=%u expected_seq=%u actual_seq=%u previous_granule=%lld incoming_granule=%lld flags=%u rate=%u channels=%u pages=%u bytes=%llu capture_age_ms=%.1f dropped_total=%ld",
+        OggRejectionName(reason),static_cast<unsigned long long>(slot.context),slot.epoch,capture!=nullptr,
+        !capture?"unknown":capture->aac?"aac":capture->lossless?"flac":"ogg",page!=nullptr,
+        stream.serial,page?page->serial:0,stream.next,page?page->sequence:0,
+        static_cast<long long>(stream.samples),static_cast<long long>(page?page->granule:-1),page?unsigned(page->flags):0,stream.rate,unsigned(stream.channels),stream.pages,
+        static_cast<unsigned long long>(capture?capture->bytes:0),capture?(slot.time-capture->born)*1000:0,dropped);
+    Log(LogKind::Diagnostic,line);
+}
 static void ProcessOggCapture(const Slot& s,CaptureBuffers& buffers) {
     auto& active=buffers.active;auto& ready=buffers.ready;
     Page page; if(!ParsePage(s.bytes,s.length,page)) {
+        const auto found=active.find(s.context);const auto* capture=found==active.end()?nullptr:found->second.get();
+        LogOggRejection(s,capture,capture?&capture->stream:nullptr,nullptr,OggRejection::InvalidPage);
         active.erase(s.context); Log(LogKind::Failure,"invalid Ogg page rejected"); return;
     }
     if(page.vorbis_start) {
@@ -865,9 +880,13 @@ static void ProcessOggCapture(const Slot& s,CaptureBuffers& buffers) {
             static_cast<unsigned long long>(s.context),page.sequence,page.serial,page.rate,page.channels); Log(LogKind::Diagnostic,line);
     }
     auto found=active.find(s.context); if(found==active.end()) return;
-    Capture& c=*found->second; Result result=c.stream.Push(s.bytes,s.length);
+    Capture& c=*found->second;Stream previous;
+    const bool diagnostic=DebugLoggingEnabled();if(diagnostic)previous=c.stream;
+    Result result=c.stream.Push(s.bytes,s.length);
     if(result==Result::Invalid || result==Result::Ignore) {
-        active.erase(found); Log(LogKind::Failure,"stream discarded: page gap or integrity failure"); return;
+        LogOggRejection(s,&c,diagnostic?&previous:nullptr,&page,c.stream.rejection);
+        char message[160];snprintf(message,sizeof(message),"Ogg stream discarded: %s; replay from the beginning to save",OggRejectionName(c.stream.rejection));
+        active.erase(found);Log(LogKind::Failure,message);return;
     }
     size_t reserved=publishing_reserved.load();
     for(const auto& item:active) reserved+=item.second->Capacity();
@@ -1028,7 +1047,19 @@ static bool FinishAppTransition(const Media& next,Listen& listen,const Media& cu
     }
     if(!done.empty()) {
         RecordCompletedListen(current,ending,heard,buffers,recent);
-    } else if(listen.eligible)LogEvent(LogKind::Activity,"skipped",Utf8(current.artist)+" - "+Utf8(current.title)+" (incomplete app transition)");
+    } else if(listen.eligible) {
+        if(DebugLoggingEnabled()) {
+            const bool uri_known=!current.spotify_uri.empty()&&!next.spotify_uri.empty();
+            const bool instance_known=!current.playback_instance.empty()&&!next.playback_instance.empty();
+            char line[300];snprintf(line,sizeof(line),
+                "app transition incomplete uri_known=%d same_uri=%d instance_known=%d instance_changed=%d last_pos=%.3f/%.3f next_pos=%.3f elapsed=%.3f",
+                uri_known,uri_known?int(current.spotify_uri==next.spotify_uri):-1,
+                instance_known,instance_known?int(current.playback_instance!=next.playback_instance):-1,
+                listen.last_position,listen.duration,next.position,time-listen.last_time);
+            Log(LogKind::Diagnostic,line);
+        }
+        LogEvent(LogKind::Activity,"skipped",Utf8(current.artist)+" - "+Utf8(current.title)+" (incomplete app transition)");
+    }
     listen.identity.clear();listen.eligible=false;listen.playing=false;
     return false;
 }
