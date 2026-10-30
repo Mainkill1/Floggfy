@@ -9,9 +9,9 @@
 #include "recording_fixture.h"
 static unsigned metadata_update_calls=0;
 namespace history {
-FileMetadataUpdate UpdateRecordingMetadata(const std::wstring&,const Tags&,const Catalog&,unsigned);
-FileMetadataUpdate CountedMetadataUpdate(const std::wstring& path,const Tags& incoming,const Catalog& catalog,unsigned generation) {
- ++metadata_update_calls;return UpdateRecordingMetadata(path,incoming,catalog,generation);
+FileMetadataUpdate UpdateRecordingMetadata(const std::wstring&,const Tags&,const Catalog&,unsigned,bool(*)(void*),void*);
+FileMetadataUpdate CountedMetadataUpdate(const std::wstring& path,const Tags& incoming,const Catalog& catalog,unsigned generation,bool(*permit)(void*),void* context) {
+ ++metadata_update_calls;return UpdateRecordingMetadata(path,incoming,catalog,generation,permit,context);
 }
 std::string ReadClientPlaybackQuality(const Media&) {return {};}
 void EnrichCatalog(const Media&,Catalog&) {}

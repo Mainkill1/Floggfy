@@ -3,6 +3,7 @@
 #include "media_session.h"
 #include "ogg_tags.h"
 #include "library_layout.h"
+#include "metadata_revision.h"
 namespace history {
 // Prepare creates/queues root hooks without suspension. Finalize follows the
 // shared ApplyQueued result; failure may retain dependent callback state.

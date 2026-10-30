@@ -4,6 +4,8 @@
 #include "metadata_update_core.h"
 #include "file_publication.h"
 #include "history_settings.h"
+#include "async_log.h"
+#include <cstdio>
 #include <memory>
 namespace history {
 namespace {
@@ -15,27 +17,54 @@ bool UpdateEnabled(unsigned expected_generation) {
     return preferences.generation==expected_generation && preferences.downloads &&
            preferences.metadata && preferences.update_existing_metadata;
 }
+void FailureContext(const char* stage,DWORD code=0) noexcept {
+    if(!DebugLoggingEnabled())return;
+    char line[128];
+    if(code)std::snprintf(line,sizeof(line),"metadata-update stage=%s winerr=%lu",stage,code);
+    else std::snprintf(line,sizeof(line),"metadata-update stage=%s",stage);
+    QueueDiagnostic(line);
 }
-FileMetadataUpdate UpdateRecordingMetadata(const std::wstring& path,const Tags& incoming,const Catalog& catalog,unsigned expected_generation) {
-    if(!UpdateEnabled(expected_generation))return FileMetadataUpdate::Skipped;
+bool InUse(DWORD code) {return code==ERROR_SHARING_VIOLATION||code==ERROR_LOCK_VIOLATION;}
+}
+FileMetadataUpdate UpdateRecordingMetadata(const std::wstring& path,const Tags& incoming,const Catalog& catalog,unsigned expected_generation,
+    bool(*is_current)(void*),void* context) {
+    struct Permit {unsigned generation;bool(*current)(void*);void* context;} permit{expected_generation,is_current,context};
+    auto enabled=[](void* argument) noexcept {
+        try{const auto& p=*static_cast<Permit*>(argument);return UpdateEnabled(p.generation)&&(!p.current||p.current(p.context));}
+        catch(...){return false;} // A failed settings/intent check never authorizes replacement.
+    };
+    if(!enabled(&permit))return FileMetadataUpdate::Skipped;
     // Retain the exact source object through promotion, preventing a metadata
     // update from replacing another process's newly created recording.
     File file(CreateFileW(WindowsPath(path).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,
                          nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr));
-    if(file.get()==INVALID_HANDLE_VALUE)return FileMetadataUpdate::Failed;
+    if(file.get()==INVALID_HANDLE_VALUE) {
+        const auto error=GetLastError();
+        if(InUse(error))return FileMetadataUpdate::InUse;
+        FailureContext("open-source",error);return FileMetadataUpdate::Failed;
+    }
     LARGE_INTEGER size{};
-    if(!GetFileSizeEx(file.get(),&size)||size.QuadPart<=0||size.QuadPart>500LL*1024*1024)
+    if(!GetFileSizeEx(file.get(),&size)||size.QuadPart<=0||size.QuadPart>500LL*1024*1024) {
+        FailureContext("source-size");
         return FileMetadataUpdate::Failed;
+    }
     std::vector<uint8_t> source(size_t(size.QuadPart));
     DWORD read=0;
-    if(!ReadFile(file.get(),source.data(),DWORD(source.size()),&read,nullptr)||read!=source.size())
+    const auto read_ok=ReadFile(file.get(),source.data(),DWORD(source.size()),&read,nullptr);
+    if(!read_ok||read!=source.size()) {
+        const auto error=read_ok?ERROR_SUCCESS:GetLastError();
+        if(InUse(error))return FileMetadataUpdate::InUse;
+        FailureContext("read-source",error);
         return FileMetadataUpdate::Failed;
+    }
     std::vector<uint8_t> patched;std::string error;
     const auto result=FillRecordingMetadata(source,incoming,catalog,patched,error);
     if(result==MetadataUpdate::Unchanged)return FileMetadataUpdate::Skipped;
-    if(result!=MetadataUpdate::Updated)return FileMetadataUpdate::Failed;
-    if(!UpdateEnabled(expected_generation))return FileMetadataUpdate::Skipped;
-    return PublishMetadataBytes(path,patched.data(),patched.size(),catalog,file.get())==FilePublication::Upgraded
-        ? FileMetadataUpdate::Updated : FileMetadataUpdate::Failed;
+    if(result!=MetadataUpdate::Updated){FailureContext("validate-metadata");return FileMetadataUpdate::Failed;}
+    if(!enabled(&permit))return FileMetadataUpdate::Skipped;
+    const auto publication=PublishMetadataBytes(path,patched.data(),patched.size(),catalog,file.get(),enabled,&permit);
+    if(publication==FilePublication::Failed)FailureContext("publication");
+    return publication==FilePublication::Upgraded?FileMetadataUpdate::Updated:
+        publication==FilePublication::Skipped?FileMetadataUpdate::Skipped:FileMetadataUpdate::Failed;
 }
 }

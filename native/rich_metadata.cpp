@@ -1,4 +1,5 @@
 #include "rich_metadata.h"
+#include "metadata_revision.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -50,8 +51,12 @@ static bool ParseMetadata(const std::string& input,RichMetadata& out,std::string
 bool ParseRichMetadata(const std::string& input,RichMetadata& out,std::string& error) {return ParseMetadata(input,out,error,false);}
 bool ParsePlaybackMetadata(const std::string& input,RichMetadata& out,std::string& error) {return ParseMetadata(input,out,error,true);}
 void MetadataCache::Put(const RichMetadata& m) {
+ const auto* old=FindUri(m.uri);
+ const bool changed=!old || old->title!=m.title || old->artist!=m.artist || old->album!=m.album ||
+     old->duration!=m.duration || old->artwork_url!=m.artwork_url || old->fields!=m.fields;
  records_.erase(std::remove_if(records_.begin(),records_.end(),[&](const auto& r){return r.uri==m.uri;}),records_.end());
  records_.push_back(m); while(records_.size()>24) records_.pop_front();
+ if(changed)MetadataChanged();
 }
 const RichMetadata* MetadataCache::FindUri(const std::string& uri) const {
  for(const auto& record:records_)if(record.uri==uri)return &record;

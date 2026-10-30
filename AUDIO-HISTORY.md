@@ -66,8 +66,9 @@ MaxBufferedMiB=500
 - **AAC:** INI-only, default `0`. Set `AAC=1` and restart to capture supported
   low-quality SpAC/AAC streams as M4A. Downloads still controls all saving.
 - **Metadata:** enriches tracks using existing client state, cached metadata, and Spotify's authenticated track/album services. Set 0 and restart to disable its hooks.
-- **UpdateExistingMetadata:** default on. Set 0 to disable metadata-only changes
-  to existing files, including lyrics and artwork upgrades. New audio saves and
+- **UpdateExistingMetadata:** default on. Verified existing recordings receive
+  available metadata, lyrics and better artwork without a full replay, including
+  while paused. Set 0 to disable those metadata-only changes. New audio saves and
   quality replacements still follow Downloads and the format settings.
 - **Lyrics:** default on. Requests available lyrics automatically through Spotify's
   existing client service, even with the lyrics panel closed. Set 0 in the INI or
@@ -520,8 +521,9 @@ are omitted. Requests use Spotify's existing client service and remain bounded;
 unsupported service shapes retain basic tags. Lyrics are not guaranteed for every
 track. Synchronized lyrics are embedded as millisecond LRC text in `LYRICS`,
 with plain text used when timing is unavailable or invalid. No sidecars are created.
-After a complete replay, verified existing FLAC and Ogg files can receive missing
-text metadata and missing artwork even when no audio upgrade is planned. Existing
+Verified existing FLAC and Ogg files can receive missing text metadata and better
+artwork as soon as current playback identity is verified and enrichment arrives,
+including while paused; finishing the song again is unnecessary. Existing
 populated text and compressed audio are preserved. Better validated Spotify
 client covers may replace smaller or unmarked legacy thumbnails without reducing
 resolution. Identical images, higher-resolution covers and artwork whose format
@@ -529,9 +531,22 @@ or layout cannot be safely assessed are retained. Plain lyrics can
 upgrade to synchronized lyrics; existing synchronized lyrics are retained. A
 lower-quality replay can enrich an existing FLAC without replacing its audio.
 `Lyrics=0` disables lyric enrichment while allowing other metadata fills;
-`Metadata=0` or `UpdateExistingMetadata=0` disables metadata-only updates. The
-update planner reuses the quality inspection and skips reopening, retagging or
-staging an existing file when no metadata or artwork changes are needed. Updates are logged separately and do
+`Metadata=0` or `UpdateExistingMetadata=0` disables metadata-only updates. Downloads
+and the existing file's format switch must also be enabled. Disabling Lyrics
+preserves already embedded lyrics. One superseding intent shares the existing
+publication worker; unchanged cache observations coalesce, while changed text or
+downloaded artwork triggers another check. No bulk scan or callback file/network
+work is added. A changed track, buffering transition, stale observation or settings
+generation revokes pending work, including at atomic replacement. If another app
+allows reading but blocks replacement (for example, an open VLC file), the updater
+reports a file-in-use warning and retains the same intent for a five-second retry.
+Source read locks are also classified as in use. Retries use the same single slot,
+do not repeat the intent's warning, and stop on stale observation, changed track
+or changed settings. Close the file in the other app to allow a safe replacement;
+no full replay is required. Other failures retain optional stage/error context
+in diagnostics. The update
+planner skips retagging and staging when no approved change is needed. New audio
+and quality upgrades still require a complete verified listen. Updates are logged separately and do
 not add a Latest Downloads entry. There is no bulk library scan.
 
 ## Optional low-quality AAC streams

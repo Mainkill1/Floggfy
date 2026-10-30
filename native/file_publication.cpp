@@ -108,11 +108,16 @@ bool PrepareBackupSlot(const std::wstring& path,const Catalog& catalog) {
     }
     return false;
 }
-FilePublication PromoteReplacement(const std::wstring& path,const std::wstring& staging,const Catalog& catalog,HANDLE old) {
+bool PermitCurrent(bool(*is_current)(void*),void* context) noexcept {
+    try{return !is_current||is_current(context);}catch(...){return false;}
+}
+FilePublication PromoteReplacement(const std::wstring& path,const std::wstring& staging,const Catalog& catalog,HANDLE old,
+    bool(*is_current)(void*)=nullptr,void* context=nullptr) {
     auto backup=path+L".previous";
     bool moved=PrepareBackupSlot(path,catalog) && RenameHandle(old,backup);
     if(moved) TestPhase(L"reserved",path);
-    bool published=moved && MoveFileExW(WindowsPath(staging).c_str(),WindowsPath(path).c_str(),MOVEFILE_WRITE_THROUGH);
+    const bool permitted=PermitCurrent(is_current,context);
+    bool published=moved && permitted && MoveFileExW(WindowsPath(staging).c_str(),WindowsPath(path).c_str(),MOVEFILE_WRITE_THROUGH);
     if(published) {
         FILE_DISPOSITION_INFO disposition={TRUE};
         SetFileInformationByHandle(old,FileDispositionInfo,&disposition,sizeof(disposition));
@@ -120,7 +125,7 @@ FilePublication PromoteReplacement(const std::wstring& path,const std::wstring& 
         if(moved) RenameHandle(old,path); // no replacement; preserve any raced file
         DeleteFileW(WindowsPath(staging).c_str());
     }
-    return published?FilePublication::Upgraded:FilePublication::Failed;
+    return published?FilePublication::Upgraded:!permitted?FilePublication::Skipped:FilePublication::Failed;
 }
 Catalog CatalogFromTags(const Tags& tags) {
     auto field=[&](const char* name) { for(const auto& pair:tags.fields) if(pair.first==name) return pair.second; return std::string(); };
@@ -240,7 +245,8 @@ FilePublication PublishBytes(const std::wstring& path,const Quality& quality,con
     if(result==FilePublication::Upgraded && published_bytes)*published_bytes=size;
     return result;
 }
-FilePublication PublishMetadataBytes(const std::wstring& path,const void* bytes,size_t size,const Catalog& catalog,void* locked_file) {
+FilePublication PublishMetadataBytes(const std::wstring& path,const void* bytes,size_t size,const Catalog& catalog,void* locked_file,
+    bool(*is_current)(void*),void* context) {
     RecordingFile incoming,current;
     if(!locked_file || locked_file==INVALID_HANDLE_VALUE || !SameFile(locked_file,path) ||
        !ReadRecording(path,current) || !current.complete || !current.owned || !MatchesRecording(current,catalog) ||
@@ -253,7 +259,8 @@ FilePublication PublishMetadataBytes(const std::wstring& path,const void* bytes,
     StagingFile cleanup{WindowsPath(staging)};
     if(!WriteNew(staging,bytes,size))return FilePublication::Failed;
     TestPhase(L"staged",path);
-    return PromoteReplacement(path,staging,catalog,locked_file);
+    if(!PermitCurrent(is_current,context))return FilePublication::Skipped;
+    return PromoteReplacement(path,staging,catalog,locked_file,is_current,context);
 }
 FilePublication PublishBytes(const std::wstring& path,const Quality& quality,const void* bytes,size_t size) {
     RecordingFile incoming;
