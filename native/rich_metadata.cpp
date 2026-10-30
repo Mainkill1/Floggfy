@@ -53,6 +53,10 @@ void MetadataCache::Put(const RichMetadata& m) {
  records_.erase(std::remove_if(records_.begin(),records_.end(),[&](const auto& r){return r.uri==m.uri;}),records_.end());
  records_.push_back(m); while(records_.size()>24) records_.pop_front();
 }
+const RichMetadata* MetadataCache::FindUri(const std::string& uri) const {
+ for(const auto& record:records_)if(record.uri==uri)return &record;
+ return nullptr;
+}
 const RichMetadata* MetadataCache::Find(const std::string& t,const std::string& a,const std::string& al,double d) const {
  const RichMetadata* result=nullptr;
  for(const auto& r:records_) if(r.Matches(t,a,al,d)) {if(result&&result->uri!=r.uri) return nullptr;result=&r;}

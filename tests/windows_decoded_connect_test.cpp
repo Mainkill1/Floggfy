@@ -68,25 +68,40 @@ void CallbackBoundary() {
     InterlockedExchange(&log_enabled,0);assert(ForwardDecodedCall(&output,&input,decoded_plain_return)==1);
     DrainDecodedConnectMessages();assert(decoded_lines.empty());InterlockedExchange(&log_enabled,1);
     native_result=0;assert(ForwardDecodedCall(&output,&input,decoded_plain_return)==0&&GetLastError()==0x10203040);
-    DrainDecodedConnectMessages();assert(Has("json_result=0")&&!Has("action=pause"));native_result=1;
+    decoded_summary_due=0;DrainDecodedConnectMessages();assert(Has("json_invalid=1")&&!Has("action=pause"));native_result=1;
     decoded_lines.clear();input.size=max_connect_message+1;input.capacity=input.size;
-    assert(ForwardDecodedCall(&output,&input,decoded_plain_return)==1);DrainDecodedConnectMessages();assert(Has("copy=oversized"));input=before;
+    assert(ForwardDecodedCall(&output,&input,decoded_plain_return)==1);decoded_summary_due=0;DrainDecodedConnectMessages();assert(Has("oversized=1"));input=before;
     decoded_lines.clear();input.size=16;input.capacity=15;
-    assert(ForwardDecodedCall(&output,&input,decoded_plain_return)==1);DrainDecodedConnectMessages();assert(Has("copy=string-layout"));input=before;
+    assert(ForwardDecodedCall(&output,&input,decoded_plain_return)==1);decoded_summary_due=0;DrainDecodedConnectMessages();assert(Has("string_layout=1"));input=before;
     const std::string small="{}";TestString inline_input(small);expected_input=&inline_input;
     decoded_lines.clear();assert(ForwardDecodedCall(&output,&inline_input,decoded_plain_return)==1);
-    DrainDecodedConnectMessages();assert(Has("copy=copied summary=unavailable"));expected_input=&input;
+    decoded_summary_due=0;DrainDecodedConnectMessages();assert(Has("no_summary=1"));expected_input=&input;
     decoded_lines.clear();expected_input=reinterpret_cast<const void*>(1);
     assert(ForwardDecodedCall(&output,expected_input,decoded_plain_return)==1&&GetLastError()==0x10203040);
-    DrainDecodedConnectMessages();assert(Has("copy=unreadable"));expected_input=&input;
+    decoded_summary_due=0;DrainDecodedConnectMessages();assert(Has("unreadable=1"));expected_input=&input;
     decoded_lines.clear();
     for(unsigned i=0;i<decoded_capacity+1;++i)assert(ForwardDecodedCall(&output,&input,decoded_plain_return)==1);
-    DrainDecodedConnectMessages();assert(Has("observations omitted=1")&&decoded_count==0);
+    decoded_summary_due=0;DrainDecodedConnectMessages();assert(Has("observations_omitted=1")&&decoded_count==0);
     for(const auto& slot:decoded_records)for(char byte:slot.bytes)assert(byte==0);
     for(const auto& line:decoded_lines)assert(line.find("PRIVATE_")==std::string::npos);
     decoded_lines.clear();AcquireSRWLockExclusive(&decoded_lock);
     assert(ForwardDecodedCall(&output,&input,decoded_plain_return)==1);
-    ReleaseSRWLockExclusive(&decoded_lock);DrainDecodedConnectMessages();assert(Has("observations omitted=1"));
+    ReleaseSRWLockExclusive(&decoded_lock);decoded_summary_due=0;DrainDecodedConnectMessages();assert(Has("observations_omitted=1"));
+    // A stream of unknown decoded messages produces a bounded interval summary.
+    decoded_lines.clear();expected_input=&inline_input;
+    decoded_summary_due=GetTickCount64()+5000;
+    for(unsigned i=0;i<100;++i){
+        assert(ForwardDecodedCall(&output,&inline_input,decoded_plain_return)==1);
+        DrainDecodedConnectMessages();
+    }
+    assert(decoded_lines.empty()&&decoded_summary.no_summary==100);
+    decoded_summary_due=0;DrainDecodedConnectMessages();
+    assert(decoded_lines.size()==1&&Has("no_summary=100"));
+    DrainDecodedConnectMessages();assert(decoded_lines.size()==1);
+    // Real identical command receipts are distinct events, not string-deduplicated.
+    decoded_lines.clear();expected_input=&input;
+    for(unsigned i=0;i<2;++i)assert(ForwardDecodedCall(&output,&input,decoded_plain_return)==1);
+    DrainDecodedConnectMessages();assert(decoded_lines.size()==2&&Has("action=pause"));
     decoded_lines.clear();decoded_enabled.store(false);
     InterlockedExchange(&networking_enabled,0);
     StartDecodedConnectMessages(reinterpret_cast<HMODULE>(1),true);
@@ -120,10 +135,12 @@ namespace history {
 void StartLogger(){}
 void QueueDiagnostic(const char* text){decoded_lines.emplace_back(text);}
 void QueueNetworkingDiagnostic(const char* text) noexcept {decoded_lines.emplace_back(text);}
-void LogActivity(const char*,const std::string&){}
+void LogEvent(LogKind,const char*,const std::string&){}
 }
 int wmain(int argc,wchar_t** argv) {
-    assert(argc==2);TestConnectMessages();TestConnectHookDiscovery();RealDiscovery(argv[1]);DecodedSettings();CallbackBoundary();
+    assert(argc==1||argc==2);TestConnectMessages();TestConnectHookDiscovery();
+    if(argc==2)RealDiscovery(argv[1]);else puts("SKIP: current Spotify DLL discovery (no binary supplied)");
+    DecodedSettings();CallbackBoundary();
     puts("PASS: bounded decoded summaries, synthetic/current-client capability checks, read-only callback/LastError forwarding, redaction, queue limits and optional settings");
     return 0;
 }

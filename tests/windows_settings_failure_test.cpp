@@ -48,7 +48,7 @@ bool ReadWithFault(const std::wstring& path,std::wstring& text,bool& unicode) {
 #undef Read
 namespace history {
 void StartLogger(){}
-void LogActivity(const char*,const std::string&){if(throw_logging.load()){++logging_failures;throw std::bad_alloc();}}
+void LogEvent(LogKind,const char*,const std::string&){if(throw_logging.load()){++logging_failures;throw std::bad_alloc();}}
 void QueueDiagnostic(const char*){}
 }
 static std::vector<unsigned char> Bytes(const std::wstring& path) {

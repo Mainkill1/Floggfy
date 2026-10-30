@@ -10,7 +10,6 @@
 #include "async_log.h"
 #include "srw_guard.h"
 #include "settings_file.h"
-#include "networking_summary.h"
 namespace history {
 static SRWLOCK lock=SRWLOCK_INIT;
 static Settings settings;
@@ -20,7 +19,7 @@ static bool IsMusic(std::wstring root) {
     return !music_path.empty() && (_wcsicmp(root.c_str(),music_path.c_str())==0 ||
         _wcsicmp(root.c_str(),(music_path+L"\\Spotify").c_str())==0);
 }
-static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,aac_enabled=0,capture_epoch=0,log_enabled=1,debug_enabled=0,networking_enabled=0,hook_diagnostics_enabled=0;
+static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,aac_enabled=0,capture_epoch=0,log_enabled=1,debug_enabled=0,networking_enabled=0,connect_logging_enabled=1,hook_diagnostics_enabled=0;
 static HANDLE settings_signal=nullptr,persist_done=nullptr;
 // A failed attempt is observable without acknowledging bytes never committed.
 static volatile LONG persisted_generation=-1,failed_generation=-1,persist_failed=0;
@@ -49,7 +48,7 @@ static constexpr char default_ini[]=
     "; Captures native FLAC when Spotify supplies lossless audio.\r\n"
     "Flac=1\r\n"
     "; AAC is usually a low-quality source; opt in explicitly.\r\n"
-    "AAC=0\r\n"
+    "Aac=0\r\n"
     "; Enables metadata enrichment using the local Spotify client.\r\n"
     "Metadata=1\r\n"
     "; Automatically obtains lyrics; Metadata=0 disables all enrichment.\r\n"
@@ -57,26 +56,28 @@ static constexpr char default_ini[]=
     "; Allows metadata-only upgrades to existing saved files.\r\n"
     "UpdateExistingMetadata=1\r\n"
     "\r\n"
-    "; Logging: writes Floggfy.log in Save Location, capped at 5 MiB.\r\n"
+    "; Normal activity, warnings and failures: Floggfy.log in Save Location (5 MiB).\r\n"
     "; Log=0 also disables ALL debug output, hooks and timing instrumentation below.\r\n"
     "Log=1\r\n"
     "\r\n"
     "; Debug options require Log=1. Fully restart Spotify after INI edits.\r\n"
-    "; Adds troubleshooting details to Floggfy.log. Normal activity needs no debug mode.\r\n"
+    "; Optional details go only to Floggfy-diagnostics.log (5 MiB), never Floggfy.log.\r\n"
     "DebugLog=0\r\n"
-    "; Requires DebugLog=1 and Metadata=1: cached playback target and local actions.\r\n"
+    "; Requires DebugLog=1: cached playback target and local actions.\r\n"
+    "; Set 0 to opt out, including when DebugNetworking=1.\r\n"
     "; Use exactly 1 to enable. Device names/IDs are omitted; senders may be unknown.\r\n"
     "DebugConnect=1\r\n"
     "; Deep read-only networking diagnostics; default off. Fully restart after edits.\r\n"
     "; Requires Log=1 and DebugLog=1. Use exactly 1 to enable; 0/invalid values disable.\r\n"
-    "; Disabled means no decoded-message hook and no networking log.\r\n"
-    "; 1 writes Floggfy-networking.log in Save Location (5 MiB, oldest lines removed).\r\n"
+    "; Disabled means no decoded-message hook or enrichment network observations.\r\n"
+    "; 1 adds networking observations to Floggfy-diagnostics.log.\r\n"
     "; Summarizes known Connect/control and enrichment I/O with timing for correlation.\r\n"
     "; No raw messages, media, credentials, URLs, device names or device IDs are logged.\r\n"
     "; Unobserved traffic and command execution remain unknown; no commands are changed.\r\n"
     "DebugNetworking=0\r\n"
     "; Extra callback/stall diagnostics. Requires DebugNetworking=1, Log=1, DebugLog=1.\r\n"
-    "; Default off; exactly 1 enables. Slow/pending activities only; no dumps or raw payloads.\r\n"
+    "; Default off; exactly 1 enables callback profiling and slow/pending activities.\r\n"
+    "; Basic DebugLog does no per-callback profiling; no dumps or raw payloads.\r\n"
     "DebugHookDiagnostics=0\r\n"
     "\r\n"
     "[History]\r\n"
@@ -176,7 +177,7 @@ static DWORD WINAPI PersistSettings(LPVOID) {
         if(ok)InterlockedExchange(&persisted_generation,LONG(generation));
         else InterlockedExchange(&failed_generation,LONG(generation));
         SetEvent(persist_done);
-        if(!ok)try{LogActivity("failed","settings persistence");}catch(...) {/* A logging allocation must not kill persistence retries. */}
+        if(!ok)try{LogEvent(LogKind::Failure,"failed","settings persistence; edits remain queued for retry");}catch(...) {/* A logging allocation must not kill persistence retries. */}
     }
 }
 bool FlushSettings(unsigned timeout_ms) {
@@ -203,30 +204,16 @@ bool EnsureDirectory(const std::wstring& path) {
     if(slash!=std::wstring::npos && slash>2 && !EnsureDirectory(path.substr(0,slash))) return false;
     return CreateDirectoryW(p.c_str(),nullptr) || GetLastError()==ERROR_ALREADY_EXISTS;
 }
-void HistoryLog(const char* message) {
-    if(!message)return;
-    // Renderer statuses are untrusted even when a caller uses this generic API.
-    // Validate and return before native failure-keyword classification can run.
-    if(IsRendererDiagnostic(std::string_view(message,strnlen(message,768)))) {
-        QueueDiagnostic(message);return;
-    }
-    QueueDiagnostic(message);
-    if(std::strstr(message,"failed") || std::strstr(message,"discarded") ||
-       std::strstr(message,"rejected") || std::strstr(message,"overflow") ||
-       std::strstr(message,"unsupported") || std::strstr(message,"stopped after"))
-        LogActivity("failed",message);
-}
 void InitSettings(HMODULE proxy) {
     wchar_t path[2048]; DWORD n=GetModuleFileNameW(proxy,path,2048);
     if(!n || n>=2048) return;
     wchar_t* slash=wcsrchr(path,L'\\'); if(!slash) return; *slash=0;
     ini=std::wstring(path)+L"\\SpotifyHistory.ini";
     DWORD attributes=GetFileAttributesW(ini.c_str());
-    if(attributes==INVALID_FILE_ATTRIBUTES &&
+    const bool default_ini_failed=attributes==INVALID_FILE_ATTRIBUTES &&
        (GetLastError()==ERROR_FILE_NOT_FOUND || GetLastError()==ERROR_PATH_NOT_FOUND) &&
-       !CreateDefaultIni(ini))
-        QueueDiagnostic("failed to create default SpotifyHistory.ini; using built-in settings");
-    if(!settings_file::Unicode(ini))QueueDiagnostic("failed to migrate settings; original file retained");
+       !CreateDefaultIni(ini);
+    const bool migration_failed=!default_ini_failed&&!settings_file::Unicode(ini);
     settings.downloads=GetPrivateProfileIntW(L"To Disk",L"Downloads",GetPrivateProfileIntW(L"History",L"Enabled",1,ini.c_str()),ini.c_str())!=0;
     settings.menu=GetPrivateProfileIntW(L"To Disk",L"Menu",1,ini.c_str())!=0;
     settings.ogg=GetPrivateProfileIntW(L"To Disk",L"Ogg",1,ini.c_str())!=0;
@@ -252,7 +239,8 @@ void InitSettings(HMODULE proxy) {
     if(raw[0] && length && length<=4096) {settings.root=expanded;settings.save_location=raw;}
     settings.music_folder=IsMusic(settings.root);
     downloads_enabled=settings.downloads; ogg_enabled=settings.ogg; flac_enabled=settings.flac; aac_enabled=settings.aac;
-    log_enabled=settings.log;debug_enabled=settings.debug_log;networking_enabled=settings.debug_networking;hook_diagnostics_enabled=settings.debug_hook_diagnostics;
+    log_enabled=settings.log;debug_enabled=settings.debug_log;networking_enabled=settings.debug_networking;connect_logging_enabled=settings.debug_connect;hook_diagnostics_enabled=settings.debug_hook_diagnostics;
+    StartLogger();
     settings_signal=CreateEventW(nullptr,FALSE,FALSE,nullptr);
     persist_done=CreateEventW(nullptr,FALSE,FALSE,nullptr);
     HANDLE thread=settings_signal&&persist_done ? CreateThread(nullptr,0,PersistSettings,nullptr,0,nullptr) : nullptr;
@@ -265,13 +253,16 @@ void InitSettings(HMODULE proxy) {
     // Missing options/conflict normalization are pending until Write succeeds.
     InterlockedExchange(&persisted_generation,startup_options_pending?-1:LONG(settings.generation));
     if(startup_options_pending && settings_signal)SetEvent(settings_signal);
-    StartLogger();
+    if(default_ini_failed)LogEvent(LogKind::Warning,"warning","default SpotifyHistory.ini could not be created; using built-in settings");
+    if(migration_failed)LogEvent(LogKind::Warning,"warning","settings Unicode migration could not be completed; original file retained");
+    if(!thread)LogEvent(LogKind::Failure,"failed","settings persistence worker unavailable; changes cannot be saved");
 }
 Settings GetSettings() {
     SharedSrw guard(lock);return settings;
 }
 bool LoggingEnabled() { return log_enabled!=0; }
 bool DebugLoggingEnabled() { return DiagnosticsEnabled(log_enabled!=0,debug_enabled!=0); }
+bool ConnectLoggingEnabled() { return connect_logging_enabled!=0 && DebugLoggingEnabled(); }
 bool NetworkingLoggingEnabled() { return networking_enabled!=0 && DebugLoggingEnabled(); }
 bool HookDiagnosticsEnabled() { return hook_diagnostics_enabled!=0 && NetworkingLoggingEnabled(); }
 bool OggEnabled() { return downloads_enabled && ogg_enabled; }

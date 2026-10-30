@@ -7,7 +7,7 @@ from pathlib import Path
 import zipfile
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--version', default='1.2.5-RC2')
+parser.add_argument('--version', default='1.2.6-RC1')
 version = parser.parse_args().version
 if not version or any(c not in '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.-' for c in version):
     parser.error('version must contain only ASCII letters, digits, dots and hyphens')

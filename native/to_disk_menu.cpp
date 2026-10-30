@@ -5,6 +5,7 @@
 #include "hook_init_state.h"
 #include "hook_startup_minhook.h"
 #include "history_settings.h"
+#include "async_log.h"
 #include "hook_diagnostics.h"
 #include "playback_quality.h"
 #include "recent_downloads.h"
@@ -130,8 +131,8 @@ static void Populate(Menu* menu) {
     if(MenuMethods::IndexOf(menu,root_id)>=0) return;
     if(!Main(menu)) {
         static volatile LONG logged=0;
-        if(InterlockedIncrement(&logged)<=3)
-            history::HistoryLog("To Disk menu capability: top-level submenu structure not recognized");
+        if(InterlockedCompareExchange(&logged,1,0)==0)
+            history::QueueDiagnostic("To Disk menu probe: non-main model ignored");
         return;
     }
     auto state=history::GetSettings();
@@ -168,7 +169,6 @@ static void Populate(Menu* menu) {
     item(ogg_id,state.ogg ? L"Ogg (Enabled)" : L"Ogg (Disabled)",state.ogg,true);
     item(lyrics_id,state.lyrics ? L"Lyrics (Enabled)" : L"Lyrics (Disabled)",state.lyrics,true);
     UpdateQuality(child);
-    if(inserted) history::HistoryLog("To Disk inserted into Spotify main menu: Downloads, Save Location, FLAC, Ogg, Lyrics");
 }
 static Menu* AddSubmenuHook(Menu* menu,int id,const String* text) {
     history::HookDiagnosticScope diagnostic(history::diagnostics::Phase::MenuSubmenu);
@@ -360,7 +360,7 @@ static void Execute(Delegate* self,Menu* menu,int command,int flags) {
             std::wstring label=command==downloads_id ? L"Downloads" : command==ogg_id ? L"Ogg" : command==lyrics_id ? L"Lyrics" : L"FLAC";
             label+=value ? L" (Enabled)" : L" (Disabled)"; auto text=Text(label);
             MenuMethods::SetLabel(menu,command,&text); MenuMethods::SetChecked(menu,command,int(value));
-            char line[160]; snprintf(line,sizeof(line),"To Disk command=%d accepted=%d enabled=%d",command,ok,value); history::HistoryLog(line);
+            char line[160]; snprintf(line,sizeof(line),"To Disk command=%d accepted=%d enabled=%d",command,ok,value); history::LogEvent(ok?history::LogKind::Activity:history::LogKind::Failure,ok?"settings":"failed",line);
         }
         if(!ok) MessageBoxW(GetActiveWindow(),L"The setting could not be saved.",L"To Disk",MB_OK|MB_ICONERROR);
         return;
@@ -453,7 +453,6 @@ static Menu* Hook(Delegate* delegate) {
        !Executable(reinterpret_cast<const void*>(delegate->base.add_ref)) ||
        !Executable(reinterpret_cast<const void*>(delegate->base.release)))
         return original_create(delegate);
-    size_t delegate_size=delegate->base.size;
     auto* w=new(std::nothrow) Wrapped;
     if(!w) return original_create(delegate);
     w->api={{sizeof(Delegate),Add,Release,One,Any},Execute,Outside,Open,Close,WillShow,Closed,Format};
@@ -472,12 +471,7 @@ static Menu* Hook(Delegate* delegate) {
             if(created) MH_RemoveHook(address);
             submenu_init.Retry(GetTickCount64());
         }
-        char line[180]; snprintf(line,sizeof(line),"CEF main-menu construction hook: %s%s",MH_StatusToString(status),status==MH_OK?"":"; retry scheduled"); history::HistoryLog(line);
-    }
-    static volatile LONG logged=0;
-    if(InterlockedIncrement(&logged)<=8) {
-        char line[160]; snprintf(line,sizeof(line),"CEF menu model wrapped delegate_bytes=%zu model_bytes=%zu",
-            delegate_size,result ? result->base.size : 0); history::HistoryLog(line);
+        if(status!=MH_OK)history::LogEvent(history::LogKind::Warning,"warning","To Disk menu construction hook unavailable; retry scheduled");
     }
     return result;
 }
@@ -485,7 +479,7 @@ static Menu* Hook(Delegate* delegate) {
 static void FinishMenuStartup(bool applied,bool activation_attempted) {
     if(!menu_prepared)return;
     menu_prepared=false;
-    if(applied){menu_init.Activate();history::HistoryLog("runtime-capability CEF main-menu integration: MH_OK (shared startup activation)");return;}
+    if(applied){menu_init.Activate();return;}
     const auto rollback=hooks::RollbackStartupHooks(menu_startup_hooks,[]{
         for(unsigned waited=0;menu_callbacks.Active()&&waited<5000;++waited)Sleep(1);
         return menu_callbacks.Active()==0;
@@ -495,29 +489,29 @@ static void FinishMenuStartup(bool applied,bool activation_attempted) {
     // A partially applied root may already have installed the submenu hook.
     // Its callback/delegate state must survive even if root cleanup succeeded.
     if(!activation_attempted&&rollback.CanRelease()&&!original_add_submenu){
-        menu_init.Retry(GetTickCount64());history::HistoryLog("To Disk startup activation failed; rollback complete; retry scheduled");
+        menu_init.Retry(GetTickCount64());history::LogEvent(history::LogKind::Warning,"warning","To Disk startup activation failed; rollback complete; retry scheduled");
     } else {
-        menu_init.MarkUnsupported();history::HistoryLog("To Disk startup activation failed or rollback unsafe; trampoline state preserved and retries disabled");
+        menu_init.MarkUnsupported();history::LogEvent(history::LogKind::Warning,"warning","To Disk startup activation failed or rollback unsafe; trampoline state preserved and retries disabled");
     }
 }
 void FinalizeToDiskMenu(bool applied) {FinishMenuStartup(applied,true);}
 bool PrepareToDiskMenu(HMODULE cef) {
     const auto now=static_cast<std::uint64_t>(GetTickCount64());
     if(!menu_init.TryBegin(now)) return false;
-    if(!history::GetSettings().menu) { history::HistoryLog("To Disk menu disabled by INI Menu=0"); menu_init.MarkUnsupported(); return false; }
+    if(!history::GetSettings().menu) { history::QueueDiagnostic("To Disk menu disabled by INI Menu=0"); menu_init.MarkUnsupported(); return false; }
     auto string_set=GetProcAddress(cef,"cef_string_utf16_set");
     memcpy(&set_string,&string_set,sizeof(set_string));
-    if(!set_string)history::HistoryLog("To Disk live labels unavailable: cef_string_utf16_set missing");
+    if(!set_string)history::LogEvent(history::LogKind::Warning,"warning","To Disk live labels unavailable: cef_string_utf16_set missing");
     auto create=GetProcAddress(cef,"cef_menu_model_create");
     if(!create || !Executable(reinterpret_cast<const void*>(create))) {
-        history::HistoryLog("To Disk menu unavailable: cef_menu_model_create capability missing"); menu_init.MarkUnsupported(); return false;
+        history::LogEvent(history::LogKind::Warning,"warning","To Disk menu unavailable: cef_menu_model_create capability missing"); menu_init.MarkUnsupported(); return false;
     }
     menu_prepared=true;
     MH_STATUS status=MH_Initialize(); if(status==MH_ERROR_ALREADY_INITIALIZED) status=MH_OK;
     if(status==MH_OK) status=MH_CreateHook(reinterpret_cast<void*>(create),reinterpret_cast<void*>(Hook),reinterpret_cast<void**>(&original_create));
     if(status==MH_OK)menu_startup_hooks.Add(reinterpret_cast<void*>(create));
     if(status!=MH_OK||!hooks::QueueStartupHooks(menu_startup_hooks)){
-        char line[180];snprintf(line,sizeof(line),"To Disk startup hook preparation failed: %s",MH_StatusToString(status));history::HistoryLog(line);
+        char line[180];snprintf(line,sizeof(line),"To Disk startup hook preparation failed: %s",MH_StatusToString(status));history::QueueDiagnostic(line);
         FinishMenuStartup(false,false);return false;
     }
     return true;

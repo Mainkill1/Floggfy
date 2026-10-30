@@ -8,7 +8,7 @@ namespace {
 constexpr const char* marker="EXAMPLE_PRIVATE_SENTINEL";
 std::wstring test_root;
 void EmptyQueues() {
-    assert(history::activity_queue.count==0&&history::network_queue.count==0);
+    assert(history::activity_queue.count==0&&history::diagnostic_queue.count==0);
 }
 std::string ReadText(const std::wstring& path) {
     HANDLE file=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr);
@@ -25,12 +25,12 @@ void FlushAndCheck() {
         assert(std::string(record.detail).find("FLOGGFY_")==std::string::npos);
         history::WriteRecord(record,false);
     }
-    while(history::Take(history::network_queue,record)) {
+    while(history::Take(history::diagnostic_queue,record)) {
         assert(std::string(record.detail).find(marker)==std::string::npos);
         assert(std::string(record.detail).find("FLOGGFY_")==std::string::npos);
         history::WriteRecord(record,true);
     }
-    for(const auto name:{L"Floggfy.log",L"Floggfy-networking.log"}) {
+    for(const auto name:{L"Floggfy.log",L"Floggfy-diagnostics.log"}) {
         const auto text=ReadText(test_root+L"\\"+name);
         assert(text.find(marker)==std::string::npos&&text.find("FLOGGFY_")==std::string::npos);
     }
@@ -39,7 +39,7 @@ void FlushAndCheck() {
 void Mode(bool log,bool debug,bool network) {
     using namespace history;
     InterlockedExchange(&log_enabled,log);InterlockedExchange(&debug_enabled,debug);
-    InterlockedExchange(&networking_enabled,network);
+    InterlockedExchange(&networking_enabled,network);InterlockedExchange(&connect_logging_enabled,1);
     settings.log=log;settings.debug_log=debug;settings.debug_networking=network;
 }
 void RejectedEverywhere() {
@@ -60,15 +60,15 @@ void RejectedEverywhere() {
     for(unsigned bits=0;bits<8;++bits) {
         Mode((bits&1)!=0,(bits&2)!=0,(bits&4)!=0);
         for(const auto& message:messages) {
-            HistoryLog(message.c_str());QueueDiagnostic(message.c_str());
-            LogActivity("failed",message);QueueNetworkingDiagnostic(message.c_str());
+            QueueDiagnostic(message.c_str());
+            LogEvent(LogKind::Failure,"failed",message);QueueNetworkingDiagnostic(message.c_str());
             const std::wstring wide(message.begin(),message.end());
             assert(QueueRendererDiagnostic(wide));EmptyQueues();
         }
         const wchar_t embedded[]=L"FLOGGFY_STATUS:cached player found\0failed EXAMPLE_PRIVATE_SENTINEL";
         assert(QueueRendererDiagnostic({embedded,sizeof(embedded)/sizeof(*embedded)-1}));EmptyQueues();
         const char narrow[]= "FLOGGFY_STATUS:cached player found\0failed EXAMPLE_PRIVATE_SENTINEL";
-        LogActivity("failed",std::string(narrow,sizeof(narrow)-1));EmptyQueues();
+        LogEvent(LogKind::Failure,"failed",std::string(narrow,sizeof(narrow)-1));EmptyQueues();
         assert(QueueRendererDiagnostic(L"FLOGGFY_STATUS:connect failed \u97f3\u697d"));EmptyQueues();
         assert(!QueueRendererDiagnostic(L"ordinary Spotify console message"));EmptyQueues();
     }
@@ -78,23 +78,25 @@ void ValidRouting() {
     const char* status="FLOGGFY_STATUS:control request=pause source=local-client";
     for(bool network:{false,true}) {
         Mode(true,true,network);
-        HistoryLog(status);
-        assert(activity_queue.count==size_t(!network)&&network_queue.count==size_t(network));
+        QueueDiagnostic(status);
+        assert(activity_queue.count==0&&diagnostic_queue.count==1);
         FlushAndCheck();
         assert(QueueRendererDiagnostic(L"FLOGGFY_STATUS:connect state=connected target=local device_changed=1 controller=unknown"));
-        assert(activity_queue.count==size_t(!network)&&network_queue.count==size_t(network));FlushAndCheck();
-        HistoryLog("FLOGGFY_NETWORK_V1:request op=1 kind=lyrics phase=rejected code=503 elapsed_ms=1");
-        assert(activity_queue.count==0&&network_queue.count==size_t(network));FlushAndCheck();
-        HistoryLog("FLOGGFY_STATUS:metadata collector started");
-        HistoryLog("FLOGGFY_STATUS:cached player found");
-        assert(activity_queue.count==2&&network_queue.count==0);FlushAndCheck();
+        assert(activity_queue.count==0&&diagnostic_queue.count==1);FlushAndCheck();
+        QueueDiagnostic("FLOGGFY_NETWORK_V1:request op=1 kind=lyrics phase=rejected code=503 elapsed_ms=1");
+        assert(activity_queue.count==0&&diagnostic_queue.count==size_t(network));FlushAndCheck();
+        QueueDiagnostic("FLOGGFY_STATUS:metadata collector started");
+        QueueDiagnostic("FLOGGFY_STATUS:cached player found");
+        EmptyQueues(); // Retired readiness text stays reserved and is not forwarded.
     }
-    Mode(true,false,true);HistoryLog("FLOGGFY_STATUS:connect failed EXAMPLE_PRIVATE_SENTINEL");EmptyQueues();
-    HistoryLog("native capture failed; original file retained");
-    assert(activity_queue.count==1&&network_queue.count==0);FlushAndCheck(); // Core failures still log without DebugLog.
+    Mode(true,true,true);InterlockedExchange(&connect_logging_enabled,0);
+    assert(QueueRendererDiagnostic(L"FLOGGFY_STATUS:control request=pause source=local-client"));EmptyQueues();
+    Mode(true,false,true);QueueDiagnostic("FLOGGFY_STATUS:connect failed EXAMPLE_PRIVATE_SENTINEL");EmptyQueues();
+    LogEvent(LogKind::Failure,"failed","native capture failed; original file retained");
+    assert(activity_queue.count==1&&diagnostic_queue.count==0);FlushAndCheck(); // Core failures still log without DebugLog.
     const auto activity=ReadText(test_root+L"\\Floggfy.log");
-    const auto networking=ReadText(test_root+L"\\Floggfy-networking.log");
-    assert(activity.find("source=client-control")!=std::string::npos);
+    const auto networking=ReadText(test_root+L"\\Floggfy-diagnostics.log");
+    assert(activity.find("source=client-control")==std::string::npos);
     assert(activity.find("native capture failed")!=std::string::npos);
     assert(networking.find("source=client-control")!=std::string::npos&&networking.find("phase=rejected code=503")!=std::string::npos);
 }
@@ -105,6 +107,6 @@ int wmain() {
     history::settings.root=test_root;history::signal=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(history::signal);
     RejectedEverywhere();ValidRouting();
     CloseHandle(history::signal);history::signal=nullptr;
-    puts("PASS: renderer privacy across all logger paths/modes, failure-keyword bypass rejection, bounded Unicode/NUL handling, valid routing and actual file contents");
+    puts("PASS: renderer privacy across explicit logger paths, reserved-prefix rejection, Unicode/NUL handling and isolated diagnostic destination");
     return 0;
 }

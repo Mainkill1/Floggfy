@@ -13,6 +13,7 @@
 #include "hook_init_state.h"
 #include "hook_startup_minhook.h"
 #include "history_settings.h"
+#include "async_log.h"
 #include "hook_diagnostics.h"
 #include "metadata_bridge.h"
 #include "module_pending.h"
@@ -27,12 +28,11 @@ static INIT_ONCE version_once = INIT_ONCE_STATIC_INIT;
 static HMODULE real_version;
 static bool spotify_main;
 static HMODULE proxy_module;
-static volatile LONG logged_results;
 static hooks::PendingModule pending_spotify;
 static hooks::InitController connectivity_init;
 
 static void Log(const char* message) {
-    history::HistoryLog(message);
+    history::QueueDiagnostic(message);
 }
 
 static BOOL CALLBACK InitVersion(PINIT_ONCE, PVOID, PVOID*) {
@@ -222,14 +222,7 @@ static HRESULT STDMETHODCALLTYPE ConnectionConnectivity(INetworkConnection* self
         if (SUCCEEDED(self->GetAdapterId(&adapter))) {
             DWORD flags = SyntheticAdapterConnectivity(adapter);
             if (flags) {
-                DWORD previous = static_cast<DWORD>(*out);
-                *out = static_cast<NLM_CONNECTIVITY>(previous | flags);
-                if (InterlockedIncrement(&logged_results) <= 16) {
-                    char message[160];
-                    snprintf(message, sizeof(message), "NLM compatibility override original=0x%lX synthetic=0x%lX; adapter has a usable address",
-                        static_cast<unsigned long>(previous), static_cast<unsigned long>(*out));
-                    Log(message);
-                }
+                *out = static_cast<NLM_CONNECTIVITY>(observed_flags | flags);
             }
         }
     }
@@ -245,7 +238,7 @@ static HRESULT WINAPI RepairCoCreateInstance(REFCLSID clsid, LPUNKNOWN outer, DW
     HRESULT result = CoCreateInstance(clsid, outer, context, iid, out);
     if (SUCCEEDED(result) && out && *out && IsEqualCLSID(clsid, CLSID_NetworkListManager) &&
         IsEqualIID(iid, IID_INetworkListManager)) {
-        Log(HookTable(*out, Kind::Manager) ? "NetworkListManager connectivity hook installed" : "NetworkListManager hook failed");
+        if(!HookTable(*out,Kind::Manager))history::LogEvent(history::LogKind::Warning,"warning","NetworkListManager compatibility hook could not be installed");
     }
     return result;
 }
@@ -355,11 +348,11 @@ static void StartConnectivityHook(HMODULE module,bool enabled) {
             connectivity_init.Activate();
             break;
         case ImportHookResult::Unsupported:
-            Log("connectivity import hook unavailable: CoCreateInstance import not found or PE unsupported");
+            history::LogEvent(history::LogKind::Warning,"warning","connectivity import hook unavailable: CoCreateInstance import not found or PE unsupported");
             connectivity_init.MarkUnsupported();
             break;
         case ImportHookResult::RetryableFailure:
-            Log("connectivity import hook failed temporarily; retry scheduled");
+            history::LogEvent(history::LogKind::Warning,"warning","connectivity import hook failed temporarily; retry scheduled");
             connectivity_init.Retry(now);
             break;
     }
@@ -386,7 +379,6 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
     const bool decoded_messages_enabled=startup_settings.debug_networking;
     Log(network_patch_enabled?"NetworkPatch=1; legacy network compatibility patch enabled":
         "NetworkPatch=0; network compatibility hooks disabled");
-    Log("version.dll proxy loaded; no Windows settings or signed files changed");
     // Polling also covers clients that loaded Spotify.dll before notification
     // registration. Stay alive at low frequency so late loads and temporary
     // allocation or hook failures remain recoverable.
@@ -402,7 +394,6 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
                 [&]{return history::PrepareMetadataCollector(cef);},
                 [&]{return PrepareToDiskMenu(cef);},
                 []{const auto status=MH_ApplyQueued();
-                    if(status!=MH_OK)Log("CEF startup hook batch activation failed; rolling back owned hooks");
                     return status==MH_OK;},
                 history::FinalizeMetadataCollector,FinalizeToDiskMenu);
             FreeLibrary(cef);

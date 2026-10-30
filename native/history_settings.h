@@ -32,8 +32,8 @@ std::wstring WindowsPath(const std::wstring& path);
 void PickSaveLocation(HWND owner);
 bool LoggingEnabled();
 bool DebugLoggingEnabled();
+bool ConnectLoggingEnabled();
 bool NetworkingLoggingEnabled();
 bool HookDiagnosticsEnabled();
 bool FlushSettings(unsigned timeout_ms);
-void HistoryLog(const char* message);
 }

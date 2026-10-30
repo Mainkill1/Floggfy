@@ -10,7 +10,6 @@
 #include "playback_quality.h"
 #include "async_log.h"
 #include "hook_diagnostics.h"
-#include <string_view>
 #include <array>
 #include "bounded_queue.h"
 #include "srw_guard.h"
@@ -25,6 +24,7 @@
 #include "metadata_update_windows.h"
 #include "metadata_update_core.h"
 #include "media_session.h"
+#include "recent_playback.h"
 #include "image_info.h"
 #include "aac_stream.h"
 #include "spotify_hook_discovery.h"
@@ -34,6 +34,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -44,9 +45,6 @@ static_assert(sizeof(OggPage)==32 && offsetof(OggPage,body)==16,"Windows x64 lib
 using PageSeek = int32_t(*)(void*,OggPage*);
 PageSeek original;
 void* target;
-using Sniff = void*(*)(void*,const void*);
-Sniff original_sniff;
-void* sniff_target;
 using FlacInit=void*(*)(void*,void*);
 using FlacRead=int(*)(void*,unsigned char*,size_t*);
 using FlacFrame=int(*)(void*,const void*,const void*);
@@ -66,11 +64,11 @@ AacPush original_aac_push=nullptr;
 AacDestroy original_aac_destroy=nullptr;
 void* aac_targets[3]={};
 hooks::CallbackCounter audio_callbacks;
-enum class AudioEventKind : unsigned { OggPage,FormatDetected,FlacBegin,FlacBytes,FlacFrame,FlacError,FlacEnd,
+enum class AudioEventKind : unsigned { OggPage,FlacBegin,FlacBytes,FlacFrame,FlacError,FlacEnd,
     AacBegin,AacBytes,AacError,AacDestroy };
 enum class FlacErrorSource : unsigned { None,ReadCallback,FrameCallback,DecoderCallback };
 struct Slot { uintptr_t context; unsigned length; double time; AudioEventKind kind;unsigned epoch; uint64_t input_length;
-    uint32_t format; bool matched,capture;
+    uint32_t format; bool capture;
     FlacErrorSource error_source;
     uint64_t requested,returned; unsigned char bytes[65307]; };
 constexpr unsigned capacity=128;
@@ -78,23 +76,14 @@ Slot* queue;
 unsigned head=0,tail=0,count=0;
 SRWLOCK queue_lock=SRWLOCK_INIT;
 HANDLE event;
-volatile LONG dropped=0,calls=0,pages=0;
+volatile LONG dropped=0;
 std::atomic<bool> quality_enabled{false};
 std::wstring output;
 size_t memory_limit=500*1024*1024;
 static double Now() { return double(GetTickCount64())/1000.0; }
-static void Log(const char* message) {
-    HistoryLog(message);
-    // Numeric/static worker diagnostics only; never mirror song names, audio,
-    // metadata payloads or filesystem paths into the networking log.
-    if(NetworkingLoggingEnabled()) {
-        const std::string_view text(message);
-        for(const auto prefix:{"playback observation=","FLAC native result ","FLAC observation ",
-            "hook timing ","network observation=","native-read continue-with-zero-bytes ",
-            "Spotify media snapshot unavailable or stale;"}) {
-            if(text.substr(0,std::strlen(prefix))==prefix){QueueNetworkingDiagnostic(message);break;}
-        }
-    }
+static void Log(LogKind kind,const char* message) {
+    LogEvent(kind,kind==LogKind::Diagnostic?"audio":kind==LogKind::Warning?"warning":
+        kind==LogKind::Failure?"failed":"activity",message);
 }
 // Hooks only record numeric counters/POD events. Formatting and disk queuing
 // belong to the worker. Independent exchanges make interval metrics approximate
@@ -118,7 +107,7 @@ static uint64_t DiagnosticTick() noexcept {
 struct NativeTimer {
     TimingSample& sample;
     uint64_t began;
-    explicit NativeTimer(TimingSample& target):sample(target),began(DebugLoggingEnabled()?DiagnosticTick():0) {}
+    explicit NativeTimer(TimingSample& target):sample(target),began(HookDiagnosticsEnabled()?DiagnosticTick():0) {}
     void Finish() noexcept {
         if(began) {const auto end=DiagnosticTick();if(end>=began)sample.Add(end-began);began=0;}
     }
@@ -126,7 +115,7 @@ struct NativeTimer {
 struct QueueGuard {
     uint64_t began,acquired;
     bool producer;
-    explicit QueueGuard(bool writing=true):began(DebugLoggingEnabled()?DiagnosticTick():0),acquired(0),producer(writing) {
+    explicit QueueGuard(bool writing=true):began(HookDiagnosticsEnabled()?DiagnosticTick():0),acquired(0),producer(writing) {
         AcquireSRWLockExclusive(&queue_lock);
         if(began)acquired=DiagnosticTick();
     }
@@ -142,9 +131,8 @@ struct QueueGuard {
     QueueGuard(const QueueGuard&)=delete;
     QueueGuard& operator=(const QueueGuard&)=delete;
 };
-enum class TimingReason { Routine,Pause,Discontinuity,Failure };
-static void LogTiming(TimingReason reason=TimingReason::Routine) {
-    if(!DebugLoggingEnabled())return;
+static void LogTiming() {
+    if(!HookDiagnosticsEnabled())return;
     LARGE_INTEGER frequency{};
     if(!QueryPerformanceFrequency(&frequency)||frequency.QuadPart<=0)return;
     const double milliseconds=1000.0/double(frequency.QuadPart);
@@ -169,12 +157,10 @@ static void LogTiming(TimingReason reason=TimingReason::Routine) {
     }
     const auto empty=empty_flac_reads.exchange(0,std::memory_order_relaxed);
     // Reporting threshold only: this neither rejects audio nor diagnoses a pause.
-    // Normal polling still drains counters but emits no per-metric heartbeat.
+    // Profiling intervals drain counters without a per-metric heartbeat.
     constexpr double report_ms=10;
-    if(reason==TimingReason::Routine&&metrics[worst].maximum_ms<report_ms&&!empty)return;
-    const char* context=reason==TimingReason::Pause?"pause":
-        reason==TimingReason::Discontinuity?"timeline-jump":reason==TimingReason::Failure?"error":
-        metrics[worst].maximum_ms>=report_ms?"slow":"empty-read";
+    if(metrics[worst].maximum_ms<report_ms&&!empty)return;
+    const char* context=metrics[worst].maximum_ms>=report_ms?"slow":"empty-read";
     char line[600];snprintf(line,sizeof(line),
         "hook timing reason=%s worst=%s count=%llu max_ms=%.3f threshold_ms=10 native_read_ms=%.3f native_frame_ms=%.3f native_error_ms=%.3f native_init_ms=%.3f native_ogg_ms=%.3f queue_wait_ms=%.3f producer_hold_ms=%.3f consumer_hold_ms=%.3f empty_reads=%llu callbacks_now=%u",
         context,metrics[worst].maximum_ms>0?metrics[worst].name:"none",
@@ -182,18 +168,22 @@ static void LogTiming(TimingReason reason=TimingReason::Routine) {
         metrics[0].maximum_ms,metrics[1].maximum_ms,metrics[2].maximum_ms,metrics[3].maximum_ms,
         metrics[4].maximum_ms,metrics[5].maximum_ms,metrics[6].maximum_ms,metrics[7].maximum_ms,
         static_cast<unsigned long long>(empty),audio_callbacks.Active());
-    Log(line);
+    Log(LogKind::Diagnostic,line);
 }
 static void LogConnectivity() {
     if(!DebugLoggingEnabled())return;
     const auto value=LastConnectivity();
-    if(!value.known){Log("network observation=NLM-unknown; stream reachability unknown");return;}
+    if(!value.known)return;
+    static ConnectivityObservation previous;
+    if(previous.known&&previous.flags_valid==value.flags_valid&&previous.result==value.result&&
+       previous.original==value.original&&previous.effective==value.effective)return;
+    previous=value;
     const auto now=GetTickCount64();
     char line[240];snprintf(line,sizeof(line),
         "network observation=last-NLM age_ms=%llu hr=0x%08lX flags_known=%d original=0x%lX effective=0x%lX; stream reachability unknown",
         static_cast<unsigned long long>(now>=value.observed_ms?now-value.observed_ms:0),
         static_cast<unsigned long>(uint32_t(value.result)),value.flags_valid,
-        static_cast<unsigned long>(value.original),static_cast<unsigned long>(value.effective));Log(line);
+        static_cast<unsigned long>(value.original),static_cast<unsigned long>(value.effective));Log(LogKind::Diagnostic,line);
 }
 static const char* PlaybackStatus(int value) {
     switch(value) {
@@ -219,17 +209,18 @@ struct PlaybackDiagnostics {
                 "playback observation=%s state=%s raw=%d playing=%d pos=%.3f/%.3f movement=%.3f elapsed=%.3f mono=%.3f seq=%llu track_changed=%d; initiator=unknown",
                 !known?"baseline":jump?"timeline-jump":"transition",PlaybackStatus(media.playback_status),media.playback_status,
                 media.playing,media.position,media.duration,movement,elapsed,at,
-                static_cast<unsigned long long>(sequence),changed);Log(line);
+                static_cast<unsigned long long>(sequence),changed);Log(LogKind::Diagnostic,line);
             LogConnectivity();
-            LogTiming(known&&playing&&!media.playing?TimingReason::Pause:
-                jump?TimingReason::Discontinuity:TimingReason::Routine);
         }
         known=true;playing=media.playing;status=media.playback_status;
         key=next_key;position=media.position;observed=at;
     }
 };
-static bool StatusDue(double now,double deadline,const Media& current,bool unavailable) {
-    return DebugLoggingEnabled()&&now>=deadline&&current.playing&&!unavailable;
+// Profiling is independent of playback state: paused/idle periods still drain
+// interval counters, but basic diagnostics never query callback timers.
+static void DrainTiming(double now,double& deadline) {
+    if(!HookDiagnosticsEnabled()||now<deadline)return;
+    LogTiming();deadline=now+10;
 }
 static bool Directories(const std::wstring& path) {
     return EnsureDirectory(path);
@@ -265,13 +256,11 @@ static int32_t Hook(void* sync,OggPage* page) {
     auto callback=audio_callbacks.Enter();
     NativeTimer timing(native_ogg_timing);
     int32_t result=original(sync,page);timing.Finish();
-    InterlockedIncrement(&calls);
     const bool capture=OggEnabled();
     if(!capture && !quality_enabled.load(std::memory_order_relaxed)) return result;
     if(result<=0 || !page || page->header_length<27 || page->header_length>282 ||
        page->body_length<0 || page->body_length>65025 ||
        page->header_length+page->body_length!=result || result>65307) return result;
-    InterlockedIncrement(&pages);
     {
         QueueGuard guard;
         if(count==capacity) InterlockedIncrement(&dropped);
@@ -280,25 +269,6 @@ static int32_t Hook(void* sync,OggPage* page) {
             s.length=unsigned(result); s.time=Now(); s.kind=AudioEventKind::OggPage; s.epoch=CaptureEpoch(); s.capture=capture;
             std::memcpy(s.bytes,page->header,page->header_length);
             if(page->body_length) std::memcpy(s.bytes+page->header_length,page->body,page->body_length);
-            tail=(tail+1)%capacity; ++count;
-        }
-    }
-    SetEvent(event); return result;
-}
-static void* FormatHook(void* out,const void* input) {
-    auto callback=audio_callbacks.Enter();
-    // Verified ABI: input is {const byte*, size_t}; result is {uint32_t kind, bool valid}.
-    // Read only a short diagnostic prefix. The original detector chooses the format.
-    void* result=original_sniff(out,input);
-    const auto* view=static_cast<const uintptr_t*>(input);
-    unsigned n=unsigned(std::min<uintptr_t>(view[1],16));
-    {
-        QueueGuard guard;
-        if(count==capacity) InterlockedIncrement(&dropped);
-        else {
-            Slot& s=queue[tail]; s.kind=AudioEventKind::FormatDetected; s.length=n; s.input_length=view[1]; s.time=Now();
-            std::memcpy(&s.format,out,4); s.matched=static_cast<unsigned char*>(out)[4]!=0;
-            if(n) std::memcpy(s.bytes,reinterpret_cast<const void*>(view[0]),n);
             tail=(tail+1)%capacity; ++count;
         }
     }
@@ -347,7 +317,7 @@ static int FlacReadHook(void* context,unsigned char* buffer,size_t* length) {
     size_t requested=*length;
     NativeTimer timing(native_read_timing);
     int status=original_flac_read(context,buffer,length);timing.Finish();
-    if(status==0 && !*length && DebugLoggingEnabled())empty_flac_reads.fetch_add(1,std::memory_order_relaxed);
+    if(status==0 && !*length && HookDiagnosticsEnabled())empty_flac_reads.fetch_add(1,std::memory_order_relaxed);
     if(status==0 && *length && *length<=requested) FlacEvent(context,AudioEventKind::FlacBytes,buffer,*length);
     else if(status==1 && !*length) FlacEvent(context,AudioEventKind::FlacEnd);
     else if(status!=0 || *length>requested) FlacEvent(context,AudioEventKind::FlacError,nullptr,0,unsigned(status),FlacErrorSource::ReadCallback,requested,*length);
@@ -410,7 +380,7 @@ static void* AacDestroyHook(void* context,unsigned flags) {
 }
 struct Capture {
     Stream stream;
-    bool lossless=false,metadata=false,aac=false;
+    bool lossless=false,metadata=false,aac=false,unverified_reported=false,ambiguous=false;
     SpacStream spac;
     FlacInfo flac;
     FlacCoverage coverage;
@@ -447,19 +417,22 @@ struct Capture {
 static bool FormatEnabled(const Capture& capture,const Settings& settings) {
     return capture.aac?settings.aac:capture.lossless?settings.flac:settings.ogg;
 }
-struct Heard { Media media; double start=0,finish=0;std::uint64_t generation=0; };
+using Heard=PlaybackListen;
 constexpr double completion_wait=10;
 static bool CaptureTimingMatchesListen(const Capture& capture,const Heard& heard) {
     return (!capture.listen_generation || capture.listen_generation==heard.generation) &&
            capture.born>=heard.start-20 && capture.born<=heard.start+3 && capture.born<heard.finish;
 }
 static double PendingCaptureDeadline(const Capture& capture,const std::vector<Heard>& heard) {
-    for(const auto& pending:heard)
-        if(CaptureTimingMatchesListen(capture,pending))return pending.finish+completion_wait;
-    return 0;
+    double deadline=0;
+    for(const auto& pending:heard)if(CaptureTimingMatchesListen(capture,pending)) {
+        const auto candidate=pending.finish+completion_wait;
+        deadline=deadline?std::min(deadline,candidate):candidate;
+    }
+    return deadline;
 }
 static Catalog CatalogFor(const Media& media) {
-    Catalog c; c.title=media.title; c.album=media.album; c.track=media.track;c.duration=media.duration;
+    Catalog c; c.spotify_uri=media.spotify_uri; c.title=media.title; c.album=media.album; c.track=media.track;c.duration=media.duration;
     c.artist=media.album_artist.empty() ? media.artist : media.album_artist;
     c.folder_artist=media.album_artist;
     if(_wcsicmp(c.artist.c_str(),L"Various Artists")==0) c.kind=MediaKind::VariousArtists;
@@ -547,7 +520,7 @@ static FilenameConversion ConvertResolvedFilename(RecordingDestination& resolved
         resolved.path.swap(renamed); // renamed now holds the previous path.
         RelocateRecentDownload(renamed,resolved.path);
         RefreshSongDestination();
-        LogActivity("renamed","removed filename number prefix; existing audio and metadata retained | "+Utf8(catalog.title));
+        LogEvent(LogKind::Activity,"renamed","removed filename number prefix; existing audio and metadata retained | "+Utf8(catalog.title));
     }
     return result;
 }
@@ -556,7 +529,7 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     const std::string identity=Utf8(heard.media.artist)+" - "+Utf8(heard.media.title);
     auto finish=[&](Publication status,const char* event,const std::string& detail) {
         // Put outcome facts first so a long title cannot truncate quality/size.
-        LogActivity(event,detail+" | "+identity);return status;
+        LogEvent(status==Publication::Failed?LogKind::Failure:LogKind::Activity,event,detail+" | "+identity);return status;
     };
     SYSTEMTIME t; GetSystemTime(&t); wchar_t stamp[64];
     swprintf(stamp,64,L"%04u-%02u-%02uT%02u:%02u:%02uZ",t.wYear,t.wMonth,t.wDay,t.wHour,t.wMinute,t.wSecond);
@@ -569,6 +542,7 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
       {"ALBUM",Utf8(heard.media.album)},{"ALBUMARTIST",Utf8(heard.media.album_artist)},
       {"TRACKNUMBER",std::to_string(heard.media.track)},
       {"HISTORY_COMPLETE_LISTEN","1"},{"HISTORY_TRANSCODED","0"},
+      {"HISTORY_PLAYBACK_SOURCE",heard.media.source==MediaSource::Spotify?"spotify":"windows"},
       {"HISTORY_SAMPLES",std::to_string(c.Samples())},
       {"HISTORY_SAMPLE_RATE",std::to_string(quality.rate)},
       {"HISTORY_BITS_PER_SAMPLE",std::to_string(quality.bits)},
@@ -641,14 +615,13 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
             if(inspected.owned && inspected.complete && NeedsRecordingMetadata(inspected,tags)) {
                 const auto result=UpdateRecordingMetadata(path,tags,catalog,settings.generation);
                 if(result==FileMetadataUpdate::Updated) {
-                    RefreshSongDestination();Log(("METADATA UPDATED "+Utf8(path)).c_str());
+                    RefreshSongDestination();
                     return finish(Publication::Saved,"updated","metadata and artwork updated; existing audio retained");
                 }
                 if(result==FileMetadataUpdate::Failed)
                     return finish(Publication::Failed,"failed","metadata update failed; existing file retained");
             }
         }
-        Log(("SKIP existing equal, higher or unverified quality "+Utf8(existing_path)).c_str());
         return finish(Publication::Skipped,"skipped",ExistingSkipReason(existing_path,quality,catalog,&inspected));
     }
     // Existing tags/art/lyrics are merged by PublishBytes while its exact old
@@ -687,16 +660,14 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     RefreshSongDestination();
     ImageInfo artwork;
     if(!ReadImageInfo(tags.cover,artwork) && !(publication==FilePublication::Upgraded && had_artwork))
-        LogActivity("metadata","artwork unavailable; audio and text tags saved | "+identity);
+        LogEvent(LogKind::Diagnostic,"metadata","artwork unavailable for completed publication");
     RecordRecentDownload(heard.media.artist+L" - "+heard.media.title,destination,published_bytes);
-    std::string line=(publication==FilePublication::Upgraded ? "UPGRADED " : "SAVED ")+Utf8(destination); Log(line.c_str());
     return finish(Publication::Saved,publication==FilePublication::Upgraded ? "upgraded" : "finished",SavedAudioDetails(quality,published_bytes));
 }
 struct SaveJob {std::unique_ptr<Capture> capture;Heard heard;unsigned epoch=0;size_t reserved=0;};
 static BoundedQueue<SaveJob,2> saves;
 static HANDLE save_event=nullptr;
 static std::atomic<size_t> publishing_reserved{0};
-static std::atomic<unsigned> saved_count{0};
 static std::atomic<bool> workers_running{false};
 static hooks::InitController audio_init;
 // Conversion checks share the existing publisher, but never consume an audio
@@ -767,7 +738,7 @@ static void ProcessFilenameCheck(const FilenameCheck& check) {
         if(resolved.state==RecordingDestinationState::Blocked)return;
         if(resolved.state!=RecordingDestinationState::Existing || !resolved.recording.complete)continue;
         if(ConvertResolvedFilename(resolved,check.catalog,check.settings,extension,check.serial)==FilenameConversion::Failed)
-            LogActivity("failed","filename conversion deferred; existing recording retained | "+Utf8(check.catalog.title));
+            LogEvent(LogKind::Failure,"failed","filename conversion deferred; existing recording retained | "+Utf8(check.catalog.title));
         return; // Best verified format/recording found; no new audio is created.
     }
 }
@@ -777,19 +748,15 @@ static DWORD WINAPI SaveWorker(LPVOID) {
         if(!saves.Pop(job)) {
             auto check=TakeFilenameCheck();
             if(check) {
-                try {ProcessFilenameCheck(*check);}catch(...) {Log("filename check failed; existing recordings retained");}
+                try {ProcessFilenameCheck(*check);}catch(...) {Log(LogKind::Failure,"filename check failed; existing recordings retained");}
                 continue;
             }
             WaitForSingleObject(save_event,200);continue;
         }
         std::string identity=Utf8(job.heard.media.artist)+" - "+Utf8(job.heard.media.title);
         try {
-            auto result=Publish(*job.capture,job.heard,job.epoch);
-            if(result==Publication::Saved) {
-                auto settings=GetSettings();
-                if(settings.capture_epoch==job.epoch) ++saved_count;
-            }
-        } catch(...) {LogActivity("failed",identity+" (publication exception)");}
+            Publish(*job.capture,job.heard,job.epoch);
+        } catch(...) {LogEvent(LogKind::Failure,"failed",identity+" (publication exception)");}
         job.capture.reset();publishing_reserved.fetch_sub(job.reserved);
     }
     return 0;
@@ -797,6 +764,9 @@ static DWORD WINAPI SaveWorker(LPVOID) {
 struct CaptureBuffers {
     std::map<uintptr_t,std::unique_ptr<Capture>> active;
     std::vector<std::unique_ptr<Capture>> ready;
+    // Lightweight evidence boundaries survive removal of unmatched bytes/records.
+    double lost_capture_start_through=-std::numeric_limits<double>::infinity();
+    double lost_listen_born_through=-std::numeric_limits<double>::infinity();
 };
 static void ObserveCodecQuality(const Slot& s,PlaybackQualityTracker& quality) {
     switch(s.kind) {
@@ -817,47 +787,44 @@ static const char* ErrorOrigin(FlacErrorSource source) {
         default:return "unknown";
     }
 }
-static void LogCaptureContext(const Slot& s,const Capture& capture,const char* origin) {
+static void LogCaptureContext(const Slot& s,const Capture* capture,const char* origin,const char* extra="") {
     if(!DebugLoggingEnabled())return;
-    char line[430];snprintf(line,sizeof(line),
-        "FLAC observation origin=%s ctx=%llx mono=%.3f age=%.3f queue_lag_ms=%.1f epoch=%u metadata=%d frames=%u covered=%llu total=%llu bytes=%llu dropped=%ld",
-        origin,static_cast<unsigned long long>(s.context),s.time,s.time-capture.born,std::max(0.0,Now()-s.time)*1000,s.epoch,capture.metadata,
-        capture.coverage.frames,static_cast<unsigned long long>(capture.coverage.samples),
-        static_cast<unsigned long long>(capture.flac.total_samples),static_cast<unsigned long long>(capture.bytes),dropped);Log(line);
+    char line[760];snprintf(line,sizeof(line),
+        "FLAC observation origin=%s ctx=%llx mono=%.3f epoch=%u code=%u requested=%llu returned=%llu age=%.3f queue_lag_ms=%.1f metadata=%d frames=%u covered=%llu total=%llu bytes=%llu dropped=%ld%s",
+        origin,static_cast<unsigned long long>(s.context),s.time,s.epoch,s.format,
+        static_cast<unsigned long long>(s.requested),static_cast<unsigned long long>(s.returned),
+        capture?s.time-capture->born:0,std::max(0.0,Now()-s.time)*1000,capture&&capture->metadata,
+        capture?capture->coverage.frames:0,static_cast<unsigned long long>(capture?capture->coverage.samples:0),
+        static_cast<unsigned long long>(capture?capture->flac.total_samples:0),static_cast<unsigned long long>(capture?capture->bytes:0),dropped,extra);
+    Log(LogKind::Diagnostic,line);
 }
 static void ProcessFlacCapture(const Slot& s,CaptureBuffers& buffers) {
     auto& active=buffers.active;auto& ready=buffers.ready;
     auto found=active.find(s.context);
-    if(s.kind==AudioEventKind::FlacError && DebugLoggingEnabled()) {
-        char line[240];snprintf(line,sizeof(line),
-            "FLAC native result ctx=%llx origin=%s code=%u requested=%llu returned=%llu mono=%.3f epoch=%u",
-            static_cast<unsigned long long>(s.context),ErrorOrigin(s.error_source),s.format,
-            static_cast<unsigned long long>(s.requested),static_cast<unsigned long long>(s.returned),s.time,s.epoch);Log(line);
-        LogConnectivity();LogTiming(TimingReason::Failure);
-    }
+    if(s.kind==AudioEventKind::FlacError && (found==active.end()||!found->second->lossless))
+        LogCaptureContext(s,nullptr,ErrorOrigin(s.error_source));
     if(s.kind==AudioEventKind::FlacBegin) {
-        if(found!=active.end())LogCaptureContext(s,*found->second,"context-reinitialized");
+        if(found!=active.end())LogCaptureContext(s,found->second.get(),"context-reinitialized");
         auto c=std::make_unique<Capture>(); c->lossless=true; c->born=s.time;
-        LogCaptureContext(s,*c,"begin");
-        active[s.context]=std::move(c); Log("FLAC decoder initialized; capture begins at compressed offset zero"); return;
+        active[s.context]=std::move(c);return;
     }
     if(found==active.end() || !found->second->lossless) return;
     Capture& c=*found->second;
     if(s.kind==AudioEventKind::FlacError) {
-        LogCaptureContext(s,c,ErrorOrigin(s.error_source));
-        active.erase(found); Log("FLAC decoder error; stream discarded"); return;
+        LogCaptureContext(s,&c,ErrorOrigin(s.error_source));
+        active.erase(found); Log(LogKind::Failure,"FLAC decoder error; stream discarded"); return;
     }
     if(s.kind==AudioEventKind::FlacBytes) {
         size_t reserved=publishing_reserved.load(); for(const auto& item:active) reserved+=item.second->Capacity();
         for(const auto& item:ready) reserved+=item->Capacity();
         size_t available=reserved<memory_limit ? memory_limit-reserved : 0;
-        if(!c.data.Append(s.bytes,s.length,available)) { active.erase(found); Log("FLAC capture memory limit; stream discarded"); return; }
+        if(!c.data.Append(s.bytes,s.length,available)) { active.erase(found); Log(LogKind::Failure,"FLAC capture memory limit; stream discarded"); return; }
         c.bytes+=s.length;
         if(!c.metadata) {
             size_t audio=0; auto parsed=ParseFlacMetadata(c.data,c.flac,audio);
-            if(parsed==FlacParse::Invalid) { active.erase(found); Log("FLAC metadata invalid; stream discarded"); return; }
+            if(parsed==FlacParse::Invalid) { active.erase(found); Log(LogKind::Failure,"FLAC metadata invalid; stream discarded"); return; }
             if(parsed==FlacParse::Valid) {
-                c.metadata=true; char line[180]; snprintf(line,sizeof(line),"FLAC STREAMINFO rate=%u channels=%u bits=%u total=%llu metadata_bytes=%zu",c.flac.rate,c.flac.channels,c.flac.bits,static_cast<unsigned long long>(c.flac.total_samples),audio); Log(line);
+                c.metadata=true; char line[180]; snprintf(line,sizeof(line),"FLAC STREAMINFO rate=%u channels=%u bits=%u total=%llu metadata_bytes=%zu",c.flac.rate,c.flac.channels,c.flac.bits,static_cast<unsigned long long>(c.flac.total_samples),audio); Log(LogKind::Diagnostic,line);
             }
         }
         return;
@@ -867,42 +834,40 @@ static void ProcessFlacCapture(const Slot& s,CaptureBuffers& buffers) {
         if(frame[5]==0) number=uint32_t(number);
         const char* reason="metadata-not-ready";
         if(!c.metadata || !c.coverage.Frame(c.flac,frame[0],frame[1],frame[2],frame[4],frame[5],number,&reason)) {
-            LogCaptureContext(s,c,"capture-coverage-guard");
             if(DebugLoggingEnabled()) {
-                char line[430];snprintf(line,sizeof(line),
-                    "FLAC coverage ctx=%llx reason=%s native_frame_result=0 expected_rate=%u got_rate=%u expected_channels=%u got_channels=%u expected_bits=%u got_bits=%u block=%u min_block=%u max_block=%u number_type=%u number=%llu expected_sample=%llu",
-                    static_cast<unsigned long long>(s.context),reason,c.flac.rate,frame[1],c.flac.channels,frame[2],c.flac.bits,frame[4],
+                char line[400];snprintf(line,sizeof(line),
+                    " reason=%s native_frame_result=0 expected_rate=%u got_rate=%u expected_channels=%u got_channels=%u expected_bits=%u got_bits=%u block=%u min_block=%u max_block=%u number_type=%u number=%llu expected_sample=%llu",
+                    reason,c.flac.rate,frame[1],c.flac.channels,frame[2],c.flac.bits,frame[4],
                     frame[0],c.flac.min_block,c.flac.max_block,frame[5],static_cast<unsigned long long>(number),
-                    static_cast<unsigned long long>(c.coverage.samples));Log(line);
-                LogConnectivity();LogTiming(TimingReason::Failure);
+                    static_cast<unsigned long long>(c.coverage.samples));
+                LogCaptureContext(s,&c,"capture-coverage-guard",line);
             }
-            active.erase(found); Log("FLAC decoded-frame gap or format mismatch; stream discarded"); return;
+            active.erase(found); Log(LogKind::Failure,"FLAC decoded-frame gap or format mismatch; stream discarded"); return;
         }
         if(!c.coverage.Complete(c.flac)) return;
     } else if(s.kind!=AudioEventKind::FlacEnd || !c.coverage.Complete(c.flac)) {
-        LogCaptureContext(s,c,"end-before-coverage");LogConnectivity();LogTiming(TimingReason::Failure);
-        active.erase(found); Log("FLAC truncated before total samples; discarded"); return;
+        LogCaptureContext(s,&c,"end-before-coverage");
+        active.erase(found); Log(LogKind::Failure,"FLAC truncated before total samples; discarded"); return;
     }
-    LogCaptureContext(s,c,"complete");
     c.finished=s.time;
-    char line[180]; snprintf(line,sizeof(line),"FLAC COMPLETE frames=%u samples=%llu bytes=%llu duration=%.6f",c.coverage.frames,static_cast<unsigned long long>(c.coverage.samples),static_cast<unsigned long long>(c.bytes),c.Duration()); Log(line);
+    char line[180]; snprintf(line,sizeof(line),"FLAC COMPLETE frames=%u samples=%llu bytes=%llu duration=%.6f",c.coverage.frames,static_cast<unsigned long long>(c.coverage.samples),static_cast<unsigned long long>(c.bytes),c.Duration()); Log(LogKind::Diagnostic,line);
     ready.push_back(std::move(found->second)); active.erase(found); return;
 }
 static void ProcessOggCapture(const Slot& s,CaptureBuffers& buffers) {
     auto& active=buffers.active;auto& ready=buffers.ready;
     Page page; if(!ParsePage(s.bytes,s.length,page)) {
-        active.erase(s.context); Log("invalid Ogg page rejected"); return;
+        active.erase(s.context); Log(LogKind::Failure,"invalid Ogg page rejected"); return;
     }
     if(page.vorbis_start) {
         auto c=std::make_unique<Capture>(); c->born=s.time;
         active[s.context]=std::move(c);
         char line[160]; snprintf(line,sizeof(line),"BOS ctx=%llx seq=%u serial=%u rate=%u channels=%u",
-            static_cast<unsigned long long>(s.context),page.sequence,page.serial,page.rate,page.channels); Log(line);
+            static_cast<unsigned long long>(s.context),page.sequence,page.serial,page.rate,page.channels); Log(LogKind::Diagnostic,line);
     }
     auto found=active.find(s.context); if(found==active.end()) return;
     Capture& c=*found->second; Result result=c.stream.Push(s.bytes,s.length);
     if(result==Result::Invalid || result==Result::Ignore) {
-        active.erase(found); Log("stream discarded: page gap or integrity failure"); return;
+        active.erase(found); Log(LogKind::Failure,"stream discarded: page gap or integrity failure"); return;
     }
     size_t reserved=publishing_reserved.load();
     for(const auto& item:active) reserved+=item.second->Capacity();
@@ -910,13 +875,13 @@ static void ProcessOggCapture(const Slot& s,CaptureBuffers& buffers) {
     size_t available=reserved<memory_limit ? memory_limit-reserved : 0;
     if(!c.data.Append(s.bytes,s.length,available)) {
         active.erase(found);
-        Log("capture memory limit reached; track discarded without scratch files"); return;
+        Log(LogKind::Failure,"capture memory limit reached; track discarded without scratch files"); return;
     }
     c.bytes+=s.length;
     if(result==Result::Complete) {
         c.finished=s.time;
         char line[200]; snprintf(line,sizeof(line),"EOS pages=%u bytes=%llu duration=%.6f capture_seconds=%.3f",
-          c.stream.pages,static_cast<unsigned long long>(c.bytes),c.stream.Duration(),c.finished-c.born); Log(line);
+          c.stream.pages,static_cast<unsigned long long>(c.bytes),c.stream.Duration(),c.finished-c.born); Log(LogKind::Diagnostic,line);
         ready.push_back(std::move(found->second)); active.erase(found);
     }
 }
@@ -924,14 +889,14 @@ static void ProcessAacCapture(const Slot& s,CaptureBuffers& buffers) {
     auto& active=buffers.active;auto& ready=buffers.ready;
     auto found=active.find(s.context);
     if(s.kind==AudioEventKind::AacBegin) {
-        if(found==active.end()&&active.size()>=16){Log("AAC decoder limit reached; stream ignored");return;}
+        if(found==active.end()&&active.size()>=16){Log(LogKind::Failure,"AAC decoder limit reached; stream ignored");return;}
         auto capture=std::make_unique<Capture>();capture->aac=true;capture->born=s.time;
         active[s.context]=std::move(capture);return;
     }
     if(found==active.end()||!found->second->aac)return;
     if(s.kind==AudioEventKind::AacDestroy||s.kind==AudioEventKind::AacError) {
         active.erase(found);
-        if(s.kind==AudioEventKind::AacError)Log("AAC decoder input rejected; stream discarded");
+        if(s.kind==AudioEventKind::AacError)Log(LogKind::Failure,"AAC decoder input rejected; stream discarded");
         return;
     }
     auto& c=*found->second;
@@ -943,55 +908,80 @@ static void ProcessAacCapture(const Slot& s,CaptureBuffers& buffers) {
     };
     const auto used=reserved();
     if(!c.spac.MemoryUsage()&&(used>=memory_limit||memory_limit-used<65536+64)) {
-        active.erase(found);Log("AAC capture memory limit; stream discarded");return;
+        active.erase(found);Log(LogKind::Failure,"AAC capture memory limit; stream discarded");return;
     }
     const auto result=c.spac.Push(s.bytes,s.length);
     if(result==AacParse::Invalid||result==AacParse::Unsupported) {
-        active.erase(found);Log(result==AacParse::Unsupported?
+        active.erase(found);Log(LogKind::Failure,result==AacParse::Unsupported?
             "unsupported SpAC AAC configuration; stream discarded":"AAC page checksum or frame gap; stream discarded");return;
     }
     const auto allocated=reserved();
     if(!c.data.Append(s.bytes,s.length,allocated<memory_limit?memory_limit-allocated:0)) {
-        active.erase(found);Log("AAC capture memory limit; stream discarded");return;
+        active.erase(found);Log(LogKind::Failure,"AAC capture memory limit; stream discarded");return;
     }
     c.bytes+=s.length;
     if(result==AacParse::Complete) {
         c.finished=s.time;
         char line[180];snprintf(line,sizeof(line),"AAC COMPLETE source_bytes=%llu rate=%u channels=%u samples=%u priming=%u duration=%.6f",
-            static_cast<unsigned long long>(c.bytes),c.spac.info.rate,c.spac.info.channels,c.spac.info.total_samples,c.spac.info.priming,c.Duration());Log(line);
+            static_cast<unsigned long long>(c.bytes),c.spac.info.rate,c.spac.info.channels,c.spac.info.total_samples,c.spac.info.priming,c.Duration());Log(LogKind::Diagnostic,line);
         ready.push_back(std::move(found->second));active.erase(found);
     }
 }
 static void ProcessCaptureEvent(const Slot& s,CaptureBuffers& buffers,PlaybackQualityTracker& quality,
                                 bool observing_quality,bool enabled,unsigned epoch) {
-    if(s.kind==AudioEventKind::FormatDetected) {
-        char prefix[33]={};for(unsigned i=0;i<s.length;++i)snprintf(prefix+2*i,3,"%02x",s.bytes[i]);
-        char line[180];snprintf(line,sizeof(line),"FORMAT kind=%u matched=%d input_bytes=%llu prefix=%s",
-            s.format,s.matched,static_cast<unsigned long long>(s.input_length),prefix);Log(line);return;
-    }
     if(observing_quality) ObserveCodecQuality(s,quality);
     if(!enabled || !s.capture || s.epoch!=epoch) return;
     if(s.kind>=AudioEventKind::AacBegin)ProcessAacCapture(s,buffers);
     else if(s.kind>=AudioEventKind::FlacBegin) ProcessFlacCapture(s,buffers);
     else ProcessOggCapture(s,buffers);
 }
+static void LogCompletedListen(const Heard& heard) {
+    if(!DebugLoggingEnabled())return;
+    char line[200];snprintf(line,sizeof(line),
+        "listen coverage completed generation=%llu elapsed=%.3f duration=%.3f source=%s",
+        static_cast<unsigned long long>(heard.generation),heard.finish-heard.start,heard.media.duration,
+        heard.media.source==MediaSource::Spotify?"spotify":"windows");
+    Log(LogKind::Diagnostic,line);
+}
+static void BoundCompletedCaptureTails(CaptureBuffers& buffers,const std::vector<Heard>& heard) {
+    const auto bound=[&](Capture& capture) {
+        const auto deadline=PendingCaptureDeadline(capture,heard);
+        if(deadline)capture.retained_until=capture.retained_until?std::min(capture.retained_until,deadline):deadline;
+    };
+    for(auto& item:buffers.active)bound(*item.second);
+    for(auto& item:buffers.ready)bound(*item);
+}
+static void RecordCompletedListen(const Media& media,const Listen& listen,std::vector<Heard>& heard,
+                                  CaptureBuffers& buffers,RecentPlaybackHistory* recent) {
+    heard.push_back({media,listen.completed_start,listen.completed_time,listen.completed_generation});
+    // Completion, including a same-identity terminal pause, fixes the original
+    // decoder deadline independently of the completed-buffer reconciliation age.
+    BoundCompletedCaptureTails(buffers,heard);
+    if(recent)recent->Complete(heard.back());
+    LogCompletedListen(heard.back());
+}
 static void AssociateListen(Media media,Listen& listen,Media& current,std::vector<Heard>& heard,
-                            CaptureBuffers& buffers,double time) {
+                            CaptureBuffers& buffers,double time,RecentPlaybackHistory* recent=nullptr) {
     auto& active=buffers.active;auto& ready=buffers.ready;
     double previous_start=listen.start_time;
     const auto previous_generation=listen.generation;
     bool was_eligible=listen.eligible;
     double prior_position=listen.last_position,prior_duration=listen.duration,prior_time=listen.last_time;
-    std::string done=listen.Observe(media.Key(),media.position,media.duration,media.playing,time);
+    if(!listen.identity.empty() && current.source!=media.source) {
+        // Restart current coverage without revoking independently completed
+        // listens or their decoder-tail deadlines.
+        listen.eligible=false;
+        Log(LogKind::Diagnostic,"playback source changed; listening coverage restarted");
+    }
+    std::string done=listen.Observe(media.ListenKey(),media.position,media.duration,media.playing,time);
     if(was_eligible && !listen.eligible && done.empty()) {
         char line[300]; snprintf(line,sizeof(line),"listen invalidated old=%.6f/%.6f new=%.6f/%.6f delta=%.3f playing=%d",
-            prior_position,prior_duration,media.position,media.duration,time-prior_time,media.playing); Log(line);
+            prior_position,prior_duration,media.position,media.duration,time-prior_time,media.playing); Log(LogKind::Diagnostic,line);
     }
-    if(!done.empty()) { heard.push_back({current,listen.completed_start,listen.completed_time,listen.completed_generation}); Log(("FULL LISTEN "+Utf8(current.title)).c_str()); }
-    if(previous_generation!=listen.generation && listen.eligible) LogActivity("started",Utf8(media.artist)+" - "+Utf8(media.title));
-    if(was_eligible && !listen.eligible && done.empty()) LogActivity("failed",Utf8(current.artist)+" - "+Utf8(current.title)+" (incomplete listen)");
+    if(!done.empty())RecordCompletedListen(current,listen,heard,buffers,recent);
+    if(previous_generation!=listen.generation && listen.eligible) LogEvent(LogKind::Activity,"started",Utf8(media.artist)+" - "+Utf8(media.title));
+    if(was_eligible && !listen.eligible && done.empty()) LogEvent(LogKind::Activity,"skipped",Utf8(current.artist)+" - "+Utf8(current.title)+" (incomplete listen)");
     if(previous_generation!=listen.generation) {
-        Log(("TRACK "+Utf8(media.artist)+" - "+Utf8(media.title)).c_str());
         {
             auto prior=[previous_start,start=listen.start_time](const auto& c) {
                 return c->born>=previous_start-20 && c->born<=previous_start+3 && c->born<start-3;
@@ -1018,13 +1008,38 @@ static void AssociateListen(Media media,Listen& listen,Media& current,std::vecto
             }
         }
     }
-    if(listen.transient) Log("timeline reset at natural end; waiting for matching title");
-    else current=std::move(media);
+    if(listen.transient) Log(LogKind::Diagnostic,"timeline reset at natural end; waiting for matching title");
+    else {current=std::move(media);if(recent)recent->Observe(current,listen);}
 }
-static bool CaptureMatchesListen(const Capture& capture,const Heard& heard) {
+static bool FinishAppTransition(const Media& next,Listen& listen,const Media& current,std::vector<Heard>& heard,CaptureBuffers& buffers,double time,RecentPlaybackHistory* recent=nullptr) {
+    if(listen.identity.empty()||current.source!=MediaSource::Spotify)return false;
+    const bool same=listen.identity==next.ListenKey();
+    // The app's transition timestamp, rather than time spent buffering, closes
+    // the old listen. The new track cannot accrue coverage until it is playing.
+    auto ending=listen;
+    std::string done;
+    if(!same)done=ending.Observe(next.ListenKey(),0,current.duration,false,time);
+    else if(next.position>=current.duration)done=ending.Observe(next.ListenKey(),next.position,current.duration,false,time);
+    else if(next.position>=0&&next.position<=1.5) {
+        ending.Observe(next.ListenKey(),next.position,current.duration,true,time);
+        if(ending.transient && listen.last_position+time-listen.last_time>=listen.duration-0.1) {
+            listen=std::move(ending);return true; // Confirm a same-URI repeat on fresh unbuffered progress.
+        }
+    }
+    if(!done.empty()) {
+        RecordCompletedListen(current,ending,heard,buffers,recent);
+    } else if(listen.eligible)LogEvent(LogKind::Activity,"skipped",Utf8(current.artist)+" - "+Utf8(current.title)+" (incomplete app transition)");
+    listen.identity.clear();listen.eligible=false;listen.playing=false;
+    return false;
+}
+static bool CaptureEvidenceMatchesListen(const Capture& capture,const Heard& heard) {
     return CaptureTimingMatchesListen(capture,heard) &&
+           capture.finished<=heard.finish+completion_wait &&
            (!capture.retained_until || capture.finished<=capture.retained_until) &&
            std::fabs(capture.Duration()-heard.media.duration)<=1.0;
+}
+static bool CaptureMatchesListen(const Capture& capture,const Heard& heard) {
+    return !capture.ambiguous&&!heard.ambiguous&&CaptureEvidenceMatchesListen(capture,heard);
 }
 static std::string AssociationFailure(const Heard& heard,const CaptureBuffers& buffers,size_t matches) {
     size_t timing_ready=0,duration_ready=0,timing_active=0,flac_active=0,ogg_active=0;
@@ -1048,21 +1063,51 @@ static std::string AssociationFailure(const Heard& heard,const CaptureBuffers& b
 }
 static void SchedulePublications(std::vector<Heard>& heard,CaptureBuffers& buffers,unsigned epoch,double now) {
     auto& ready=buffers.ready;
+    // Late-discovered captures inherit the same cutoff before they can match.
+    BoundCompletedCaptureTails(buffers,heard);
+    // Assess every alternative before expiry/pressure can remove evidence.
+    std::vector<size_t> listen_matches(heard.size()),capture_matches(ready.size());
+    std::vector<std::pair<size_t,size_t>> links;
+    for(size_t h=0;h<heard.size();++h)for(size_t c=0;c<ready.size();++c)
+        if(CaptureEvidenceMatchesListen(*ready[c],heard[h])){++listen_matches[h];++capture_matches[c];links.push_back({h,c});}
+    for(const auto& link:links) {
+        auto& h=heard[link.first];auto& c=*ready[link.second];
+        if(listen_matches[link.first]>1||capture_matches[link.second]>1||h.ambiguous||c.ambiguous)
+            h.ambiguous=c.ambiguous=true;
+    }
+    while(heard.size()>5) {
+        buffers.lost_listen_born_through=std::max(buffers.lost_listen_born_through,heard.front().start+3);
+        LogEvent(LogKind::Failure,"failed","unmatched completed listen evicted from five-song history");heard.erase(heard.begin());
+    }
+    while(ready.size()>5) {
+        buffers.lost_capture_start_through=std::max(buffers.lost_capture_start_through,ready.front()->born+20);
+        LogEvent(LogKind::Failure,"failed","unmatched capture evicted from five-song buffer");ready.erase(ready.begin());
+    }
     for(auto h=heard.begin();h!=heard.end();) {
+        if(h->start<=buffers.lost_capture_start_through)h->ambiguous=true;
         size_t match=ready.size(),matches=0;
         for(size_t i=0;i<ready.size();i++) {
             Capture& c=*ready[i];
+            if(c.born<=buffers.lost_listen_born_through)c.ambiguous=true;
             if(CaptureMatchesListen(c,*h)) { match=i; ++matches; }
+        }
+        // Matching is one-to-one across recent completed listens as well as
+        // decoder candidates. A buffer compatible with two songs is ambiguous.
+        if(matches==1)for(auto other=heard.begin();other!=heard.end();++other)
+            if(other!=h&&CaptureMatchesListen(*ready[match],*other)){matches=2;break;}
+        if(h->ambiguous) {
+            LogEvent(LogKind::Failure,"failed","ambiguous association rejected; removing alternatives cannot establish ownership");h=heard.erase(h);continue;
         }
         if(matches==1) {
             SaveJob job;job.reserved=ready[match]->Capacity();job.epoch=epoch;
             job.capture=std::move(ready[match]);job.heard=*h;job.capture->listen_generation=h->generation;
             publishing_reserved.fetch_add(job.reserved);
             if(saves.Push(std::move(job)))SetEvent(save_event);
-            else {size_t reserved=job.reserved;job.capture.reset();publishing_reserved.fetch_sub(reserved);LogActivity("failed","publication queue full; completed candidate discarded");}
+            else {size_t reserved=job.reserved;job.capture.reset();publishing_reserved.fetch_sub(reserved);LogEvent(LogKind::Failure,"failed","publication queue full; completed candidate discarded");}
             ready.erase(ready.begin()+match); h=heard.erase(h);
-        } else if(matches>1 || now-h->finish>completion_wait) {
-            LogActivity("failed",AssociationFailure(*h,buffers,matches)); h=heard.erase(h);
+        } else if(now-h->finish>600) {
+            buffers.lost_listen_born_through=std::max(buffers.lost_listen_born_through,h->start+3);
+            LogEvent(LogKind::Failure,"failed",AssociationFailure(*h,buffers,matches)); h=heard.erase(h);
         } else ++h;
     }
     // Release transition-only retention once its listen was queued/discarded,
@@ -1074,22 +1119,52 @@ static void SchedulePublications(std::vector<Heard>& heard,CaptureBuffers& buffe
     for(auto it=buffers.active.begin();it!=buffers.active.end();) {
         if(expired(it->second))it=buffers.active.erase(it);else ++it;
     }
-    ready.erase(std::remove_if(ready.begin(),ready.end(),expired),ready.end());
+    ready.erase(std::remove_if(ready.begin(),ready.end(),[](const auto& capture){
+        return capture->retained_until&&capture->finished>capture->retained_until;
+    }),ready.end());
+}
+struct MediaWarningState {double since=-1;bool reported=false;};
+static void ReportMediaUnavailable(const CaptureBuffers& buffers,bool unavailable,
+                                   const MediaDiagnostic& diagnostic,double now,MediaWarningState& warning) {
+    // App state can settle just after the first decoder pages arrive. Give the
+    // warning a grace period; coverage invalidation above remains immediate.
+    // Completed-only captures have their own final failure outcome below.
+    if(!unavailable || buffers.active.empty() || std::strcmp(diagnostic.reason,"client-buffering-transition")==0) {
+        warning={};return;
+    }
+    if(warning.since<0){warning.since=now;return;}
+    if(warning.reported || now-warning.since<3)return;
+    warning.reported=true;
+    const auto message=std::string("playback verification unavailable while audio is being captured; ")+MediaRecoveryHint(diagnostic);
+    Log(LogKind::Warning,message.c_str());
+}
+static void ReportUnverifiedCaptures(CaptureBuffers& buffers,bool unavailable,
+                                     const MediaDiagnostic& diagnostic,double now) {
+    if(!unavailable)return;
+    for(auto& capture:buffers.ready) {
+        if(capture->unverified_reported || now-capture->finished<3)continue;
+        capture->unverified_reported=true;
+        const char* codec=capture->aac?"AAC":capture->lossless?"FLAC":"Ogg";
+        const auto message=std::string("complete ")+codec+" capture not saved: playback verification unavailable; "+MediaRecoveryHint(diagnostic);
+        Log(LogKind::Failure,message.c_str());
+    }
 }
 static DWORD WINAPI Worker(LPVOID) {
     LONG overflow=0;
     CaptureBuffers buffers;auto& active=buffers.active;auto& ready=buffers.ready;
-    std::vector<Heard> heard;
-    Listen listen; MediaSnapshotReader reader; Media current; PlaybackQualityTracker quality; std::string client_quality;
+    std::vector<Heard> heard;RecentPlaybackHistory recent;
+    Listen listen; PlaybackSnapshotReader reader; Media current; PlaybackQualityTracker quality; std::string client_quality;
     uint64_t media_sequence=0;
     PlaybackDiagnostics diagnostics;
-    double last_media=Now(),minimum_media_time=last_media,next_log=0;
-    bool observer_started=false,media_unavailable=false;
+    MediaDiagnostic media_diagnostic;MediaDiagnosticReporter media_reporter;
+    double last_media=Now(),minimum_media_time=last_media,next_timing=0;
+    bool observer_started=false,media_unavailable=false;MediaWarningState media_warning;
     unsigned generation=~0u,epoch=~0u; bool enabled=false;
     try {
         while(workers_running.load(std::memory_order_acquire)) {
             NoteCaptureProgress();
             double now=Now();
+            DrainTiming(now,next_timing);
             auto preferences=GetSettings();
             if(preferences.generation!=generation) {
                 bool initial=generation==~0u;
@@ -1097,11 +1172,10 @@ static DWORD WINAPI Worker(LPVOID) {
                 output=preferences.root; memory_limit=size_t(preferences.max_buffered_mib)*1024*1024;
                 bool capture=preferences.downloads && (preferences.ogg || preferences.flac || preferences.aac);
                 if(capture!=enabled || initial || preferences.capture_epoch!=epoch) {
-                    active.clear(); ready.clear(); heard.clear(); listen={}; current={};
-                    last_media=minimum_media_time=now;media_unavailable=false;diagnostics.known=false;CancelFilenameChecks();
-                    if(!enabled && capture) saved_count=0;
+                    buffers={}; heard.clear();recent.Clear(); listen={}; current={};
+                    last_media=minimum_media_time=now;media_unavailable=false;media_warning={};diagnostics.known=false;CancelFilenameChecks();
                     enabled=capture;
-                    Log(enabled ? "To Disk capture enabled" : "To Disk capture disabled");
+                    LogEvent(LogKind::Activity,"capture",enabled ? "enabled" : "disabled");
                 }
                 epoch=preferences.capture_epoch;
             }
@@ -1114,37 +1188,50 @@ static DWORD WINAPI Worker(LPVOID) {
             }
             if(dropped!=overflow) {
                 overflow=dropped; active.clear(); ready.clear(); heard.clear(); listen.eligible=false; quality.ClearStreams();
-                Log("capture queue overflow; streams and listening coverage invalidated");
+                Log(LogKind::Failure,"capture queue overflow; streams and listening coverage invalidated");
             }
             Slot s;
             while(Pop(s)) {
                 ProcessCaptureEvent(s,buffers,quality,quality_enabled.load(std::memory_order_relaxed),enabled,epoch);
                 // Draining a continuously busy queue is still forward progress.
                 NoteCaptureProgress();
+                if(HookDiagnosticsEnabled())DrainTiming(Now(),next_timing);
             }
             // Start only the basic media observer. All COM/WinRT work stays on
             // its thread; this consumer only try-locks a bounded RAM snapshot.
             // A still-stopping observer must finish before another can start.
             if(!observer_started) observer_started=reader.Start();
             Media media;double observed_at=0;
-            auto observation=observer_started?reader.TryRead(media,observed_at,media_sequence):MediaRead::Pending;
+            auto observation=observer_started?reader.TryRead(media,observed_at,media_sequence,&media_diagnostic):MediaRead::Pending;
             if(observation!=MediaRead::Pending && observed_at<minimum_media_time)
                 observation=MediaRead::Pending; // Never reuse an earlier capture epoch.
+            if(!observer_started){media_diagnostic.stage="observer-start";media_diagnostic.reason="thread-start-failed";}
+            if(observation==MediaRead::Pending && Now()-last_media>3 && std::strcmp(media_diagnostic.stage,"ready")==0) {
+                media_diagnostic.stage="snapshot-freshness";media_diagnostic.reason="no-fresh-observation";
+            }
+            if(DebugLoggingEnabled() && media_reporter.Due(media_diagnostic,Now()))Log(LogKind::Diagnostic,DescribeMediaDiagnostic(media_diagnostic).c_str());
             if(observation==MediaRead::Ready) {
                 last_media=observed_at;media_unavailable=false;
                 diagnostics.Observe(media,observed_at,media_sequence);
                 PublishCurrentDestination(media,preferences);
                 quality.Media(media.Key(),media.title,media.position,media.duration,observed_at,media.playing);
                 client_quality=ReadClientPlaybackQuality(media);
-                if(enabled)AssociateListen(std::move(media),listen,current,heard,buffers,observed_at);
+                if(enabled)AssociateListen(std::move(media),listen,current,heard,buffers,observed_at,&recent);
+            } else if(observation==MediaRead::Transition) {
+                const bool pending_repeat=enabled&&FinishAppTransition(media,listen,current,heard,buffers,observed_at,&recent);
+                // Explicit buffering is never converted into Windows fallback
+                // or new listening coverage. A fresh unbuffered state is needed.
+                if(!pending_repeat)listen.eligible=false;
+                media_unavailable=true;diagnostics.known=false;
             } else if(observation==MediaRead::Failed || Now()-last_media>3) {
                 // A stalled provider cannot stall decoder events, but missing
                 // observations still cannot establish continuous listening.
                 PublishSongDestination(0,L"",{},false,0);
                 listen.eligible=false;quality.Media({},L"",0,0,Now());client_quality.clear();
-                if(!media_unavailable){CancelFilenameChecks();Log("Spotify media snapshot unavailable or stale; listen invalidated");LogTiming(TimingReason::Failure);}
+                if(!media_unavailable){CancelFilenameChecks();Log(LogKind::Diagnostic,"Spotify media snapshot unavailable or stale; listen invalidated");}
                 media_unavailable=true;diagnostics.known=false;
             }
+            ReportMediaUnavailable(buffers,media_unavailable,media_diagnostic,Now(),media_warning);
             if(!enabled) {
                 PublishPlaybackQuality(quality.Snapshot(client_quality));
                 WaitForSingleObject(event,50);continue;
@@ -1154,23 +1241,19 @@ static DWORD WINAPI Worker(LPVOID) {
             // Menu settings may change concurrently with snapshot processing.
             // Apply that generation before considering any publication.
             if(GetSettings().generation!=generation) continue;
+            for(auto& pending:heard)recent.Refresh(pending);
             SchedulePublications(heard,buffers,epoch,now);
-            ready.erase(std::remove_if(ready.begin(),ready.end(),[now](const auto& c){return now-c->finished>600;}),ready.end());
+            ReportUnverifiedCaptures(buffers,media_unavailable,media_diagnostic,now);
+            ready.erase(std::remove_if(ready.begin(),ready.end(),[now,&buffers](const auto& c){
+                if(now-c->finished<=600)return false;
+                buffers.lost_capture_start_through=std::max(buffers.lost_capture_start_through,c->born+20);return true;
+            }),ready.end());
             for(auto it=active.begin();it!=active.end();) {
                 if(now-it->second->born>21600) it=active.erase(it); else ++it;
             }
-            // A paused/stale timeline adds no useful periodic status. Leave an
-            // overdue deadline intact so resumed playback logs immediately.
-            if(StatusDue(now,next_log,current,media_unavailable)) {
-                size_t buffered=0;
-                for(const auto& item:active) buffered+=item.second->Capacity();
-                for(const auto& item:ready) buffered+=item->Capacity();
-                char line[350]; snprintf(line,sizeof(line),"status calls=%ld pages=%ld dropped=%ld active=%zu ready=%zu saved=%u pos=%.3f/%.3f eligible=%d buffered=%zu",
-                  calls,pages,dropped,active.size(),ready.size(),saved_count.load(),current.position,current.duration,listen.eligible,buffered); Log(line); LogTiming(); next_log=now+10;
-            }
             WaitForSingleObject(event,50);
         }
-    } catch(...) { Log("history worker stopped after an exception; playback remains with original parser"); }
+    } catch(...) { Log(LogKind::Failure,"history worker stopped after an exception; playback remains with original parser"); }
     capture_progress_ms.store(0,std::memory_order_release);
     CancelFilenameChecks();
     reader.Stop(); // Nonblocking even if Windows is still servicing a COM call.
@@ -1179,7 +1262,6 @@ static DWORD WINAPI Worker(LPVOID) {
     workers_running.store(false,std::memory_order_release);
     if(save_event) SetEvent(save_event);
     MH_DisableHook(target);
-    MH_DisableHook(sniff_target);
     for(auto address:flac_targets) if(address) MH_DisableHook(address);
     for(auto address:aac_targets) if(address) MH_DisableHook(address);
     return 0;
@@ -1193,17 +1275,16 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
     auto preferences=GetSettings(); output=preferences.root;
     quality_enabled.store(preferences.menu,std::memory_order_relaxed);
     StartSongDestinationWorker(preferences.menu);
-    if(output.empty()) { Log("save location unavailable; history initialization will retry"); audio_init.Retry(now); return; }
+    if(output.empty()) { Log(LogKind::Failure,"save location unavailable; history initialization will retry"); audio_init.Retry(now); return; }
     spotify::HookTargets discovered{};
     const auto discovery=DiscoverTargets(spotify_module,discovered);
     if(discovery!=spotify::DiscoveryResult::Found) {
         char message[220];snprintf(message,sizeof(message),
             "Spotify audio target discovery failed: %s; capture disabled",
-            DiscoveryFailure(discovery));Log(message);
+            DiscoveryFailure(discovery));Log(LogKind::Failure,message);
         audio_init.MarkUnsupported();return;
     }
     target=DiscoveredTarget(spotify_module,discovered,spotify::TargetKind::OggPageSeek);
-    sniff_target=DiscoveredTarget(spotify_module,discovered,spotify::TargetKind::FormatSniff);
     flac_targets[0]=DiscoveredTarget(spotify_module,discovered,spotify::TargetKind::FlacInit);
     flac_targets[1]=DiscoveredTarget(spotify_module,discovered,spotify::TargetKind::FlacRead);
     flac_targets[2]=DiscoveredTarget(spotify_module,discovered,spotify::TargetKind::FlacFrame);
@@ -1215,16 +1296,16 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
         spotify::AacHookTargets aac;
         if(spotify::DiscoverAacHookTargets(base,nt->OptionalHeader.SizeOfImage,aac)==spotify::DiscoveryResult::Found) {
             aac_targets[0]=base+aac.initialize;aac_targets[1]=base+aac.push;aac_targets[2]=base+aac.destroy;
-        } else Log("optional AAC capture unsupported on this Spotify build; FLAC/Ogg remain available");
+        } else Log(LogKind::Warning,"optional AAC capture unsupported on this Spotify build; FLAC/Ogg remain available");
     }
     auto release_resources=[] {
         if(event) { CloseHandle(event); event=nullptr; }
         if(save_event) { CloseHandle(save_event); save_event=nullptr; }
         if(queue) { HeapFree(GetProcessHeap(),0,queue); queue=nullptr; }
         head=tail=count=0;
-        original=nullptr; original_sniff=nullptr; original_flac_init=nullptr;
+        original=nullptr; original_flac_init=nullptr;
         original_flac_read=nullptr; original_flac_frame=nullptr; original_flac_error=nullptr;
-        target=nullptr; sniff_target=nullptr;
+        target=nullptr;
         for(auto& address:flac_targets) address=nullptr;
         for(auto& address:aac_targets)address=nullptr;
         original_aac_initialize=nullptr;original_aac_push=nullptr;original_aac_destroy=nullptr;
@@ -1233,25 +1314,25 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
     queue=static_cast<Slot*>(HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof(Slot)*capacity));
     event=CreateEventW(nullptr,FALSE,FALSE,nullptr);
     if(!save_event || !queue || !event) {
-        Log("audio queue resources unavailable; initialization will retry"); release_resources(); audio_init.Retry(now); return;
+        Log(LogKind::Failure,"audio queue resources unavailable; initialization will retry"); release_resources(); audio_init.Retry(now); return;
     }
     workers_running.store(true,std::memory_order_release);
     HANDLE publisher=CreateThread(nullptr,0,SaveWorker,nullptr,0,nullptr);
     if(!publisher) {
         workers_running.store(false,std::memory_order_release);
-        Log("publication worker startup failed; initialization will retry"); release_resources(); audio_init.Retry(now); return;
+        Log(LogKind::Failure,"publication worker startup failed; initialization will retry"); release_resources(); audio_init.Retry(now); return;
     }
     SetThreadPriority(publisher,THREAD_PRIORITY_BELOW_NORMAL);
     HANDLE worker=CreateThread(nullptr,0,Worker,nullptr,0,nullptr);
     if(!worker) {
         workers_running.store(false,std::memory_order_release); SetEvent(save_event);
         const bool stopped=WaitForSingleObject(publisher,5000)==WAIT_OBJECT_0;CloseHandle(publisher);
-        if(stopped) {Log("audio worker startup failed; initialization will retry");release_resources();audio_init.Retry(now);}
-        else {Log("audio worker startup failed and publisher did not quiesce; state preserved");audio_init.MarkUnsupported();}
+        if(stopped) {Log(LogKind::Failure,"audio worker startup failed; initialization will retry");release_resources();audio_init.Retry(now);}
+        else {Log(LogKind::Failure,"audio worker startup failed and publisher did not quiesce; state preserved");audio_init.MarkUnsupported();}
         return;
     }
     auto close_threads=[&] {CloseHandle(publisher);CloseHandle(worker);publisher=nullptr;worker=nullptr;};
-    void* created_targets[9]={};unsigned created_count=0;
+    void* created_targets[8]={};unsigned created_count=0;
     auto rollback=[&] {
         hooks::RollbackStatus result;
         auto disabled=[](MH_STATUS value){return value==MH_OK||value==MH_ERROR_DISABLED||value==MH_ERROR_NOT_CREATED;};
@@ -1275,7 +1356,6 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
     };
     MH_STATUS status=MH_Initialize(); if(status==MH_ERROR_ALREADY_INITIALIZED) status=MH_OK;
     if(status==MH_OK) status=create_hook(target,reinterpret_cast<void*>(Hook),reinterpret_cast<void**>(&original));
-    if(status==MH_OK) status=create_hook(sniff_target,reinterpret_cast<void*>(FormatHook),reinterpret_cast<void**>(&original_sniff));
     void* flac_callbacks[]={reinterpret_cast<void*>(FlacInitHook),reinterpret_cast<void*>(FlacReadHook),reinterpret_cast<void*>(FlacFrameHook),reinterpret_cast<void*>(FlacErrorHook)};
     void** flac_originals[]={reinterpret_cast<void**>(&original_flac_init),reinterpret_cast<void**>(&original_flac_read),reinterpret_cast<void**>(&original_flac_frame),reinterpret_cast<void**>(&original_flac_error)};
     for(unsigned i=0;status==MH_OK && i<4;i++) {
@@ -1303,15 +1383,14 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
                 created_count=first_aac;
                 for(auto& address:aac_targets)address=nullptr;
             }
-            Log("optional AAC hook preparation failed; AAC capture unavailable");
+            Log(LogKind::Warning,"optional AAC hook preparation failed; AAC capture unavailable");
         }
     }
     if(status==MH_OK) status=MH_QueueEnableHook(target);
-    if(status==MH_OK) status=MH_QueueEnableHook(sniff_target);
     bool apply_attempted=false;
     if(status==MH_OK) {apply_attempted=true;status=MH_ApplyQueued();}
     if(status!=MH_OK) {
-        char message[200];snprintf(message,sizeof(message),"audio hook installation failed: %s",MH_StatusToString(status));Log(message);
+        char message[200];snprintf(message,sizeof(message),"audio hook transaction status=%s apply_attempted=%d",MH_StatusToString(status),apply_attempted);Log(LogKind::Diagnostic,message);
         if(apply_attempted) {
             // MH_ApplyQueued may have published some detours before reporting a
             // failure. A thread can be between the detour entry and our C++
@@ -1320,13 +1399,12 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
             for(unsigned i=0;i<created_count;i++) MH_DisableHook(created_targets[i]);
             workers_running.store(false,std::memory_order_release);SetEvent(event);SetEvent(save_event);
             WaitForSingleObject(worker,5000);WaitForSingleObject(publisher,5000);close_threads();
-            Log("audio hook activation failed; disabled hook state preserved for callback safety");
+            Log(LogKind::Failure,"audio hook activation failed; disabled hook state preserved for callback safety");
             audio_init.MarkUnsupported();
-        } else if(rollback()){Log("audio hook rollback complete; retry scheduled");audio_init.Retry(now);}
-        else {Log("audio hook rollback incomplete; callback state preserved and retries disabled");audio_init.MarkUnsupported();}
+        } else if(rollback()){Log(LogKind::Failure,"audio hook preparation failed; rollback complete; retry scheduled");audio_init.Retry(now);}
+        else {Log(LogKind::Failure,"audio hook rollback incomplete; callback state preserved and retries disabled");audio_init.MarkUnsupported();}
         return;
     }
     close_threads();
     audio_init.Activate();
-    Log("native history active; dynamic Spotify targets; memory capture; embedded metadata/art; complete listens only");
 }

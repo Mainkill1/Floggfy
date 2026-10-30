@@ -122,12 +122,6 @@ unsigned SenderLabel(const std::string& sender) {
     if(decoded_sender_count==decoded_senders.size())return 0;
     decoded_senders[decoded_sender_count]=sender;return ++decoded_sender_count;
 }
-const char* CopyReason(CopyState state) noexcept {
-    switch(state) {
-        case CopyState::Copied:return "copied";case CopyState::Oversized:return "oversized";
-        case CopyState::InvalidString:return "string-layout";default:return "unreadable";
-    }
-}
 std::size_t MappedConnectImageSize(HMODULE module) noexcept {
     if(!module)return 0;
     const auto base=reinterpret_cast<std::uintptr_t>(module);
@@ -180,9 +174,34 @@ void StartDecodedConnectMessages(HMODULE spotify_module,bool requested) noexcept
         QueueNetworkingDiagnostic("decoded Connect observer unavailable: activation incomplete; observation disabled");return;
     }
     decoded_init.Activate();
-    QueueNetworkingDiagnostic("decoded Connect observer active: complete messages only; read-only; pause/resume receipt is not execution");
 }
 namespace {
+// Startup worker only. Unknown messages are counts, never one line per payload.
+struct DecodedSummary {
+    std::uint64_t json_invalid=0,oversized=0,string_layout=0,unreadable=0,no_summary=0;
+    bool Pending() const noexcept {return json_invalid||oversized||string_layout||unreadable||no_summary;}
+};
+DecodedSummary decoded_summary;
+std::uint64_t decoded_summary_due=0;
+static void CountUnsummarized(const DecodedRecord& record) noexcept {
+    auto& count=record.json_result!=1?decoded_summary.json_invalid:
+        record.copy==CopyState::Oversized?decoded_summary.oversized:
+        record.copy==CopyState::InvalidString?decoded_summary.string_layout:
+        record.copy==CopyState::Unreadable?decoded_summary.unreadable:decoded_summary.no_summary;
+    if(count<std::numeric_limits<std::uint64_t>::max())++count;
+}
+static void FlushDecodedSummary(std::uint64_t now) noexcept {
+    if(!NetworkingLoggingEnabled()){decoded_summary={};decoded_omitted.exchange(0);return;}
+    if(now<decoded_summary_due||(!decoded_summary.Pending()&&!decoded_omitted.load(std::memory_order_relaxed)))return;
+    decoded_summary_due=now+5000;
+    const auto omitted=decoded_omitted.exchange(0,std::memory_order_relaxed);
+    char line[320];std::snprintf(line,sizeof(line),
+        "direction=in service=connect summary=unavailable json_invalid=%llu oversized=%llu string_layout=%llu unreadable=%llu no_summary=%llu observations_omitted=%lu; commands unchanged",
+        static_cast<unsigned long long>(decoded_summary.json_invalid),static_cast<unsigned long long>(decoded_summary.oversized),
+        static_cast<unsigned long long>(decoded_summary.string_layout),static_cast<unsigned long long>(decoded_summary.unreadable),
+        static_cast<unsigned long long>(decoded_summary.no_summary),omitted);
+    decoded_summary={};QueueNetworkingDiagnostic(line);
+}
 __declspec(noinline) void DrainPendingDecodedConnectMessages() noexcept {
     for(unsigned i=0;i<decoded_capacity;++i) {
         DecodedRecord record;
@@ -200,18 +219,13 @@ __declspec(noinline) void DrainPendingDecodedConnectMessages() noexcept {
                     std::snprintf(line,sizeof(line),
                         "direction=in service=connect Connect decoded request action=%s message_id=%s sender=%s mono=%.3f source=%s json_ok=1 execution=unobserved",
                         ConnectActionName(message.action),id,sender,double(record.observed_ms)/1000.0,source);
-                } else std::snprintf(line,sizeof(line),
-                    "direction=in service=connect Connect decoded observation mono=%.3f source=%s json_result=%u copy=%s summary=unavailable; commands unchanged",
-                    double(record.observed_ms)/1000.0,source,unsigned(record.json_result),CopyReason(record.copy));
-                QueueNetworkingDiagnostic(line);
+                    QueueNetworkingDiagnostic(line);
+                } else CountUnsummarized(record);
             }
         }catch(...) {/* An enrichment allocation must not terminate the startup worker. */}
         SecureZeroMemory(&record,sizeof(record));
     }
-    const auto omitted=decoded_omitted.exchange(0,std::memory_order_relaxed);
-    if(omitted&&NetworkingLoggingEnabled()) {
-        char line[120];std::snprintf(line,sizeof(line),"Connect decoded observations omitted=%lu; commands unchanged",omitted);QueueNetworkingDiagnostic(line);
-    }
+
 }
 }
 void DrainDecodedConnectMessages() noexcept {
@@ -221,6 +235,7 @@ void DrainDecodedConnectMessages() noexcept {
     if(!TryAcquireSRWLockExclusive(&decoded_lock))return;
     const bool pending=decoded_count!=0;
     ReleaseSRWLockExclusive(&decoded_lock);
-    if(pending||decoded_omitted.load(std::memory_order_relaxed))DrainPendingDecodedConnectMessages();
+    if(pending)DrainPendingDecodedConnectMessages();
+    FlushDecodedSummary(GetTickCount64());
 }
 }

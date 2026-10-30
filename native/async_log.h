@@ -3,7 +3,9 @@
 #include <string_view>
 namespace history {
 void StartLogger();
-void LogActivity(const char* event,const std::string& detail);
+enum class LogKind {Activity,Warning,Failure,Diagnostic};
+// The producer owns classification. Message wording never selects a destination.
+void LogEvent(LogKind kind,const char* event,const std::string& detail);
 void QueueDiagnostic(const char* message);
 // Claims all reserved renderer diagnostics, including rejected/disabled input.
 // False means an unrelated console message; never forwards raw renderer text.

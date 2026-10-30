@@ -1,3 +1,7 @@
+The current consolidated diagnostics regression entry point is
+`bash test-diagnostics.sh [SPOTIFY_DLL]`. Earlier dated sections below preserve
+historical evidence and may name wrappers that this entry point has replaced.
+
 ## Release 1.2.4 handoff
 
 The maintainer approved merge and release after controlled use on Windows x64
@@ -1135,3 +1139,108 @@ canonical routing; two fixed startup messages; and normal native failure logging
 without DebugLog. Exact commit and execution results are recorded in PR #13.
 No Spotify/CEF process or network operation is used by this fixture, and no full
 regression suite or live renderer integration is implied by that result.
+
+## Logging cleanup and app-clock verification (2026-10-29)
+
+Before implementing, compared pre-cleanup HEAD `a67c3ae` with reviewed main
+`7f99fa51698f80c802418d0ab00e33ae6e27b616`. The existing app-source/recent-song
+changes are retained. Logging cleanup uses explicit producer categories, two
+bounded queues and the existing worker; all optional output has one diagnostics
+file. Seven overlapping shell wrappers are replaced by `test-diagnostics.sh`.
+
+Passed checks:
+
+- `bash test-native.sh`.
+- `bash test-native-windows.sh`: all stages passed via the initial prefix and
+  resumed menu-through-final stages after removing an unused diagnostic local
+  caught by `-Werror`. This was not one uninterrupted run at the final HEAD.
+- `bash test-diagnostics.sh SPOTIFY_DLL` against Spotify x64 1.3.6.1921, repeated
+  after the reporting-grace and app-clock fixes.
+- `bash test-media-observer.sh` after the final clock change, covering the
+  deterministic single-ULP regression and existing freshness, identity,
+  transitions, queue contention and disconnected-manager checks.
+- `bash test-network-patch.sh`.
+- Focused Windows menu fixture after the final one-line menu-only routing change.
+- `bash build-native.sh` after the final source change; x64 PE outputs verified.
+- Source/embedded-INI checks, `git diff --check`, exact-range/tracked-tree privacy
+  scans and independent review. Existing vendor warnings remain visible.
+
+Actual Windows file-operation instrumentation for 10,000 one-KiB appends measured
+5 compactions, 5 reads, 10,005 writes, 20,971,525 read bytes and 31,211,520 written
+bytes. Eight queued records drained as one WriteFile. The old cap-minus-incoming
+retention policy calculates to 4,880 compactions in that workload; no old runtime
+or wall-clock speedup is claimed. Retained files stay within 5 MiB and preserve
+complete UTF-8 lines.
+
+Live Windows/Spotify validation used `Log=1`, `DebugLog=1`, `Metadata=0`, optional
+decoded/profiling hooks off, and Windows media controls disabled. A natural
+137.297-second Ogg saved once with `HISTORY_PLAYBACK_SOURCE=spotify`. Independent
+Xiph verification accepted all 1,288 pages, CRC/BOS/EOS and decoded all 6,054,816
+samples with zero errors; final tagged size was 5,569,075 bytes. Polling confirmed
+local app state at roughly 500 ms intervals. Separate normal/diagnostic files,
+no status heartbeat, no obsolete format/duplicate-outcome producers and no
+basic-mode profiling were verified. The full capture used the final capture/media
+code; the subsequent menu-only logging change received a separate startup smoke
+check with its latest build. The normal startup log contained only capture enable;
+ordinary menu probe detail was diagnostic-only.
+
+Live testing exposed two additional cases now covered by deterministic tests:
+brief startup buffering no longer warns to replay before state can settle, and
+fresh ordered app observations cannot invalidate a listen solely through bounded
+UTC/uptime rounding. The reporting grace does not delay coverage invalidation;
+clock ordering adds zero elapsed coverage and leaves genuine regressions,
+identity changes, freshness, larger discontinuities and transitions guarded.
+
+Original INI values, Lossless preferences and Windows media controls were
+restored. The latest DLL and normal launcher are installed; private test launchers
+and the test debugging listener were removed.
+
+Remaining live coverage: long-running remote Connect/decoded-hook interleavings,
+explicit profiling runs and live FLAC/AAC captures. Deterministic suites cover
+their original callback results, lifetime/rollback, validation, completeness,
+quality and publication guards. A manual early skip logged both a skipped listen
+and a separate Ogg page-gap capture rejection. Those are distinct observed facts;
+whether cancellation caused the discontinuity remains unproven. The conservative
+integrity guard and its explicit failure remain, without attributing Spotify
+playback failure or corruption to the user action.
+
+## PR #15 association follow-up
+
+Both playback findings at reviewed commit `dedc83b` were reproduced with the
+production association/scheduling functions and native Ogg/FLAC event handlers.
+The provider-switch case failed because completed-listen evidence was removed;
+the terminal-pause case queued a tail completed at 122 after a listen completed
+at 110. Each test was observed failing before its corresponding fix.
+
+Source corrections are `631edf5` (preserve completed pending listens across both
+provider directions) and `2002496` (apply the original decoder-tail deadline to
+every completion, including same-identity terminal pauses and late-discovered
+captures). Pending captures use the earliest applicable deadline and cannot
+extend an existing earlier cutoff. Completed on-time buffers still reconcile
+within their separate ten-minute window.
+
+`bash test-capture-association.sh` passed the new cases and existing repeats,
+epochs, ambiguity, invalid-stream and skip checks. New coverage includes Ogg/FLAC
+across both provider-switch directions and 36 terminal-pause cases across both
+providers/codecs: inside/exact/outside ten seconds, scheduling before the late
+tail, late-discovered captures, existing earlier cutoffs and on-time completed
+buffers reconciled at 500 after a completion at 110.
+
+Fresh validation on source commit `2002496`:
+
+- `bash test-native.sh`: exit 0.
+- `bash test-native-windows.sh "$TEST_ROOT"`: exit 0, with a fresh isolated
+  Windows TEMP fixture root and one complete start-to-finish execution.
+  Includes the new production association regressions, production build,
+  startup, capture/quality/publication, settings, media and diagnostics gates.
+- `python3 tests/diagnostics_source_test.py`: passed.
+- Independent review: approved with no unresolved findings.
+- `git diff --check` and publication privacy scans: passed.
+
+Existing vendor warnings remain visible. The optional current-Spotify-DLL
+static discovery check was skipped by the full suite because no DLL argument
+was supplied; discovery code did not change. No new live Spotify capture was
+performed for these two association corrections, and the existing installation
+and preferences were left as previously restored. The earlier live evidence is
+historical coverage of the preceding revision, not a claim that these fixes
+were reproduced live.

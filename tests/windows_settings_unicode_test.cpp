@@ -10,7 +10,7 @@ void operator delete(void* p) noexcept {if(p)HeapFree(GetProcessHeap(),0,p);}
 void operator delete(void* p,std::size_t) noexcept {if(p)HeapFree(GetProcessHeap(),0,p);}
 namespace history {
 void StartLogger() {}
-void LogActivity(const char*,const std::string&) {}
+void LogEvent(LogKind,const char*,const std::string&) {}
 void QueueDiagnostic(const char*) {}
 }
 static std::wstring Module() {wchar_t file[32768];assert(GetModuleFileNameW(nullptr,file,32768));return file;}

@@ -3,21 +3,34 @@
 #include <string>
 #include <cstdint>
 #include <memory>
+#include "media_diagnostics.h"
 namespace history {
+enum class MediaSource { Windows,Spotify };
 struct Media {
     std::wstring title, artist, album, album_artist, app, genre;
     unsigned track = 0;
     double position = 0, duration = 0;
     bool playing = false;
     int playback_status = -1; // Raw Windows status; unknown for other providers.
+    MediaSource source=MediaSource::Windows;
+    std::string spotify_uri,playback_instance;
     std::string Key() const;
+    std::string ListenKey() const {return source==MediaSource::Spotify?spotify_uri+(playback_instance.empty()?std::string{}:"\x1f"+playback_instance):Key();}
 };
 std::string Utf8(const std::wstring& s);
 std::string Json(const std::string& s);
-enum class MediaRead { Pending,Ready,Failed };
+enum class MediaRead { Pending,Ready,Failed,Transition };
+enum class ClientMediaRead { Pending,Ready,Unavailable,Blocked,Transition };
+// Validated renderer snapshots only. Publishing/polling never performs I/O.
+bool PublishClientMedia(Media,double sampled_utc_ms);
+void PublishClientBufferingTransition(Media,double sampled_utc_ms,double changed_utc_ms);
+void InvalidateClientMedia() noexcept;
+void PublishClientMediaUnavailable(const char* static_reason,bool blocked=false);
+ClientMediaRead TryReadClientMedia(Media&,double& observed_at,uint64_t& sequence,MediaDiagnostic&) noexcept;
 class MediaReader {
     void* manager_ = nullptr;
     bool initialized_ = false;
+    MediaDiagnostic diagnostic_;
 public:
     ~MediaReader();
     // Blocking WinRT boundary: dedicated observer worker or external probe only.
@@ -27,6 +40,7 @@ public:
     // Pending means session/state/bounds or discontinuous playback changed
     // while properties were outstanding. Normal timeline refreshes are allowed.
     MediaRead Observe(Media& out,double& observed_at);
+    const MediaDiagnostic& Diagnostic() const noexcept {return diagnostic_;}
 };
 class MediaSnapshotReader {
 public:
@@ -46,12 +60,25 @@ public:
     // Ready/Failed consumes a new sequence; Pending never replays observations.
     // Failed leaves Media untouched. Ready older than 3s is rejected. The
     // consumer must also invalidate a >3s absence while Pending is returned.
-    MediaRead TryRead(Media&,double& observed_at,uint64_t& sequence) noexcept;
+    MediaRead TryRead(Media&,double& observed_at,uint64_t& sequence,MediaDiagnostic* diagnostic=nullptr) noexcept;
 private:
     struct State;
     std::shared_ptr<State> state_;
     Fetch fetch_;
     void* context_;
     static DWORD WINAPI Run(void*);
+};
+// App snapshots are primary. Explicit remote/buffering states block capture;
+// missing/incompatible app snapshots permit the independently sequenced WinRT fallback.
+class PlaybackSnapshotReader {
+    MediaSnapshotReader windows_;
+    uint64_t client_sequence_=0,windows_sequence_=0,sequence_=0;
+    bool running_=false,windows_started_=false;
+public:
+    explicit PlaybackSnapshotReader(MediaSnapshotReader::Fetch fetch=nullptr,void* context=nullptr) noexcept:windows_(fetch,context){}
+    bool Start() noexcept {running_=true;return true;}
+    void Stop() noexcept {running_=false;windows_started_=false;windows_.Stop();}
+    bool IsStopped() const noexcept {return windows_.IsStopped();}
+    MediaRead TryRead(Media&,double& observed_at,uint64_t& sequence,MediaDiagnostic* diagnostic=nullptr) noexcept;
 };
 }
