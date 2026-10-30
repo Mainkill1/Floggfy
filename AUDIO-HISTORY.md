@@ -537,7 +537,14 @@ preserves already embedded lyrics. One superseding intent shares the existing
 publication worker; unchanged cache observations coalesce, while changed text or
 downloaded artwork triggers another check. No bulk scan or callback file/network
 work is added. A changed track, buffering transition, stale observation or settings
-generation revokes pending work, including at atomic replacement. The update
+generation revokes pending work, including at atomic replacement. If another app
+allows reading but blocks replacement (for example, an open VLC file), the updater
+reports a file-in-use warning and retains the same intent for a five-second retry.
+Source read locks are also classified as in use. Retries use the same single slot,
+do not repeat the intent's warning, and stop on stale observation, changed track
+or changed settings. Close the file in the other app to allow a safe replacement;
+no full replay is required. Other failures retain optional stage/error context
+in diagnostics. The update
 planner skips retagging and staging when no approved change is needed. New audio
 and quality upgrades still require a complete verified listen. Updates are logged separately and do
 not add a Latest Downloads entry. There is no bulk library scan.

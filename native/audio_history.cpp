@@ -620,6 +620,10 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
                 }
                 if(result==FileMetadataUpdate::Failed)
                     return finish(Publication::Failed,"failed","metadata update failed; existing file retained");
+                if(result==FileMetadataUpdate::InUse) {
+                    LogEvent(LogKind::Warning,"warning","metadata update deferred: saved file is in use; close apps using it | "+identity);
+                    return Publication::Skipped;
+                }
             }
         }
         return finish(Publication::Skipped,"skipped",ExistingSkipReason(existing_path,quality,catalog,&inspected));
@@ -673,7 +677,7 @@ static hooks::InitController audio_init;
 // Existing-recording checks share the publisher, but never consume an audio
 // queue slot. Rapid track changes retain only one superseding request. Serial
 // cancellation rejects an older request after a new track/settings observation.
-struct FilenameCheck {Catalog catalog;Settings settings;uint64_t serial=0;Media media{};bool metadata=false;};
+struct FilenameCheck {Catalog catalog;Settings settings;uint64_t serial=0;Media media{};bool metadata=false;ULONGLONG retry_at=0;bool warned_in_use=false;};
 static SRWLOCK filename_check_lock=SRWLOCK_INIT;
 static std::optional<FilenameCheck> pending_filename_check;
 // Producer-only state: the capture worker owns these two fields.
@@ -733,15 +737,24 @@ static void QueueFilenameCheck(const Media& media,const Settings& settings,doubl
 }
 static std::optional<FilenameCheck> TakeFilenameCheck() {
     ExclusiveSrw guard(filename_check_lock);
+    if(pending_filename_check && pending_filename_check->serial==filename_check_serial.load(std::memory_order_acquire) &&
+       pending_filename_check->retry_at>GetTickCount64())return {};
     auto check=std::move(pending_filename_check);pending_filename_check.reset();return check;
+}
+static void RetryFilenameCheck(const FilenameCheck& check) {
+    auto retry=check;retry.retry_at=GetTickCount64()+5000;retry.warned_in_use=true;
+    ExclusiveSrw guard(filename_check_lock);
+    if(check.serial!=filename_check_serial.load(std::memory_order_acquire) || pending_filename_check)return;
+    pending_filename_check=std::move(retry);
 }
 static void ProcessFilenameCheck(const FilenameCheck& check) {
     auto current=[&] {
         const auto settings=GetSettings();
-        return settings.generation==check.settings.generation && settings.downloads &&
+        const bool fresh=GetTickCount64()<=filename_check_valid_until.load(std::memory_order_acquire);
+        return (!check.warned_in_use||fresh) && settings.generation==check.settings.generation && settings.downloads &&
             ((settings.convert_numbered_filenames && !settings.track_number_in_filename) ||
              (check.metadata && settings.metadata && settings.update_existing_metadata &&
-              GetTickCount64()<=filename_check_valid_until.load(std::memory_order_acquire))) &&
+              fresh)) &&
             check.serial==filename_check_serial.load(std::memory_order_acquire);
     };
     if(!current())return;
@@ -762,11 +775,14 @@ static void ProcessFilenameCheck(const FilenameCheck& check) {
         if(!current())return;
         if(resolved.state==RecordingDestinationState::Blocked)return;
         if(resolved.state!=RecordingDestinationState::Existing || !resolved.recording.complete)continue;
-        if(ConvertResolvedFilename(resolved,check.catalog,check.settings,extension,check.serial)==FilenameConversion::Failed)
-            LogEvent(LogKind::Failure,"failed","filename conversion deferred; existing recording retained | "+Utf8(check.catalog.title));
+        const bool conversion_failed=ConvertResolvedFilename(resolved,check.catalog,check.settings,extension,check.serial)==FilenameConversion::Failed;
         const bool format_enabled=resolved.recording.quality.codec==Codec::Flac?check.settings.flac:
             resolved.recording.quality.codec==Codec::Vorbis?check.settings.ogg:false;
-        if(check.metadata&&!format_enabled)continue;
+        if(check.metadata&&!format_enabled) {
+            if(conversion_failed)LogEvent(LogKind::Failure,"failed","filename conversion deferred; existing recording retained | "+Utf8(check.catalog.title));
+            continue;
+        }
+        auto result=FileMetadataUpdate::Skipped;
         if(check.metadata && format_enabled && resolved.recording.owned && current() && NeedsRecordingMetadata(resolved.recording,tags)) {
             struct Permit {const FilenameCheck* check;Codec codec;} permit{&check,resolved.recording.quality.codec};
             auto allowed=[](void* argument) {
@@ -777,11 +793,18 @@ static void ProcessFilenameCheck(const FilenameCheck& check) {
                     settings.metadata && settings.update_existing_metadata && format &&
                     p.check->serial==filename_check_serial.load(std::memory_order_acquire);
             };
-            const auto result=UpdateRecordingMetadata(resolved.path,tags,check.catalog,check.settings.generation,allowed,&permit);
-            if(result==FileMetadataUpdate::Updated) {
-                RefreshSongDestination();LogEvent(LogKind::Activity,"updated","metadata updated; existing audio retained | "+Utf8(check.catalog.title));
-            }else if(result==FileMetadataUpdate::Failed)LogEvent(LogKind::Failure,"failed","metadata update failed; existing file retained | "+Utf8(check.catalog.title));
+            result=UpdateRecordingMetadata(resolved.path,tags,check.catalog,check.settings.generation,allowed,&permit);
         }
+        // A typed file-in-use warning owns this attempt. Other conversion
+        // failures remain visible, including after a previous lock has cleared.
+        if(conversion_failed&&result!=FileMetadataUpdate::InUse)
+            LogEvent(LogKind::Failure,"failed","filename conversion deferred; existing recording retained | "+Utf8(check.catalog.title));
+        if(result==FileMetadataUpdate::Updated) {
+                RefreshSongDestination();LogEvent(LogKind::Activity,"updated","metadata updated; existing audio retained | "+Utf8(check.catalog.title));
+        }else if(result==FileMetadataUpdate::InUse) {
+                if(!check.warned_in_use)LogEvent(LogKind::Warning,"warning","metadata update deferred: saved file is in use; close apps using it | "+Utf8(check.catalog.title));
+                RetryFilenameCheck(check);
+        }else if(result==FileMetadataUpdate::Failed)LogEvent(LogKind::Failure,"failed","metadata update failed; existing file retained | "+Utf8(check.catalog.title));
         return; // Best verified format/recording found; no new audio is created.
     }
 }

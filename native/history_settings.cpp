@@ -54,6 +54,7 @@ static constexpr char default_ini[]=
     "; Automatically obtains lyrics; Metadata=0 disables all enrichment.\r\n"
     "Lyrics=1\r\n"
     "; Refreshes verified existing files as metadata arrives; no full replay needed.\r\n"
+    "; Files held open by another app retry while the track remains current.\r\n"
     "UpdateExistingMetadata=1\r\n"
     "\r\n"
     "; Normal activity, warnings and failures: Floggfy.log in Save Location (5 MiB).\r\n"

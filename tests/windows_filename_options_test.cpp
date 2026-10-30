@@ -1,5 +1,10 @@
 // One focused integration executable; only isolated Windows TEMP fixtures.
+#include "../native/async_log.h"
+namespace {unsigned in_use_warnings=0;}
+namespace history {void ObservedLogEvent(LogKind,const char*,const std::string&);}
+#define LogEvent ObservedLogEvent
 #include "../native/audio_history.cpp"
+#undef LogEvent
 #include "../native/history_settings.cpp"
 #include "recording_fixture.h"
 #include "artwork_fixture.h"
@@ -185,8 +190,34 @@ void ExistingMetadataRefresh(const std::wstring& root) {
         const auto catalog=CatalogFor(media);expected_refresh_uri=catalog.spotify_uri;const auto path=OutputPath(root,catalog,flac?L".flac":L".ogg");
         const auto original=Tagged(catalog,flac?L".flac":L".ogg",true,16,true);WriteBytes(path,original);
         refresh_tags.fields={{"GENRE","Fresh cached genre"}};
+        // Players may allow reading while denying atomic replacement. Preserve
+        // that distinction so a current track can retry after the player closes.
+        HANDLE playing_file=CreateFileW(WindowsPath(path).c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr);
+        assert(playing_file!=INVALID_HANDLE_VALUE);
+        assert(UpdateRecordingMetadata(path,refresh_tags,catalog)==FileMetadataUpdate::InUse);
+        assert(ReadBytes(path)==original);
         PublishCurrentDestination(media,GetSettings());auto check=TakeFilenameCheck();
         assert(check); // Conversion is off: metadata refresh independently schedules.
+        const auto warnings_before=in_use_warnings;
+        ProcessFilenameCheck(*check);
+        {ExclusiveSrw guard(filename_check_lock);
+         assert(pending_filename_check&&pending_filename_check->warned_in_use&&pending_filename_check->retry_at>GetTickCount64());}
+        for(unsigned i=0;i<10;++i){PublishCurrentDestination(media,GetSettings());assert(!TakeFilenameCheck());}
+        SaveJob pending_audio;assert(!saves.Pop(pending_audio)&&ReadBytes(path)==original);
+        {ExclusiveSrw guard(filename_check_lock);pending_filename_check->retry_at=0;}
+        check=TakeFilenameCheck();assert(check&&check->warned_in_use);ProcessFilenameCheck(*check);
+        assert(in_use_warnings==warnings_before+1); // The retry is a wait, not another warning event.
+        assert(CloseHandle(playing_file));
+        // Byte-range locks can reject ReadFile after the delete-capable open
+        // succeeds; preserve the same typed deferral and exact source bytes.
+        HANDLE range_file=CreateFileW(WindowsPath(path).c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,0,nullptr);
+        assert(range_file!=INVALID_HANDLE_VALUE);OVERLAPPED range{};
+        assert(LockFileEx(range_file,LOCKFILE_EXCLUSIVE_LOCK|LOCKFILE_FAIL_IMMEDIATELY,0,1,0,&range));
+        assert(UpdateRecordingMetadata(path,refresh_tags,catalog)==FileMetadataUpdate::InUse);
+        assert(UnlockFileEx(range_file,0,1,0,&range)&&CloseHandle(range_file));
+        // Advance only the retry clock, never freshness/identity authorization.
+        {ExclusiveSrw guard(filename_check_lock);pending_filename_check->retry_at=0;}
+        PublishCurrentDestination(media,GetSettings());check=TakeFilenameCheck();assert(check&&check->warned_in_use);
         ProcessFilenameCheck(*check);RecordingFile result;assert(ReadRecording(path,result)&&result.complete&&result.owned);
         assert(TagValue(result,"GENRE")=="Fresh cached genre"&&TagValue(result,"CUSTOM")=="Preserve me");
         auto updated=ReadBytes(path);assert(updated!=original&&AudioPayload(updated,flac)==AudioPayload(original,flac));
@@ -220,7 +251,12 @@ void ExistingMetadataRefresh(const std::wstring& root) {
         preferences();refresh_tags.fields={{"COMMENT","Cancelled detail"}};
         // Superseding identity, expired Ready observation and explicit cancellation retain the exact file.
         PublishCurrentDestination(media,GetSettings());check=TakeFilenameCheck();assert(check);
+        playing_file=CreateFileW(WindowsPath(path).c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr);
+        assert(playing_file!=INVALID_HANDLE_VALUE);ProcessFilenameCheck(*check);
+        {ExclusiveSrw guard(filename_check_lock);assert(pending_filename_check);check=*pending_filename_check;}
         PublishCurrentDestination(MediaFor(L"Other identity"),GetSettings());ProcessFilenameCheck(*check);assert(ReadBytes(path)==updated);
+        auto superseding=TakeFilenameCheck();assert(superseding&&superseding->serial!=check->serial);
+        assert(CloseHandle(playing_file));
         PublishCurrentDestination(media,GetSettings());check=TakeFilenameCheck();assert(check);
         filename_check_valid_until.store(0);ProcessFilenameCheck(*check);assert(ReadBytes(path)==updated);
         CancelFilenameChecks();PublishCurrentDestination(media,GetSettings());check=TakeFilenameCheck();assert(check);
@@ -252,6 +288,20 @@ void ExistingMetadataRefresh(const std::wstring& root) {
         PublishCurrentDestination(media,GetSettings());check=TakeFilenameCheck();assert(check);ProcessFilenameCheck(*check);
         assert(ReadBytes(path)==incomplete&&DeleteFileW(WindowsPath(path).c_str()));
     }
+    // A delayed lock retry cannot use filename conversion to bypass freshness.
+    expected_refresh_uri.clear();preferences();SetNaming(false,true);
+    auto stale_media=MediaFor(L"Stale conversion retry");const auto stale_catalog=CatalogFor(stale_media);
+    const auto stale_title=OutputPath(root,stale_catalog,L".flac"),stale_old=Numbered(stale_title);
+    const auto stale_bytes=Tagged(stale_catalog,L".flac",true,16,true);WriteBytes(stale_old,stale_bytes);
+    refresh_tags={};refresh_tags.fields={{"GENRE","Must not rename stale retry"}};
+    HANDLE stale_lock=CreateFileW(WindowsPath(stale_old).c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr);
+    assert(stale_lock!=INVALID_HANDLE_VALUE);PublishCurrentDestination(stale_media,GetSettings());auto stale_check=TakeFilenameCheck();assert(stale_check);
+    ProcessFilenameCheck(*stale_check);
+    {ExclusiveSrw guard(filename_check_lock);assert(pending_filename_check);pending_filename_check->retry_at=0;}
+    assert(CloseHandle(stale_lock));filename_check_valid_until.store(0);
+    stale_check=TakeFilenameCheck();assert(stale_check&&stale_check->warned_in_use);ProcessFilenameCheck(*stale_check);
+    assert(MissingFile(stale_title)&&ReadBytes(stale_old)==stale_bytes&&!TakeFilenameCheck()&&DeleteFileW(WindowsPath(stale_old).c_str()));
+    CancelFilenameChecks();
     expected_refresh_uri.clear();preferences();SetNaming(false,true);auto media=MediaFor(L"Enabled Ogg under disabled FLAC");const auto catalog=CatalogFor(media);
     const auto flac_path=OutputPath(root,catalog,L".flac"),ogg_path=OutputPath(root,catalog,L".ogg");
     const auto flac_bytes=Tagged(catalog,L".flac",true,16,true);WriteBytes(flac_path,flac_bytes);WriteBytes(ogg_path,Tagged(catalog,L".ogg",true,16,true));
@@ -287,6 +337,10 @@ void PublicationModes(const std::wstring& root) {
 }
 }
 namespace history {
+void ObservedLogEvent(LogKind kind,const char* event,const std::string& detail) {
+    if(kind==LogKind::Warning&&detail.rfind("metadata update deferred:",0)==0)++in_use_warnings;
+    LogEvent(kind,event,detail);
+}
 std::string ReadClientPlaybackQuality(const Media&){return {};}
 void EnrichCatalog(const Media& media,Catalog& c){c.disc=2;c.spotify_uri=media.title==L"Raw/A"||media.title==L"Raw:A"?"":"spotify:track:"+Utf8(media.title);}
 void EnrichTags(const Media& media,Tags& tags) {
