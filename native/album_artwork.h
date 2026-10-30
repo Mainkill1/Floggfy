@@ -11,7 +11,8 @@ namespace history {
 bool IsAlbumArtworkUrl(const std::string& url);
 // Call only on the metadata worker: bounded synchronous HTTPS fetch, no credentials.
 void CacheAlbumArtwork(const std::string& track_uri,const std::string& url);
-// Never performs IO or waits for a fetch. On a miss leaves outputs unchanged.
+// Publisher-worker RAM read; a short cache lock never waits for network fetches
+// (those run outside it). No I/O. On a miss leaves outputs unchanged.
 bool GetAlbumArtwork(const std::string& track_uri,std::vector<uint8_t>& bytes,std::string& mime);
 class AlbumArtworkCache {
 public:

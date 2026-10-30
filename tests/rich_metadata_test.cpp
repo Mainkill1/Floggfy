@@ -1,4 +1,5 @@
 #include "../native/rich_metadata.h"
+#include "../native/metadata_revision.h"
 #include <cassert>
 #include <iostream>
 using namespace history;
@@ -26,6 +27,10 @@ int main() {
  MetadataCache cache;
  assert(ParseRichMetadata("v=1&title=Song&artist=Artist&album=Album&duration=200&uri=spotify%3Atrack%3Aa&DATE=2026",m,e)); cache.Put(m);
  assert(cache.Find("Song","Artist","Album",200));
+ const auto revision=MetadataRevision();m.quality_time=100;cache.Put(m);
+ assert(MetadataRevision()==revision); // Poll/quality timestamps do not schedule disk work.
+ m.fields["LYRICS"]="[00:01.000]Later lyrics";cache.Put(m);
+ assert(MetadataRevision()==revision+1); // Real enrichment wakes an existing-recording check.
  m.uri="spotify:track:b"; cache.Put(m); assert(!cache.Find("Song","Artist","Album",200));
  assert(ParseRichMetadata("v=1&title=Song&artist=Artist&album=Album&duration=200&uri=spotify%3Atrack%3A123&ARTIST=Artist%3B%20Guest&ALBUMARTIST=Artist%3B%20Guest&LABEL=Example%20Records&ORGANIZATION=Example%20Records&COPYRIGHT=Example%20Rights&PUBLISHER=Example%20Publishing",m,e));
  assert(m.artist=="Artist" && m.fields.at("ARTIST")=="Artist; Guest");

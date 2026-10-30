@@ -16,7 +16,8 @@ FilePublication PublishBytes(const std::wstring& path,const Quality& quality,con
                              size_t* published_bytes=nullptr);
 // Caller retains a GENERIC_READ|DELETE handle denying writes/deletes from the
 // original metadata read through this exact-object replacement.
-FilePublication PublishMetadataBytes(const std::wstring& path,const void* bytes,size_t size,const Catalog& catalog,void* locked_file);
+FilePublication PublishMetadataBytes(const std::wstring& path,const void* bytes,size_t size,const Catalog& catalog,void* locked_file,
+    bool(*is_current)(void*)=nullptr,void* context=nullptr);
 // Compatibility entry point derives identity from the incoming file's tags.
 FilePublication PublishBytes(const std::wstring& path,const Quality& quality,const void* bytes,size_t size);
 }

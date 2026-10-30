@@ -35,7 +35,7 @@ Save the music you play in Spotify on Windows.
 
 - **To Disk** provides **Downloads**, **Save Location**, **FLAC**, **Ogg** and **Lyrics** controls.
 - `SpotifyHistory.ini` is created automatically. Keep it when upgrading, and fully restart Spotify after editing it.
-- `UpdateExistingMetadata=1` fills missing details and improves artwork on existing songs. Set `0` to leave their metadata unchanged.
+- `UpdateExistingMetadata=1` fills missing details, lyrics and better artwork on verified existing songs as enrichment arrives, including while paused, without finishing the song again. Set `0` to leave their metadata unchanged.
 - `TrackNumberInFilename=0` uses title-only filenames. Set `1` to add track numbers.
 - `ConvertNumberedFilenames=0`: set `1` to remove old track-number prefixes. Numbering disables conversion.
 - `AAC=1` enables AAC saving as M4A. It defaults to `0`.

@@ -16,8 +16,14 @@ bool UpdateEnabled(unsigned expected_generation) {
            preferences.metadata && preferences.update_existing_metadata;
 }
 }
-FileMetadataUpdate UpdateRecordingMetadata(const std::wstring& path,const Tags& incoming,const Catalog& catalog,unsigned expected_generation) {
-    if(!UpdateEnabled(expected_generation))return FileMetadataUpdate::Skipped;
+FileMetadataUpdate UpdateRecordingMetadata(const std::wstring& path,const Tags& incoming,const Catalog& catalog,unsigned expected_generation,
+    bool(*is_current)(void*),void* context) {
+    struct Permit {unsigned generation;bool(*current)(void*);void* context;} permit{expected_generation,is_current,context};
+    auto enabled=[](void* argument) noexcept {
+        try{const auto& p=*static_cast<Permit*>(argument);return UpdateEnabled(p.generation)&&(!p.current||p.current(p.context));}
+        catch(...){return false;} // A failed settings/intent check never authorizes replacement.
+    };
+    if(!enabled(&permit))return FileMetadataUpdate::Skipped;
     // Retain the exact source object through promotion, preventing a metadata
     // update from replacing another process's newly created recording.
     File file(CreateFileW(WindowsPath(path).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,
@@ -34,8 +40,9 @@ FileMetadataUpdate UpdateRecordingMetadata(const std::wstring& path,const Tags& 
     const auto result=FillRecordingMetadata(source,incoming,catalog,patched,error);
     if(result==MetadataUpdate::Unchanged)return FileMetadataUpdate::Skipped;
     if(result!=MetadataUpdate::Updated)return FileMetadataUpdate::Failed;
-    if(!UpdateEnabled(expected_generation))return FileMetadataUpdate::Skipped;
-    return PublishMetadataBytes(path,patched.data(),patched.size(),catalog,file.get())==FilePublication::Upgraded
-        ? FileMetadataUpdate::Updated : FileMetadataUpdate::Failed;
+    if(!enabled(&permit))return FileMetadataUpdate::Skipped;
+    const auto publication=PublishMetadataBytes(path,patched.data(),patched.size(),catalog,file.get(),enabled,&permit);
+    return publication==FilePublication::Upgraded?FileMetadataUpdate::Updated:
+        publication==FilePublication::Skipped?FileMetadataUpdate::Skipped:FileMetadataUpdate::Failed;
 }
 }

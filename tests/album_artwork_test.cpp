@@ -1,5 +1,6 @@
 #include "../native/album_artwork.h"
 #include "../native/image_info.h"
+#include "../native/metadata_revision.h"
 #include "artwork_fixture.h"
 #include <cstdio>
 #include <cstdlib>
@@ -25,10 +26,14 @@ int main(){
     for(const auto& u:{"http://i.scdn.co/image/abc","https://i.scdn.co.example.invalid/image/abc","https://@i.scdn.co/image/abc","https://i.scdn.co/image/abc?variant=example","https://example.invalid/image/abc"})check(!history::IsAlbumArtworkUrl(u),"non-public or unexpected CDN URL rejected");
     int calls=0;bool fail=false;history::AlbumArtworkCache cache([&](const std::string&,std::vector<uint8_t>& out){++calls;out=fail?std::vector<uint8_t>{1,2,3}:png;return true;});
     std::vector<uint8_t> bytes;std::string mime;
+    const auto revision=history::MetadataRevision();
     cache.Cache("spotify:track:a",url);check(cache.Get("spotify:track:a",bytes,mime)&&bytes==png&&mime=="image/png","validated art cached by track");
+    check(history::MetadataRevision()==revision+1,"art arrival wakes existing-recording refresh");
     cache.Cache("spotify:track:a",url);check(calls==1,"repeated metadata avoids repeated network");
+    check(history::MetadataRevision()==revision+1,"unchanged art does not schedule another refresh");
     fail=true;cache.Cache("spotify:track:b",url);check(!cache.Get("spotify:track:b",bytes,mime),"invalid response never cached");
     cache.Cache("spotify:track:b",url);check(calls==2,"failed fetch rate limited");
+    check(history::MetadataRevision()==revision+1,"failed art does not advertise a metadata change");
     cache.Cache("spotify:track:a","https://i.scdn.co/image/ab67616d0000b2730123456789abcdef01234568");
     check(cache.Get("spotify:track:a",bytes,mime)&&bytes==png,"failed URL refresh preserves valid art");
     fail=false;
@@ -40,5 +45,16 @@ int main(){
     while(!entered)std::this_thread::yield();
     check(!slow.Get("spotify:track:a",bytes,mime),"cached reads do not wait for in-flight fetch");
     release=true;worker.join();check(slow.Get("spotify:track:a",bytes,mime),"worker publishes completed image");
+    // All consumers run on background workers. An available image must not be
+    // silently lost just because another RAM reader is copying it.
+    history::AlbumArtworkCache shared([](const std::string&,std::vector<uint8_t>& out){out=artwork_fixture::png(true);return true;});
+    shared.Cache("spotify:track:shared",url);
+    std::atomic<bool> go{false};std::atomic<unsigned> misses{0};std::vector<std::thread> readers;
+    for(unsigned i=0;i<4;++i)readers.emplace_back([&]{
+        while(!go.load())std::this_thread::yield();
+        for(unsigned n=0;n<1000;++n){std::vector<uint8_t> art;std::string type;if(!shared.Get("spotify:track:shared",art,type))++misses;}
+    });
+    go=true;for(auto& reader:readers)reader.join();
+    check(misses==0,"available cached art survives concurrent RAM readers without a lost refresh");
     std::puts("PASS: Spotify artwork validation and bounded cache");
 }

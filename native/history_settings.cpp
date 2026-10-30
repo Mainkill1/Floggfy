@@ -53,7 +53,7 @@ static constexpr char default_ini[]=
     "Metadata=1\r\n"
     "; Automatically obtains lyrics; Metadata=0 disables all enrichment.\r\n"
     "Lyrics=1\r\n"
-    "; Allows metadata-only upgrades to existing saved files.\r\n"
+    "; Refreshes verified existing files as metadata arrives; no full replay needed.\r\n"
     "UpdateExistingMetadata=1\r\n"
     "\r\n"
     "; Normal activity, warnings and failures: Floggfy.log in Save Location (5 MiB).\r\n"

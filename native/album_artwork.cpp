@@ -1,5 +1,6 @@
 #include "album_artwork.h"
 #include "image_info.h"
+#include "metadata_revision.h"
 #include <algorithm>
 #ifdef _WIN32
 #include <windows.h>
@@ -34,14 +35,17 @@ void AlbumArtworkCache::Cache(const std::string& uri,const std::string& url){
     }
     std::vector<uint8_t> bytes;ImageInfo info;bool ok=false;
     try{ok=fetch_(url,bytes)&&ReadImageInfo(bytes,info);}catch(...){ok=false;}
-    std::lock_guard<std::mutex> lock(mutex_);auto it=entries_.find(uri);
-    if(it==entries_.end()||it->second.order!=order)return;
-    auto& e=it->second;e.pending=false;
-    if(ok){e.bytes=std::move(bytes);e.mime=info.mime;e.ready_url=url;}
+    bool changed=false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);auto it=entries_.find(uri);
+        if(it==entries_.end()||it->second.order!=order)return;
+        auto& e=it->second;e.pending=false;
+        if(ok){changed=e.bytes!=bytes;e.bytes=std::move(bytes);e.mime=info.mime;e.ready_url=url;}
+    }
+    if(changed)MetadataChanged(); // Announce only after readers can obtain the bytes.
 }
 bool AlbumArtworkCache::Get(const std::string& uri,std::vector<uint8_t>& bytes,std::string& mime){
-    std::unique_lock<std::mutex> lock(mutex_,std::try_to_lock);
-    if(!lock)return false;
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it=entries_.find(uri);if(it==entries_.end()||it->second.bytes.empty())return false;
     bytes=it->second.bytes;mime=it->second.mime;return true;
 }
