@@ -65,6 +65,31 @@ for(const mode of ['observed','missing','throws','manual','seek','paused','same'
 }
 console.log('PASS: natural transition evidence requires successful action monitoring, playing state and changed instance');
 
+// An acknowledged pause belongs to the current playback instance. It must not
+// survive resume and poison the natural transition at the end of the track.
+{
+ let clock=1793300000000;
+ let current={timestamp:clock,positionAsOfTimestamp:4000,duration:180000,isPaused:false,isBuffering:false,
+  playbackId:'pause-track',item:{uri:'spotify:track:0000000000000000000001',metadata:{title:'Song',artist_name:'Artist',album_title:'Album'}}};
+ const handlers=new Map(),messages=[];
+ const api={getState:()=>current,getEvents:()=>({addListener:(type,fn)=>handlers.set(type,fn),removeListener:type=>handlers.delete(type)})};
+ const sandbox={window:{__floggfyConfig:{metadata:false},Spicetify:{Platform:{PlayerAPI:api,ConnectDevicesAPI:{getConnectState:()=>({activeDevice:{isLocal:true}})}}}},
+  document:{querySelector:()=>null},console:{info:line=>messages.push(line)},performance:{now:()=>clock},Date:{now:()=>clock},setInterval:()=>{},encodeURIComponent};
+ vm.runInNewContext(script,sandbox);sandbox.window.__floggfyPoll();
+ handlers.get('action')({data:{action:'pause'}});
+ clock+=500;current={...current,timestamp:clock,positionAsOfTimestamp:4500,isPaused:true};sandbox.window.__floggfyPoll();
+ handlers.get('action')({data:{action:'resume'}});
+ clock+=500;current={...current,timestamp:clock,positionAsOfTimestamp:4500,isPaused:false};sandbox.window.__floggfyPoll();
+ clock+=177500;current={...current,timestamp:clock,positionAsOfTimestamp:179500};sandbox.window.__floggfyPoll();
+ clock+=500;current={...current,timestamp:clock,positionAsOfTimestamp:0,isBuffering:true,playbackId:'next-track',
+  item:{...current.item,uri:'spotify:track:0000000000000000000002'}};sandbox.window.__floggfyPoll();
+ const message=messages.filter(line=>line.startsWith('FLOGGFY_TIMELINE_V1:')).at(-1);
+ const fields=new URLSearchParams(message.slice('FLOGGFY_TIMELINE_V1:'.length));
+ assert.equal(fields.get('natural'),'1');
+ assert.equal(fields.get('controlled'),null,'acknowledged pause must not attach to a later natural transition');
+}
+console.log('PASS: acknowledged pause/resume does not poison natural completion');
+
 // Stock Spotify has no Spicetify global. Resolve its already-created services
 // and keep polling even if its optional event API is unavailable.
 {

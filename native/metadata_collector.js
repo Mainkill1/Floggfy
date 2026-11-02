@@ -8,7 +8,7 @@
  let builder,activeRequests=0,connectDevices;
  let player,root,queue=[],seen=new Set(),walked=0,lastPlayback='',playbackTime=-Infinity;
  let timelineBinding,lastReadyTimeline;
- let timelineSeen=false,lastTimeline='',timelineTime=-Infinity,timelineBlocked='',timelineLocal='unknown',lastSkipAt=-Infinity,controlPending=false;
+ let timelineSeen=false,lastTimeline='',timelineTime=-Infinity,timelineBlocked='',timelineLocal='unknown',lastSkipAt=-Infinity,pendingControl;
  function playback(data){
   const payload=Object.entries(data).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&');
   const now=performance.now();
@@ -37,12 +37,16 @@
     const position=own(state,'positionAsOfTimestamp');if(typeof position==='number'&&Number.isFinite(position)&&position>=0)blocked.position_ms=position;
     const skipAge=blocked.sampled_ms-lastSkipAt;
     if(skipAge>=0&&skipAge<=3000){blocked.manual=1;lastSkipAt=-Infinity;}
-    if(controlPending){blocked.controlled=1;controlPending=false;}
+    if(pendingControl){
+     const controlAge=blocked.sampled_ms-pendingControl.sampled;
+     if(controlAge>=0&&controlAge<=10000)blocked.controlled=1;
+     pendingControl=undefined;
+    }
     blocked.monitoring=Number(!!(controlBinding?.active&&controlBinding.observing&&controlBinding.player===player));
     const prior=lastReadyTimeline,age=prior?blocked.sampled_ms-prior.sampled:Infinity;
     // Missing/failed action monitoring is unknown, never evidence of natural end.
     if(controlBinding?.active&&controlBinding.observing&&controlBinding.player===player&&
-       timelineLocal===1&&!blocked.manual&&prior?.playing&&prior.player===player&&age>=0&&age<=3000&&
+       timelineLocal===1&&!blocked.manual&&!blocked.controlled&&prior?.playing&&prior.player===player&&age>=0&&age<=3000&&
        prior.instance&&blocked.instance&&prior.instance!==blocked.instance&&
        stamp>=prior.sampled-250)blocked.natural=1;
    }
@@ -65,9 +69,12 @@
   // Buffering is sent separately so native coverage cannot credit stalled audio.
   const seconds=Math.min(duration,position+(paused||buffering?0:Math.max(0,elapsed)*rate))/1000;
   timelineSeen=true;
-  lastReadyTimeline={player,sampled,instance:typeof own(state,'playbackId')==='string'?own(state,'playbackId'):'',playing:!paused&&timelineLocal===1};
+  const instance=typeof own(state,'playbackId')==='string'?own(state,'playbackId'):'';
+  if(pendingControl?.action==='pause'&&paused&&
+     (!pendingControl.instance||pendingControl.instance===instance))pendingControl=undefined;
+  lastReadyTimeline={player,sampled,instance,playing:!paused&&timelineLocal===1};
   timeline({v:1,title:data.title,artist:data.artist||'',album:data.album||'',uri:data.uri,
-   duration:duration/1000,position:seconds,sampled_ms:sampled,instance:typeof own(state,'playbackId')==='string'?own(state,'playbackId'):'',paused:Number(paused),buffering:Number(buffering),local:timelineLocal,speed:rate});
+   duration:duration/1000,position:seconds,sampled_ms:sampled,instance,paused:Number(paused),buffering:Number(buffering),local:timelineLocal,speed:rate});
  }
  function emitTimelineState(state){
   timelineBlocked='';
@@ -162,8 +169,8 @@
      const action=own(own(event,'data'),'action');
      // Any observed control action (including changed/unknown seek names)
      // breaks the evidence chain used for natural-transition recovery.
-     lastReadyTimeline=undefined;
-     if(action!=='play'&&action!=='resume')controlPending=true;
+     const ready=lastReadyTimeline;lastReadyTimeline=undefined;
+     if(action!=='play'&&action!=='resume')pendingControl={action,instance:ready?.player===player?ready.instance:'',sampled:Date.now()};
      if(!['play','pause','resume','skipToNext','skipToPrevious'].includes(action))return;
      if(action==='skipToNext'||action==='skipToPrevious')lastSkipAt=Date.now();
      if(!connectEnabled())return;
