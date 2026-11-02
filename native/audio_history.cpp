@@ -665,6 +665,7 @@ struct Capture {
     uint64_t reported_playback_token=0;
     uint64_t reported_generation=0;
     unsigned reported_ownership_state=~0u;
+    std::string bound_identity;
     CompressedBuffer data;
     size_t Capacity() const {return data.capacity()+(aac?spac.MemoryUsage():0);}
     double Duration() const {
@@ -813,7 +814,15 @@ static const char* CheckBeforeRelease(Capture& capture,const char* reason,
         "final cache check: %s; release reason=%s; bytes=%llu; ownership_state=%u capture=%llu",
         result,reason,static_cast<unsigned long long>(capture.bytes),unsigned(binding.state),
         static_cast<unsigned long long>(capture.capture_token));
-    Log(LogKind::Failure,line);
+    Log(LogKind::Diagnostic,line);
+    const char* outcome=std::strcmp(result,"incomplete or invalid cached audio")==0?"incomplete cache":
+        std::strcmp(result,"invalid cached audio")==0?"invalid cache":
+        std::strstr(result,"ownership ambiguous")?"ambiguous cache":
+        std::strstr(result,"publication deferred")?"deferred cache":
+        std::strstr(result,"no verified metadata/listen match")?"unmatched cache":
+        std::strstr(result,"verification failed")?"unverified cache":"cache validation failed";
+    LogEvent(LogKind::Failure,"failed",std::string(outcome)+" | "+
+        (capture.bound_identity.empty()?"unknown track":capture.bound_identity));
     return result;
 }
 static bool FormatEnabled(const Capture& capture,const Settings& settings) {
@@ -1237,6 +1246,21 @@ struct CaptureBuffers {
         return false;
     }
 };
+static void RememberBoundCaptureIdentity(CaptureBuffers& buffers,const Media& media,
+                                         uint64_t generation,uint64_t playback_token) {
+    if(!buffers.ownership_tracker||!generation||!playback_token)return;
+    const auto identity=Utf8(media.artist)+" - "+Utf8(media.title);
+    const auto remember=[&](Capture& capture) {
+        if(!capture.capture_token)return;
+        const auto binding=buffers.ownership_tracker->Binding(capture.capture_token);
+        if(binding.state==ownership::OwnershipState::Bound&&
+           binding.listen_generation==generation&&binding.playback_token==playback_token)
+            capture.bound_identity=identity;
+    };
+    for(auto& capture:buffers.active)remember(*capture.second);
+    for(auto& capture:buffers.ogg_active)remember(*capture.second);
+    for(auto& capture:buffers.ready)remember(*capture);
+}
 static void BeginCaptureOwnership(Capture& capture,CaptureBuffers& buffers,
                                   ownership::DecoderCodec codec,uintptr_t context,
                                   uint32_t stream,double time,unsigned epoch) {
@@ -2128,6 +2152,7 @@ static DWORD WINAPI Worker(LPVOID) {
                 if(enabled)AssociateListen(std::move(media),listen,current,heard,buffers,observed_at,&recent);
                 ownership_tracker.ObservePlayback(playback_id,playback_uri,listen.generation,observed_at);
                 const auto playback_token=ownership_tracker.PlaybackToken(playback_id);
+                RememberBoundCaptureIdentity(buffers,current,listen.generation,playback_token);
                 if(DebugLoggingEnabled()&&playback_token&&
                    (playback_token!=ownership_playback_token||playback_uri!=ownership_playback_uri||
                     listen.generation!=ownership_listen_generation)) {

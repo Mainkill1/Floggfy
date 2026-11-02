@@ -151,7 +151,7 @@ void CoverageAndFailures() {
     uint32_t frame[8]={16,48000,2,0,16,0,0,0};slot.kind=AudioEventKind::FlacFrame;slot.length=32;memcpy(slot.bytes,frame,32);
     diagnostic_lines.clear();const auto prior_failures=failure_events;ProcessFlacCapture(slot,buffers);
     assert(buffers.active.empty()&&buffers.ready.empty());
-    assert(diagnostic_lines.size()==3&&failure_events==prior_failures+2); // Context, final-cache check, native failure outcome.
+    assert(diagnostic_lines.size()==4&&failure_events==prior_failures+2); // Context, cache detail/outcome, native failure outcome.
     assert(Contains("final cache check:"));
     assert(Contains("origin=capture-coverage-guard")&&Contains("reason=format")&&Contains("native_frame_result=0"));
     assert(Contains("expected_rate=44100 got_rate=48000")&&Contains("ctx=1234")&&Contains("queue_lag_ms="));
@@ -164,7 +164,7 @@ void CoverageAndFailures() {
     slot.kind=AudioEventKind::FlacBegin;ProcessFlacCapture(slot,buffers);
     InterlockedExchange(&history::debug_enabled,0);diagnostic_lines.clear();
     slot.kind=AudioEventKind::FlacFrame;ProcessFlacCapture(slot,buffers);
-    assert(diagnostic_lines.size()==2&&Contains("stream discarded")&&Contains("final cache check:"));
+    assert(diagnostic_lines.size()==2&&Contains("stream discarded")&&Contains("incomplete cache | unknown track"));
     InterlockedExchange(&history::debug_enabled,1);
 }
 void CaptureOwnershipLifecycle() {
@@ -943,6 +943,34 @@ void FinalReleaseReconciliation() {
         assert(std::string(CheckBeforeRelease(*bad,"test"))=="invalid cached audio");
     }
 }
+void CompactFailureIdentity() {
+    ownership::DecoderOwnershipTracker tracker;tracker.Reset(23);
+    CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+    auto capture=std::make_unique<Capture>();capture->mp3=true;capture->born=100;
+    constexpr uintptr_t context=0x9000;
+    BeginCaptureOwnership(*capture,buffers,ownership::DecoderCodec::Mp3,context,0,100,23);
+    buffers.active[context]=std::move(capture);
+    ownership::DecodedActivity activity{};activity.owner=context;activity.calls=1;
+    activity.produced_floats=4096;activity.first=100.01;activity.last=100.1;activity.epoch=23;
+    tracker.ObserveDecoded(activity);
+    const std::string old_instance="old-instance";
+    tracker.ObservePlayback(old_instance,"spotify:track:0000000000000000000001",41,100.2);
+    Media old;old.artist=L"Old Artist";old.title=L"Old Title";
+    RememberBoundCaptureIdentity(buffers,old,41,tracker.PlaybackToken(old_instance));
+    const std::string new_instance="new-instance";
+    tracker.ObservePlayback(new_instance,"spotify:track:0000000000000000000002",42,101);
+    Media current;current.artist=L"New Artist";current.title=L"New Title";
+    RememberBoundCaptureIdentity(buffers,current,42,tracker.PlaybackToken(new_instance));
+    diagnostic_lines.clear();
+    buffers.RecordLostActive(buffers.active[context].get(),ownership::CaptureAbortReason::Timeout);
+    assert(Contains("incomplete cache | Old Artist - Old Title")&&
+           Contains("final cache check: incomplete or invalid cached audio")&&
+           !Contains("New Artist")&&"delayed cleanup names the capture's bound song");
+
+    CaptureBuffers unbound;unbound.active[context]=std::make_unique<Capture>();
+    diagnostic_lines.clear();unbound.RecordLostActive(unbound.active[context].get());
+    assert(Contains("incomplete cache | unknown track")&&"unbound failures do not borrow current metadata");
+}
 void DurableAssociationEvidence() {
     {
         // A corrupt competing stream can be lost in the same drained batch,
@@ -1066,7 +1094,7 @@ void EnrichTags(const Media&,Tags&){}
 int wmain() {
     // Use in-memory preferences only. Never read or write the user's INI/music.
     InterlockedExchange(&history::debug_enabled,1);
-    Connectivity();PodcastCatalog();PodcastCaptureEvents();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();DurableAssociationEvidence();AppTailDeadline();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
+    Connectivity();PodcastCatalog();PodcastCaptureEvents();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();DurableAssociationEvidence();AppTailDeadline();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
     puts("PASS: observed transitions, one FLAC failure context/outcome, original callback semantics, profiling-only intervals, basic-mode zero profiling and changed-only NLM observations");
     return 0;
 }
