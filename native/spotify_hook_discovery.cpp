@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 
 namespace spotify {
 namespace {
@@ -212,6 +213,73 @@ bool Consistent(const HookTargets& targets) noexcept {
            Gap(sniff, ogg, 0x10000, 0x40000);
 }
 
+bool DirectBranch(const Image& image,std::uint32_t at,std::uint8_t opcode,
+                  std::uint32_t& target) noexcept {
+    std::int32_t displacement=0;
+    if(!Range(image.image_size,at,5)||image.base[at]!=opcode||
+       !Read(image.base,image.image_size,at+1,displacement))return false;
+    const auto destination=std::int64_t(at)+5+displacement;
+    if(destination<0||destination>=image.image_size)return false;
+    target=std::uint32_t(destination);return true;
+}
+
+bool PointerRva(const Image& image,std::size_t at,std::uint32_t& rva) noexcept {
+    std::uint64_t pointer=0;
+    if(!Read(image.base,image.available,at,pointer))return false;
+    const auto base=reinterpret_cast<std::uintptr_t>(image.base);
+    if(pointer<base||pointer-base>=image.image_size)return false;
+    rva=std::uint32_t(pointer-base);return true;
+}
+
+DiscoveryResult UniqueVtableSlot(const Image& image,unsigned slot,std::uint32_t target,
+                                 std::uint32_t& table) noexcept {
+    bool found=false;table=0;const auto base=reinterpret_cast<std::uintptr_t>(image.base);
+    for(std::uint16_t index=0;index<image.section_count;++index) {
+        const auto section=image.sections+std::size_t(index)*kSectionSize;
+        std::uint32_t virtual_size=0,virtual_address=0,raw_size=0,flags=0;
+        if(!Read(image.base,image.available,section+8,virtual_size)||
+           !Read(image.base,image.available,section+12,virtual_address)||
+           !Read(image.base,image.available,section+16,raw_size)||
+           !Read(image.base,image.available,section+36,flags))return DiscoveryResult::InvalidImage;
+        if((flags&kExecutable)||virtual_address>=image.image_size)continue;
+        const auto extent=std::min<std::size_t>(std::max(virtual_size,raw_size),image.image_size-virtual_address);
+        const auto bytes=(std::size_t(slot)+1)*sizeof(std::uint64_t);
+        if(extent<bytes)continue;
+        for(std::size_t offset=0;offset+bytes<=extent;offset+=alignof(std::uint64_t)) {
+            std::uint64_t pointer=0;
+            if(!Read(image.base,image.available,virtual_address+offset+slot*8,pointer))
+                return DiscoveryResult::InvalidImage;
+            if(pointer!=base+target)continue;
+            const auto candidate=virtual_address+std::uint32_t(offset);
+            if(found&&table!=candidate)return DiscoveryResult::AmbiguousTarget;
+            found=true;table=candidate;
+        }
+    }
+    return found?DiscoveryResult::Found:DiscoveryResult::MissingTarget;
+}
+
+bool UniqueContextThunk(const Image& image,const std::uint8_t move[3],
+                        std::uint32_t target) noexcept {
+    unsigned found=0;
+    for(std::uint16_t index=0;index<image.section_count;++index) {
+        const auto section=image.sections+std::size_t(index)*kSectionSize;
+        std::uint32_t virtual_size=0,virtual_address=0,raw_size=0,flags=0;
+        if(!Read(image.base,image.available,section+8,virtual_size)||
+           !Read(image.base,image.available,section+12,virtual_address)||
+           !Read(image.base,image.available,section+16,raw_size)||
+           !Read(image.base,image.available,section+36,flags))return false;
+        if(!(flags&kExecutable)||virtual_address>=image.image_size)continue;
+        const auto extent=std::min<std::size_t>(std::max(virtual_size,raw_size),image.image_size-virtual_address);
+        for(std::size_t offset=0;offset+8<=extent;++offset) {
+            const auto at=virtual_address+std::uint32_t(offset);
+            if(std::memcmp(image.base+at,move,3)||image.base[at+3]!=0xe9)continue;
+            std::uint32_t destination=0;
+            if(DirectBranch(image,at+3,0xe9,destination)&&destination==target)++found;
+        }
+    }
+    return found==1;
+}
+
 } // namespace
 
 DiscoveryResult DiscoverHookTargets(const std::uint8_t* mapped_image,
@@ -318,12 +386,116 @@ DiscoveryResult DiscoverDecodedOutputTarget(const std::uint8_t* mapped_image,
     if(caller_result!=DiscoveryResult::Found)return caller_result;
     const auto call=caller.rva+0x2c9;
     std::int32_t relative=0;
-    if(!Range(image.image_size,call,5)||image.base[call]!=0xe8||
+    static constexpr std::uint8_t decoder_load[]={0x49,0x8b,0x4e,0x70};
+    if(!Range(image.image_size,call-4,sizeof(decoder_load))||
+       std::memcmp(image.base+call-4,decoder_load,sizeof(decoder_load))||
+       !Range(image.image_size,call,5)||image.base[call]!=0xe8||
        !Read(image.base,image.image_size,call+1,relative)||
        std::int64_t(call)+5+relative!=found.rva||
        !Range(image.image_size,caller.rva+0x48c,sizeof(stereo))||
        std::memcmp(image.base+caller.rva+0x48c,stereo,sizeof(stereo)))return DiscoveryResult::InconsistentLayout;
     target.rva=found.rva;return DiscoveryResult::Found;
+}
+
+DiscoveryResult DiscoverDecoderOwnershipLayout(const std::uint8_t* mapped_image,
+    std::size_t available,DecoderOwnershipLayout& layout) noexcept {
+    layout={};Image image{};
+    if(!ParseImage(mapped_image,available,image))return DiscoveryResult::InvalidImage;
+    HookTargets capture{};
+    auto result=DiscoverHookTargets(mapped_image,available,capture);
+    if(result!=DiscoveryResult::Found)return result;
+    DecodedOutputTarget decoded{};
+    result=DiscoverDecodedOutputTarget(mapped_image,available,decoded);
+    if(result!=DiscoveryResult::Found)return result;
+
+    // The Ogg virtual decoder owns an embedded parser. That parser supplies an
+    // embedded sync object to the page wrapper, which forwards it unchanged to
+    // the existing capture target. Extract both LEA displacements rather than
+    // accepting a version-specific aggregate constant.
+    static constexpr std::uint8_t ogg_decoder_prefix[]={
+        0x48,0x8b,0xc4,0x48,0x89,0x58,0x08,0x48,0x89,0x70,0x10,0x48,0x89,
+        0x78,0x20,0x4c,0x89,0x40,0x18,0x55,0x41,0x54,0x41,0x55,0x41,0x56,
+        0x41,0x57,0x48,0x8b,0xec,0x48,0x81,0xec,0x80,0x00,0x00,0x00,
+        0x4d,0x8b,0xe1,0x48,0x8b,0xfa,0x48,0x8b,0xf1};
+    HookTarget ogg_decoder{};
+    result=FindTarget(image,{TargetKind::DecodedOutput,ogg_decoder_prefix,sizeof(ogg_decoder_prefix),0x200,0x400},ogg_decoder);
+    if(result!=DiscoveryResult::Found)return result;
+    static constexpr std::uint8_t outer_link[]={0x48,0x8d,0x55,0xb8,0x48,0x8d,0x4e};
+    if(!Range(image.image_size,ogg_decoder.rva+0x178,13)||
+       std::memcmp(image.base+ogg_decoder.rva+0x178,outer_link,sizeof(outer_link)))
+        return DiscoveryResult::InconsistentLayout;
+    const auto parser_offset=image.base[ogg_decoder.rva+0x17f];
+    std::uint32_t parser=0;
+    if(!parser_offset||!DirectBranch(image,ogg_decoder.rva+0x180,0xe8,parser))
+        return DiscoveryResult::InconsistentLayout;
+    std::uint32_t parser_begin=0,parser_end=0;
+    if(!RuntimeFunction(image,parser,1,parser_begin,parser_end)||parser_begin!=parser||
+       parser_end-parser_begin<0x300||parser_end-parser_begin>0x600)
+        return DiscoveryResult::InconsistentLayout;
+    static constexpr std::uint8_t parser_link[]={
+        0x48,0x8d,0x99,0x80,0x03,0x00,0x00,0x48,0x8d,0x41};
+    if(!Range(image.image_size,parser+0x2c,22)||
+       std::memcmp(image.base+parser+0x2c,parser_link,sizeof(parser_link))||
+       std::memcmp(image.base+parser+0x37,"\x48\x8b\xd3\x48\x8b\xc8",6))
+        return DiscoveryResult::InconsistentLayout;
+    const auto sync_offset=image.base[parser+0x36];
+    std::uint32_t wrapper=0;
+    if(!sync_offset||!DirectBranch(image,parser+0x3d,0xe8,wrapper))
+        return DiscoveryResult::InconsistentLayout;
+    std::uint32_t wrapper_begin=0,wrapper_end=0;
+    if(!RuntimeFunction(image,wrapper,1,wrapper_begin,wrapper_end)||wrapper_begin!=wrapper||
+       wrapper_end-wrapper_begin<0x40||wrapper_end-wrapper_begin>0x80)
+        return DiscoveryResult::InconsistentLayout;
+    static constexpr std::uint8_t wrapper_prefix[]={0x48,0x89,0x5c,0x24,0x08,0x57,0x48,0x83,0xec,0x20};
+    static constexpr std::uint8_t wrapper_save_context[]={0x48,0x8b,0xd9};
+    static constexpr std::uint8_t wrapper_forward_context[]={0x48,0x8b,0xd7,0x48,0x8b,0xcb};
+    std::uint32_t page=0;
+    if(std::memcmp(image.base+wrapper,wrapper_prefix,sizeof(wrapper_prefix))||
+       std::memcmp(image.base+wrapper+0x11,wrapper_save_context,sizeof(wrapper_save_context))||
+       std::memcmp(image.base+wrapper+0x2b,wrapper_forward_context,sizeof(wrapper_forward_context))||
+       !DirectBranch(image,wrapper+0x31,0xe8,page)||
+       page!=TargetRva(capture,TargetKind::OggPageSeek))
+        return DiscoveryResult::InconsistentLayout;
+    std::uint32_t ogg_table=0,ogg_destroy=0;
+    result=UniqueVtableSlot(image,1,ogg_decoder.rva,ogg_table);
+    if(result!=DiscoveryResult::Found)return result;
+    if(!PointerRva(image,ogg_table,ogg_destroy)||!ExecutableRange(image,ogg_destroy,1))
+        return DiscoveryResult::InconsistentLayout;
+    const auto ogg_total=std::uint32_t(parser_offset)+std::uint32_t(sync_offset);
+    if(ogg_total>0x1000||ogg_total>std::uint32_t(std::numeric_limits<std::int32_t>::max()))
+        return DiscoveryResult::InconsistentLayout;
+
+    // FLAC's vtable slot zero initializes the same object whose slot one is
+    // dispatched by the shared wrapper. Its callback thunks restore the client
+    // data pointer into RCX before entering our existing hook targets.
+    const auto flac_init=TargetRva(capture,TargetKind::FlacInit);
+    std::uint32_t flac_table=0,flac_decode=0;
+    result=UniqueVtableSlot(image,0,flac_init,flac_table);
+    if(result!=DiscoveryResult::Found)return result;
+    if(!PointerRva(image,flac_table+8,flac_decode)||!ExecutableRange(image,flac_decode,1))
+        return DiscoveryResult::InconsistentLayout;
+    std::uint32_t decode_begin=0,decode_end=0;
+    if(!RuntimeFunction(image,flac_decode,1,decode_begin,decode_end)||decode_begin!=flac_decode||
+       !Range(image.image_size,flac_init+0x13c,5)||
+       std::memcmp(image.base+flac_init+0x2f,"\x48\x8b\xf1",3)||
+       std::memcmp(image.base+flac_init+0x13c,"\x48\x89\x74\x24\x48",5))
+        return DiscoveryResult::InconsistentLayout;
+    static constexpr std::uint8_t r9_to_rcx[]={0x49,0x8b,0xc9};
+    static constexpr std::uint8_t r8_to_rcx[]={0x49,0x8b,0xc8};
+    if(!UniqueContextThunk(image,r9_to_rcx,TargetRva(capture,TargetKind::FlacRead))||
+       !UniqueContextThunk(image,r9_to_rcx,TargetRva(capture,TargetKind::FlacFrame))||
+       !UniqueContextThunk(image,r8_to_rcx,TargetRva(capture,TargetKind::FlacError)))
+        return DiscoveryResult::InconsistentLayout;
+
+    layout.decoded_output=decoded.rva;
+    layout.ogg_capture_to_decoder=-std::int32_t(ogg_total);
+    layout.flac_capture_to_decoder=0;
+
+    // AAC's compressed SpacReader is not the object dispatched by the shared
+    // decoder wrapper on the audited client. Do not infer ownership from its
+    // unrelated vtable; a future relationship needs its own proven call chain.
+    layout.aac_capture_to_decoder=0;layout.aac_verified=false;
+    return DiscoveryResult::Found;
 }
 
 namespace {
