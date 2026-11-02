@@ -17,6 +17,17 @@ std::string Field(const Tags& tags,const char* name) {
     for(const auto& field:tags.fields) if(field.first==name) return field.second;
     return {};
 }
+bool UnsignedField(const Tags& tags,const char* name,uint64_t& out) {
+    const auto value=Field(tags,name);if(value.empty())return false;
+    uint64_t result=0;
+    for(const unsigned char digit:value) {
+        if(digit<'0'||digit>'9'||result>(std::numeric_limits<uint64_t>::max()-(digit-'0'))/10)
+            return false;
+        result=result*10+(digit-'0');
+    }
+    if(!result)return false;
+    out=result;return true;
+}
 uint32_t Big(const uint8_t* bytes) {return (uint32_t(bytes[0])<<24)|(uint32_t(bytes[1])<<16)|(uint32_t(bytes[2])<<8)|bytes[3];}
 void Picture(const uint8_t* bytes,size_t size,RecordingFile& record) {
     record.has_artwork=true;
@@ -352,7 +363,11 @@ bool InspectRecording(const uint8_t* bytes,size_t size,RecordingFile& out) {
         if(valid) {
             out.quality={Codec::Mp3,mp3.rate,mp3.channels,0,
                 mp3.Duration()>0?unsigned((mp3.audio_size*8)/mp3.Duration()):0};
-            out.complete=true;
+            const bool owned=Field(out.tags,"HISTORY_COMPLETE_LISTEN")=="1"&&
+                Field(out.tags,"HISTORY_CAPTURE")=="native compressed MP3 input";
+            uint64_t expected_samples=0;
+            out.complete=mp3.complete&&(!owned||
+                (UnsignedField(out.tags,"HISTORY_SAMPLES",expected_samples)&&expected_samples==mp3.samples));
             if(!out.tags.cover.empty()) {
                 out.has_artwork=ReadRecordingArtwork(out.tags.cover,out.artwork);
                 out.artwork_edit_safe=out.has_artwork;

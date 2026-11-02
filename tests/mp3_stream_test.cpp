@@ -2,8 +2,21 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 #include <vector>
 using namespace history;
+static thread_local long allocation_allowance=-1;
+void* operator new(std::size_t size) {
+    if(allocation_allowance==0)throw std::bad_alloc();
+    if(allocation_allowance>0)--allocation_allowance;
+    if(void* value=std::malloc(size?size:1))return value;
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t size){return ::operator new(size);}
+__attribute__((noinline)) void operator delete(void* value) noexcept {std::free(value);}
+__attribute__((noinline)) void operator delete[](void* value) noexcept {::operator delete(value);}
+__attribute__((noinline)) void operator delete(void* value,std::size_t) noexcept {::operator delete(value);}
+__attribute__((noinline)) void operator delete[](void* value,std::size_t) noexcept {::operator delete(value);}
 static void check(bool value,const char* message){if(!value){std::fprintf(stderr,"FAIL: %s\n",message);std::exit(1);}}
 static void syncsafe(std::vector<uint8_t>& out,size_t value) {
     out.push_back(uint8_t(value>>21)&0x7f);out.push_back(uint8_t(value>>14)&0x7f);
@@ -55,7 +68,8 @@ int main() {
         Tags tags;tags.fields={{"TITLE","Episode"},{"ARTIST","Publisher"},{"ALBUM","Show"},
             {"SPOTIFY_URI","spotify:episode:0000000000000000000001"},
             {"HISTORY_COMPLETE_LISTEN","1"},{"HISTORY_CAPTURE","native compressed MP3 input"},
-            {"HISTORY_MEDIA_DURATION","0.078367"},{"CUSTOM","one"},{"CUSTOM","two"}};
+            {"HISTORY_MEDIA_DURATION","0.078367"},{"HISTORY_SAMPLES","3456"},
+            {"CUSTOM","one"},{"CUSTOM","two"}};
         std::vector<uint8_t> owned;std::string error;
         check(MakeOwnedMp3(bytes.data(),bytes.size(),tags,owned,error),"owned MP3 construction");
         Mp3Info info;Tags inspected;
@@ -66,6 +80,28 @@ int main() {
               "owned identity fields round trip");
         check(info.audio_size==audio.size()&&owned.size()>=audio.size()&&
               !memcmp(owned.data()+info.audio_offset,audio.data(),audio.size()),"every MP3 audio byte retained exactly");
+
+        Tags rich=tags;for(unsigned i=0;i<24;++i)rich.fields.push_back({"FIELD_"+std::to_string(i),std::string(64,'a'+i%26)});
+        rich.cover.assign(4096,0x5a);
+        check(MakeOwnedMp3(bytes.data(),bytes.size(),rich,owned,error),"allocation fixture construction");
+        bool rejected=false,completed=false;
+        for(long fault=0;fault<128&&!completed;++fault) {
+            Mp3Info fault_info;Tags partial;std::string fault_error;
+            allocation_allowance=fault;const bool ok=InspectOwnedMp3(owned.data(),owned.size(),fault_info,partial,fault_error);
+            allocation_allowance=-1;
+            if(!ok) {
+                rejected=true;
+                check(partial.fields.empty()&&partial.cover.empty()&&!fault_info.frames,
+                      "allocation failure never exposes partially trusted MP3 metadata");
+            } else completed=true;
+        }
+        check(rejected&&completed,"every owned-MP3 parser allocation is contained before eventual success");
+
+        auto changed=frame(0xfb,0x90,417);append(changed,frame(0xf3,0x80,208));
+        Mp3Info failed_info;std::string failed_error;
+        allocation_allowance=0;const bool failed=InspectMp3Source(changed.data(),changed.size(),failed_info,failed_error);
+        allocation_allowance=-1;
+        check(!failed&&!failed_info.frames,"error-message allocation failure is contained by the parser boundary");
     }
     const auto reject=[](std::vector<uint8_t> bytes,const char* message) {
         Mp3Info info;std::string error;check(!InspectMp3Source(bytes.data(),bytes.size(),info,error)&&!error.empty(),message);
