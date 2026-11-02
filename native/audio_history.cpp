@@ -102,6 +102,8 @@ unsigned decoded_activity_head=0,decoded_activity_tail=0,decoded_activity_count=
 SRWLOCK decoded_activity_lock=SRWLOCK_INIT;
 volatile LONG decoded_activity_dropped=0;
 LONG decoded_activity_loss_seen=0;
+std::array<uint64_t,16> ownership_output_logged{};
+unsigned ownership_output_logged_count=0,ownership_output_logged_next=0;
 std::atomic<bool> quality_enabled{false};
 std::wstring output;
 size_t memory_limit=500*1024*1024;
@@ -412,11 +414,23 @@ static void ResetDecodedActivityQueue() noexcept {
     InterlockedExchange(&decoded_activity_dropped,0);decoded_activity_loss_seen=0;
     ReleaseSRWLockExclusive(&decoded_activity_lock);
 }
+static bool FirstOwnershipOutput(uint64_t owner) noexcept {
+    if(!owner)return false;
+    for(unsigned index=0;index<ownership_output_logged_count;++index)
+        if(ownership_output_logged[index]==owner)return false;
+    if(ownership_output_logged_count<ownership_output_logged.size()) {
+        ownership_output_logged[ownership_output_logged_count++]=owner;return true;
+    }
+    ownership_output_logged[ownership_output_logged_next]=owner;
+    ownership_output_logged_next=(ownership_output_logged_next+1)%ownership_output_logged.size();
+    return true;
+}
 static void DrainDecodedActivity(ownership::DecoderOwnershipTracker& tracker,unsigned epoch) {
     const auto losses=InterlockedCompareExchange(&decoded_activity_dropped,0,0);
     if(losses!=decoded_activity_loss_seen) {
         decoded_activity_loss_seen=losses;
         tracker.ObservationLost(ownership::ObservationLoss::DecodedQueue,Now());
+        if(DebugLoggingEnabled())Log(LogKind::Diagnostic,"ownership event=loss source=decoded-queue");
     }
     DecodedActivitySlot slot{};
     while(PopDecodedActivity(slot)) {
@@ -431,6 +445,16 @@ static void DrainDecodedActivity(ownership::DecoderOwnershipTracker& tracker,uns
         activity.produced_floats=slot.produced_floats;activity.consumed_bytes=slot.consumed_bytes;
         activity.kept_floats=slot.kept_floats;activity.first=slot.first;activity.last=slot.last;
         activity.epoch=slot.epoch;tracker.ObserveDecoded(activity);
+        const auto token=tracker.OwnerToken(owner);
+        if(DebugLoggingEnabled()&&FirstOwnershipOutput(token)) {
+            char line[260];snprintf(line,sizeof(line),
+                "ownership event=output-first owner=%llu calls=%llu produced=%llu consumed=%llu kept=%llu mono=%.3f",
+                static_cast<unsigned long long>(token),static_cast<unsigned long long>(slot.calls),
+                static_cast<unsigned long long>(slot.produced_floats),
+                static_cast<unsigned long long>(slot.consumed_bytes),
+                static_cast<unsigned long long>(slot.kept_floats),slot.first);
+            Log(LogKind::Diagnostic,line);
+        }
     }
 }
 static bool AdvancedSpan(const decoded_output::Span& before,const decoded_output::Span& after,
@@ -527,6 +551,9 @@ struct Capture {
     uint64_t bytes=0,listen_generation=0;
     uintptr_t decoder_owner=0;
     uint64_t capture_token=0;
+    uint64_t reported_playback_token=0;
+    uint64_t reported_generation=0;
+    unsigned reported_ownership_state=~0u;
     CompressedBuffer data;
     size_t Capacity() const {return data.capacity()+(aac?spac.MemoryUsage():0);}
     double Duration() const {
@@ -654,7 +681,7 @@ static const char* CheckBeforeRelease(Capture& capture,const char* reason,
             guarded_complete?"invalid cached audio":"incomplete or invalid cached audio";
     } catch(...) { /* Release under the existing memory bound, with an honest outcome. */ }
     const auto binding=tracker&&capture.capture_token?tracker->Binding(capture.capture_token):
-        ownership::OwnershipBinding{capture.capture_token,0,0,ownership::OwnershipState::Invalidated};
+        ownership::OwnershipBinding{capture.capture_token,0,0,0,ownership::OwnershipState::Invalidated};
     char line[360];snprintf(line,sizeof(line),
         "final cache check: %s; release reason=%s; bytes=%llu; ownership_state=%u capture=%llu",
         result,reason,static_cast<unsigned long long>(capture.bytes),unsigned(binding.state),
@@ -1049,8 +1076,17 @@ struct CaptureBuffers {
     void RecordLostActive(Capture* capture,
                           ownership::CaptureAbortReason reason=ownership::CaptureAbortReason::InvalidData) {
         if(!capture)return;
-        if(ownership_tracker&&capture->capture_token)
+        if(ownership_tracker&&capture->capture_token) {
             ownership_tracker->AbortCapture(capture->capture_token,reason);
+            if(DebugLoggingEnabled()) {
+                const auto binding=ownership_tracker->Binding(capture->capture_token);
+                char line[220];snprintf(line,sizeof(line),
+                    "ownership event=capture-abort capture=%llu owner=%llu reason=%u state=%u",
+                    static_cast<unsigned long long>(binding.capture_token),
+                    static_cast<unsigned long long>(binding.owner_token),unsigned(reason),unsigned(binding.state));
+                Log(LogKind::Diagnostic,line);
+            }
+        }
         CheckBeforeRelease(*capture,"active capture discarded",ownership_tracker);
         if(lost_active_count==lost_active.size())
             lost_capture_start_through=std::max(lost_capture_start_through,lost_active[next_lost_active].born+20);
@@ -1077,12 +1113,56 @@ static void BeginCaptureOwnership(Capture& capture,CaptureBuffers& buffers,
     uintptr_t owner=0;
     if(verified)ownership::NormalizeDecoderOwner(context,delta,owner);
     capture.decoder_owner=owner;
-    if(buffers.ownership_tracker)
+    if(buffers.ownership_tracker) {
         capture.capture_token=buffers.ownership_tracker->BeginCapture(codec,owner,stream,time,epoch);
+        if(DebugLoggingEnabled()) {
+            const auto binding=buffers.ownership_tracker->Binding(capture.capture_token);
+            const char* name=codec==ownership::DecoderCodec::Flac?"flac":
+                codec==ownership::DecoderCodec::Ogg?"ogg":"aac";
+            char line[240];snprintf(line,sizeof(line),
+                "ownership event=capture-begin capture=%llu owner=%llu codec=%s stream=%u epoch=%u state=%u",
+                static_cast<unsigned long long>(binding.capture_token),
+                static_cast<unsigned long long>(binding.owner_token),name,stream,epoch,unsigned(binding.state));
+            Log(LogKind::Diagnostic,line);
+        }
+    }
 }
 static void CompleteCaptureOwnership(Capture& capture,CaptureBuffers& buffers,double time) {
-    if(buffers.ownership_tracker&&capture.capture_token)
+    if(buffers.ownership_tracker&&capture.capture_token) {
         buffers.ownership_tracker->CompleteCapture(capture.capture_token,time);
+        if(DebugLoggingEnabled()) {
+            const auto binding=buffers.ownership_tracker->Binding(capture.capture_token);
+            char line[240];snprintf(line,sizeof(line),
+                "ownership event=capture-complete capture=%llu owner=%llu state=%u bytes=%llu mono=%.3f",
+                static_cast<unsigned long long>(binding.capture_token),
+                static_cast<unsigned long long>(binding.owner_token),unsigned(binding.state),
+                static_cast<unsigned long long>(capture.bytes),time);
+            Log(LogKind::Diagnostic,line);
+        }
+    }
+}
+static void LogOwnershipBindings(CaptureBuffers& buffers) {
+    if(!DebugLoggingEnabled()||!buffers.ownership_tracker)return;
+    const auto observe=[&](Capture& capture) {
+        if(!capture.capture_token)return;
+        const auto binding=buffers.ownership_tracker->Binding(capture.capture_token);
+        if(capture.reported_ownership_state==unsigned(binding.state)&&
+           capture.reported_playback_token==binding.playback_token&&
+           capture.reported_generation==binding.listen_generation)return;
+        capture.reported_ownership_state=unsigned(binding.state);
+        capture.reported_playback_token=binding.playback_token;
+        capture.reported_generation=binding.listen_generation;
+        char line[260];snprintf(line,sizeof(line),
+            "ownership event=binding capture=%llu owner=%llu instance=%llu listen_generation=%llu state=%u",
+            static_cast<unsigned long long>(binding.capture_token),
+            static_cast<unsigned long long>(binding.owner_token),
+            static_cast<unsigned long long>(binding.playback_token),
+            static_cast<unsigned long long>(binding.listen_generation),unsigned(binding.state));
+        Log(LogKind::Diagnostic,line);
+    };
+    for(auto& capture:buffers.active)observe(*capture.second);
+    for(auto& capture:buffers.ogg_active)observe(*capture.second);
+    for(auto& capture:buffers.ready)observe(*capture);
 }
 static void ObserveCodecQuality(const Slot& s,PlaybackQualityTracker& quality) {
     switch(s.kind) {
@@ -1616,6 +1696,8 @@ static DWORD WINAPI Worker(LPVOID) {
     MediaDiagnostic media_diagnostic;MediaDiagnosticReporter media_reporter;
     double last_media=Now(),minimum_media_time=last_media,next_timing=0;
     bool observer_started=false,media_unavailable=false;MediaWarningState media_warning;
+    bool ownership_media_lost=false;std::string ownership_playback_uri;
+    uint64_t ownership_playback_token=0,ownership_listen_generation=0;
     unsigned generation=~0u,epoch=~0u; bool enabled=false;
     try {
         while(workers_running.load(std::memory_order_acquire)) {
@@ -1642,6 +1724,9 @@ static DWORD WINAPI Worker(LPVOID) {
                     last_media=minimum_media_time=now;media_unavailable=false;media_warning={};diagnostics.known=false;CancelFilenameChecks();
                     enabled=capture;
                     ownership_tracker.Reset(preferences.capture_epoch);
+                    ownership_output_logged={};ownership_output_logged_count=ownership_output_logged_next=0;
+                    ownership_media_lost=false;ownership_playback_uri.clear();
+                    ownership_playback_token=ownership_listen_generation=0;
                     LogEvent(LogKind::Activity,"capture",enabled ? "enabled" : "disabled");
                 }
                 epoch=preferences.capture_epoch;
@@ -1690,8 +1775,36 @@ static DWORD WINAPI Worker(LPVOID) {
                 PublishCurrentDestination(media,preferences);
                 quality.Media(media.Key(),media.title,media.position,media.duration,observed_at,media.playing);
                 client_quality=ReadClientPlaybackQuality(media);
+                const auto playback_id=media.playback_instance;
+                const auto playback_uri=media.spotify_uri;
                 if(enabled)AssociateListen(std::move(media),listen,current,heard,buffers,observed_at,&recent);
+                ownership_tracker.ObservePlayback(playback_id,playback_uri,listen.generation,observed_at);
+                const auto playback_token=ownership_tracker.PlaybackToken(playback_id);
+                if(DebugLoggingEnabled()&&playback_token&&
+                   (playback_token!=ownership_playback_token||playback_uri!=ownership_playback_uri||
+                    listen.generation!=ownership_listen_generation)) {
+                    char line[240];snprintf(line,sizeof(line),
+                        "ownership event=playback instance=%llu uri_changed=%d listen_generation=%llu mono=%.3f",
+                        static_cast<unsigned long long>(playback_token),
+                        !ownership_playback_uri.empty()&&ownership_playback_uri!=playback_uri,
+                        static_cast<unsigned long long>(listen.generation),observed_at);
+                    Log(LogKind::Diagnostic,line);
+                }
+                ownership_playback_uri=playback_uri;ownership_playback_token=playback_token;
+                ownership_listen_generation=listen.generation;
+                ownership_media_lost=false;
             } else if(observation==MediaRead::Transition) {
+                ownership_tracker.ObserveTransition(media.playback_instance,media.spotify_uri,
+                    observed_at,media.explicit_skip,media.natural_transition);
+                const auto next_token=ownership_tracker.PlaybackToken(media.playback_instance);
+                if(DebugLoggingEnabled()) {
+                    char line[240];snprintf(line,sizeof(line),
+                        "ownership event=transition from=%llu to=%llu explicit_skip=%d natural=%d mono=%.3f",
+                        static_cast<unsigned long long>(ownership_playback_token),
+                        static_cast<unsigned long long>(next_token),media.explicit_skip,
+                        media.natural_transition,observed_at);Log(LogKind::Diagnostic,line);
+                }
+                if(next_token)ownership_playback_token=next_token;
                 const bool pending_repeat=enabled&&FinishAppTransition(media,listen,current,heard,buffers,observed_at,&recent);
                 // Explicit buffering is never converted into Windows fallback
                 // or new listening coverage. A fresh unbuffered state is needed.
@@ -1704,7 +1817,13 @@ static DWORD WINAPI Worker(LPVOID) {
                 listen.eligible=false;quality.Media({},L"",0,0,Now());client_quality.clear();
                 if(!media_unavailable){CancelFilenameChecks();Log(LogKind::Diagnostic,"Spotify media snapshot unavailable or stale; listen invalidated");}
                 media_unavailable=true;diagnostics.known=false;
+                if(!ownership_media_lost) {
+                    ownership_media_lost=true;
+                    ownership_tracker.ObservationLost(ownership::ObservationLoss::Media,Now());
+                    if(DebugLoggingEnabled())Log(LogKind::Diagnostic,"ownership event=loss source=media");
+                }
             }
+            LogOwnershipBindings(buffers);
             ReportMediaUnavailable(buffers,media_unavailable,media_diagnostic,Now(),media_warning);
             if(!enabled) {
                 PublishPlaybackQuality(quality.Snapshot(client_quality));
@@ -1784,6 +1903,12 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
         if(ownership_discovery==spotify::DiscoveryResult::Found) {
             decoder_ownership_layout=layout;decoder_ownership_layout_available=true;
             decoded_sink_target=base+layout.decoded_output;
+            if(DebugLoggingEnabled()) {
+                char line[260];snprintf(line,sizeof(line),
+                    "ownership event=layout decoded_rva=%u ogg_delta=%d flac_delta=%d aac_delta=%d aac_verified=%d",
+                    layout.decoded_output,layout.ogg_capture_to_decoder,layout.flac_capture_to_decoder,
+                    layout.aac_capture_to_decoder,layout.aac_verified);Log(LogKind::Diagnostic,line);
+            }
         } else {
             char line[160];snprintf(line,sizeof(line),
                 "ownership event=layout-unavailable reason=%s",
@@ -1824,6 +1949,7 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
         original_decoded_process=nullptr;decoded_sink_target=nullptr;
         decoder_ownership_layout={};decoder_ownership_layout_available=false;
         ResetDecodedActivityQueue();
+        ownership_output_logged={};ownership_output_logged_count=ownership_output_logged_next=0;
         decoded_accelerator.Reset();decoded_fallback_requested.store(false,std::memory_order_release);
         SetCaptureAccelerationAvailable(false);
     };

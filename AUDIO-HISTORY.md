@@ -86,7 +86,12 @@ MaxBufferedMiB=500
 - **Log:** default `1`; the master switch for both logs and all optional diagnostics.
   `Floggfy.log` contains normal activity, warnings and actionable failures.
 - **DebugLog:** default `0`; requires `Log=1`. Optional playback, metadata and
-  troubleshooting detail goes only to `Floggfy-diagnostics.log`.
+  troubleshooting detail goes only to `Floggfy-diagnostics.log`. It also adds
+  experimental decoder-ownership evidence using bounded numeric capture, owner,
+  and playback tokens. Raw native addresses, playback IDs, and URIs are never
+  written in ownership records. These observations do not affect saving: a
+  `Bound` result is diagnostic only, and missing, conflicting, or lost evidence
+  fails closed for a future ownership design rather than selecting metadata.
 - **DebugConnect:** default `1`; requires `Log=1` and `DebugLog=1`. Enables cached
   Connect target observations and passive local action requests. `0` opts out of
   those observations even with deep networking enabled. No discovery, playback

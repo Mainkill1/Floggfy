@@ -146,7 +146,7 @@ std::uint64_t DecoderOwnershipTracker::BeginCapture(DecoderCodec codec,std::uint
     if(!owner||epoch!=epoch_||!ValidTime(time)) {
         slot->state=OwnershipState::Invalidated;
     } else {
-        EnsureOwner(owner,epoch);
+        slot->owner_token=EnsureOwner(owner,epoch).token;
     }
     return slot->token;
 }
@@ -305,8 +305,19 @@ OwnershipBinding DecoderOwnershipTracker::Binding(std::uint64_t capture_token) c
     const auto* capture=FindCapture(capture_token);
     if(!capture) {binding.state=OwnershipState::Invalidated;return binding;}
     binding.playback_token=capture->playback_token;
-    binding.listen_generation=capture->listen_generation;binding.state=capture->state;
+    binding.owner_token=capture->owner_token;binding.listen_generation=capture->listen_generation;
+    binding.state=capture->state;
     return binding;
+}
+
+std::uint64_t DecoderOwnershipTracker::OwnerToken(std::uintptr_t owner) const noexcept {
+    for(const auto& record:owners_)if(record.token&&record.owner==owner)return record.token;
+    return 0;
+}
+
+std::uint64_t DecoderOwnershipTracker::PlaybackToken(const std::string& playback_id) const noexcept {
+    for(const auto& record:playbacks_)if(record.token&&record.id==playback_id)return record.token;
+    return 0;
 }
 
 } // namespace ownership

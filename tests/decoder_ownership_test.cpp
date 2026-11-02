@@ -53,7 +53,9 @@ void TestSingleOwnerBinds() {
     State(tracker,capture,OwnershipState::AwaitingPlaybackInstance);
     tracker.ObservePlayback("play-1","uri:one",7,1.3);
     const auto binding=State(tracker,capture,OwnershipState::Bound);
-    assert(binding.playback_token&&binding.listen_generation==7);
+    assert(binding.owner_token&&binding.playback_token&&binding.listen_generation==7);
+    assert(tracker.OwnerToken(0x1000)==binding.owner_token&&
+           tracker.PlaybackToken("play-1")==binding.playback_token);
     tracker.ObserveDecoded(Activity(0x1000,1.4,1.5));
     const auto continued=State(tracker,capture,OwnershipState::Bound);
     assert(continued.playback_token==binding.playback_token);

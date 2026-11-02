@@ -49,6 +49,7 @@ struct DecodedActivity {
 
 struct OwnershipBinding {
     std::uint64_t capture_token=0;
+    std::uint64_t owner_token=0;
     std::uint64_t playback_token=0;
     std::uint64_t listen_generation=0;
     OwnershipState state=OwnershipState::AwaitingOutput;
@@ -69,6 +70,8 @@ public:
     void ObservationLost(ObservationLoss source,double time);
     void Reset(unsigned epoch);
     OwnershipBinding Binding(std::uint64_t capture_token) const;
+    std::uint64_t OwnerToken(std::uintptr_t owner) const noexcept;
+    std::uint64_t PlaybackToken(const std::string& playback_id) const noexcept;
 
 private:
     static constexpr std::size_t kCaptureCapacity=32;
@@ -79,6 +82,7 @@ private:
         std::uint64_t token=0;
         std::uint64_t sequence=0;
         std::uintptr_t owner=0;
+        std::uint64_t owner_token=0;
         std::uint32_t stream=0;
         DecoderCodec codec=DecoderCodec::Ogg;
         OwnershipState state=OwnershipState::AwaitingOutput;

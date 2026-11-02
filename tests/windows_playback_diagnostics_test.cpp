@@ -171,6 +171,33 @@ void CaptureOwnershipLifecycle() {
         !aac->decoder_owner&&tracker.Binding(aac->capture_token).state==ownership::OwnershipState::Invalidated);
     decoder_ownership_layout={};decoder_ownership_layout_available=false;
 }
+void OwnershipDiagnosticPrivacy() {
+    diagnostic_lines.clear();ownership_output_logged={};
+    ownership_output_logged_count=ownership_output_logged_next=0;
+    decoder_ownership_layout={};decoder_ownership_layout.flac_capture_to_decoder=0;
+    decoder_ownership_layout_available=true;
+    ownership::DecoderOwnershipTracker tracker;tracker.Reset(12);
+    CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+    Capture capture;capture.lossless=true;capture.born=1;
+    constexpr uintptr_t raw_owner=0x1234567812345680ull;
+    BeginCaptureOwnership(capture,buffers,ownership::DecoderCodec::Flac,raw_owner,0,1,12);
+    buffers.active[raw_owner]=std::make_unique<Capture>(std::move(capture));
+    ResetDecodedActivityQueue();QueueDecodedActivity(raw_owner,80,100,80,2,12);
+    DrainDecodedActivity(tracker,12);
+    tracker.ObservePlayback("private-playback-id","spotify:track:private",44,3);
+    LogOwnershipBindings(buffers);
+    bool saw_begin=false,saw_output=false,saw_binding=false;
+    for(const auto& line:diagnostic_lines)if(line.find("ownership event=")!=std::string::npos) {
+        saw_begin|=line.find("capture-begin")!=std::string::npos;
+        saw_output|=line.find("output-first")!=std::string::npos;
+        saw_binding|=line.find("event=binding")!=std::string::npos;
+        assert(line.find("1234567812345680")==std::string::npos&&
+               line.find("private-playback-id")==std::string::npos&&
+               line.find("spotify:track:private")==std::string::npos);
+    }
+    assert(saw_begin&&saw_output&&saw_binding);
+    decoder_ownership_layout={};decoder_ownership_layout_available=false;
+}
 void ConcurrentOggLogicalStreams() {
     CaptureBuffers buffers;Slot slot{};slot.context=0x7788;slot.kind=AudioEventKind::OggPage;
     slot.time=100;slot.epoch=4;slot.capture=true;
@@ -721,7 +748,7 @@ void EnrichTags(const Media&,Tags&){}
 int wmain() {
     // Use in-memory preferences only. Never read or write the user's INI/music.
     InterlockedExchange(&history::debug_enabled,1);
-    Connectivity();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();AcceleratedUiClockRecovery();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();DurableAssociationEvidence();AppTailDeadline();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();CaptureOwnershipLifecycle();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
+    Connectivity();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();AcceleratedUiClockRecovery();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();DurableAssociationEvidence();AppTailDeadline();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
     puts("PASS: observed transitions, one FLAC failure context/outcome, original callback semantics, profiling-only intervals, basic-mode zero profiling and changed-only NLM observations");
     return 0;
 }
