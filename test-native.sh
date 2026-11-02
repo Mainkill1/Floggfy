@@ -26,7 +26,7 @@ g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/history_core_test.cpp native/ogg_
 build/history-core-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/capture_speed_test.cpp native/ogg_history_core.cpp -o build/capture-speed-test
 build/capture-speed-test
-g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/decoded_output_speed_test.cpp native/decoded_output_speed.cpp -o build/decoded-output-speed-test
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/decoded_output_speed_test.cpp -o build/decoded-output-speed-test
 build/decoded-output-speed-test
 gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/ogg-framing-test.o
 g++ -std=c++17 -O2 -Wall -Wextra -Werror -I native/vendor/libogg/include \

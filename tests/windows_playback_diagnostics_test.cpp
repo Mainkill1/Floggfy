@@ -131,6 +131,27 @@ void ConcurrentOggLogicalStreams() {
     send(damaged);
     assert(buffers.ogg_active.size()==1&&buffers.ogg_active.begin()->first.serial==42&&
            "a CRC failure with an exact serial/sequence must not erase an interleaved peer");
+    for(const bool same_context:{false,true}) {
+        buffers={};const auto bytes=recording_fixture::ogg();const double start=slot.time;
+        std::vector<uint8_t> final_b;
+        for(size_t at=0;at<bytes.size();) {
+            const size_t header=27+bytes[at+26];size_t length=header;
+            for(size_t i=27;i<header;++i)length+=bytes[at+i];
+            Page parsed;assert(ParsePage(bytes.data()+at,length,parsed));
+            const std::vector<uint8_t> body(bytes.begin()+at+header,bytes.begin()+at+length);
+            const std::vector<uint8_t> lacing(bytes.begin()+at+27,bytes.begin()+at+header);
+            const auto a=recording_fixture::page_parts(body,lacing,parsed.sequence,parsed.flags,uint64_t(parsed.granule),41);
+            const auto b=recording_fixture::page_parts(body,lacing,parsed.sequence,parsed.flags,uint64_t(parsed.granule),42);
+            slot.context=77;send(a);slot.context=same_context?77:78;
+            if(parsed.flags&4)final_b=b;else send(b);
+            at+=length;
+        }
+        Heard heard;heard.start=start;heard.finish=slot.time;heard.media.duration=1;
+        std::vector<Heard> pending{heard};SchedulePublications(pending,buffers,0,slot.time);
+        SaveJob job;assert(!saves.Pop(job)&&pending.size()==1&&buffers.ogg_active.size()==1);
+        send(final_b);SchedulePublications(pending,buffers,0,slot.time);
+        assert(!saves.Pop(job)&&pending.empty()&&"first EOS cannot select ownership across interleaved contexts/serials");
+    }
 }
 void HookBoundaries() {
     queue=new Slot[capacity];event=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(event);
@@ -295,7 +316,7 @@ void CrossfadeQuarantineRecovery() {
         auto active=CompleteFlacCapture(100,0);active->coverage.samples=8;active->finished=0;
         buffers.active[1]=std::move(active);
         Media next;next.source=MediaSource::Spotify;next.spotify_uri="spotify:track:0000000000000000000002";
-        next.playback_instance="second";next.explicit_skip=explicit_skip;
+        next.playback_instance="second";next.explicit_skip=explicit_skip;next.natural_transition=true;
         FinishAppTransition(next,listen,current,heard,buffers,105);
         if(explicit_skip) {
             assert(heard.empty()&&!listen.eligible);return;
@@ -317,10 +338,24 @@ void CrossfadeQuarantineRecovery() {
     for(unsigned i=0;i<=4;++i){media.position=i;AssociateListen(media,listen,current,heard,buffers,100+i);}
     auto early=CompleteFlacCapture(100,104);early->coverage.samples=16;buffers.ready.push_back(std::move(early));
     Media next;next.source=MediaSource::Spotify;next.spotify_uri="spotify:track:0000000000000000000002";
-    next.playback_instance="next";FinishAppTransition(next,listen,current,heard,buffers,105);
+    next.playback_instance="next";next.natural_transition=true;FinishAppTransition(next,listen,current,heard,buffers,105);
     SchedulePublications(heard,buffers,0,105);SaveJob early_job;
     assert(saves.Pop(early_job)&&early_job.heard.provisional&&early_job.capture->finished==104&&
            "a uniquely matched, revalidated complete buffer survives a false natural transition flag");
+    for(unsigned scenario=0;scenario<6;++scenario) {
+        CaptureBuffers rejected;std::vector<Heard> pending;Listen trial;Media previous;
+        media.position=0;media.playing=true;
+        for(unsigned i=0;i<=4;++i){media.position=i;AssociateListen(media,trial,previous,pending,rejected,100+i);}
+        rejected.ready.push_back(CompleteFlacCapture(100,104));
+        auto blocked=media;blocked.position=scenario==0?13:scenario==1?16:4;
+        blocked.natural_transition=true;
+        if(scenario>=3){blocked.playback_instance="new";blocked.natural_transition=scenario!=3;}
+        if(scenario==2)trial.playing=false;
+        if(scenario==4)blocked.explicit_skip=true;
+        FinishAppTransition(blocked,trial,previous,pending,rejected,scenario==5?110:105);
+        SchedulePublications(pending,rejected,0,110);SaveJob rejected_job;
+        assert(pending.empty()&&!saves.Pop(rejected_job)&&"seek, pause, unknown/manual or stale transition cannot recover a listen");
+    }
 }
 void RecentPlaybackMatching() {
     RecentPlaybackHistory history;Media media;media.source=MediaSource::Spotify;
@@ -334,6 +369,32 @@ void RecentPlaybackMatching() {
     history.Clear();assert(history.Size()==0);
 }
 void DurableAssociationEvidence() {
+    {
+        // A corrupt competing stream can be lost in the same drained batch,
+        // before the scheduler ever sees it alongside the ready recording.
+        CaptureBuffers batch;std::vector<Heard> pending;
+        batch.ready.push_back(CompleteFlacCapture(100,110));
+        Heard heard;heard.start=100;heard.finish=110;heard.media.duration=16;pending.push_back(heard);
+        Slot event{};event.context=99;event.time=100.1;event.kind=AudioEventKind::FlacBegin;
+        ProcessFlacCapture(event,batch);event.kind=AudioEventKind::FlacError;ProcessFlacCapture(event,batch);
+        SchedulePublications(pending,batch,0,111);SaveJob job;
+        assert(!saves.Pop(job)&&pending.empty()&&"lost same-batch active alternatives leave durable ownership evidence");
+    }
+    {
+        CaptureBuffers interleaved;std::vector<Heard> pending;
+        auto completed=CompleteFlacCapture(100,110);
+        Heard heard;heard.start=100;heard.finish=110;heard.media.duration=16;heard.provisional=true;heard.deadline=125;
+        pending.push_back(heard);interleaved.ready.push_back(std::move(completed));
+        auto active=std::make_unique<Capture>();active->born=100.1;
+        interleaved.ogg_active[{77,42}]=std::move(active);
+        for(unsigned pass=0;pass<10;++pass)SchedulePublications(pending,interleaved,0,111);
+        SaveJob job;assert(!saves.Pop(job)&&pending.size()==1&&interleaved.ogg_active.size()==1);
+        assert(interleaved.ready[0]->validation_runs==1&&"immutable completed capture validated once across matching passes");
+        interleaved.ogg_active.clear();SchedulePublications(pending,interleaved,0,112);
+        assert(!saves.Pop(job)&&pending.empty()&&"removing an active alternative cannot establish ownership");
+        auto wrong_duration=CompleteFlacCapture(100,110);heard.media.duration=200;
+        assert(!CaptureEvidenceMatchesListen(*wrong_duration,heard)&&wrong_duration->validation_runs==0);
+    }
     const auto capture=[](double born,double finished) {
         auto value=std::make_unique<Capture>();value->lossless=true;value->born=born;value->finished=finished;
         value->flac.rate=1;value->coverage.samples=10;return value;

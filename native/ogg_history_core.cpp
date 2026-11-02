@@ -153,12 +153,18 @@ std::string Listen::Observe(const std::string& key,double pos,double length,
         }
         const bool pending=phase==ListenPhase::AwaitingIdentity && IdentityWindowOpen(*this,time);
         const bool observed_start=pending && eligible && is_playing && std::fabs(length-wrap_length)<=1.0 &&
-            pos>=wrap_position-0.1 && pos<=wrap_position+(time-wrap_time)+1.5;
+            pos>=wrap_position-0.1 && pos<=wrap_position+(time-wrap_time)*capture_speed+1.5;
         const double next_start=observed_start ? wrap_start : time-pos/speed;
         if(NaturalEnd(*this,pending ? wrap_time-last_time : elapsed) &&
            (phase!=ListenPhase::AwaitingIdentity || pending))
             done=CompleteListen(*this,pending ? wrap_start : last_time+(duration-last_position)/capture_speed);
-        BeginListen(*this,key,observed_start ? 0 : pos,length,is_playing,time,next_start,speed);
+        // A slow poll can first see the new accelerated track beyond 1.5 media
+        // seconds. Credit its start only when the prior natural end independently
+        // establishes the same boundary; an arbitrary initial mid-track sample
+        // still cannot acquire eligibility.
+        const bool boundary_start=!done.empty()&&is_playing&&speed>1&&
+            next_start>=completed_time-0.1&&next_start<=completed_time+0.5;
+        BeginListen(*this,key,(observed_start||boundary_start) ? 0 : pos,length,is_playing,time,next_start,speed);
         last_position=pos;return done;
     }
     if(key.empty()) {eligible=false;playing=is_playing;last_time=time;return {};}

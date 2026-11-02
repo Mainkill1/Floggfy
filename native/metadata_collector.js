@@ -7,7 +7,7 @@
  const serviceCache=new Map();
  let builder,activeRequests=0,connectDevices;
  let player,root,queue=[],seen=new Set(),walked=0,lastPlayback='',playbackTime=-Infinity;
- let timelineBinding;
+ let timelineBinding,lastReadyTimeline;
  let timelineSeen=false,lastTimeline='',timelineTime=-Infinity,timelineBlocked='',timelineLocal='unknown',lastSkipAt=-Infinity;
  function playback(data){
   const payload=Object.entries(data).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&');
@@ -22,7 +22,7 @@
    console.info('FLOGGFY_TIMELINE_V1:'+payload);lastTimeline=payload;timelineTime=now;
   }
  }
- function unavailableTimeline(reason){if(timelineSeen&&!timelineBlocked)timeline({v:1,unavailable:reason});}
+ function unavailableTimeline(reason){lastReadyTimeline=undefined;if(timelineSeen&&!timelineBlocked)timeline({v:1,unavailable:reason});}
  function guardTimeline(state){
   timelineLocal='unknown';
   try{const get=method(connectDevices,'getConnectState');const active=own(get&&get.call(connectDevices),'activeDevice');
@@ -37,8 +37,14 @@
     const position=own(state,'positionAsOfTimestamp');if(typeof position==='number'&&Number.isFinite(position)&&position>=0)blocked.position_ms=position;
     const skipAge=blocked.sampled_ms-lastSkipAt;
     if(skipAge>=0&&skipAge<=3000){blocked.manual=1;lastSkipAt=-Infinity;}
+    const prior=lastReadyTimeline,age=prior?blocked.sampled_ms-prior.sampled:Infinity;
+    // Missing/failed action monitoring is unknown, never evidence of natural end.
+    if(controlBinding?.active&&controlBinding.observing&&controlBinding.player===player&&
+       timelineLocal===1&&!blocked.manual&&prior?.playing&&prior.player===player&&age>=0&&age<=3000&&
+       prior.instance&&blocked.instance&&prior.instance!==blocked.instance&&
+       stamp>=prior.sampled-250)blocked.natural=1;
    }
-   timeline(blocked);
+   timeline(blocked);lastReadyTimeline=undefined;
   }
  }
  function observeTimeline(state,data){
@@ -57,6 +63,7 @@
   // Buffering is sent separately so native coverage cannot credit stalled audio.
   const seconds=Math.min(duration,position+(paused||buffering?0:Math.max(0,elapsed)*rate))/1000;
   timelineSeen=true;
+  lastReadyTimeline={player,sampled,instance:typeof own(state,'playbackId')==='string'?own(state,'playbackId'):'',playing:!paused&&timelineLocal===1};
   timeline({v:1,title:data.title,artist:data.artist||'',album:data.album||'',uri:data.uri,
    duration:duration/1000,position:seconds,sampled_ms:sampled,instance:typeof own(state,'playbackId')==='string'?own(state,'playbackId'):'',paused:Number(paused),buffering:Number(buffering),local:timelineLocal,speed:rate});
  }
@@ -151,6 +158,9 @@
     try{
      if(!binding.active)return;
      const action=own(own(event,'data'),'action');
+     // Any observed control action (including changed/unknown seek names)
+     // breaks the evidence chain used for natural-transition recovery.
+     lastReadyTimeline=undefined;
      if(!['play','pause','resume','skipToNext','skipToPrevious'].includes(action))return;
      if(action==='skipToNext'||action==='skipToPrevious')lastSkipAt=Date.now();
      if(!connectEnabled())return;
@@ -158,7 +168,7 @@
     }catch{/* A diagnostic observer must never affect command dispatch. */}
    };
    controlBinding=binding; // Own cleanup even if addListener throws after attaching.
-   try{add.call(events,'action',binding.listener);}catch{detachControls();}
+   try{add.call(events,'action',binding.listener);binding.observing=true;}catch{detachControls();}
   }catch{/* Changed event APIs leave commands untouched. */}
  }
  function connectDiagnostics(state){

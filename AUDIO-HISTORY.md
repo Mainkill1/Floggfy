@@ -445,10 +445,14 @@ is never treated as evidence of ownership. Observation loss under lock contentio
 also invalidates coverage instead of losing a guard silently.
 During a natural crossfade or buffering transition, the prior decoder and its
 complete compressed buffer can remain quarantined for up to 15 seconds while the
-new playback identity settles. Before publishing or clearing that provisional
-capture, Floggfy reruns full container validation and requires a unique one-to-one
-match with the completed listen. A false transition signal therefore does not
-discard an otherwise complete valid song. Explicit skips and seeks remain
+new playback identity settles. Recovery requires a changed playback instance,
+recent local playing observations, and working action monitoring with no observed
+skip. Missing or failed action monitoring leaves the transition unverified;
+same-instance buffering or paused playback cannot recover missing coverage.
+Before publishing a provisional capture, Floggfy validates the immutable completed
+buffer once and requires a unique one-to-one match with no unresolved active
+alternatives. The save worker independently checks integrity before publication.
+Explicit skips and seeks remain
 ineligible and are never recovered from the quarantine.
 Incomplete decoder tails retain their original ten-second deadline. Audio is
 published as a final file only after complete-listen and integrity checks pass.

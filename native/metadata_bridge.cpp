@@ -221,7 +221,7 @@ static bool CurrentTimeline(const String* text) {
   if(payload=="v=1&blocked=buffering"||payload.rfind("v=1&blocked=buffering&",0)==0){
    ClientTransition transition;
    if(ParseClientTransition(payload,transition)) {
-    Media next;next.source=MediaSource::Spotify;next.spotify_uri=transition.uri;next.playback_instance=transition.instance;next.position=transition.position;next.explicit_skip=transition.explicit_skip;
+    Media next;next.source=MediaSource::Spotify;next.spotify_uri=transition.uri;next.playback_instance=transition.instance;next.position=transition.position;next.explicit_skip=transition.explicit_skip;next.natural_transition=transition.natural;
     PublishClientBufferingTransition(std::move(next),transition.sampled_ms,transition.transition_ms);
    }else PublishClientMediaUnavailable("client-buffering",true);
    return true;

@@ -24,6 +24,9 @@ int main(){
     assert(!ParseClientPlayback(base+"&position="+std::string("0\0junk",6)+"&sampled_ms=1793300000000&paused=0&buffering=0&local=1",value,error));
     const std::string event="v=1&blocked=buffering&uri=spotify%3Atrack%3A0000000000000000000001&instance=playback-1&sampled_ms=1793300000500&transition_ms=1793300000000&position_ms=0&manual=1";
     assert(ParseClientTransition(event,transition));
+    assert(!transition.natural);
+    assert(ParseClientTransition(event+"&natural=1",transition)&&transition.natural);
+    assert(!ParseClientTransition(event+"&natural=unknown",transition));
     assert(!ParseClientTransition(event+std::string("\0junk",5),transition));
     assert(!ParseClientTransition(std::string(16385,'x'),transition));
     assert(transition.uri=="spotify:track:0000000000000000000001"&&transition.instance=="playback-1"&&transition.position==0&&transition.transition_ms==1793300000000&&transition.explicit_skip);

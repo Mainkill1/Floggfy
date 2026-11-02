@@ -35,6 +35,33 @@ Object.defineProperty(state,'positionAsOfTimestamp',{get(){getters++;throw Error
 now+=500;context.window.__floggfyPoll();assert.equal(getters,0);
 assert(!output.some(x=>x.startsWith('FLOGGFY_METADATA_V1:')));assert.equal(requests,0);
 console.log('PASS: client timeline, URI, pause/buffering/local flags, bounded clocks and Metadata=0 without getters or requests');
+// Producer evidence must remain unknown if action registration is absent or
+// failed; only an observed instance transition during local playing qualifies.
+for(const mode of ['observed','missing','throws','manual','seek','paused','same','unavailable','replacement']) {
+ let clock=1793300000000;
+ let current={timestamp:clock,positionAsOfTimestamp:4000,duration:16000,isPaused:mode==='paused',isBuffering:false,
+  playbackId:'one',item:{uri:'spotify:track:0000000000000000000001',metadata:{title:'Song',artist_name:'Artist',album_title:'Album'}}};
+ const handlers=new Map(),messages=[];
+ const api={getState:()=>current};
+ if(mode!=='missing')api.getEvents=()=>({addListener(type,fn){if(type==='action'&&mode==='throws')throw Error('registration failed');handlers.set(type,fn);},removeListener:type=>handlers.delete(type)});
+ const sandbox={window:{__floggfyConfig:{metadata:false},Spicetify:{Platform:{PlayerAPI:api,ConnectDevicesAPI:{getConnectState:()=>({activeDevice:{isLocal:true}})}}}},
+  document:{querySelector:()=>null},console:{info:line=>messages.push(line)},performance:{now:()=>clock},Date:{now:()=>clock},setInterval:()=>{},encodeURIComponent};
+ vm.runInNewContext(script,sandbox);sandbox.window.__floggfyPoll();
+ if(mode==='manual')handlers.get('action')({data:{action:'skipToNext'}});
+ if(mode==='seek')handlers.get('action')({data:{action:'seekTo'}});
+ if(mode==='unavailable'){
+  current={...current,item:undefined};sandbox.window.__floggfyPoll();
+  current={...current,item:{uri:'spotify:track:0000000000000000000001',metadata:{title:'Song',artist_name:'Artist',album_title:'Album'}}};
+ }
+ if(mode==='replacement')sandbox.window.Spicetify.Platform.PlayerAPI={...api};
+ clock+=500;current={...current,timestamp:clock,isBuffering:true,playbackId:mode==='same'?'one':'two',
+  item:{...current.item,uri:'spotify:track:0000000000000000000002'}};
+ sandbox.window.__floggfyPoll();
+ const message=messages.filter(line=>line.startsWith('FLOGGFY_TIMELINE_V1:')).at(-1);
+ const fields=new URLSearchParams(message.slice('FLOGGFY_TIMELINE_V1:'.length));
+ assert.equal(fields.get('natural'),mode==='observed'?'1':null,mode);
+}
+console.log('PASS: natural transition evidence requires successful action monitoring, playing state and changed instance');
 
 // Stock Spotify has no Spicetify global. Resolve its already-created services
 // and keep polling even if its optional event API is unavailable.

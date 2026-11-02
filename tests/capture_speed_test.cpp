@@ -1,23 +1,31 @@
 #include "../native/capture_speed.h"
+#include "../native/decoded_output_speed.h"
 #include "../native/ogg_history_core.h"
 #include <cassert>
 #include <cstdio>
 
 int main() {
-    for(unsigned speed:{1u,2u,4u,8u,10u}) {
-        capture_speed::Phase phase;
-        unsigned forwarded=0;
-        for(unsigned i=0;i<speed*4;++i) {
-            const bool forward=phase.Forward(speed);
-            assert(forward==(i%speed==0));
-            forwarded+=forward;
-        }
-        assert(forwarded==4);
+    for(unsigned rate:{1u,2u,4u,8u,10u}) {
+        history::Listen delayed;delayed.Observe("old",0,20,true,100,rate);
+        for(double t=.1;t<20.0/rate;t+=.1)delayed.Observe("old",t*rate,20,true,100+t,rate);
+        const double end=100+20.0/rate;
+        delayed.Observe("old",.1,20,true,end+.1/rate,rate);
+        delayed.Observe("new",.1+.6*rate,20,true,end+.1/rate+.6,rate);
+        assert(delayed.eligible&&"delayed identity preserves accelerated observed start");
+        history::Listen polled;polled.Observe("old",0,20,true,100,rate);
+        for(unsigned sample=1;sample<20;++sample)polled.Observe("old",sample,20,true,100+double(sample)/rate,rate);
+        assert(polled.Observe("new",.3*rate,20,true,end+.3,rate)=="old");
+        assert(polled.eligible&&"300ms polling delay preserves a start proven by the previous natural end");
+        history::Listen unknown;unknown.Observe("new",3,20,true,100,rate);
+        assert(!unknown.eligible&&"mid-track initial observation without boundary evidence remains rejected");
     }
-    capture_speed::Phase first,second;
-    assert(first.Forward(4)&&!first.Forward(4));
-    assert(second.Forward(4)&&!second.Forward(4));
-    first.Reset();assert(first.Forward(10));
+    for(unsigned speed:{1u,2u,4u,8u,10u}) {
+        decoded_output::Accelerator accelerator;
+        for(size_t frames=1;frames<4096;++frames) {
+            const auto kept=accelerator.Keep(reinterpret_cast<void*>(1),frames*2,speed);
+            assert(kept==2*std::max(size_t(1),frames/speed));
+        }
+    }
 
     for(unsigned speed:{1u,2u,4u,8u,10u}) {
         history::Listen completed;
@@ -46,5 +54,5 @@ int main() {
     // near-zero identity observation starts a new generation explicitly.
     assert(listen.Observe("next",0,100,true,11,8).empty());
     assert(listen.eligible&&listen.capture_speed==8&&listen.generation==generation+1);
-    std::puts("PASS: exact capture phases, independent contexts and rate-bound listen generations");
+    std::puts("PASS: shipped stereo reduction and rate-bound delayed-identity listen generations");
 }

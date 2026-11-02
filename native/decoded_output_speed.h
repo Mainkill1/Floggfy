@@ -10,7 +10,7 @@ struct Span {void* data=nullptr;std::size_t size=0;};
 class Accelerator {
     std::atomic<bool> enabled_{true};
 public:
-    std::size_t Keep(void* context,std::size_t produced,unsigned speed,unsigned) noexcept {
+    std::size_t Keep(void* context,std::size_t produced,unsigned speed) noexcept {
         if(!Enabled())return produced;
         if(!context||!capture_speed::Supported(speed)||(produced%2)) {
             Disable();return produced;

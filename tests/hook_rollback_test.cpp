@@ -3,6 +3,12 @@
 #include <cassert>
 
 int main() {
+    for(unsigned failure=0;failure<4;++failure) {
+        unsigned creates=0,queues=0,removes=0;
+        const auto result=hooks::PrepareOptional([&]{++creates;return failure!=1;},[&]{++queues;return failure==0;},[&]{++removes;return failure!=3;});
+        assert(creates==1&&queues==(failure==1?0u:1u)&&removes==(failure>=2?1u:0u));
+        assert(result==(failure==0?hooks::OptionalPreparation::Ready:failure==3?hooks::OptionalPreparation::UnsafeRollback:hooks::OptionalPreparation::Unavailable));
+    }
     hooks::RollbackStatus clean;
     clean.ObserveDisable(true);
     clean.ObserveRemove(true);

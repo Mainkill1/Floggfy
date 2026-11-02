@@ -71,7 +71,7 @@ inline bool ParseClientPlayback(const std::string& input,ClientPlaybackRecord& o
     }
     out=std::move(record);error.clear();return true;
 }
-struct ClientTransition {std::string uri,instance;double sampled_ms=0,transition_ms=0,position=-1;bool explicit_skip=false;};
+struct ClientTransition {std::string uri,instance;double sampled_ms=0,transition_ms=0,position=-1;bool explicit_skip=false,natural=false;};
 inline bool ParseClientTransition(const std::string& input,ClientTransition& out) {
     if(input.size()>16384||input.find('\0')!=std::string::npos)return false;
     std::map<std::string,std::string> values;
@@ -79,7 +79,7 @@ inline bool ParseClientTransition(const std::string& input,ClientTransition& out
         auto end=input.find('&',p);if(end==std::string::npos)end=input.size();
         const auto eq=input.find('=',p);if(eq==std::string::npos||eq>=end)return false;
         const auto key=input.substr(p,eq-p);
-        if(key!="v"&&key!="blocked"&&key!="uri"&&key!="instance"&&key!="sampled_ms"&&key!="transition_ms"&&key!="position_ms"&&key!="manual")return false;
+        if(key!="v"&&key!="blocked"&&key!="uri"&&key!="instance"&&key!="sampled_ms"&&key!="transition_ms"&&key!="position_ms"&&key!="manual"&&key!="natural")return false;
         if(!values.emplace(key,input.substr(eq+1,end-eq-1)).second)return false;
         p=end+1;
     }
@@ -98,8 +98,10 @@ inline bool ParseClientTransition(const std::string& input,ClientTransition& out
     }
     const auto manual=values.find("manual");
     if(manual!=values.end()&&manual->second!="0"&&manual->second!="1")return false;
+    const auto natural=values.find("natural");
+    if(natural!=values.end()&&natural->second!="0"&&natural->second!="1")return false;
     out={record.metadata.uri,record.instance,record.sampled_ms,changed,position,
-         manual!=values.end()&&manual->second=="1"};return true;
+         manual!=values.end()&&manual->second=="1",natural!=values.end()&&natural->second=="1"};return true;
 }
 
 }

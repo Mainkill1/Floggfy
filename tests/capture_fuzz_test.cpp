@@ -14,10 +14,33 @@
 #include <thread>
 #include <limits>
 using namespace history;
+static uint64_t stateful_pages=0;
+static std::vector<std::vector<uint8_t>> OggPages(const std::vector<uint8_t>& bytes,bool repair=false) {
+    std::vector<std::vector<uint8_t>> pages;
+    for(size_t at=0;at<bytes.size();) {
+        if(bytes.size()-at<27)return {};
+        const size_t header=27+bytes[at+26];if(header>bytes.size()-at)return {};
+        size_t length=header;for(size_t i=27;i<header;++i)length+=bytes[at+i];
+        if(length>bytes.size()-at)return {};
+        pages.emplace_back(bytes.begin()+at,bytes.begin()+at+length);at+=length;
+        auto& page=pages.back();
+        if(repair) {
+            for(unsigned i=22;i<26;++i)page[i]=0;
+            uint32_t crc=0;for(auto b:page){crc^=uint32_t(b)<<24;for(unsigned bit=0;bit<8;++bit)crc=(crc<<1)^((crc&0x80000000)?0x04c11db7:0);}
+            for(unsigned i=0;i<4;++i)page[22+i]=uint8_t(crc>>(8*i));
+        }
+    }
+    return pages;
+}
+static Stream ReplayOgg(const std::vector<std::vector<uint8_t>>& pages) {
+    Stream stream;
+    for(const auto& page:pages){++stateful_pages;if(stream.Push(page.data(),page.size())==Result::Invalid)break;}
+    return stream;
+}
 static void Exercise(const std::vector<uint8_t>& bytes,std::mt19937_64& rng) {
     Page page;ParsePage(bytes.data(),bytes.size(),page);
     uint32_t serial=0,sequence=0;ParsePageIdentity(bytes.data(),bytes.size(),serial,sequence);
-    Stream ogg;ogg.Push(bytes.data(),bytes.size());
+    ReplayOgg(OggPages(bytes));
     RecordingFile recording;InspectRecording(bytes.data(),bytes.size(),recording);
     FlacInfo info;size_t audio=0;ParseFlacMetadata(bytes,info,audio);
     SpacStream whole,fragmented;const auto expected=whole.Push(bytes.data(),bytes.size());
@@ -40,6 +63,16 @@ int main(int argc,char** argv) {
     const uint64_t seed=argc>2?std::stoull(argv[2]):0xf1099f19;
     std::mt19937_64 rng(seed);
     std::vector<std::vector<uint8_t>> corpus={recording_fixture::fixture(),recording_fixture::ogg(),spac_fixture::stream()};
+    assert(ReplayOgg(OggPages(corpus[1])).complete);
+    for(unsigned field:{14u,18u,6u}) {
+        auto pages=OggPages(corpus[1]);pages[1][field]=field==6?0xfb:uint8_t(pages[1][field]+1);
+        if(field==6)for(unsigned i=7;i<14;++i)pages[1][i]=0xff;
+        std::vector<uint8_t> joined;for(const auto& p:pages)joined.insert(joined.end(),p.begin(),p.end());
+        const auto repaired=OggPages(joined,true);Page parsed;
+        for(const auto& p:repaired)assert(ParsePage(p.data(),p.size(),parsed));
+        const auto rejected=ReplayOgg(repaired);
+        assert(rejected.rejection==(field==14?OggRejection::Serial:field==18?OggRejection::Sequence:OggRejection::Granule));
+    }
     const std::string protocol="v=1&title=Song&artist=Artist&album=Album&duration=100&uri=spotify%3Atrack%3A0000000000000000000001&position=0&sampled_ms=1793300000000&paused=0&buffering=0&local=1&speed=10";
     corpus.emplace_back(protocol.begin(),protocol.end());
     AacInfo aac;std::vector<std::vector<uint8_t>> packets;std::string error;
@@ -60,9 +93,9 @@ int main(int argc,char** argv) {
         Exercise(bytes,rng);
         // Repair Ogg CRC after mutations to reach sequence/granule/header guards.
         if(bytes.size()>=27&&bytes[0]=='O'&&bytes[1]=='g'&&bytes[2]=='g'&&bytes[3]=='S') {
-            for(unsigned i=22;i<26;++i)bytes[i]=0;
-            uint32_t crc=0;for(auto b:bytes){crc^=uint32_t(b)<<24;for(unsigned bit=0;bit<8;++bit)crc=(crc<<1)^((crc&0x80000000)?0x04c11db7:0);}
-            for(unsigned i=0;i<4;++i)bytes[22+i]=uint8_t(crc>>(8*i));Exercise(bytes,rng);
+            const auto repaired=OggPages(bytes,true);ReplayOgg(repaired);
+            std::vector<uint8_t> joined;for(const auto& p:repaired)joined.insert(joined.end(),p.begin(),p.end());
+            if(!joined.empty())Exercise(joined,rng);
         }
         Listen listen;double time=100;
         for(unsigned event=0;event<32;++event) {
@@ -77,10 +110,11 @@ int main(int argc,char** argv) {
     for(unsigned lane=0;lane<8;++lane)threads.emplace_back([&,lane]{
         for(unsigned i=0;i<100000;++i) {
             const unsigned rates[]={1,2,4,8,10};const auto produced=size_t(2+2*(i%8192));
-            const auto kept=accelerator.Keep(reinterpret_cast<void*>(uintptr_t(0x1000+(i%256)*16)),produced,rates[(i+lane)%5],i%3);
+            const auto kept=accelerator.Keep(reinterpret_cast<void*>(uintptr_t(0x1000+(i%256)*16)),produced,rates[(i+lane)%5]);
             assert(kept>0&&kept<=produced&&kept%2==0);
         }
     });
     for(auto& thread:threads)thread.join();
+    std::printf("Stateful Ogg page calls=%llu; valid multipage completion and repaired serial/sequence/granule rejection verified\n",(unsigned long long)stateful_pages);
     std::printf("PASS: seed=%llu mutations=%u; all fixture truncations; fragmented SpAC equivalence; randomized listens; 800000 concurrent frame reductions\n",(unsigned long long)seed,iterations);
 }

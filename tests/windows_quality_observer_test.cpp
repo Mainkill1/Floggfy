@@ -111,7 +111,7 @@ static void TestLateCapture(bool flac,bool repeat,LateCapture outcome,bool switc
     if(switch_provider)assert(job.heard.media.source==provider);
     publishing_reserved.fetch_sub(job.reserved);
   } else {
-    assert(!saves.Pop(job)&&heard.size()==1);
+    assert(!saves.Pop(job)&&(outcome==LateCapture::Invalid?heard.empty():heard.size()==1));
     SchedulePublications(heard,buffers,7,711); // Recent completed records expire after ten minutes.
   }
   assert(heard.empty()&&!old_capture()&&buffers.active.count(2));
@@ -198,7 +198,8 @@ static void TestTerminalPauseTail(bool flac,MediaSource provider,const TerminalT
   if(queued) {
     assert(heard.empty()&&job.heard.finish==110&&job.capture->Duration()==10);
     publishing_reserved.fetch_sub(job.reserved);
-  } else assert(heard.size()==1);
+  } else if(scenario.expire_before_tail)assert(heard.empty());
+  else assert(heard.size()==1);
 }
 static void TestTerminalPauseScheduling() {
   const TerminalTailCase cases[]={
