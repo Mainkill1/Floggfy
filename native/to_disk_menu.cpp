@@ -562,6 +562,3 @@ bool PrepareToDiskMenu(HMODULE cef) {
     }
     return true;
 }
-void StartToDiskMenu(HMODULE cef) {
-    if(PrepareToDiskMenu(cef))FinalizeToDiskMenu(MH_ApplyQueued()==MH_OK);
-}

@@ -64,7 +64,7 @@ int main() {
   auto end = OggPage(1, 4, 8820000);
   tracker.Ogg(1, end.data(), end.size(), 101);
   q = tracker.Snapshot();
-  assert(q.level == PlaybackLevel::VeryHigh && std::fabs(q.bitrate - 4.64) < 0.0001);
+  assert(q.level == PlaybackLevel::VeryHigh);
   auto next_end = OggPage(1, 4, 7938000);
   tracker.Ogg(3, first.data(), first.size(), 110);
   tracker.Ogg(3, next_end.data(), next_end.size(), 111);
@@ -84,15 +84,14 @@ int main() {
   tracker.FlacBytes(2, header.data(), 5, 5);
   tracker.FlacBytes(2, header.data() + 5, 37, 99995);
   q = tracker.Snapshot();
-  assert(q.format == PlaybackFormat::Flac && q.rate == 48000 && q.bitrate == 0);
+  assert(q.format == PlaybackFormat::Flac && q.rate == 48000);
   for (unsigned i = 0; i < 10; i++)
     Frame(tracker, i);
   q = tracker.Snapshot();
-  assert(q.bitrate == 0); // Read-ahead is not decoded-byte progress.
   for (unsigned i = 10; i < 200; i++)
     Frame(tracker, i);
   q = tracker.Snapshot();
-  assert(q.bitrate == 4000 && q.level == PlaybackLevel::Lossless24);
+  assert(q.level == PlaybackLevel::Lossless24);
   tracker.Media("other", L"Other", 0, 180, 201);
   assert(tracker.Snapshot().format == PlaybackFormat::Unknown);
   tracker.Media("flac", L"Lossless", 0, 200, 200);
@@ -152,16 +151,15 @@ int main() {
   sought.FlacBegin(2, 600);sought.FlacBytes(2, header.data(), header.size(), 100000);
   Frame(sought, 20); // Midtrack decoding does not invalidate valid codec/rate.
   q=sought.Snapshot();
-  assert(q.format==PlaybackFormat::Flac && q.rate==48000 && q.bits==24 && q.bitrate==0);
+  assert(q.format==PlaybackFormat::Flac && q.rate==48000 && q.bits==24);
   sought.FlacEnd(2,false);
-  assert(sought.Snapshot().format==PlaybackFormat::Flac && sought.Snapshot().bitrate==0);
+  assert(sought.Snapshot().format==PlaybackFormat::Flac);
   sought.FlacEnd(2,true);assert(sought.Snapshot().format==PlaybackFormat::Unknown);
   q = {};
   const auto unknown = PlaybackQualityLabels(q);
   assert(unknown[3].find(L"Unavailable") != std::wstring::npos);
   q.format = PlaybackFormat::Ogg;
   q.rate = 44100;
-  q.bitrate = 320000;
   q.level = PlaybackLevel::VeryHigh;
   std::copy_n(L"Song & Guest\n", 13, q.title.begin());
   auto labels = PlaybackQualityLabels(q);

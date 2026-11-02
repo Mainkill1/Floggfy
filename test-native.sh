@@ -6,8 +6,6 @@ gcc -std=c11 -O2 -Wall -Wextra -c native/vendor/minimp4/minimp4.c -o build/minim
 gcc -std=c11 -O2 -Wall -Wextra -c native/vorbis_headers_stb.c -o build/vorbis-headers-stb-test.o
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/hook_init_state_test.cpp -o build/hook-init-state-test
 build/hook-init-state-test
-g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/hook_installation_test.cpp -o build/hook-installation-test
-build/hook-installation-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/hook_rollback_test.cpp -o build/hook-rollback-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/hook_startup_batch_test.cpp -o build/hook-startup-batch-test
 build/hook-startup-batch-test
@@ -16,8 +14,6 @@ g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/cef_identity_test.cpp -o build/ce
 build/cef-identity-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/cef_menu_capability_test.cpp -o build/cef-menu-capability-test
 build/cef-menu-capability-test
-g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/module_pending_test.cpp -o build/module-pending-test
-build/module-pending-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/pe_imports_test.cpp native/pe_imports.cpp -o build/pe-imports-test
 build/pe-imports-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/spotify_hook_discovery_test.cpp native/spotify_hook_discovery.cpp -o build/spotify-hook-discovery-test

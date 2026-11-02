@@ -260,7 +260,7 @@ static void TestLyricsPublication() {
   assert(GetFileAttributesExW(path.c_str(),GetFileExInfoStandard,&after)&&CompareFileTime(&before.ftLastWriteTime,&after.ftLastWriteTime)==0);
   WIN32_FIND_DATAW staged{};HANDLE stage=FindFirstFileW((path+L".complete-*").c_str(),&staged);
   assert(stage==INVALID_HANDLE_VALUE);
-  Quality q;assert(ReadQuality(path,q)&&q.bits==24);
+  RecordingFile saved;assert(ReadRecording(path,saved)&&saved.complete&&saved.quality.bits==24);
   // Lower-quality Vorbis playback can fill a better existing FLAC too.
   write();capture.lossless=false;assert(Publish(capture,heard,CaptureEpoch())==Publication::Saved);
   write();assert(SetLyrics(false));assert(Publish(capture,heard,CaptureEpoch())==Publication::Saved);
@@ -330,7 +330,7 @@ static void TestPublicationLogging() {
   assert(EnsureDirectory(path.substr(0,path.find_last_of(L'\\'))));
   HANDLE f=CreateFileW(path.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,0,nullptr);DWORD n;
   assert(f!=INVALID_HANDLE_VALUE&&WriteFile(f,"unknown",7,&n,nullptr));CloseHandle(f);
-  const auto alternate=ResolveRecordingPath(path,CatalogFor(heard.media));assert(alternate!=path && !alternate.empty());
+  const auto alternate=ResolveRecordingDestination(path,CatalogFor(heard.media)).path;assert(alternate!=path && !alternate.empty());
   capture=make(44100,24);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Saved);
   Quality alternate_quality;assert(ExistingRecording(alternate,CatalogFor(heard.media),alternate_quality));
   f=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr);char preserved[7]{};
@@ -355,7 +355,7 @@ static void TestPublicationLogging() {
     }
     assert(outcomes==1);
     const auto named_path=OutputPath(GetSettings().root,CatalogFor(named.media),L".flac",GetSettings().music_folder);
-    Quality quality;assert(ReadQuality(named_path,quality)&&quality.codec==Codec::Flac);
+    RecordingFile named_recording;assert(ReadRecording(named_path,named_recording)&&named_recording.complete&&named_recording.quality.codec==Codec::Flac);
     assert(DeleteFileW(named_path.c_str()));
   }
   assert(SetDownloads(false));

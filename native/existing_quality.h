@@ -6,7 +6,6 @@
 namespace history {
 // Complete container and supported codec-header validation, not independent
 // audio decoding. A header alone never counts as a saved song.
-bool ReadQuality(const std::wstring& file,Quality& out);
 enum class RecordingRead { ValidComplete, Incomplete, InvalidContainer, ReadError };
 // Separates a parsed but incomplete recording from an unreadable object. All
 // error outcomes clear out; identity is checked separately by the caller.
@@ -49,9 +48,7 @@ RecordingDestination ResolveRecordingDestination(const std::wstring& base,const 
 // Pure, bounded naming rule shared by publication and folder lookup. The menu
 // can stop at its first complete matching file; replacement must examine all.
 std::vector<std::wstring> RecordingPathCandidates(const std::wstring& base,const Catalog& catalog,bool legacy_names=true,bool track_numbers=false);
-std::wstring ResolveRecordingPath(const std::wstring& base,const Catalog& catalog,bool track_numbers=false);
 enum class SaveDecision { NewFile, Upgrade, Skip };
-SaveDecision DecideSave(const std::wstring& path,const Quality& incoming);
 // Optional inspection lets callers plan metadata changes without rereading the file.
 SaveDecision DecideSave(const std::wstring& path,const Quality& incoming,const Catalog& catalog,RecordingFile* inspected=nullptr);
 }

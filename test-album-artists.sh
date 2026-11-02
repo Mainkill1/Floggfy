@@ -5,7 +5,7 @@ cd -- "$(dirname -- "$0")"
 mkdir -p build/album-artists
 python3 - <<'PY'
 from pathlib import Path
-script='window.__floggfyNative=true;\n'+Path('native/metadata_collector.js').read_text()
+script=Path('native/metadata_collector.js').read_text()
 Path('build/metadata_script.h').write_text('static constexpr wchar_t metadata_script[]=LR"FLOGGFY('+script+')FLOGGFY";\n')
 PY
 floggfy_album_temp=$(cmd.exe /c echo %TEMP% 2>/dev/null | tr -d '\r')

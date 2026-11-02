@@ -79,7 +79,7 @@ spotify::DecoderOwnershipLayout decoder_ownership_layout{};
 bool decoder_ownership_layout_available=false;
 hooks::CallbackCounter audio_callbacks;
 enum class AudioEventKind : unsigned { OggPage,FlacBegin,FlacBytes,FlacFrame,FlacError,FlacEnd,
-    AacBegin,AacBytes,AacError,AacDestroy,Mp3Begin,Mp3Bytes,Mp3End,Mp3Error };
+    AacBegin,AacBytes,AacError,AacDestroy,Mp3Begin,Mp3Bytes };
 enum class FlacErrorSource : unsigned { None,ReadCallback,FrameCallback,DecoderCallback };
 struct Slot { uintptr_t context; unsigned length; double time; AudioEventKind kind;unsigned epoch; uint64_t input_length;
     uint32_t format; bool capture;
@@ -1559,17 +1559,6 @@ static void ProcessMp3Capture(const Slot& s,CaptureBuffers& buffers) {
         active[s.context]=std::move(capture);return;
     }
     if(found==active.end()||!found->second->mp3)return;
-    if(s.kind==AudioEventKind::Mp3Error) {
-        buffers.RecordLostActive(found->second.get(),ownership::CaptureAbortReason::QueueLoss);
-        active.erase(found);return;
-    }
-    if(s.kind==AudioEventKind::Mp3End) {
-        if(!CompleteMp3Capture(found,buffers,s.time)) {
-            buffers.RecordLostActive(found->second.get(),ownership::CaptureAbortReason::InvalidData);
-            active.erase(found);
-        }
-        return;
-    }
     if(s.kind!=AudioEventKind::Mp3Bytes)return;
     size_t reserved=publishing_reserved.load();
     for(const auto& entry:active)reserved+=entry.second->Capacity();

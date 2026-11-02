@@ -18,7 +18,7 @@ x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vendor/minimp4/minim
 x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vorbis_headers_stb.c -o build/windows-tests/vorbis-headers-stb.o
 python3 - <<'PY'
 from pathlib import Path
-script='window.__floggfyNative=true;\n'+Path('native/metadata_collector.js').read_text()
+script=Path('native/metadata_collector.js').read_text()
 Path('build/metadata_script.h').write_text('static constexpr wchar_t metadata_script[]=LR"FLOGGFY('+script+')FLOGGFY";\n')
 PY
 for source in buffer hook trampoline hde/hde64; do
@@ -52,11 +52,8 @@ x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/play
 x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_menu_quality_test.cpp native/library_layout.cpp "${quality_sources[@]}" native/history_settings.cpp native/async_log.cpp build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-menu-quality-test.exe"
 "$floggfy_test_root/windows-menu-quality-test.exe"
 
-x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_quality_observer_test.cpp native/decoder_ownership.cpp native/playback_quality_windows.cpp "${quality_sources[@]}" native/media_session.cpp native/library_layout.cpp native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp native/mp3_stream.cpp build/windows-tests/minimp4.o native/vorbis_headers.cpp build/windows-tests/vorbis-headers-stb.o native/existing_quality.cpp native/file_publication.cpp native/lyrics_update.cpp native/metadata_update_core.cpp native/metadata_update_windows.cpp native/recent_downloads.cpp native/song_destination.cpp native/spotify_hook_discovery.cpp native/history_settings.cpp native/async_log.cpp build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_test_root/windows-quality-observer-test.exe"
+x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_quality_observer_test.cpp native/decoder_ownership.cpp native/playback_quality_windows.cpp "${quality_sources[@]}" native/media_session.cpp native/library_layout.cpp native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp native/mp3_stream.cpp build/windows-tests/minimp4.o native/vorbis_headers.cpp build/windows-tests/vorbis-headers-stb.o native/existing_quality.cpp native/file_publication.cpp native/metadata_update_core.cpp native/metadata_update_windows.cpp native/recent_downloads.cpp native/song_destination.cpp native/spotify_hook_discovery.cpp native/history_settings.cpp native/async_log.cpp build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_test_root/windows-quality-observer-test.exe"
 "$floggfy_test_root/windows-quality-observer-test.exe"
-
-x86_64-w64-mingw32-g++ "${common[@]}" -DFLOGGFY_PUBLICATION_TEST -I native/vendor/libogg/include tests/windows_lyrics_update_test.cpp native/lyrics_update.cpp native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp native/mp3_stream.cpp build/windows-tests/minimp4.o native/vorbis_headers.cpp build/windows-tests/vorbis-headers-stb.o native/existing_quality.cpp native/file_publication.cpp native/metadata_update_core.cpp native/library_layout.cpp "${quality_sources[@]}" native/history_settings.cpp native/async_log.cpp -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-lyrics-update-test.exe"
-"$floggfy_test_root/windows-lyrics-update-test.exe"
 
 # Synthetic host preloads System32 VERSION.dll before its entry point.
 x86_64-w64-mingw32-g++ "${common[@]}" -municode tests/windows_startup_host.cpp -o "$floggfy_test_root/Spotify-startup-host.exe"

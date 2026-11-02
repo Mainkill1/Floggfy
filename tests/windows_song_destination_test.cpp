@@ -106,7 +106,7 @@ static void LegacyNames(const std::wstring& root) {
     WriteAudio(numbered,song);
     Quality quality;
     assert(ExistingRecording(numbered,song,quality));
-    assert(ResolveRecordingPath(canonical,song)==numbered&&DecideSave(numbered,quality,song)==SaveDecision::Skip);
+    assert(ResolveRecordingDestination(canonical,song).path==numbered&&DecideSave(numbered,quality,song)==SaveDecision::Skip);
     assert(GetFileAttributesW(canonical.c_str())==INVALID_FILE_ATTRIBUTES);
     RecordingFile stored;assert(ReadRecording(numbered,stored));
     bool disc_tag=false,track_tag=false;
@@ -116,18 +116,18 @@ static void LegacyNames(const std::wstring& root) {
     }
     assert(disc_tag&&track_tag);
     assert(MoveFileW(numbered.c_str(),prefixed.c_str()));
-    assert(ResolveRecordingPath(canonical,song)==prefixed&&DecideSave(prefixed,quality,song)==SaveDecision::Skip);
+    assert(ResolveRecordingDestination(canonical,song).path==prefixed&&DecideSave(prefixed,quality,song)==SaveDecision::Skip);
     const auto suffixed=prefixed.substr(0,prefixed.size()-5)+RecordingSuffix(song)+L".flac";
     assert(MoveFileW(prefixed.c_str(),suffixed.c_str()));
-    assert(ResolveRecordingPath(canonical,song)==suffixed&&DecideSave(suffixed,quality,song)==SaveDecision::Skip);
+    assert(ResolveRecordingDestination(canonical,song).path==suffixed&&DecideSave(suffixed,quality,song)==SaveDecision::Skip);
     assert(DeleteFileW(suffixed.c_str()));
     auto other=song;other.disc=1;other.spotify_uri="spotify:track:other-disc-song";
     WriteAudio(canonical,other);
-    const auto alternate=ResolveRecordingPath(canonical,song);
+    const auto alternate=ResolveRecordingDestination(canonical,song).path;
     assert(!alternate.empty()&&alternate!=canonical);
     assert(alternate.substr(alternate.find_last_of(L'\\')+1).rfind(L"Legacy song [",0)==0);
     WriteAudio(alternate,song);
-    assert(ResolveRecordingPath(canonical,song)==alternate&&DecideSave(alternate,quality,song)==SaveDecision::Skip);
+    assert(ResolveRecordingDestination(canonical,song).path==alternate&&DecideSave(alternate,quality,song)==SaveDecision::Skip);
     assert(ExistingRecording(canonical,other,quality));
     assert(DeleteFileW(alternate.c_str())&&DeleteFileW(canonical.c_str()));
 }
@@ -299,7 +299,7 @@ int main() {
     assert(!ReadSongDestination(7,11,saved_file) && saved_file==before);
     auto other=item;other.spotify_uri="spotify:track:other-probe";
     WriteAudio(ogg,other); // Preserve a different recording occupying the legacy filename.
-    const auto alternate=ResolveRecordingPath(ogg,item);assert(alternate!=ogg && !alternate.empty());
+    const auto alternate=ResolveRecordingDestination(ogg,item).path;assert(alternate!=ogg && !alternate.empty());
     WriteAudio(alternate,item);SubmitSong(7,root,item,true,11);
     assert(ReadSongDestination(7,11,saved_file) && saved_file==alternate);
     assert(DeleteFileW(WindowsPath(alternate).c_str()));assert(DeleteFileW(WindowsPath(ogg).c_str()));

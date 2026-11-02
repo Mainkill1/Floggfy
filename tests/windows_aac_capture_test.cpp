@@ -151,7 +151,7 @@ void TestPipeline(const std::wstring& root) {
     tags.fields.back()={"HISTORY_CAPTURE","native compressed SpAC AAC packets"};
     for(auto& field:tags.fields)if(field.first=="SPOTIFY_URI")field.second="spotify:track:unrelated";
     std::vector<uint8_t> unrelated;assert(MakeAacM4a(info,packets,tags,unrelated,error));Write(path,unrelated);
-    const auto alternate=ResolveRecordingPath(path,catalog);assert(!alternate.empty()&&alternate!=path);
+    const auto alternate=ResolveRecordingDestination(path,catalog).path;assert(!alternate.empty()&&alternate!=path);
     capture=Captured(source);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Saved&&Read(path)==unrelated);
     assert(ReadRecording(alternate,inspected)&&MatchesRecording(inspected,catalog));
     assert(DeleteFileW(path.c_str())&&DeleteFileW(alternate.c_str()));

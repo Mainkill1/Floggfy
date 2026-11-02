@@ -264,8 +264,7 @@
  function scan(){
   const sp=own(window,'Spicetify'),wrapper=own(sp,'Player');
   const p=own(own(sp,'Platform'),'PlayerAPI')||own(wrapper,'origin')||wrapper;if(method(p,'getState'))player=p;
-  const observeConnect=true; // Cached local-device identity is required even with diagnostics off.
-  if(observeConnect)try{
+  try{
    const candidate=own(own(sp,'Platform'),'ConnectDevicesAPI');
    if(method(candidate,'getConnectState'))connectDevices=candidate;
   }catch{}
@@ -288,7 +287,7 @@
     if(++n>160)break;
     if(String(key)==='Symbol(RequestBuilder)'){const candidate=own(value,'instance');if(method(candidate,'build'))builder=candidate;}
     if(String(key)==='Symbol(PlayerAPI)'){const candidate=own(value,'instance');if(method(candidate,'getState'))player=candidate;}
-    if(observeConnect&&String(key)==='Symbol(ConnectDevicesAPI)'){const candidate=own(value,'instance');if(method(candidate,'getConnectState'))connectDevices=candidate;}
+    if(String(key)==='Symbol(ConnectDevicesAPI)'){const candidate=own(value,'instance');if(method(candidate,'getConnectState'))connectDevices=candidate;}
    }}catch{}
    if(own(o,'uri')||own(o,'trackUri')||own(o,'queryKey'))remember(o);
    try{let count=0;for(const v of Map.prototype.values.call(o)){if(++count>80||queue.length>=8192)break;if(object(v))queue.push(v);}}catch{}

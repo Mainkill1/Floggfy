@@ -8,7 +8,6 @@ namespace history {
 // shared ApplyQueued result; failure may retain dependent callback state.
 bool PrepareMetadataCollector(HMODULE cef);
 void FinalizeMetadataCollector(bool applied);
-void StartMetadataCollector(HMODULE cef);
 // RAM-only identity enrichment; never reads storage or fetches artwork.
 void EnrichCatalog(const Media&,Catalog&);
 void EnrichTags(const Media&,Tags&);

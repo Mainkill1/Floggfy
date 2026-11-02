@@ -2,7 +2,6 @@
 #include "metadata_bridge.h"
 #include "cef_identity.h"
 #include "hook_init_state.h"
-#include "hook_installation.h"
 #include "hook_rollback.h"
 #include "hook_startup_minhook.h"
 #include "rich_metadata.h"
@@ -99,7 +98,6 @@ static hooks::InitController metadata_init;
 static hooks::CallbackCounter metadata_callbacks;
 static std::atomic<bool> metadata_running{false},metadata_polling{false};
 static hooks::QueuedHookSet<3> metadata_startup_hooks;
-static hooks::InstallCounts metadata_startup_counts;
 static HANDLE metadata_preparation_thread=nullptr;
 static bool metadata_prepared=false;
 struct Message { ULONGLONG time=0; char data[131073];size_t length=0;};
@@ -457,7 +455,7 @@ bool PrepareMetadataCollector(HMODULE cef) {
  metadata_polling.store(false,std::memory_order_release);metadata_running.store(true,std::memory_order_release);
  metadata_preparation_thread=CreateThread(nullptr,0,MetadataWorker,nullptr,0,nullptr);
  if(!metadata_preparation_thread){metadata_running.store(false,std::memory_order_release);CloseHandle(message_event);message_event=nullptr;LogEvent(LogKind::Warning,"warning","metadata worker startup failed; retry scheduled");metadata_init.Retry(now);return false;}
- metadata_prepared=true;metadata_startup_counts={};
+ metadata_prepared=true;
  auto status=MH_Initialize();if(status==MH_ERROR_ALREADY_INITIALIZED)status=MH_OK;
  if(status!=MH_OK){QueueDiagnostic("metadata MinHook initialization failed");FinishMetadataStartup(false,false);return false;}
  const char* names[]={"cef_browser_host_create_browser","cef_browser_host_create_browser_sync","cef_browser_view_create"};
@@ -466,7 +464,7 @@ bool PrepareMetadataCollector(HMODULE cef) {
  bool complete=true;
  for(unsigned i=0;i<3;i++){
   auto target=reinterpret_cast<void*>(GetProcAddress(cef,names[i]));if(!target)continue;
-  metadata_startup_counts.Found();status=MH_CreateHook(target,callbacks[i],originals[i]);metadata_startup_counts.Created(status==MH_OK);
+  status=MH_CreateHook(target,callbacks[i],originals[i]);
   if(status!=MH_OK){char line[200];snprintf(line,sizeof(line),"metadata hook %s create failed: %s",names[i],MH_StatusToString(status));QueueDiagnostic(line);complete=false;continue;}
   metadata_startup_hooks.Add(target);
  }
@@ -474,8 +472,5 @@ bool PrepareMetadataCollector(HMODULE cef) {
   QueueDiagnostic("metadata startup hook preparation unavailable");FinishMetadataStartup(false,false);return false;
  }
  return true;
-}
-void StartMetadataCollector(HMODULE cef) {
- if(PrepareMetadataCollector(cef))FinalizeMetadataCollector(MH_ApplyQueued()==MH_OK);
 }
 }

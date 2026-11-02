@@ -54,7 +54,7 @@ x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/wind
     native/spac_stream.cpp native/mp3_stream.cpp native/aac_container.cpp native/playback_quality_windows.cpp native/playback_quality.cpp native/media_session.cpp \
     native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp native/ogg_history_core.cpp native/image_info.cpp \
     native/library_layout.cpp native/recording_file.cpp native/vorbis_headers.cpp native/existing_quality.cpp native/file_publication.cpp \
-    native/lyrics_update.cpp native/metadata_update_core.cpp native/metadata_update_windows.cpp native/recent_downloads.cpp \
+    native/metadata_update_core.cpp native/metadata_update_windows.cpp native/recent_downloads.cpp \
     native/song_destination.cpp native/spotify_hook_discovery.cpp native/async_log.cpp \
     native/decoder_ownership.cpp \
     "$floggfy_diag_build"/*.o -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_diag_root/playback/test.exe"

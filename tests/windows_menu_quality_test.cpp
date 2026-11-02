@@ -251,7 +251,6 @@ int main() {
   std::copy_n(L"Example", 7, q.title.begin());
   q.format = history::PlaybackFormat::Ogg;
   q.rate = 44100;
-  q.bitrate = 320000;
   q.level = history::PlaybackLevel::VeryHigh;
   history::PublishPlaybackQuality(q);
   Populate(&root.api);

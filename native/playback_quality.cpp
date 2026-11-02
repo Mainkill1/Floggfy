@@ -187,12 +187,6 @@ PlaybackQualitySnapshot PlaybackQualityTracker::Snapshot(const std::string &clie
                 c.ogg.bitrate == 160000 ? PlaybackLevel::High :
                 c.ogg.bitrate == 96000 ? PlaybackLevel::Normal : PlaybackLevel::Lossy;
   }
-  if (c.complete) {
-    const double length = c.format == PlaybackFormat::Flac
-                              ? double(c.flac.total_samples) / c.flac.rate : c.ogg.Duration();
-    out.bitrate = double(c.bytes) * 8 / length;
-  }
-  // Never divide read-ahead bytes by partial decoded coverage.
   return out;
 }
 uint64_t PlaybackIdentity(const std::string &key) {

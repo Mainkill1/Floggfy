@@ -122,23 +122,6 @@ FilePublication PromoteReplacement(const std::wstring& path,const std::wstring& 
     }
     return published?FilePublication::Upgraded:FilePublication::Failed;
 }
-Catalog CatalogFromTags(const Tags& tags) {
-    auto field=[&](const char* name) { for(const auto& pair:tags.fields) if(pair.first==name) return pair.second; return std::string(); };
-    auto wide=[](const std::string& value) {
-        int n=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,value.data(),int(value.size()),nullptr,0);
-        std::wstring result(size_t(n),L'\0');
-        if(n) MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,value.data(),int(value.size()),result.data(),n);
-        return result;
-    };
-    Catalog catalog;
-    catalog.title=wide(field("TITLE")); catalog.album=wide(field("ALBUM"));
-    auto artist=field("ALBUMARTIST"); if(artist.empty()) artist=field("ARTIST");
-    catalog.artist=wide(artist); catalog.spotify_uri=field("SPOTIFY_URI");
-    catalog.track=unsigned(std::strtoul(field("TRACKNUMBER").c_str(),nullptr,10));
-    catalog.disc=unsigned(std::strtoul(field("DISCNUMBER").c_str(),nullptr,10));
-    catalog.duration=std::strtod(field("HISTORY_MEDIA_DURATION").c_str(),nullptr);
-    return catalog;
-}
 }
 FilenameConversion ConvertRecordingFilename(const std::wstring& source,const std::wstring& title_path,
     const Catalog& catalog,std::wstring& renamed_path,FilenameRenamePermit is_current,void* context) {
@@ -254,10 +237,5 @@ FilePublication PublishMetadataBytes(const std::wstring& path,const void* bytes,
     if(!WriteNew(staging,bytes,size))return FilePublication::Failed;
     TestPhase(L"staged",path);
     return PromoteReplacement(path,staging,catalog,locked_file);
-}
-FilePublication PublishBytes(const std::wstring& path,const Quality& quality,const void* bytes,size_t size) {
-    RecordingFile incoming;
-    if(!InspectRecording(static_cast<const uint8_t*>(bytes),size,incoming)) return FilePublication::Failed;
-    return PublishBytes(path,quality,bytes,size,CatalogFromTags(incoming.tags));
 }
 }

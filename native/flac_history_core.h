@@ -17,12 +17,5 @@ struct FlacCoverage {
 };
 // Recognize bounded, monotonic LRC timestamps without accepting plain text.
 bool IsSyncedLyrics(const std::string& lyrics);
-bool CopyFlacLyrics(const std::vector<uint8_t>& source,Tags& incoming);
-enum class LyricsUpdate { Updated, Unchanged, Invalid };
-// Read comment fields without decoding audio or requiring artwork.
-bool ReadFlacComments(const std::vector<uint8_t>& source,Tags& tags,std::string& error);
-// Fill missing lyrics or upgrade plain text to LRC for the same track;
-// preserve all unrelated tags and every other metadata/audio block.
-LyricsUpdate FillFlacLyrics(const std::vector<uint8_t>& source,const Tags& incoming,std::vector<uint8_t>& output,std::string& error);
 bool TagFlac(const std::vector<uint8_t>& source,const Tags& tags,std::vector<uint8_t>& output,std::string& error);
 }

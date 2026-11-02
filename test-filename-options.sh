@@ -18,7 +18,7 @@ x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -municode -static-li
     native/spac_stream.cpp native/mp3_stream.cpp native/aac_container.cpp native/playback_quality_windows.cpp native/playback_quality.cpp native/media_session.cpp \
     native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp native/ogg_history_core.cpp native/image_info.cpp \
     native/library_layout.cpp native/recording_file.cpp native/vorbis_headers.cpp native/existing_quality.cpp native/file_publication.cpp \
-    native/lyrics_update.cpp native/metadata_update_core.cpp native/metadata_update_windows.cpp native/recent_downloads.cpp \
+    native/metadata_update_core.cpp native/metadata_update_windows.cpp native/recent_downloads.cpp \
     native/song_destination.cpp native/spotify_hook_discovery.cpp native/decoder_ownership.cpp native/async_log.cpp \
     build/filename-options/*.o -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_names_root/filename-options-test.exe"
 exec "$floggfy_names_root/filename-options-test.exe"

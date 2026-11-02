@@ -51,7 +51,7 @@ int main() {
         assert(DeleteFileW(path.c_str()));
         Write(path,bytes);race=true;
         assert(UpdateRecordingMetadata(path,incoming,catalog)==FileMetadataUpdate::Failed);race=false;
-        const auto recovered=ResolveRecordingPath(path,catalog);assert(recovered!=path&&ReadRecording(recovered,result)&&result.complete);
+        const auto recovered=ResolveRecordingDestination(path,catalog).path;assert(recovered!=path&&ReadRecording(recovered,result)&&result.complete);
         HANDLE foreign=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr);assert(foreign!=INVALID_HANDLE_VALUE&&GetFileSize(foreign,nullptr)==3);CloseHandle(foreign);
         assert(DeleteFileW(path.c_str())&&DeleteFileW(recovered.c_str()));
     }

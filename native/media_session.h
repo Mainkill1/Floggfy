@@ -23,7 +23,6 @@ struct Media {
     std::string ListenKey() const {return source==MediaSource::Spotify?spotify_uri+(playback_instance.empty()?std::string{}:"\x1f"+playback_instance):Key();}
 };
 std::string Utf8(const std::wstring& s);
-std::string Json(const std::string& s);
 enum class MediaRead { Pending,Ready,Failed,Transition };
 enum class ClientMediaRead { Pending,Ready,Unavailable,Blocked,Transition };
 // Validated renderer snapshots only. Publishing/polling never performs I/O.

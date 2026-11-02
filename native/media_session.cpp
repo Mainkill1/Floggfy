@@ -78,15 +78,6 @@ std::string Utf8(const std::wstring& s) {
     if(n) WideCharToMultiByte(CP_UTF8,0,s.data(),int(s.size()),out.data(),n,nullptr,nullptr);
     return out;
 }
-std::string Json(const std::string& s) {
-    const char* hex="0123456789abcdef"; std::string out="\"";
-    for(unsigned char c:s) {
-        if(c=='"' || c=='\\') { out+='\\'; out+=char(c); }
-        else if(c<32) { out+="\\u00"; out+=hex[c>>4]; out+=hex[c&15]; }
-        else out+=char(c);
-    }
-    return out+'"';
-}
 std::string Media::Key() const {
     return Utf8(title)+"\x1f"+Utf8(artist)+"\x1f"+Utf8(album);
 }
