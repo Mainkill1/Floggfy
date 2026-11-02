@@ -26,7 +26,6 @@ class PlaybackQualityTracker {
     FlacCoverage coverage;
     std::array<uint8_t, 42> prefix{};
     size_t prefix_size = 0;
-    uint64_t bytes = 0;
     bool metadata = false, broken = false, complete = false, coverage_valid = true;
   };
   std::deque<Candidate> streams_;

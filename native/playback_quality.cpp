@@ -70,12 +70,10 @@ void PlaybackQualityTracker::Ogg(uintptr_t context, const uint8_t *bytes, size_t
   if (!c || (bytes[5] & 2))
     c = &Begin(context, PlaybackFormat::Ogg, time);
   auto result = c->ogg.Push(bytes, length);
-  if (result == Result::Invalid || result == Result::Ignore ||
-      length > (uint64_t(1) << 40) - c->bytes) {
+  if (result == Result::Invalid || result == Result::Ignore) {
     c->broken = true;
     return;
   }
-  c->bytes += length;
   c->metadata = c->ogg.rate != 0;
   c->complete = result == Result::Complete;
 }
@@ -88,12 +86,10 @@ void PlaybackQualityTracker::FlacBytes(uintptr_t context, const uint8_t *bytes, 
   auto c = Find(context, PlaybackFormat::Flac);
   if (!c || c->broken)
     return;
-  if (length > encoded_bytes || (length && !bytes) ||
-      encoded_bytes > (uint64_t(1) << 40) - c->bytes) {
+  if (length > encoded_bytes || (length && !bytes)) {
     c->broken = true;
     return;
   }
-  c->bytes += encoded_bytes;
   const auto n = std::min(length, c->prefix.size() - c->prefix_size);
   if (n) memcpy(c->prefix.data() + c->prefix_size, bytes, n);
   c->prefix_size += n;
