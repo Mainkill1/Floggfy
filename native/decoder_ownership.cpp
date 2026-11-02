@@ -111,7 +111,8 @@ DecoderOwnershipTracker::EnsurePlayback(const std::string& id,const std::string&
     auto* slot=EmptyOrOldest(playbacks_);
     if(slot->token)InvalidatePlayback(slot->token);
     *slot={};slot->id=id;slot->uri=uri;slot->token=next_playback_++;
-    slot->sequence=sequence_++;slot->listen_generation=generation;slot->observed=observed;
+    slot->sequence=sequence_++;slot->listen_generation=generation;
+    slot->first_observed=observed;slot->observed=observed;
     return *slot;
 }
 
@@ -255,6 +256,9 @@ void DecoderOwnershipTracker::TryBind(CaptureRecord& capture,PlaybackRecord& pla
     if(observed-capture.first_output>kRetentionSeconds) {
         capture.state=OwnershipState::Invalidated;return;
     }
+    // A newly discovered decoder can belong to Spotify's preloaded successor.
+    // A recent repeat observation does not make an old playback instance new.
+    if(capture.first_output-playback.first_observed>kRetentionSeconds)return;
     if(pending_capture_==capture.token&&playback.token==current_playback_)return;
     capture.playback_token=playback.token;capture.listen_generation=playback.listen_generation;
     capture.state=OwnershipState::Bound;current_capture_=capture.token;

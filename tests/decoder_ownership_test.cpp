@@ -86,6 +86,27 @@ void TestSameSongRepeatNeedsNewInstance() {
     assert(second_binding.playback_token!=first_binding.playback_token);
 }
 
+void TestPreloadedSuccessorWaitsForNewPlaybackInstance() {
+    DecoderOwnershipTracker tracker;tracker.Reset(1);
+
+    const auto outgoing=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,1.0,1);
+    tracker.ObserveDecoded(Activity(0x1000,1.1,1.2));
+    tracker.ObservePlayback("instance-old","uri:old",1,1.3);
+    State(tracker,outgoing,OwnershipState::Bound);
+    tracker.AbortCapture(outgoing,CaptureAbortReason::SettingsChange);
+
+    tracker.ObservePlayback("instance-old","uri:old",1,130.0);
+    const auto preload=tracker.BeginCapture(DecoderCodec::Flac,0x2000,0,130.1,1);
+    tracker.ObserveDecoded(Activity(0x2000,130.1,130.1));
+    tracker.ObservePlayback("instance-old","uri:old",1,130.2);
+    State(tracker,preload,OwnershipState::AwaitingPlaybackInstance);
+
+    tracker.ObservePlayback("instance-new","uri:new",2,133.0);
+    const auto binding=State(tracker,preload,OwnershipState::Bound);
+    assert(binding.playback_token==tracker.PlaybackToken("instance-new"));
+    assert(binding.listen_generation==2);
+}
+
 void TestUnavailableInstanceAndPauseResume() {
     DecoderOwnershipTracker tracker;tracker.Reset(1);
     const auto capture=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,1.0,1);
@@ -259,6 +280,7 @@ int main() {
     TestNormalization();
     TestSingleOwnerBinds();
     TestSameSongRepeatNeedsNewInstance();
+    TestPreloadedSuccessorWaitsForNewPlaybackInstance();
     TestUnavailableInstanceAndPauseResume();
     TestSuccessorsAndSkips();
     TestCaptureConflictsAndReuse();

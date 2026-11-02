@@ -110,6 +110,7 @@ private:
         std::uint64_t token=0;
         std::uint64_t sequence=0;
         std::uint64_t listen_generation=0;
+        double first_observed=0;
         double observed=0;
     };
 
