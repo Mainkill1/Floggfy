@@ -22,6 +22,8 @@ g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/pe_imports_test.cpp native/pe_imp
 build/pe-imports-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/spotify_hook_discovery_test.cpp native/spotify_hook_discovery.cpp -o build/spotify-hook-discovery-test
 build/spotify-hook-discovery-test
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/decoder_ownership_test.cpp native/decoder_ownership.cpp -o build/decoder-ownership-test
+build/decoder-ownership-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/history_core_test.cpp native/ogg_history_core.cpp -o build/history-core-test
 build/history-core-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/capture_speed_test.cpp native/ogg_history_core.cpp -o build/capture-speed-test
