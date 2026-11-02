@@ -211,11 +211,13 @@ std::string Listen::Observe(const std::string& key,double pos,double length,
         last_time=time;last_position=pos;playing=is_playing;return {};
     }
     const double expected=last_position+(playing ? elapsed*capture_speed : 0);
-    if(elapsed<0 || elapsed>3 || pos<last_position-1.5 || pos>expected+1.5 ||
+    if(elapsed<0 || (elapsed>3&&playing) || pos<last_position-1.5 || pos>expected+1.5 ||
        std::fabs(length-duration)>1.0) eligible=false;
     if(eligible && playing && !is_playing && pos>=duration && expected>=duration-0.1)
         done=CompleteListen(*this,last_time+(duration-last_position)/capture_speed);
-    last_time=time;last_position=pos;playing=is_playing;
+    last_time=time;
+    if(playing||is_playing)last_position=pos; // Repeated paused polls retain the first pause position.
+    playing=is_playing;
     return done;
 }
 }
