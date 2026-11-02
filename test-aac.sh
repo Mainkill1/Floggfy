@@ -23,7 +23,7 @@ x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -DFLOGGFY_COMBINED_T
     native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp native/ogg_history_core.cpp native/image_info.cpp \
     native/library_layout.cpp native/recording_file.cpp native/vorbis_headers.cpp native/existing_quality.cpp native/file_publication.cpp \
     native/lyrics_update.cpp native/metadata_update_core.cpp native/metadata_update_windows.cpp native/recent_downloads.cpp \
-    native/song_destination.cpp native/spotify_hook_discovery.cpp native/async_log.cpp \
+    native/song_destination.cpp native/spotify_hook_discovery.cpp native/decoder_ownership.cpp native/async_log.cpp \
     build/aac-tests/*.o -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_aac_root/aac-test.exe"
 if [[ $# == 2 ]]; then
     "$floggfy_aac_root/aac-test.exe" "$(wslpath -w "$1")" "$(wslpath -w "$floggfy_aac_root/source-sample.m4a")" "$(wslpath -w "$2")"

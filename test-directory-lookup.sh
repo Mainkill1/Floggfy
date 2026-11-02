@@ -19,6 +19,6 @@ x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -municode -static-li
     native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp native/ogg_history_core.cpp native/image_info.cpp \
     native/library_layout.cpp native/recording_file.cpp native/vorbis_headers.cpp native/file_publication.cpp \
     native/lyrics_update.cpp native/metadata_update_core.cpp native/metadata_update_windows.cpp native/recent_downloads.cpp \
-    native/spotify_hook_discovery.cpp native/async_log.cpp \
+    native/spotify_hook_discovery.cpp native/decoder_ownership.cpp native/async_log.cpp \
     build/directory-lookup/*.o -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_names_root/directory-lookup-test.exe"
 exec "$floggfy_names_root/directory-lookup-test.exe" "$@"
