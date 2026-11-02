@@ -37,8 +37,10 @@ static bool ParseMetadata(const std::string& input,RichMetadata& out,std::string
   if(value.size()>(key=="LYRICS"?65536u:4096u)) return fail("field too large");
   kv.emplace(key,std::move(value)); p=end+1;
  }
- const bool episode=playback && kv["uri"].rfind("spotify:episode:",0)==0;
- if(kv["v"]!="1"||kv["title"].empty()||(!episode && (kv["artist"].empty()||kv["album"].empty()||kv["uri"].rfind("spotify:track:",0)!=0))) return fail("missing identity");
+ const bool episode=kv["uri"].rfind("spotify:episode:",0)==0;
+ const bool track=kv["uri"].rfind("spotify:track:",0)==0;
+ const bool labels=(playback&&episode)||(!kv["artist"].empty()&&!kv["album"].empty());
+ if(kv["v"]!="1"||kv["title"].empty()||(!track&&!episode)||!labels) return fail("missing identity");
  char* last=nullptr; double d=strtod(kv["duration"].c_str(),&last);
  if(!last||*last||!std::isfinite(d)||d<=0||d>86400) return fail("invalid duration");
  RichMetadata m; m.title=kv["title"];m.artist=kv["artist"];m.album=kv["album"];m.uri=kv["uri"];m.duration=d;m.artwork_url=kv["artwork_url"];
