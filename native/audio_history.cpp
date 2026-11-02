@@ -423,6 +423,7 @@ struct Capture {
     bool lossless=false,metadata=false,aac=false,unverified_reported=false,ambiguous=false;
     mutable int final_validation=-1;
     mutable unsigned validation_runs=0;
+    bool publication_deferred=false;
     SpacStream spac;
     FlacInfo flac;
     FlacCoverage coverage;
@@ -528,6 +529,35 @@ static FinalCaptureValidation CachedFinalValidation(const Capture& capture) {
         capture.final_validation=int(ValidateFinalCapture(capture));
     }
     return FinalCaptureValidation(capture.final_validation);
+}
+// Called only when ownership reconciliation has finished and this object really
+// will be released. Flatten keeps the source alive through the final whole-file
+// inspection and avoids retaining another permanent copy.
+static const char* CheckBeforeRelease(Capture& capture,const char* reason) {
+    const char* result="validation unavailable";
+    try {
+        const bool guarded_complete=capture.lossless?(capture.metadata&&capture.coverage.Complete(capture.flac)):
+            capture.aac?capture.spac.Complete():capture.stream.complete;
+        const bool verified=guarded_complete&&CachedFinalValidation(capture)==FinalCaptureValidation::Valid;
+        // Inspect the bytes independently: a failed decoder/coverage flag does
+        // not establish that the complete compressed source was lost.
+        auto source=capture.data.Flatten();bool complete=false;
+        if(capture.aac) {
+            SpacStream rebuilt;rebuilt.Push(source.data(),source.size());complete=rebuilt.Complete();
+        }else {
+            RecordingFile recording;
+            complete=InspectRecording(source.data(),source.size(),recording)&&recording.complete;
+        }
+        result=complete?
+            (capture.ambiguous?"complete valid audio; ownership ambiguous":!verified?
+                "complete valid audio; capture/listen verification failed":capture.publication_deferred?
+                "complete valid audio; publication deferred":"complete valid audio; no verified metadata/listen match"):
+            guarded_complete?"invalid cached audio":"incomplete or invalid cached audio";
+    } catch(...) { /* Release under the existing memory bound, with an honest outcome. */ }
+    char line[320];snprintf(line,sizeof(line),"final cache check: %s; release reason=%s; bytes=%llu",
+        result,reason,static_cast<unsigned long long>(capture.bytes));
+    Log(LogKind::Failure,line);
+    return result;
 }
 static bool FormatEnabled(const Capture& capture,const Settings& settings) {
     return capture.aac?settings.aac:capture.lossless?settings.flac:settings.ogg;
@@ -899,8 +929,9 @@ struct CaptureBuffers {
     double lost_listen_born_through=-std::numeric_limits<double>::infinity();
     std::array<double,32> lost_active_births{};
     unsigned lost_active_count=0,next_lost_active=0;
-    void RecordLostActive(const Capture* capture) {
+    void RecordLostActive(Capture* capture) {
         if(!capture)return;
+        CheckBeforeRelease(*capture,"active capture discarded");
         if(lost_active_count==lost_active_births.size())
             lost_capture_start_through=std::max(lost_capture_start_through,lost_active_births[next_lost_active]+20);
         else ++lost_active_count;
@@ -1187,7 +1218,8 @@ static void AssociateListen(Media media,Listen& listen,Media& current,std::vecto
             // ambiguous or skipped streams at publication.
             if(done.empty())
                 ready.erase(std::remove_if(ready.begin(),ready.end(),[&](const auto& c) {
-                    return prior(c) && !PendingCaptureDeadline(*c,heard);
+                    if(!prior(c)||PendingCaptureDeadline(*c,heard))return false;
+                    CheckBeforeRelease(*c,"ineligible previous listen");return true;
                 }),ready.end());
             for(auto it=active.begin();it!=active.end();) {
                 if(prior(it->second)) {
@@ -1293,19 +1325,14 @@ static std::string AssociationFailure(const Heard& heard,const CaptureBuffers& b
         (matches>1?"ambiguous completed captures":"no matching complete capture")+counts+
         " | "+Utf8(heard.media.artist)+" - "+Utf8(heard.media.title);
 }
-static void SchedulePublications(std::vector<Heard>& heard,CaptureBuffers& buffers,unsigned epoch,double now) {
+static void SchedulePublications(std::vector<Heard>& heard,CaptureBuffers& buffers,unsigned epoch,double now,RecentPlaybackHistory* recent=nullptr) {
     auto& ready=buffers.ready;
+    if(recent)for(auto& pending:heard)recent->Refresh(pending);
     const auto active_alternative=[&](const Heard& h) {
         for(const auto& c:buffers.active)if(CaptureTimingMatchesListen(*c.second,h))return true;
         for(const auto& c:buffers.ogg_active)if(CaptureTimingMatchesListen(*c.second,h))return true;
         return false;
     };
-    for(auto it=heard.begin();it!=heard.end();) {
-        if(it->provisional&&now>it->deadline) {
-            LogEvent(LogKind::Failure,"failed","quarantined capture expired before final validation");
-            it=heard.erase(it);
-        } else ++it;
-    }
     // Late-discovered captures inherit the same cutoff before they can match.
     BoundCompletedCaptureTails(buffers,heard);
     // Assess every alternative before expiry/pressure can remove evidence.
@@ -1317,14 +1344,6 @@ static void SchedulePublications(std::vector<Heard>& heard,CaptureBuffers& buffe
         auto& h=heard[link.first];auto& c=*ready[link.second];
         if(listen_matches[link.first]>1||capture_matches[link.second]>1||h.ambiguous||c.ambiguous)
             h.ambiguous=c.ambiguous=true;
-    }
-    while(heard.size()>5) {
-        buffers.lost_listen_born_through=std::max(buffers.lost_listen_born_through,heard.front().start+3);
-        LogEvent(LogKind::Failure,"failed","unmatched completed listen evicted from five-song history");heard.erase(heard.begin());
-    }
-    while(ready.size()>5) {
-        buffers.lost_capture_start_through=std::max(buffers.lost_capture_start_through,ready.front()->born+20);
-        LogEvent(LogKind::Failure,"failed","unmatched capture evicted from five-song buffer");ready.erase(ready.begin());
     }
     for(auto h=heard.begin();h!=heard.end();) {
         if(h->start<=buffers.lost_capture_start_through||buffers.LostActiveMatches(*h))h->ambiguous=true;
@@ -1355,12 +1374,39 @@ static void SchedulePublications(std::vector<Heard>& heard,CaptureBuffers& buffe
             job.capture=std::move(ready[match]);job.heard=*h;job.capture->listen_generation=h->generation;
             publishing_reserved.fetch_add(job.reserved);
             if(saves.Push(std::move(job)))SetEvent(save_event);
-            else {size_t reserved=job.reserved;job.capture.reset();publishing_reserved.fetch_sub(reserved);LogEvent(LogKind::Failure,"failed","publication queue full; completed candidate discarded");}
+            else {
+                publishing_reserved.fetch_sub(job.reserved);
+                ready[match]=std::move(job.capture);
+                if(!ready[match]->publication_deferred) {
+                    ready[match]->publication_deferred=true;
+                    Log(LogKind::Warning,"publication queue full; complete capture retained for retry");
+                }
+                ++h;continue;
+            }
             ready.erase(ready.begin()+match); h=heard.erase(h);
         } else if(now-h->finish>600) {
             buffers.lost_listen_born_through=std::max(buffers.lost_listen_born_through,h->start+3);
             LogEvent(LogKind::Failure,"failed",AssociationFailure(*h,buffers,matches)); h=heard.erase(h);
         } else ++h;
+    }
+    // Matching gets the last word before expiry or capacity removes evidence.
+    for(auto it=heard.begin();it!=heard.end();) {
+        const bool waiting_for_queue=std::any_of(ready.begin(),ready.end(),[&](const auto& c){
+            return c->publication_deferred&&CaptureMatchesListen(*c,*it);
+        });
+        if((it->provisional&&now>it->deadline&&!waiting_for_queue)||now-it->finish>600) {
+            buffers.lost_listen_born_through=std::max(buffers.lost_listen_born_through,it->start+3);
+            LogEvent(LogKind::Failure,"failed","pending listen expired after final cache reconciliation");
+            it=heard.erase(it);
+        }else ++it;
+    }
+    while(heard.size()>5) {
+        buffers.lost_listen_born_through=std::max(buffers.lost_listen_born_through,heard.front().start+3);
+        LogEvent(LogKind::Failure,"failed","unmatched completed listen evicted from five-song history");heard.erase(heard.begin());
+    }
+    while(ready.size()>5) {
+        buffers.lost_capture_start_through=std::max(buffers.lost_capture_start_through,ready.front()->born+20);
+        CheckBeforeRelease(*ready.front(),"five-song capacity");ready.erase(ready.begin());
     }
     // Release transition-only retention once its listen was queued/discarded,
     // or its original completion deadline passed. Do not extend it on repeats.
@@ -1375,7 +1421,8 @@ static void SchedulePublications(std::vector<Heard>& heard,CaptureBuffers& buffe
         if(expired(it->second)){buffers.RecordLostActive(it->second.get());it=buffers.ogg_active.erase(it);}else ++it;
     }
     ready.erase(std::remove_if(ready.begin(),ready.end(),[](const auto& capture){
-        return capture->retained_until&&capture->finished>capture->retained_until;
+        if(!capture->retained_until||capture->finished<=capture->retained_until)return false;
+        CheckBeforeRelease(*capture,"decoder completed after deadline");return true;
     }),ready.end());
 }
 struct MediaWarningState {double since=-1;bool reported=false;};
@@ -1432,6 +1479,9 @@ static DWORD WINAPI Worker(LPVOID) {
                 output=preferences.root; memory_limit=size_t(preferences.max_buffered_mib)*1024*1024;
                 bool capture=preferences.downloads && (preferences.ogg || preferences.flac || preferences.aac);
                 if(capture!=enabled || initial || preferences.capture_epoch!=epoch) {
+                    for(auto& c:buffers.active)CheckBeforeRelease(*c.second,"capture settings changed");
+                    for(auto& c:buffers.ogg_active)CheckBeforeRelease(*c.second,"capture settings changed");
+                    for(auto& c:ready)CheckBeforeRelease(*c,"capture settings changed");
                     buffers={}; heard.clear();recent.Clear(); listen={}; current={};
                     last_media=minimum_media_time=now;media_unavailable=false;media_warning={};diagnostics.known=false;CancelFilenameChecks();
                     enabled=capture;
@@ -1447,8 +1497,12 @@ static DWORD WINAPI Worker(LPVOID) {
                 WaitForSingleObject(event,200); continue;
             }
             if(dropped!=overflow) {
-                overflow=dropped; active.clear(); buffers.ogg_active.clear(); ready.clear(); heard.clear(); listen.eligible=false; quality.ClearStreams();
-                Log(LogKind::Failure,"capture queue overflow; streams and listening coverage invalidated");
+                overflow=dropped;
+                for(auto& c:active)CheckBeforeRelease(*c.second,"capture queue overflow");
+                for(auto& c:buffers.ogg_active)CheckBeforeRelease(*c.second,"capture queue overflow");
+                for(auto& c:ready)c->ambiguous=true;
+                active.clear(); buffers.ogg_active.clear(); heard.clear(); listen.eligible=false; quality.ClearStreams();
+                Log(LogKind::Failure,"capture queue overflow; active streams and listening coverage invalidated; complete captures retained for final audit");
             }
             Slot s;
             while(Pop(s)) {
@@ -1501,12 +1555,12 @@ static DWORD WINAPI Worker(LPVOID) {
             // Menu settings may change concurrently with snapshot processing.
             // Apply that generation before considering any publication.
             if(GetSettings().generation!=generation) continue;
-            for(auto& pending:heard)recent.Refresh(pending);
-            SchedulePublications(heard,buffers,epoch,now);
+            SchedulePublications(heard,buffers,epoch,now,&recent);
             ReportUnverifiedCaptures(buffers,media_unavailable,media_diagnostic,now);
             ready.erase(std::remove_if(ready.begin(),ready.end(),[now,&buffers](const auto& c){
                 if(now-c->finished<=600)return false;
-                buffers.lost_capture_start_through=std::max(buffers.lost_capture_start_through,c->born+20);return true;
+                buffers.lost_capture_start_through=std::max(buffers.lost_capture_start_through,c->born+20);
+                CheckBeforeRelease(*c,"ten-minute cache expiry");return true;
             }),ready.end());
             for(auto it=active.begin();it!=active.end();) {
                 if(now-it->second->born>21600) {buffers.RecordLostActive(it->second.get());it=active.erase(it);} else ++it;

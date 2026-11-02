@@ -84,7 +84,8 @@ void CoverageAndFailures() {
     uint32_t frame[8]={16,48000,2,0,16,0,0,0};slot.kind=AudioEventKind::FlacFrame;slot.length=32;memcpy(slot.bytes,frame,32);
     diagnostic_lines.clear();const auto prior_failures=failure_events;ProcessFlacCapture(slot,buffers);
     assert(buffers.active.empty()&&buffers.ready.empty());
-    assert(diagnostic_lines.size()==2&&failure_events==prior_failures+1); // One context plus one normal outcome.
+    assert(diagnostic_lines.size()==3&&failure_events==prior_failures+2); // Context, final-cache check, native failure outcome.
+    assert(Contains("final cache check:"));
     assert(Contains("origin=capture-coverage-guard")&&Contains("reason=format")&&Contains("native_frame_result=0"));
     assert(Contains("expected_rate=44100 got_rate=48000")&&Contains("ctx=1234")&&Contains("queue_lag_ms="));
     // Native errors remain visible even after our capture has already ended.
@@ -96,7 +97,7 @@ void CoverageAndFailures() {
     slot.kind=AudioEventKind::FlacBegin;ProcessFlacCapture(slot,buffers);
     InterlockedExchange(&history::debug_enabled,0);diagnostic_lines.clear();
     slot.kind=AudioEventKind::FlacFrame;ProcessFlacCapture(slot,buffers);
-    assert(diagnostic_lines.size()==1&&Contains("stream discarded")); // Keep normal failure activity.
+    assert(diagnostic_lines.size()==2&&Contains("stream discarded")&&Contains("final cache check:"));
     InterlockedExchange(&history::debug_enabled,1);
 }
 void ConcurrentOggLogicalStreams() {
@@ -368,6 +369,56 @@ void RecentPlaybackMatching() {
     assert(history.Size()==5&&!history.Find(1,completed.media.ListenKey()));
     history.Clear();assert(history.Size()==0);
 }
+void FinalReleaseReconciliation() {
+    const auto heard=[] {
+        Heard h;h.start=100;h.finish=110;h.media.duration=16;h.media.title=L"Late metadata";
+        h.generation=1;h.media.source=MediaSource::Spotify;
+        h.media.spotify_uri="spotify:track:0000000000000000000001";h.media.playback_instance="final-check";
+        h.provisional=true;h.deadline=120;return h;
+    };
+    {
+        CaptureBuffers buffers;buffers.ready.push_back(CompleteFlacCapture(100,110));
+        auto h=heard();RecentPlaybackHistory recent;recent.Complete(h);
+        auto refreshed=h.media;refreshed.title=L"Refreshed title";
+        Listen listen;listen.generation=h.generation;listen.identity=h.media.ListenKey();recent.Observe(refreshed,listen);
+        std::vector<Heard> pending{h};SaveJob job;
+        SchedulePublications(pending,buffers,0,121,&recent);
+        assert(saves.Pop(job)&&"timely complete capture gets one last match before its pending record expires");
+        assert(job.heard.media.title==L"Refreshed title");
+        publishing_reserved.fetch_sub(job.reserved);
+    }
+    {
+        CaptureBuffers buffers;
+        for(unsigned i=0;i<6;++i)buffers.ready.push_back(CompleteFlacCapture(100+i*100,110+i*100));
+        auto h=heard();h.provisional=false;std::vector<Heard> pending{h};SaveJob job;
+        SchedulePublications(pending,buffers,0,112);
+        assert(saves.Pop(job)&&job.capture->born==100&&"reconciliation precedes capacity eviction");
+        publishing_reserved.fetch_sub(job.reserved);
+    }
+    {
+        SaveJob blocker;assert(saves.Push(std::move(blocker)));assert(saves.Push(SaveJob{}));
+        CaptureBuffers buffers;buffers.ready.push_back(CompleteFlacCapture(100,110));
+        std::vector<Heard> pending{heard()};SchedulePublications(pending,buffers,0,121);
+        assert(pending.size()==1&&buffers.ready.size()==1&&buffers.ready[0]->data.size()>0);
+        SaveJob job;assert(saves.Pop(job)&&saves.Pop(job));
+        SchedulePublications(pending,buffers,0,122);
+        assert(saves.Pop(job)&&pending.empty()&&buffers.ready.empty());
+        publishing_reserved.fetch_sub(job.reserved);
+    }
+    {
+        auto valid=CompleteFlacCapture(100,110);
+        assert(std::string(CheckBeforeRelease(*valid,"test")).find("no verified metadata/listen match")!=std::string::npos);
+        auto incomplete=CompleteFlacCapture(100,110);incomplete->coverage.samples=8;
+        assert(std::string(CheckBeforeRelease(*incomplete,"test"))=="complete valid audio; capture/listen verification failed");
+        auto truncated=CompleteFlacCapture(100,110);truncated->coverage.samples=8;
+        auto prefix=truncated->data.Flatten();prefix.resize(prefix.size()-2);truncated->bytes=prefix.size();
+        assert(truncated->data.Append(prefix.data(),prefix.size(),65536));
+        assert(std::string(CheckBeforeRelease(*truncated,"test"))=="incomplete or invalid cached audio");
+        auto bad=CompleteFlacCapture(100,110);auto bytes=bad->data.Flatten();bytes.back()^=1;
+        assert(bad->data.Append(bytes.data(),bytes.size(),65536));
+        assert(std::string(CheckBeforeRelease(*bad,"test"))=="invalid cached audio");
+    }
+}
 void DurableAssociationEvidence() {
     {
         // A corrupt competing stream can be lost in the same drained batch,
@@ -484,7 +535,7 @@ void EnrichTags(const Media&,Tags&){}
 int wmain() {
     // Use in-memory preferences only. Never read or write the user's INI/music.
     InterlockedExchange(&history::debug_enabled,1);
-    Connectivity();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();DurableAssociationEvidence();AppTailDeadline();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();HookBoundaries();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
+    Connectivity();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();DurableAssociationEvidence();AppTailDeadline();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();HookBoundaries();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
     puts("PASS: observed transitions, one FLAC failure context/outcome, original callback semantics, profiling-only intervals, basic-mode zero profiling and changed-only NLM observations");
     return 0;
 }

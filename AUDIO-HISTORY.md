@@ -454,6 +454,12 @@ buffer once and requires a unique one-to-one match with no unresolved active
 alternatives. The save worker independently checks integrity before publication.
 Explicit skips and seeks remain
 ineligible and are never recovered from the quarantine.
+Complete unmatched recordings stay in the existing bounded RAM cache. Before
+expiry or capacity eviction, Floggfy tries association once more, then checks the
+retained audio before releasing it. The final cache-check log distinguishes valid
+unmatched audio, ambiguous ownership, deferred publication, incomplete audio, and
+invalid data. A full publication queue retains the candidate for retry within the
+same cache limits. Final checks never invent missing listening coverage.
 Incomplete decoder tails retain their original ten-second deadline. Audio is
 published as a final file only after complete-listen and integrity checks pass.
 Destination resolution returns a verified matching-file snapshot or an explicit
