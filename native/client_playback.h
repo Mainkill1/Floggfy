@@ -9,6 +9,7 @@ struct ClientPlaybackRecord {
     RichMetadata metadata;
     double position=0,sampled_ms=0;
     bool playing=false,buffering=false;
+    bool explicit_control=false,prior_control=false;
     unsigned speed=1;
     int local=-1;
     std::string instance;
@@ -23,7 +24,7 @@ inline bool ParseClientPlayback(const std::string& input,ClientPlaybackRecord& o
         auto end=input.find('&',p);if(end==std::string::npos)end=input.size();
         const auto eq=input.find('=',p);if(eq==std::string::npos||eq>=end)return fail("client-invalid-pair");
         const auto key=input.substr(p,eq-p),value=input.substr(eq+1,end-eq-1);
-        if(key=="position"||key=="sampled_ms"||key=="paused"||key=="buffering"||key=="local"||key=="instance"||key=="speed") {
+        if(key=="position"||key=="sampled_ms"||key=="paused"||key=="buffering"||key=="local"||key=="instance"||key=="speed"||key=="controlled"||key=="prior_control") {
             if(!timeline.emplace(key,value).second)return fail("client-duplicate-field");
         } else {
             if(!metadata.empty())metadata+='&';
@@ -47,6 +48,14 @@ inline bool ParseClientPlayback(const std::string& input,ClientPlaybackRecord& o
     if((timeline["paused"]!="0"&&timeline["paused"]!="1")||
        (timeline["buffering"]!="0"&&timeline["buffering"]!="1"))return fail("client-invalid-playback-flags");
     record.playing=timeline["paused"]=="0";record.buffering=timeline["buffering"]=="1";
+    if(timeline.count("controlled")) {
+        if(timeline["controlled"]!="0"&&timeline["controlled"]!="1")return fail("client-invalid-control-flag");
+        record.explicit_control=timeline["controlled"]=="1";
+    }
+    if(timeline.count("prior_control")) {
+        if(timeline["prior_control"]!="0"&&timeline["prior_control"]!="1")return fail("client-invalid-prior-control-flag");
+        record.prior_control=timeline["prior_control"]=="1";
+    }
     if(timeline.count("speed")) {
         const auto& speed=timeline["speed"];
         if(speed=="1")record.speed=1;else if(speed=="2")record.speed=2;
@@ -71,7 +80,7 @@ inline bool ParseClientPlayback(const std::string& input,ClientPlaybackRecord& o
     }
     out=std::move(record);error.clear();return true;
 }
-struct ClientTransition {std::string uri,instance;double sampled_ms=0,transition_ms=0,position=-1;bool explicit_skip=false,explicit_control=false,control_monitoring=false,natural=false;};
+struct ClientTransition {std::string uri,instance;double sampled_ms=0,transition_ms=0,position=-1;bool explicit_skip=false,explicit_control=false,control_monitoring=false,natural=false,pending=false;};
 inline bool ParseClientTransition(const std::string& input,ClientTransition& out) {
     if(input.size()>16384||input.find('\0')!=std::string::npos)return false;
     std::map<std::string,std::string> values;
@@ -79,7 +88,7 @@ inline bool ParseClientTransition(const std::string& input,ClientTransition& out
         auto end=input.find('&',p);if(end==std::string::npos)end=input.size();
         const auto eq=input.find('=',p);if(eq==std::string::npos||eq>=end)return false;
         const auto key=input.substr(p,eq-p);
-        if(key!="v"&&key!="blocked"&&key!="uri"&&key!="instance"&&key!="sampled_ms"&&key!="transition_ms"&&key!="position_ms"&&key!="manual"&&key!="controlled"&&key!="monitoring"&&key!="natural")return false;
+        if(key!="v"&&key!="blocked"&&key!="uri"&&key!="instance"&&key!="sampled_ms"&&key!="transition_ms"&&key!="position_ms"&&key!="manual"&&key!="controlled"&&key!="monitoring"&&key!="natural"&&key!="pending")return false;
         if(!values.emplace(key,input.substr(eq+1,end-eq-1)).second)return false;
         p=end+1;
     }
@@ -104,11 +113,15 @@ inline bool ParseClientTransition(const std::string& input,ClientTransition& out
     if(monitoring==values.end()||(monitoring->second!="0"&&monitoring->second!="1"))return false;
     const auto natural=values.find("natural");
     if(natural!=values.end()&&natural->second!="0"&&natural->second!="1")return false;
+    const auto pending=values.find("pending");
+    if(pending!=values.end()&&pending->second!="0"&&pending->second!="1")return false;
+    if(natural!=values.end()&&natural->second=="1"&&pending!=values.end()&&pending->second=="1")return false;
     out={record.metadata.uri,record.instance,record.sampled_ms,changed,position,
          manual!=values.end()&&manual->second=="1",
          controlled!=values.end()&&controlled->second=="1",
          monitoring->second=="1",
-         natural!=values.end()&&natural->second=="1"};return true;
+         natural!=values.end()&&natural->second=="1",
+         pending!=values.end()&&pending->second=="1"};return true;
 }
 
 }

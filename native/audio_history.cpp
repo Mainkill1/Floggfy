@@ -31,6 +31,7 @@
 #include "spotify_hook_discovery.h"
 #include "decoded_output_speed.h"
 #include "decoder_ownership.h"
+#include "recording_formats.h"
 #include "vendor/minhook/include/MinHook.h"
 #include <algorithm>
 #include <cmath>
@@ -82,6 +83,7 @@ enum class AudioEventKind : unsigned { OggPage,FlacBegin,FlacBytes,FlacFrame,Fla
     AacBegin,AacBytes,AacError,AacDestroy,Mp3Begin,Mp3Bytes };
 enum class FlacErrorSource : unsigned { None,ReadCallback,FrameCallback,DecoderCallback };
 struct Slot { uintptr_t context; unsigned length; double time; AudioEventKind kind;unsigned epoch; uint64_t input_length;
+    uint64_t sequence;
     uint32_t format; bool capture;
     FlacErrorSource error_source;
     uint64_t requested,returned; unsigned char bytes[65307]; };
@@ -105,13 +107,15 @@ struct DecodedActivitySlot {
     double first=0;
     double last=0;
     unsigned epoch=0;
+    uint64_t first_sequence=0;
+    uint64_t last_sequence=0;
 };
 constexpr unsigned decoded_activity_capacity=256;
 std::array<DecodedActivitySlot,decoded_activity_capacity> decoded_activity_queue{};
 unsigned decoded_activity_head=0,decoded_activity_tail=0,decoded_activity_count=0;
-SRWLOCK decoded_activity_lock=SRWLOCK_INIT;
 volatile LONG decoded_activity_dropped=0;
 LONG decoded_activity_loss_seen=0;
+uint64_t producer_sequence=0;
 enum class Mp3ProbeState : unsigned char { Empty,Probing,Capturing,Rejected };
 struct Mp3ProbeSlot {
     uintptr_t context=0;unsigned epoch=0;Mp3ProbeState state=Mp3ProbeState::Empty;
@@ -181,7 +185,7 @@ static unsigned SlotsFor(size_t bytes) noexcept {
 static void PushMp3SlotLocked(uintptr_t context,AudioEventKind kind,const unsigned char* bytes,
                               size_t length,double time,unsigned epoch) noexcept {
     auto& slot=queue[tail];slot.context=context;slot.kind=kind;slot.length=unsigned(length);
-    slot.time=time;slot.epoch=epoch;slot.capture=true;
+    slot.time=time;slot.epoch=epoch;slot.capture=true;slot.sequence=++producer_sequence;
     if(length)memcpy(slot.bytes,bytes,length);
     tail=(tail+1)%capacity;++count;
 }
@@ -380,6 +384,7 @@ static int32_t Hook(void* sync,OggPage* page) {
         else {
             Slot& s=queue[tail]; s.context=reinterpret_cast<uintptr_t>(sync);
             s.length=unsigned(result); s.time=Now(); s.kind=AudioEventKind::OggPage; s.epoch=CaptureEpoch(); s.capture=capture;
+            s.sequence=++producer_sequence;
             std::memcpy(s.bytes,page->header,page->header_length);
             if(page->body_length) std::memcpy(s.bytes+page->header_length,page->body,page->body_length);
             tail=(tail+1)%capacity; ++count;
@@ -409,6 +414,7 @@ static void FlacEvent(void* context,AudioEventKind kind,const void* bytes=nullpt
             s.capture=capture; s.input_length=amount;
             s.length=(!capture && kind==AudioEventKind::FlacBytes) ? std::min(amount,42u) : amount;
             s.time=Now(); s.format=status; s.epoch=CaptureEpoch();
+            s.sequence=++producer_sequence;
             s.error_source=source;s.requested=requested;s.returned=returned;
             if(s.length) memcpy(s.bytes,bytes,s.length);
             tail=(tail+1)%capacity; ++count;
@@ -456,17 +462,18 @@ static uint64_t SaturatingAdd(uint64_t left,uint64_t right) noexcept {
 }
 static void QueueDecodedActivity(uintptr_t context,size_t produced,size_t consumed,size_t kept,
                                  double time,unsigned epoch) noexcept {
-    AcquireSRWLockExclusive(&decoded_activity_lock);
+    AcquireSRWLockExclusive(&queue_lock);
+    const auto sequence=++producer_sequence;
     if(decoded_activity_count) {
         const auto previous=(decoded_activity_tail+decoded_activity_capacity-1)%decoded_activity_capacity;
         auto& slot=decoded_activity_queue[previous];
-        if(slot.context==context&&slot.epoch==epoch) {
+        if(slot.context==context&&slot.epoch==epoch&&slot.last_sequence+1==sequence) {
             slot.calls=SaturatingAdd(slot.calls,1);
             slot.produced_floats=SaturatingAdd(slot.produced_floats,produced);
             slot.consumed_bytes=SaturatingAdd(slot.consumed_bytes,consumed);
             slot.kept_floats=SaturatingAdd(slot.kept_floats,kept);
-            slot.last=time;
-            ReleaseSRWLockExclusive(&decoded_activity_lock);
+            slot.last=time;slot.last_sequence=sequence;
+            ReleaseSRWLockExclusive(&queue_lock);
             if(event)SetEvent(event);
             return;
         }
@@ -475,15 +482,15 @@ static void QueueDecodedActivity(uintptr_t context,size_t produced,size_t consum
         InterlockedIncrement(&decoded_activity_dropped);
     } else {
         auto& slot=decoded_activity_queue[decoded_activity_tail];
-        slot={context,1,produced,consumed,kept,time,time,epoch};
+        slot={context,1,produced,consumed,kept,time,time,epoch,sequence,sequence};
         decoded_activity_tail=(decoded_activity_tail+1)%decoded_activity_capacity;
         ++decoded_activity_count;
     }
-    ReleaseSRWLockExclusive(&decoded_activity_lock);
+    ReleaseSRWLockExclusive(&queue_lock);
     if(event)SetEvent(event);
 }
 static bool PopDecodedActivity(DecodedActivitySlot& slot) noexcept {
-    AcquireSRWLockExclusive(&decoded_activity_lock);
+    AcquireSRWLockExclusive(&queue_lock);
     const bool available=decoded_activity_count!=0;
     if(available) {
         slot=decoded_activity_queue[decoded_activity_head];
@@ -491,14 +498,14 @@ static bool PopDecodedActivity(DecodedActivitySlot& slot) noexcept {
         decoded_activity_head=(decoded_activity_head+1)%decoded_activity_capacity;
         --decoded_activity_count;
     }
-    ReleaseSRWLockExclusive(&decoded_activity_lock);
+    ReleaseSRWLockExclusive(&queue_lock);
     return available;
 }
 static void ResetDecodedActivityQueue() noexcept {
-    AcquireSRWLockExclusive(&decoded_activity_lock);
+    AcquireSRWLockExclusive(&queue_lock);
     decoded_activity_queue={};decoded_activity_head=decoded_activity_tail=decoded_activity_count=0;
     InterlockedExchange(&decoded_activity_dropped,0);decoded_activity_loss_seen=0;
-    ReleaseSRWLockExclusive(&decoded_activity_lock);
+    ReleaseSRWLockExclusive(&queue_lock);
     ResetMp3Probes();
 }
 static bool FirstOwnershipOutput(uint64_t owner) noexcept {
@@ -531,7 +538,7 @@ static void DrainDecodedActivity(ownership::DecoderOwnershipTracker& tracker,uns
         ownership::DecodedActivity activity{};activity.owner=owner;activity.calls=slot.calls;
         activity.produced_floats=slot.produced_floats;activity.consumed_bytes=slot.consumed_bytes;
         activity.kept_floats=slot.kept_floats;activity.first=slot.first;activity.last=slot.last;
-        activity.epoch=slot.epoch;tracker.ObserveDecoded(activity);
+        activity.epoch=slot.epoch;activity.sequence=slot.first_sequence;tracker.ObserveDecoded(activity);
         const auto token=tracker.OwnerToken(owner);
         if(slot.produced_floats&&DebugLoggingEnabled()&&FirstOwnershipOutput(token)) {
             char line[260];snprintf(line,sizeof(line),
@@ -612,6 +619,7 @@ static void QueueAac(void* context,AudioEventKind kind,const unsigned char* byte
         else {
             auto& s=queue[tail];s.context=reinterpret_cast<uintptr_t>(context);s.kind=kind;
             s.capture=true;s.epoch=epoch;s.time=time;s.length=unsigned(size);s.format=status;
+            s.sequence=++producer_sequence;
             if(size)memcpy(s.bytes,bytes,size);
             tail=(tail+1)%capacity;++count;
         }
@@ -1167,13 +1175,14 @@ static void ProcessFilenameCheck(const FilenameCheck& check) {
     if(!current())return;
     RecordingDirectory directory;
     if(!ListRecordingDirectory(OutputPath(check.settings.root,check.catalog,L".flac",check.settings.music_folder,false),directory,&check.catalog))return;
-    for(const auto* extension:{L".flac",L".ogg",L".m4a"}) {
+    for(const auto& format:kRecordingFormats) {
+        if(!SupportsMedia(format,check.catalog.kind))continue;
         if(!current())return;
-        auto resolved=ResolveRecordingDestination(OutputPath(check.settings.root,check.catalog,extension,check.settings.music_folder,false),check.catalog,false,&directory);
+        auto resolved=ResolveRecordingDestination(OutputPath(check.settings.root,check.catalog,format.extension,check.settings.music_folder,false),check.catalog,false,&directory);
         if(!current())return;
         if(resolved.state==RecordingDestinationState::Blocked)return;
         if(resolved.state!=RecordingDestinationState::Existing || !resolved.recording.complete)continue;
-        if(ConvertResolvedFilename(resolved,check.catalog,check.settings,extension,check.serial)==FilenameConversion::Failed)
+        if(ConvertResolvedFilename(resolved,check.catalog,check.settings,format.extension,check.serial)==FilenameConversion::Failed)
             LogEvent(LogKind::Failure,"failed","filename conversion deferred; existing recording retained | "+Utf8(check.catalog.title));
         return; // Best verified format/recording found; no new audio is created.
     }
@@ -1201,6 +1210,7 @@ struct CaptureBuffers {
     ownership::DecoderOwnershipTracker* ownership_tracker=nullptr;
     uint64_t ownership_hold_generation=0;
     uint64_t pending_natural_generation=0;
+    uint64_t confirmed_transition_playback=0;
     double pending_natural_time=0;
     Listen pending_natural_listen{};
     std::map<uintptr_t,std::unique_ptr<Capture>> active;
@@ -1249,6 +1259,51 @@ struct CaptureBuffers {
         return false;
     }
 };
+static bool ExcludeUnboundMp3Interludes(CaptureBuffers& buffers,const Media& media) {
+    if(media.spotify_uri.rfind("spotify:track:",0)!=0||!buffers.ownership_tracker)return false;
+    bool excluded=false;
+    for(auto it=buffers.active.begin();it!=buffers.active.end();) {
+        auto& capture=*it->second;
+        if(!capture.mp3||!capture.capture_token||
+           buffers.ownership_tracker->Binding(capture.capture_token).state==ownership::OwnershipState::Bound) {
+            ++it;continue;
+        }
+        ReleaseMp3Probe(capture.capture_context,capture.capture_epoch);
+        buffers.ownership_tracker->AbortCapture(
+            capture.capture_token,ownership::CaptureAbortReason::InvalidData);
+        if(DebugLoggingEnabled())Log(LogKind::Diagnostic,
+            "excluded unbound MP3 interlude before music playback");
+        it=buffers.active.erase(it);excluded=true;
+    }
+    return excluded;
+}
+static bool BoundCaptureProvesInterludeSuccessor(const CaptureBuffers& buffers,const Media& media,
+                                                 bool interlude_excluded) {
+    if(!interlude_excluded||!buffers.ownership_tracker||media.playback_instance.empty()||!media.playing||
+       media.position<=1.5||media.spotify_uri.rfind("spotify:track:",0)!=0)return false;
+    const auto playback=buffers.ownership_tracker->PlaybackToken(media.playback_instance);
+    if(!playback||buffers.confirmed_transition_playback!=playback)return false;
+    size_t candidates=0,bound=0;
+    const auto inspect=[&](const Capture& capture) {
+        const auto declared=DeclaredCaptureDuration(capture);
+        const bool began_at_source_start=capture.lossless?(capture.metadata&&capture.coverage.frames):
+            capture.aac?(capture.spac.info.rate&&capture.SourceUnits()):
+            (capture.stream.pages&&(capture.stream.active||capture.stream.complete));
+        if(capture.mp3||capture.ambiguous||!capture.capture_token||!began_at_source_start||
+           (declared&&std::fabs(declared-media.duration)>1.0))return;
+        const auto binding=buffers.ownership_tracker->Binding(capture.capture_token);
+        if(binding.state==ownership::OwnershipState::Bound&&binding.playback_token!=playback)return;
+        if(binding.state!=ownership::OwnershipState::Bound&&
+           binding.state!=ownership::OwnershipState::AwaitingOutput&&
+           binding.state!=ownership::OwnershipState::AwaitingPlaybackInstance)return;
+        ++candidates;
+        if(binding.state==ownership::OwnershipState::Bound&&binding.playback_token==playback)++bound;
+    };
+    for(const auto& capture:buffers.active)inspect(*capture.second);
+    for(const auto& capture:buffers.ogg_active)inspect(*capture.second);
+    for(const auto& capture:buffers.ready)inspect(*capture);
+    return candidates==1&&bound==1;
+}
 static void RememberBoundCaptureIdentity(CaptureBuffers& buffers,const Media& media,
                                          uint64_t generation,uint64_t playback_token) {
     if(!buffers.ownership_tracker||!generation||!playback_token)return;
@@ -1266,7 +1321,7 @@ static void RememberBoundCaptureIdentity(CaptureBuffers& buffers,const Media& me
 }
 static void BeginCaptureOwnership(Capture& capture,CaptureBuffers& buffers,
                                   ownership::DecoderCodec codec,uintptr_t context,
-                                  uint32_t stream,double time,unsigned epoch) {
+                                  uint32_t stream,double time,unsigned epoch,uint64_t sequence=0) {
     // A discovered layout describes addresses; a retained decoded target proves
     // the observation hook was prepared and the successful transaction made it
     // usable before any capture callback can run.
@@ -1280,7 +1335,7 @@ static void BeginCaptureOwnership(Capture& capture,CaptureBuffers& buffers,
     if(verified)ownership::NormalizeDecoderOwner(context,delta,owner);
     capture.decoder_owner=owner;
     if(buffers.ownership_tracker) {
-        capture.capture_token=buffers.ownership_tracker->BeginCapture(codec,owner,stream,time,epoch);
+        capture.capture_token=buffers.ownership_tracker->BeginCapture(codec,owner,stream,time,epoch,sequence);
         if(DebugLoggingEnabled()) {
             const auto binding=buffers.ownership_tracker->Binding(capture.capture_token);
             const char* name=codec==ownership::DecoderCodec::Flac?"flac":
@@ -1293,9 +1348,10 @@ static void BeginCaptureOwnership(Capture& capture,CaptureBuffers& buffers,
         }
     }
 }
-static void CompleteCaptureOwnership(Capture& capture,CaptureBuffers& buffers,double time) {
+static void CompleteCaptureOwnership(Capture& capture,CaptureBuffers& buffers,double time,
+                                     uint64_t sequence=0) {
     if(buffers.ownership_tracker&&capture.capture_token) {
-        buffers.ownership_tracker->CompleteCapture(capture.capture_token,time);
+        buffers.ownership_tracker->CompleteCapture(capture.capture_token,time,sequence);
         if(DebugLoggingEnabled()) {
             const auto binding=buffers.ownership_tracker->Binding(capture.capture_token);
             char line[240];snprintf(line,sizeof(line),
@@ -1369,7 +1425,7 @@ static void ProcessFlacCapture(const Slot& s,CaptureBuffers& buffers) {
         if(found!=active.end())buffers.RecordLostActive(found->second.get(),ownership::CaptureAbortReason::Reinitialized);
         if(found!=active.end())LogCaptureContext(s,found->second.get(),"context-reinitialized");
         auto c=std::make_unique<Capture>(); c->lossless=true; c->born=s.time;
-        BeginCaptureOwnership(*c,buffers,ownership::DecoderCodec::Flac,s.context,0,s.time,s.epoch);
+        BeginCaptureOwnership(*c,buffers,ownership::DecoderCodec::Flac,s.context,0,s.time,s.epoch,s.sequence);
         active[s.context]=std::move(c);return;
     }
     if(found==active.end() || !found->second->lossless) return;
@@ -1415,7 +1471,7 @@ static void ProcessFlacCapture(const Slot& s,CaptureBuffers& buffers) {
         buffers.RecordLostActive(found->second.get());active.erase(found); Log(LogKind::Failure,"FLAC truncated before total samples; discarded"); return;
     }
     c.finished=s.time;
-    CompleteCaptureOwnership(c,buffers,s.time);
+    CompleteCaptureOwnership(c,buffers,s.time,s.sequence);
     char line[180]; snprintf(line,sizeof(line),"FLAC COMPLETE frames=%u samples=%llu bytes=%llu duration=%.6f",c.coverage.frames,static_cast<unsigned long long>(c.coverage.samples),static_cast<unsigned long long>(c.bytes),c.Duration()); Log(LogKind::Diagnostic,line);
     ready.push_back(std::move(found->second)); active.erase(found); return;
 }
@@ -1459,7 +1515,7 @@ static void ProcessOggCapture(const Slot& s,CaptureBuffers& buffers) {
         const auto previous=active.find(key);
         if(previous!=active.end())buffers.RecordLostActive(previous->second.get(),ownership::CaptureAbortReason::Reinitialized);
         auto c=std::make_unique<Capture>(); c->born=s.time;
-        BeginCaptureOwnership(*c,buffers,ownership::DecoderCodec::Ogg,s.context,page.serial,s.time,s.epoch);
+        BeginCaptureOwnership(*c,buffers,ownership::DecoderCodec::Ogg,s.context,page.serial,s.time,s.epoch,s.sequence);
         active[key]=std::move(c);
         char line[160]; snprintf(line,sizeof(line),"BOS ctx=%llx seq=%u serial=%u rate=%u channels=%u",
             static_cast<unsigned long long>(s.context),page.sequence,page.serial,page.rate,page.channels); Log(LogKind::Diagnostic,line);
@@ -1488,7 +1544,7 @@ static void ProcessOggCapture(const Slot& s,CaptureBuffers& buffers) {
     c.bytes+=s.length;
     if(result==Result::Complete) {
         c.finished=s.time;
-        CompleteCaptureOwnership(c,buffers,s.time);
+        CompleteCaptureOwnership(c,buffers,s.time,s.sequence);
         char line[200]; snprintf(line,sizeof(line),"EOS pages=%u bytes=%llu duration=%.6f capture_seconds=%.3f",
           c.stream.pages,static_cast<unsigned long long>(c.bytes),c.stream.Duration(),c.finished-c.born); Log(LogKind::Diagnostic,line);
         ready.push_back(std::move(found->second)); active.erase(found);
@@ -1501,7 +1557,7 @@ static void ProcessAacCapture(const Slot& s,CaptureBuffers& buffers) {
         if(found==active.end()&&active.size()>=16){Log(LogKind::Failure,"AAC decoder limit reached; stream ignored");return;}
         auto capture=std::make_unique<Capture>();capture->aac=true;capture->born=s.time;
         if(found!=active.end())buffers.RecordLostActive(found->second.get(),ownership::CaptureAbortReason::Reinitialized);
-        BeginCaptureOwnership(*capture,buffers,ownership::DecoderCodec::Aac,s.context,0,s.time,s.epoch);
+        BeginCaptureOwnership(*capture,buffers,ownership::DecoderCodec::Aac,s.context,0,s.time,s.epoch,s.sequence);
         active[s.context]=std::move(capture);return;
     }
     if(found==active.end()||!found->second->aac)return;
@@ -1535,7 +1591,7 @@ static void ProcessAacCapture(const Slot& s,CaptureBuffers& buffers) {
     c.bytes+=s.length;
     if(result==AacParse::Complete) {
         c.finished=s.time;
-        CompleteCaptureOwnership(c,buffers,s.time);
+        CompleteCaptureOwnership(c,buffers,s.time,s.sequence);
         char line[180];snprintf(line,sizeof(line),"AAC COMPLETE source_bytes=%llu rate=%u channels=%u samples=%u priming=%u duration=%.6f",
             static_cast<unsigned long long>(c.bytes),c.spac.info.rate,c.spac.info.channels,c.spac.info.total_samples,c.spac.info.priming,c.Duration());Log(LogKind::Diagnostic,line);
         ready.push_back(std::move(found->second));active.erase(found);
@@ -1558,7 +1614,7 @@ static void ProcessMp3Capture(const Slot& s,CaptureBuffers& buffers) {
         auto capture=std::make_unique<Capture>();capture->mp3=true;capture->born=s.time;
         capture->capture_epoch=s.epoch;capture->capture_context=s.context;
         if(found!=active.end())buffers.RecordLostActive(found->second.get(),ownership::CaptureAbortReason::Reinitialized);
-        BeginCaptureOwnership(*capture,buffers,ownership::DecoderCodec::Mp3,s.context,0,s.time,s.epoch);
+        BeginCaptureOwnership(*capture,buffers,ownership::DecoderCodec::Mp3,s.context,0,s.time,s.epoch,s.sequence);
         active[s.context]=std::move(capture);return;
     }
     if(found==active.end()||!found->second->mp3)return;
@@ -1656,7 +1712,20 @@ static void AssociateListen(Media media,Listen& listen,Media& current,std::vecto
     }
     const auto configured_speed=CaptureSpeed();
     const auto effective_speed=configured_speed>1?configured_speed:media.playback_speed;
+    if(media.explicit_skip||media.explicit_control||media.prior_control)buffers.confirmed_transition_playback=0;
+    if(media.prior_control)listen.eligible=false;
+    const bool excluded_interlude=ExcludeUnboundMp3Interludes(buffers,media);
+    const bool delayed_start=BoundCaptureProvesInterludeSuccessor(buffers,media,excluded_interlude);
     std::string done=listen.Observe(media.ListenKey(),media.position,media.duration,media.playing,time,effective_speed);
+    if(media.explicit_skip||media.explicit_control) {
+        listen.eligible=false;listen.pending_start=false;
+    }
+    if(delayed_start&&previous_generation!=listen.generation&&listen.pending_start) {
+        listen.eligible=true;listen.pending_start=false;
+        if(DebugLoggingEnabled())Log(LogKind::Diagnostic,
+            "decoder binding recovered track start hidden by metadata gap");
+    }
+    buffers.confirmed_transition_playback=0;
     if(previous_generation!=listen.generation||!listen.eligible)
         buffers.ownership_hold_generation=0;
     if(was_eligible && !listen.eligible && done.empty()) {
@@ -1762,18 +1831,25 @@ static Capture* UniqueCompleteUnownedAacForListen(CaptureBuffers& buffers,const 
 static bool FinishAppTransition(const Media& next,Listen& listen,const Media& current,std::vector<Heard>& heard,CaptureBuffers& buffers,double time,RecentPlaybackHistory* recent=nullptr) {
     if(listen.identity.empty()||current.source!=MediaSource::Spotify) {
         buffers.ownership_hold_generation=0;buffers.pending_natural_generation=0;
+        buffers.confirmed_transition_playback=0;
         buffers.pending_natural_time=0;buffers.pending_natural_listen={};return false;
     }
     if(next.explicit_skip||next.explicit_control) {
         buffers.ownership_hold_generation=0;buffers.pending_natural_generation=0;
+        buffers.confirmed_transition_playback=0;
         buffers.pending_natural_time=0;buffers.pending_natural_listen={};
         AbortBoundMp3Capture(buffers,listen.generation,ownership::CaptureAbortReason::InvalidData);
         listen.identity.clear();listen.eligible=false;listen.playing=false;return false;
     }
+    const bool confirmed_successor=next.natural_transition&&next.control_monitoring&&
+        !next.playback_instance.empty()&&!current.playback_instance.empty()&&
+        next.playback_instance!=current.playback_instance&&listen.playing;
+    buffers.confirmed_transition_playback=confirmed_successor&&buffers.ownership_tracker?
+        buffers.ownership_tracker->PlaybackToken(next.playback_instance):0;
     // Spotify clears the playback ID during some natural buffering
     // transitions. Keep the old listen intact until the first Ready snapshot
     // supplies the successor ID; all ordinary completion checks still run then.
-    if(next.natural_transition&&next.playback_instance.empty()&&
+    if(next.transition_pending&&next.playback_instance.empty()&&
        next.control_monitoring&&listen.eligible&&listen.playing) {
         buffers.pending_natural_generation=listen.generation;
         buffers.pending_natural_time=time;
@@ -1879,6 +1955,11 @@ static bool FinishPendingNaturalTransition(const Media& next,Listen& listen,cons
                                            std::vector<Heard>& heard,CaptureBuffers& buffers,
                                            RecentPlaybackHistory* recent=nullptr) {
     if(!buffers.pending_natural_generation)return false;
+    if(next.explicit_skip||next.explicit_control) {
+        buffers.pending_natural_generation=0;buffers.pending_natural_time=0;
+        buffers.pending_natural_listen={};buffers.confirmed_transition_playback=0;
+        listen.eligible=false;listen.playing=false;return false;
+    }
     if(!listen.eligible||buffers.pending_natural_generation!=listen.generation) {
         buffers.pending_natural_generation=0;buffers.pending_natural_time=0;
         buffers.pending_natural_listen={};return false;
@@ -2188,6 +2269,7 @@ static DWORD WINAPI Worker(LPVOID) {
                 client_quality=ReadClientPlaybackQuality(media);
                 const auto playback_id=media.playback_instance;
                 const auto playback_uri=media.spotify_uri;
+                ownership_tracker.ObservePlayback(playback_id,playback_uri,0,observed_at);
                 if(enabled) {
                     FinishPendingNaturalTransition(media,listen,current,heard,buffers,&recent);
                     AssociateListen(std::move(media),listen,current,heard,buffers,observed_at,&recent);

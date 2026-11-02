@@ -17,6 +17,9 @@ bool InspectMp3Source(const std::uint8_t* bytes,std::size_t size,Mp3Info& out,st
 bool InspectMp3Source(const CompressedBuffer& bytes,Mp3Info& out,std::string& error) noexcept;
 bool MakeOwnedMp3(const std::uint8_t* source,std::size_t size,const Tags& tags,
                   std::vector<std::uint8_t>& out,std::string& error);
+enum class Mp3InspectionResult { Valid,Invalid,ResourceFailure };
+Mp3InspectionResult InspectOwnedMp3Result(const std::uint8_t* bytes,std::size_t size,
+                                          Mp3Info& info,Tags& tags,std::string& error) noexcept;
 bool InspectOwnedMp3(const std::uint8_t* bytes,std::size_t size,Mp3Info& info,
                      Tags& tags,std::string& error) noexcept;
 }

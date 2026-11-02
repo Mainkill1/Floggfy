@@ -170,10 +170,11 @@ bool MakeOwnedMp3(const std::uint8_t* source,std::size_t size,const Tags& tags,
         out.swap(result);error.clear();return true;
     } catch(...) {out.clear();return Fail(error,"MP3 metadata allocation failed");}
 }
-bool InspectOwnedMp3(const std::uint8_t* bytes,std::size_t size,Mp3Info& info,
-                     Tags& tags,std::string& error) noexcept {
+Mp3InspectionResult InspectOwnedMp3Result(const std::uint8_t* bytes,std::size_t size,
+                                          Mp3Info& info,Tags& tags,std::string& error) noexcept {
     info={};tags={};error.clear();
     try {
+        const auto inspect=[&]() -> bool {
         if(!bytes)return Fail(error,"invalid MP3 size");
         const RawBytes source{bytes,size};
         if(ScanMp3(source,info,error,true)==Mp3Scan::Invalid)return false;
@@ -214,6 +215,12 @@ bool InspectOwnedMp3(const std::uint8_t* bytes,std::size_t size,Mp3Info& info,
             at+=10+length;
         }
         error.clear();return true;
-    } catch(...) {info={};tags={};error.clear();return false;}
+        };
+        return inspect()?Mp3InspectionResult::Valid:Mp3InspectionResult::Invalid;
+    } catch(...) {info={};tags={};error.clear();return Mp3InspectionResult::ResourceFailure;}
+}
+bool InspectOwnedMp3(const std::uint8_t* bytes,std::size_t size,Mp3Info& info,
+                     Tags& tags,std::string& error) noexcept {
+    return InspectOwnedMp3Result(bytes,size,info,tags,error)==Mp3InspectionResult::Valid;
 }
 }

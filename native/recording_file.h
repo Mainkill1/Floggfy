@@ -25,6 +25,7 @@ struct RecordingFile {
     bool owned=false;
     bool has_artwork=false;
     bool artwork_edit_safe=true;
+    bool inspection_resource_failure=false;
     RecordingArtwork artwork;
     std::vector<RecordingArtwork> artworks;
     // Exact original picture comment values, including opaque/uninspectable

@@ -45,6 +45,7 @@ struct DecodedActivity {
     double first=0;
     double last=0;
     unsigned epoch=0;
+    std::uint64_t sequence=0;
 };
 
 struct OwnershipBinding {
@@ -58,8 +59,10 @@ struct OwnershipBinding {
 class DecoderOwnershipTracker {
 public:
     std::uint64_t BeginCapture(DecoderCodec codec,std::uintptr_t owner,
-                               std::uint32_t stream,double time,unsigned epoch);
-    void CompleteCapture(std::uint64_t capture_token,double time);
+                               std::uint32_t stream,double time,unsigned epoch,
+                               std::uint64_t producer_sequence=0);
+    void CompleteCapture(std::uint64_t capture_token,double time,
+                         std::uint64_t producer_sequence=0);
     void AbortCapture(std::uint64_t capture_token,CaptureAbortReason reason);
     void ObserveDecoded(const DecodedActivity& activity);
     void ObservePlayback(const std::string& playback_id,const std::string& uri,
@@ -90,6 +93,8 @@ private:
         double first_output=0;
         double last_output=0;
         double completed_at=0;
+        std::uint64_t begun_sequence=0;
+        std::uint64_t completed_sequence=0;
         unsigned epoch=0;
         std::uint64_t playback_token=0;
         std::uint64_t listen_generation=0;

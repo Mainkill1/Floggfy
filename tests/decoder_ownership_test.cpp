@@ -15,11 +15,12 @@ using ownership::ObservationLoss;
 using ownership::OwnershipBinding;
 using ownership::OwnershipState;
 
-DecodedActivity Activity(std::uintptr_t owner,double first,double last,unsigned epoch=1) {
+DecodedActivity Activity(std::uintptr_t owner,double first,double last,unsigned epoch=1,
+                         std::uint64_t sequence=0) {
     DecodedActivity activity{};
     activity.owner=owner;activity.calls=1;activity.produced_floats=4096;
     activity.consumed_bytes=1024;activity.kept_floats=4096;
-    activity.first=first;activity.last=last;activity.epoch=epoch;
+    activity.first=first;activity.last=last;activity.epoch=epoch;activity.sequence=sequence;
     return activity;
 }
 
@@ -130,6 +131,51 @@ void TestPreloadedSuccessorAllowsConcurrentOutgoingOutput() {
     const auto binding=State(tracker,preload,OwnershipState::Bound);
     assert(binding.playback_token==tracker.PlaybackToken("instance-new"));
     assert(binding.listen_generation==2);
+}
+
+void TestMixedVoiceAndMusicSelectByPlaybackKind() {
+    {
+        DecoderOwnershipTracker tracker;tracker.Reset(1);
+        const auto voice=tracker.BeginCapture(DecoderCodec::Mp3,0x1000,0,1.0,1);
+        tracker.ObserveDecoded(Activity(0x1000,1.0,1.1));
+        const auto music=tracker.BeginCapture(DecoderCodec::Flac,0x2000,0,1.02,1);
+        tracker.ObserveDecoded(Activity(0x2000,1.02,1.12));
+        State(tracker,voice,OwnershipState::AwaitingPlaybackInstance);
+        State(tracker,music,OwnershipState::AwaitingPlaybackInstance);
+
+        tracker.ObservePlayback("music","spotify:track:0000000000000000000001",0,1.2);
+        State(tracker,voice,OwnershipState::AwaitingPlaybackInstance);
+        auto binding=State(tracker,music,OwnershipState::Bound);
+        assert(binding.listen_generation==0);
+        tracker.ObservePlayback("music","spotify:track:0000000000000000000001",7,1.2);
+        binding=State(tracker,music,OwnershipState::Bound);
+        assert(binding.listen_generation==7&&
+               "the same Ready observation can attach the new listen generation");
+    }
+    {
+        DecoderOwnershipTracker tracker;tracker.Reset(1);
+        const auto voice=tracker.BeginCapture(DecoderCodec::Mp3,0x3000,0,2.0,1);
+        tracker.ObserveDecoded(Activity(0x3000,2.0,2.1));
+        const auto preload=tracker.BeginCapture(DecoderCodec::Flac,0x4000,0,2.02,1);
+        tracker.ObserveDecoded(Activity(0x4000,2.02,2.12));
+        tracker.ObservePlayback("episode","spotify:episode:0000000000000000000001",8,2.2);
+        State(tracker,voice,OwnershipState::Bound);
+        State(tracker,preload,OwnershipState::AwaitingPlaybackInstance);
+    }
+    {
+        DecoderOwnershipTracker tracker;tracker.Reset(1);
+        const auto voice=tracker.BeginCapture(DecoderCodec::Mp3,0x5000,0,3.0,1);
+        tracker.ObserveDecoded(Activity(0x5000,3.0,3.1));
+        tracker.ObservePlayback("track","spotify:track:0000000000000000000001",9,3.2);
+        State(tracker,voice,OwnershipState::AwaitingPlaybackInstance);
+    }
+    {
+        DecoderOwnershipTracker tracker;tracker.Reset(1);
+        const auto music=tracker.BeginCapture(DecoderCodec::Flac,0x6000,0,4.0,1);
+        tracker.ObserveDecoded(Activity(0x6000,4.0,4.1));
+        tracker.ObservePlayback("episode","spotify:episode:0000000000000000000001",10,4.2);
+        State(tracker,music,OwnershipState::AwaitingPlaybackInstance);
+    }
 }
 
 void TestUnavailableInstanceAndPauseResume() {
@@ -247,6 +293,20 @@ void TestDelayedDecodedEvidenceUsesCompletedLifetimeWindow() {
     assert(second_binding.listen_generation==2);
 }
 
+void TestProducerSequenceOwnsCompletionBoundaryAndAddressReuse() {
+    DecoderOwnershipTracker tracker;tracker.Reset(1);
+    const auto first=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,1.0,1,10);
+    tracker.CompleteCapture(first,2.0,20);
+    tracker.ObserveDecoded(Activity(0x1000,1.9,2.001,1,21));
+    State(tracker,first,OwnershipState::AwaitingPlaybackInstance);
+
+    const auto reused=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,3.0,1,30);
+    tracker.CompleteCapture(reused,4.0,40);
+    tracker.ObserveDecoded(Activity(0x1000,3.9,4.001,1,41));
+    State(tracker,first,OwnershipState::AwaitingPlaybackInstance);
+    State(tracker,reused,OwnershipState::AwaitingPlaybackInstance);
+}
+
 void TestAbortLossEpochAndTime() {
     DecoderOwnershipTracker tracker;tracker.Reset(1);
     const auto aborted=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,1.0,1);
@@ -346,10 +406,12 @@ int main() {
     TestSameSongRepeatNeedsNewInstance();
     TestPreloadedSuccessorWaitsForNewPlaybackInstance();
     TestPreloadedSuccessorAllowsConcurrentOutgoingOutput();
+    TestMixedVoiceAndMusicSelectByPlaybackKind();
     TestUnavailableInstanceAndPauseResume();
     TestSuccessorsAndSkips();
     TestCaptureConflictsAndReuse();
     TestDelayedDecodedEvidenceUsesCompletedLifetimeWindow();
+    TestProducerSequenceOwnsCompletionBoundaryAndAddressReuse();
     TestCompletedConflictDoesNotPoisonLaterCapture();
     TestAbortLossEpochAndTime();
     TestRetentionNeverChooses();

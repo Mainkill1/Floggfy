@@ -11,6 +11,10 @@ int main(){
     assert(!ParseClientPlayback(base,value,error));
     assert(!ParseClientPlayback(base+timeline+"&position=13",value,error));
     assert(!ParseClientPlayback(base+timeline+"&UNKNOWN=ignored",value,error));
+    assert(ParseClientPlayback(base+timeline+"&controlled=1",value,error)&&value.explicit_control);
+    assert(!ParseClientPlayback(base+timeline+"&controlled=unknown",value,error));
+    assert(ParseClientPlayback(base+timeline+"&prior_control=1",value,error)&&value.prior_control);
+    assert(!ParseClientPlayback(base+timeline+"&prior_control=unknown",value,error));
     for(const auto* bad:{"0","3","5","11","-1","fast"})
         assert(!ParseClientPlayback(base+"&position=0&sampled_ms=1793300000000&paused=0&buffering=0&local=1&speed="+bad,value,error));
     for(const auto* bad:{"nan","inf","-1","181","","12junk"})
@@ -26,6 +30,9 @@ int main(){
     assert(ParseClientTransition(event,transition));
     assert(!transition.natural);
     assert(ParseClientTransition(event+"&natural=1",transition)&&transition.natural);
+    assert(ParseClientTransition(event+"&pending=1",transition)&&transition.pending);
+    assert(!ParseClientTransition(event+"&pending=1&natural=1",transition));
+    assert(!ParseClientTransition(event+"&pending=unknown",transition));
     assert(!ParseClientTransition(event+"&natural=unknown",transition));
     assert(!ParseClientTransition(event+std::string("\0junk",5),transition));
     assert(!ParseClientTransition(std::string(16385,'x'),transition));

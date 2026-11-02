@@ -47,8 +47,10 @@
     // Missing/failed action monitoring is unknown, never evidence of natural end.
     if(controlBinding?.active&&controlBinding.observing&&controlBinding.player===player&&
        timelineLocal===1&&!blocked.manual&&!blocked.controlled&&prior?.playing&&prior.player===player&&age>=0&&age<=3000&&
-       prior.instance&&blocked.instance&&prior.instance!==blocked.instance&&
-       stamp>=prior.sampled-250)blocked.natural=1;
+       prior.instance&&stamp>=prior.sampled-250) {
+     if(blocked.instance&&prior.instance!==blocked.instance)blocked.natural=1;
+     else if(!blocked.instance)blocked.pending=1;
+    }
    }
    timeline(blocked);lastReadyTimeline=undefined;
   }
@@ -70,11 +72,17 @@
   const seconds=Math.min(duration,position+(paused||buffering?0:Math.max(0,elapsed)*rate))/1000;
   timelineSeen=true;
   const instance=typeof own(state,'playbackId')==='string'?own(state,'playbackId'):'';
+  let readyControlled=false,readyPriorControlled=false;
+  if(pendingControl&&instance&&pendingControl.instance!==instance){
+   if(pendingControl.instance){readyPriorControlled=true;pendingControl=undefined;lastSkipAt=-Infinity;}
+   else {readyControlled=true;pendingControl=undefined;lastSkipAt=-Infinity;}
+  }
   if(pendingControl?.action==='pause'&&paused&&
      (!pendingControl.instance||pendingControl.instance===instance))pendingControl=undefined;
   lastReadyTimeline={player,sampled,instance,playing:!paused&&timelineLocal===1};
   timeline({v:1,title:data.title,artist:data.artist||'',album:data.album||'',uri:data.uri,
-   duration:duration/1000,position:seconds,sampled_ms:sampled,instance,paused:Number(paused),buffering:Number(buffering),local:timelineLocal,speed:rate});
+   duration:duration/1000,position:seconds,sampled_ms:sampled,instance,paused:Number(paused),buffering:Number(buffering),local:timelineLocal,speed:rate,
+   controlled:readyControlled?1:undefined,prior_control:readyPriorControlled?1:undefined});
  }
  function emitTimelineState(state){
   timelineBlocked='';

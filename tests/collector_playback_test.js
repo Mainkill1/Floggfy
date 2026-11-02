@@ -37,7 +37,7 @@ assert(!output.some(x=>x.startsWith('FLOGGFY_METADATA_V1:')));assert.equal(reque
 console.log('PASS: client timeline, URI, pause/buffering/local flags, bounded clocks and Metadata=0 without getters or requests');
 // Producer evidence must remain unknown if action registration is absent or
 // failed; only an observed instance transition during local playing qualifies.
-for(const mode of ['observed','missing','throws','manual','seek','paused','same','unavailable','replacement']) {
+for(const mode of ['observed','blank','missing','throws','manual','seek','paused','same','unavailable','replacement']) {
  let clock=1793300000000;
  let current={timestamp:clock,positionAsOfTimestamp:4000,duration:16000,isPaused:mode==='paused',isBuffering:false,
   playbackId:'one',item:{uri:'spotify:track:0000000000000000000001',metadata:{title:'Song',artist_name:'Artist',album_title:'Album'}}};
@@ -54,12 +54,13 @@ for(const mode of ['observed','missing','throws','manual','seek','paused','same'
   current={...current,item:{uri:'spotify:track:0000000000000000000001',metadata:{title:'Song',artist_name:'Artist',album_title:'Album'}}};
  }
  if(mode==='replacement')sandbox.window.Spicetify.Platform.PlayerAPI={...api};
- clock+=mode==='seek'?4000:500;current={...current,timestamp:clock,isBuffering:true,playbackId:mode==='same'?'one':'two',
+ clock+=mode==='seek'?4000:500;current={...current,timestamp:clock,isBuffering:true,playbackId:mode==='same'?'one':mode==='blank'?'':'two',
   item:{...current.item,uri:'spotify:track:0000000000000000000002'}};
  sandbox.window.__floggfyPoll();
  const message=messages.filter(line=>line.startsWith('FLOGGFY_TIMELINE_V1:')).at(-1);
  const fields=new URLSearchParams(message.slice('FLOGGFY_TIMELINE_V1:'.length));
  assert.equal(fields.get('natural'),mode==='observed'?'1':null,mode);
+ assert.equal(fields.get('pending'),mode==='blank'?'1':null,mode);
  assert.equal(fields.get('controlled'),mode==='manual'||mode==='seek'?'1':null,mode);
  assert.equal(fields.get('monitoring'),mode==='missing'||mode==='throws'?'0':'1',mode);
 }
@@ -89,6 +90,55 @@ console.log('PASS: natural transition evidence requires successful action monito
  assert.equal(fields.get('controlled'),null,'acknowledged pause must not attach to a later natural transition');
 }
 console.log('PASS: acknowledged pause/resume does not poison natural completion');
+
+// A control belongs to the playback instance that was current when observed.
+// A Ready successor acknowledges it even when no buffering event was emitted.
+{
+ let clock=1793300000000;
+ let current={timestamp:clock,positionAsOfTimestamp:4000,duration:60000,isPaused:false,isBuffering:false,speed:10,
+  playbackId:'first',item:{uri:'spotify:track:0000000000000000000001',metadata:{title:'A',artist_name:'Artist',album_title:'Album'}}};
+ const handlers=new Map(),messages=[];
+ const api={getState:()=>current,getEvents:()=>({addListener:(type,fn)=>handlers.set(type,fn),removeListener:type=>handlers.delete(type)})};
+ const sandbox={window:{__floggfyConfig:{metadata:false},Spicetify:{Platform:{PlayerAPI:api,ConnectDevicesAPI:{getConnectState:()=>({activeDevice:{isLocal:true}})}}}},
+  document:{querySelector:()=>null},console:{info:line=>messages.push(line)},performance:{now:()=>clock},Date:{now:()=>clock},setInterval:()=>{},encodeURIComponent};
+ vm.runInNewContext(script,sandbox);sandbox.window.__floggfyPoll();
+ handlers.get('action')({data:{action:'skipToNext'}});
+ clock+=100;current={...current,timestamp:clock,positionAsOfTimestamp:0,playbackId:'second',
+  item:{uri:'spotify:track:0000000000000000000002',metadata:{title:'B',artist_name:'Artist',album_title:'Album'}}};
+ sandbox.window.__floggfyPoll();
+ const successor=new URLSearchParams(messages.filter(line=>line.startsWith('FLOGGFY_TIMELINE_V1:')).at(-1).slice('FLOGGFY_TIMELINE_V1:'.length));
+ assert.equal(successor.get('prior_control'),'1','the successor must reject A while remaining independently eligible');
+ for(let step=1;step<=12;++step){clock+=500;current={...current,timestamp:clock,positionAsOfTimestamp:step*5000};sandbox.window.__floggfyPoll();}
+ current={...current,positionAsOfTimestamp:60000,isBuffering:true,playbackId:'third',
+  item:{uri:'spotify:track:0000000000000000000003',metadata:{title:'C',artist_name:'Artist',album_title:'Album'}}};
+ sandbox.window.__floggfyPoll();
+ const fields=new URLSearchParams(messages.filter(line=>line.startsWith('FLOGGFY_TIMELINE_V1:')).at(-1).slice('FLOGGFY_TIMELINE_V1:'.length));
+ assert.equal(fields.get('controlled'),null,'A control must not attach to B completion');
+ assert.equal(fields.get('manual'),null,'A skip must be retired by the Ready B successor');
+ assert.equal(fields.get('natural'),'1','B can provide independent natural-transition evidence');
+}
+console.log('PASS: a Ready successor retires control evidence from the prior playback instance');
+
+// A control observed after buffering has no prior Ready instance to attach to.
+// Carry it on the successor Ready snapshot instead of silently retiring it.
+{
+ let clock=1793300000000;
+ let current={timestamp:clock,positionAsOfTimestamp:59000,duration:60000,isPaused:false,isBuffering:false,
+  playbackId:'first',item:{uri:'spotify:track:0000000000000000000001',metadata:{title:'A',artist_name:'Artist',album_title:'Album'}}};
+ const handlers=new Map(),messages=[];
+ const api={getState:()=>current,getEvents:()=>({addListener:(type,fn)=>handlers.set(type,fn),removeListener:type=>handlers.delete(type)})};
+ const sandbox={window:{__floggfyConfig:{metadata:false},Spicetify:{Platform:{PlayerAPI:api,ConnectDevicesAPI:{getConnectState:()=>({activeDevice:{isLocal:true}})}}}},
+  document:{querySelector:()=>null},console:{info:line=>messages.push(line)},performance:{now:()=>clock},Date:{now:()=>clock},setInterval:()=>{},encodeURIComponent};
+ vm.runInNewContext(script,sandbox);sandbox.window.__floggfyPoll();
+ clock+=100;current={...current,timestamp:clock,positionAsOfTimestamp:0,isBuffering:true,playbackId:'second',
+  item:{uri:'spotify:track:0000000000000000000002',metadata:{title:'B',artist_name:'Artist',album_title:'Album'}}};
+ sandbox.window.__floggfyPoll();
+ handlers.get('action')({data:{action:'seekTo'}});
+ clock+=100;current={...current,timestamp:clock,positionAsOfTimestamp:3000,isBuffering:false};sandbox.window.__floggfyPoll();
+ const fields=new URLSearchParams(messages.filter(line=>line.startsWith('FLOGGFY_TIMELINE_V1:')).at(-1).slice('FLOGGFY_TIMELINE_V1:'.length));
+ assert.equal(fields.get('controlled'),'1','gap control must reach the successor Ready observation');
+}
+console.log('PASS: a control during the buffering gap invalidates successor recovery');
 
 // Stock Spotify has no Spicetify global. Resolve its already-created services
 // and keep polling even if its optional event API is unavailable.

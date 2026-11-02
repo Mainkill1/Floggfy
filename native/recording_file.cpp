@@ -359,7 +359,9 @@ bool InspectRecording(const uint8_t* bytes,size_t size,RecordingFile& out) {
         }
     } else if(!std::memcmp(bytes,"ID3",3)||(bytes[0]==0xff&&(bytes[1]&0xe0)==0xe0)) {
         Mp3Info mp3;std::string error;
-        valid=InspectOwnedMp3(bytes,size,mp3,out.tags,error);
+        const auto inspected=InspectOwnedMp3Result(bytes,size,mp3,out.tags,error);
+        valid=inspected==Mp3InspectionResult::Valid;
+        if(inspected==Mp3InspectionResult::ResourceFailure)out.inspection_resource_failure=true;
         if(valid) {
             out.quality={Codec::Mp3,mp3.rate,mp3.channels,0,
                 mp3.Duration()>0?unsigned((mp3.audio_size*8)/mp3.Duration()):0};

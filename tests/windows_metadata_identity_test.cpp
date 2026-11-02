@@ -99,11 +99,21 @@ int main(){
     history::Media client_media;double observed=0;uint64_t client_sequence=0;history::MediaDiagnostic diagnostic;
     assert(history::TryReadClientMedia(client_media,observed,client_sequence,diagnostic)==history::ClientMediaRead::Ready);
     assert(client_media.source==history::MediaSource::Spotify&&client_media.spotify_uri=="spotify:track:0000000000000000000001"&&client_media.title==L"App");
+    auto controlled_payload=timeline_payload+L"&controlled=1";
+    timeline={controlled_payload.data(),controlled_payload.size(),nullptr};assert(history::CurrentTimeline(&timeline));
+    assert(history::TryReadClientMedia(client_media,observed,client_sequence,diagnostic)==history::ClientMediaRead::Ready&&
+           client_media.explicit_control);
     auto blocked_payload=timeline_payload;
     blocked_payload.replace(blocked_payload.find(L"buffering=0"),11,L"buffering=1");
     blocked_payload.replace(blocked_payload.find(L"local=1"),7,L"local=unknown");
     timeline={blocked_payload.data(),blocked_payload.size(),nullptr};assert(history::CurrentTimeline(&timeline));
     assert(history::TryReadClientMedia(client_media,observed,client_sequence,diagnostic)==history::ClientMediaRead::Blocked);
+    const auto sampled_ms=std::to_wstring(sampled/10000);
+    auto pending_payload=L"FLOGGFY_TIMELINE_V1:v=1&blocked=buffering&uri=spotify%3Atrack%3A0000000000000000000002&instance=&sampled_ms="+
+        sampled_ms+L"&transition_ms="+sampled_ms+L"&position_ms=0&monitoring=1&pending=1";
+    timeline={pending_payload.data(),pending_payload.size(),nullptr};assert(history::CurrentTimeline(&timeline));
+    assert(history::TryReadClientMedia(client_media,observed,client_sequence,diagnostic)==history::ClientMediaRead::Transition&&
+           client_media.transition_pending&&!client_media.natural_transition&&client_media.playback_instance.empty());
     wchar_t invalid_timeline[]=L"FLOGGFY_TIMELINE_V1:v=1&unavailable=timeline-fields";
     timeline={invalid_timeline,wcslen(invalid_timeline),nullptr};assert(history::CurrentTimeline(&timeline));
     assert(history::TryReadClientMedia(client_media,observed,client_sequence,diagnostic)==history::ClientMediaRead::Unavailable);

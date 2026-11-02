@@ -17,8 +17,10 @@ struct Media {
     std::string spotify_uri,playback_instance;
     bool explicit_skip=false; // Validated local skip action attached to a transition.
     bool explicit_control=false; // Any observed local playback control, including seeks.
+    bool prior_control=false; // A control on the prior instance acknowledged by this Ready successor.
     bool control_monitoring=false; // Action listener was attached for this transition.
     bool natural_transition=false; // Positive renderer transition evidence; absent is unknown.
+    bool transition_pending=false; // Natural-transition candidate awaiting a successor playback ID.
     std::string Key() const;
     std::string ListenKey() const {return source==MediaSource::Spotify?spotify_uri+(playback_instance.empty()?std::string{}:"\x1f"+playback_instance):Key();}
 };

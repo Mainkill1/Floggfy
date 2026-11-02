@@ -87,10 +87,13 @@ int main() {
         bool rejected=false,completed=false;
         for(long fault=0;fault<128&&!completed;++fault) {
             Mp3Info fault_info;Tags partial;std::string fault_error;
-            allocation_allowance=fault;const bool ok=InspectOwnedMp3(owned.data(),owned.size(),fault_info,partial,fault_error);
+            allocation_allowance=fault;const auto result=InspectOwnedMp3Result(owned.data(),owned.size(),fault_info,partial,fault_error);
             allocation_allowance=-1;
+            const bool ok=result==Mp3InspectionResult::Valid;
             if(!ok) {
                 rejected=true;
+                check(result==Mp3InspectionResult::ResourceFailure,
+                      "allocation failure remains distinguishable from corrupt MP3 input");
                 check(partial.fields.empty()&&partial.cover.empty()&&!fault_info.frames,
                       "allocation failure never exposes partially trusted MP3 metadata");
             } else completed=true;

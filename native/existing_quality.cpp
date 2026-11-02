@@ -158,7 +158,8 @@ RecordingRead InspectRecordingFile(const std::wstring& path,RecordingFile& out) 
         LARGE_INTEGER after={};
         if(!GetFileSizeEx(file.value,&after)||after.QuadPart!=size.QuadPart)return RecordingRead::ReadError;
         RecordingFile inspected;
-        if(!InspectRecording(bytes.data(),bytes.size(),inspected))return RecordingRead::InvalidContainer;
+        if(!InspectRecording(bytes.data(),bytes.size(),inspected))
+            return inspected.inspection_resource_failure?RecordingRead::ReadError:RecordingRead::InvalidContainer;
         out=std::move(inspected);
         return out.complete?RecordingRead::ValidComplete:RecordingRead::Incomplete;
     }catch(...) {
