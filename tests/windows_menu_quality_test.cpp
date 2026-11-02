@@ -342,6 +342,16 @@ int main() {
   Retain(&speed_menu.api.base);Execute(&wrapped.api,&speed_menu.api,first_speed_id+2,0);
   assert(history::CaptureSpeed()==4&&speed_menu.refs==1);
   for(unsigned i=0;i<5;++i)assert(speed_menu.entries[i].checked==(i==2));
+  // Native fallback can change speed/capability while CEF retains this model.
+  history::SetCaptureAccelerationAvailable(false);assert(history::SetCaptureSpeed(1));
+  Retain(&child.api.base);WillShow(&wrapped.api,&child.api);
+  assert(speed_menu.entries[0].checked&&speed_menu.entries[0].enabled);
+  for(unsigned i=1;i<5;++i)assert(!speed_menu.entries[i].checked&&!speed_menu.entries[i].enabled);
+  const auto messages_before_unsupported=message_calls;
+  Retain(&speed_menu.api.base);Execute(&wrapped.api,&speed_menu.api,first_speed_id+2,0);
+  assert(history::CaptureSpeed()==1&&message_calls==messages_before_unsupported+1);
+  assert(last_message.find(L"unavailable")!=std::wstring::npos);
+  history::SetCaptureAccelerationAvailable(true);
   // CEF builds visible labels BEFORE WillShow. FormatLabel is the public
   // callback that can update the first opening without an extra hook.
   set_string=SetText;
@@ -440,7 +450,7 @@ int main() {
   assert(selected_path==L"C:\\Music\\earlier.ogg" && shell_calls==2 && recent.refs==1);
   saved_file_exists=false;
   Retain(&recent.api.base);Execute(&wrapped.api,&recent.api,first_recent_id,0);
-  assert(shell_calls==2 && message_calls==1 && original_commands==0 && recent.refs==1);
+  assert(shell_calls==2 && message_calls==messages_before_unsupported+2 && original_commands==0 && recent.refs==1);
   saved_file_exists=true;recent_ready=true;
   build_root();assert(recent.entries.size()==1 && recent.entries[0].label==L"Arrived while menu open");
   Retain(&recent.api.base);Execute(&wrapped.api,&recent.api,first_recent_id,0);

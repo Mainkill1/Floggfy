@@ -2,6 +2,7 @@
 #include "song_destination.h"
 #include "history_settings.h"
 #include "existing_quality.h"
+#include "recording_formats.h"
 #include <windows.h>
 #include <atomic>
 #include <optional>
@@ -24,7 +25,7 @@ struct DestinationRequest {
     unsigned generation=0;
     bool track_numbers=false;
     Catalog catalog;
-    std::wstring flac,ogg,aac;
+    std::wstring flac,ogg,aac,mp3;
 };
 SRWLOCK destination_lock=SRWLOCK_INIT;
 INIT_ONCE destination_once=INIT_ONCE_STATIC_INIT;
@@ -50,11 +51,29 @@ struct DestinationTryExclusive {
 };
 static bool SameRequest(const DestinationRequest& a,const DestinationRequest& b) {
     const auto& x=a.catalog;const auto& y=b.catalog;
-    return a.identity==b.identity && a.generation==b.generation && a.track_numbers==b.track_numbers && a.flac==b.flac && a.ogg==b.ogg && a.aac==b.aac &&
+    return a.identity==b.identity && a.generation==b.generation && a.track_numbers==b.track_numbers && a.flac==b.flac && a.ogg==b.ogg && a.aac==b.aac && a.mp3==b.mp3 &&
         x.kind==y.kind && x.artist==y.artist && x.folder_artist==y.folder_artist && x.legacy_artist==y.legacy_artist && x.album==y.album && x.title==y.title &&
         x.author==y.author && x.series==y.series && x.book==y.book && x.show==y.show &&
         x.track==y.track && x.episode_year==y.episode_year && x.disc==y.disc &&
         x.spotify_uri==y.spotify_uri && x.duration==y.duration;
+}
+static std::wstring& FormatPath(DestinationRequest& request,Codec codec) {
+    if(codec==Codec::Flac)return request.flac;
+    if(codec==Codec::Vorbis)return request.ogg;
+    if(codec==Codec::Aac)return request.aac;
+    return request.mp3;
+}
+static const std::wstring& FormatPath(const DestinationRequest& request,Codec codec) {
+    if(codec==Codec::Flac)return request.flac;
+    if(codec==Codec::Vorbis)return request.ogg;
+    if(codec==Codec::Aac)return request.aac;
+    return request.mp3;
+}
+static std::array<const std::wstring*,4> FormatPaths(const DestinationRequest& request) {
+    std::array<const std::wstring*,4> paths{};size_t count=0;
+    for(const auto& format:kRecordingFormats)if(SupportsMedia(format,request.catalog.kind))
+        paths[count++]=&FormatPath(request,format.codec);
+    return paths;
 }
 static std::uint64_t IntentKey(std::uint64_t identity,const std::wstring& root,const Catalog& catalog,
                                bool music_folder,unsigned generation,bool track_numbers) {
@@ -141,9 +160,11 @@ static std::wstring ProbeSavedSong(const DestinationRequest& request,Verificatio
     // verified cache hit above needs just its live signature, never a listing.
     RecordingDirectory directory;
     if(!CurrentRequest(request))return {};
-    if(!ListRecordingDirectory(request.flac,directory,&request.catalog))return unavailable();
+    const auto paths=FormatPaths(request);
+    if(!paths[0]||!ListRecordingDirectory(*paths[0],directory,&request.catalog))return unavailable();
     if(!CurrentRequest(request))return {};
-    for(const auto* base:{&request.flac,&request.ogg,&request.aac}) {
+    for(const auto* base:paths) {
+        if(!base)break;
         if(!CurrentRequest(request))return {};
         FileSignature signature;
         // Opening the containing folder needs any verified matching recording,
@@ -155,7 +176,8 @@ static std::wstring ProbeSavedSong(const DestinationRequest& request,Verificatio
     }
     // Check all three ordinary names before any collision search. Their
     // containing directory is identical; the menu does not choose an upgrade.
-    for(const auto* base:{&request.flac,&request.ogg,&request.aac}) {
+    for(const auto* base:paths) {
+        if(!base)break;
         if(!CurrentRequest(request))return {};
         for(const auto& file:RecordingPathCandidates(*base,request.catalog,true,request.track_numbers)) {
             if(file==*base)continue; // Already verified above.
@@ -235,9 +257,8 @@ void PublishSongDestination(std::uint64_t identity,const std::wstring& root,
         request.identity=identity;request.generation=settings_generation;request.catalog=catalog;request.track_numbers=track_numbers;
         request.serial=serial;request.intent=intent;request.revision=cache_revision.load(std::memory_order_acquire);
         if(identity && !root.empty()) {
-            request.flac=OutputPath(root,catalog,L".flac",music_folder,track_numbers);
-            request.ogg=OutputPath(root,catalog,L".ogg",music_folder,track_numbers);
-            request.aac=OutputPath(root,catalog,L".m4a",music_folder,track_numbers);
+            for(const auto& format:kRecordingFormats)if(SupportsMedia(format,catalog.kind))
+                FormatPath(request,format.codec)=OutputPath(root,catalog,format.extension,music_folder,track_numbers);
         }
         DestinationTryExclusive guard;
         if(!guard.locked || !destination_enabled.load(std::memory_order_relaxed) ||

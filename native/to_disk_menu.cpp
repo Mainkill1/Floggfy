@@ -125,6 +125,18 @@ static void UpdateQuality(Menu* menu,const history::PlaybackQualitySnapshot* son
         MenuMethods::SetVisible(menu,id,int(visible));
     }
 }
+static void RefreshSpeedMenu(Menu* parent) {
+    if(!parent||MenuMethods::IndexOf(parent,speed_root_id)<0)return;
+    auto* speed_menu=MenuMethods::GetSubmenu(parent,speed_root_id);if(!speed_menu)return;
+    MenuReference speed_reference(speed_menu);
+    constexpr unsigned speeds[]{1,2,4,8,10};
+    const auto selected=history::CaptureSpeed();
+    const bool accelerated=history::CaptureAccelerationAvailable();
+    for(unsigned i=0;i<5;++i)if(MenuMethods::IndexOf(speed_menu,first_speed_id+int(i))>=0) {
+        MenuMethods::SetChecked(speed_menu,first_speed_id+int(i),int(selected==speeds[i]));
+        MenuMethods::SetEnabled(speed_menu,first_speed_id+int(i),int(i==0||accelerated));
+    }
+}
 static void Populate(Menu* menu) {
     static thread_local MenuCapabilities capability;
     if(!capability.Check(menu) || MenuMethods::IsSubmenu(menu)) return;
@@ -183,6 +195,7 @@ static void Populate(Menu* menu) {
     item(ogg_id,state.ogg ? L"Ogg (Enabled)" : L"Ogg (Disabled)",state.ogg,true);
     item(podcasts_id,state.podcasts ? L"Podcasts (Enabled)" : L"Podcasts (Disabled)",state.podcasts,true);
     item(lyrics_id,state.lyrics ? L"Lyrics (Enabled)" : L"Lyrics (Disabled)",state.lyrics,true);
+    RefreshSpeedMenu(child);
     UpdateQuality(child);
 }
 static Menu* AddSubmenuHook(Menu* menu,int id,const String* text) {
@@ -361,6 +374,11 @@ static void Execute(Delegate* self,Menu* menu,int command,int flags) {
     if(command>=song_id && command<=last_quality_id) {return;}
     if(command>=first_speed_id && command<=last_speed_id) {
         constexpr unsigned speeds[]{1,2,4,8,10};const auto speed=speeds[command-first_speed_id];
+        if(speed>1&&!history::CaptureAccelerationAvailable()) {
+            history::LogEvent(history::LogKind::Warning,"capture-speed","acceleration unavailable; 1x remains active");
+            MessageBoxW(GetActiveWindow(),L"Accelerated capture is unavailable; 1x remains active.",L"To Disk",MB_OK|MB_ICONINFORMATION);
+            return;
+        }
         const bool ok=history::SetCaptureSpeed(speed);
         if(ok)for(int id=first_speed_id;id<=last_speed_id;++id)
             if(MenuMethods::IndexOf(menu,id)>=0)MenuMethods::SetChecked(menu,id,int(id==command));
@@ -401,6 +419,7 @@ static void WillShow(Delegate* self,Menu* menu) {
     history::HookDiagnosticScope diagnostic(history::diagnostics::Phase::MenuWillShow);
     MenuReference reference(menu);
     try {
+    RefreshSpeedMenu(menu);
     if(Self(self)->CapableCached(menu) && MenuMethods::IndexOf(menu,root_id)>=0) Self(self)->opening.Show();
     auto* o=Self(self)->original;
     // CEF transfers one menu reference into every delegate callback. Retain
@@ -438,6 +457,7 @@ static int Format(Delegate* self,Menu* menu,String* label) {
        Self(self)->CapableCached(menu) && MenuMethods::IndexOf(menu,root_id)>=0) {
         if(auto* child=MenuMethods::GetSubmenu(menu,root_id)) {
             MenuReference child_reference(child);
+            RefreshSpeedMenu(child);
             try { if(Self(self)->CapableCached(child) && MenuMethods::IndexOf(child,song_id)>=0 &&
                      MenuMethods::IndexOf(child,downloads_id)>=0) {
                          if(!Self(self)->opening.Visible()) BindSong(Self(self));
