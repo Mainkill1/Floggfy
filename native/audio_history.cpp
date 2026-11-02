@@ -525,6 +525,8 @@ struct Capture {
     FlacCoverage coverage;
     double born=0,finished=0,retained_until=0;
     uint64_t bytes=0,listen_generation=0;
+    uintptr_t decoder_owner=0;
+    uint64_t capture_token=0;
     CompressedBuffer data;
     size_t Capacity() const {return data.capacity()+(aac?spac.MemoryUsage():0);}
     double Duration() const {
@@ -629,7 +631,8 @@ static FinalCaptureValidation CachedFinalValidation(const Capture& capture) {
 // Called only when ownership reconciliation has finished and this object really
 // will be released. Flatten keeps the source alive through the final whole-file
 // inspection and avoids retaining another permanent copy.
-static const char* CheckBeforeRelease(Capture& capture,const char* reason) {
+static const char* CheckBeforeRelease(Capture& capture,const char* reason,
+                                     const ownership::DecoderOwnershipTracker* tracker=nullptr) {
     const char* result="validation unavailable";
     try {
         const bool guarded_complete=capture.lossless?(capture.metadata&&capture.coverage.Complete(capture.flac)):
@@ -650,8 +653,12 @@ static const char* CheckBeforeRelease(Capture& capture,const char* reason) {
                 "complete valid audio; publication deferred":"complete valid audio; no verified metadata/listen match"):
             guarded_complete?"invalid cached audio":"incomplete or invalid cached audio";
     } catch(...) { /* Release under the existing memory bound, with an honest outcome. */ }
-    char line[320];snprintf(line,sizeof(line),"final cache check: %s; release reason=%s; bytes=%llu",
-        result,reason,static_cast<unsigned long long>(capture.bytes));
+    const auto binding=tracker&&capture.capture_token?tracker->Binding(capture.capture_token):
+        ownership::OwnershipBinding{capture.capture_token,0,0,ownership::OwnershipState::Invalidated};
+    char line[360];snprintf(line,sizeof(line),
+        "final cache check: %s; release reason=%s; bytes=%llu; ownership_state=%u capture=%llu",
+        result,reason,static_cast<unsigned long long>(capture.bytes),unsigned(binding.state),
+        static_cast<unsigned long long>(capture.capture_token));
     Log(LogKind::Failure,line);
     return result;
 }
@@ -1023,6 +1030,7 @@ static DWORD WINAPI SaveWorker(LPVOID) {
     return 0;
 }
 struct CaptureBuffers {
+    ownership::DecoderOwnershipTracker* ownership_tracker=nullptr;
     std::map<uintptr_t,std::unique_ptr<Capture>> active;
     struct OggKey {
         uintptr_t context=0;uint32_t serial=0;
@@ -1038,9 +1046,12 @@ struct CaptureBuffers {
     struct LostActiveEvidence {double born=0,duration=0;};
     std::array<LostActiveEvidence,32> lost_active{};
     unsigned lost_active_count=0,next_lost_active=0;
-    void RecordLostActive(Capture* capture) {
+    void RecordLostActive(Capture* capture,
+                          ownership::CaptureAbortReason reason=ownership::CaptureAbortReason::InvalidData) {
         if(!capture)return;
-        CheckBeforeRelease(*capture,"active capture discarded");
+        if(ownership_tracker&&capture->capture_token)
+            ownership_tracker->AbortCapture(capture->capture_token,reason);
+        CheckBeforeRelease(*capture,"active capture discarded",ownership_tracker);
         if(lost_active_count==lost_active.size())
             lost_capture_start_through=std::max(lost_capture_start_through,lost_active[next_lost_active].born+20);
         else ++lost_active_count;
@@ -1056,6 +1067,23 @@ struct CaptureBuffers {
         return false;
     }
 };
+static void BeginCaptureOwnership(Capture& capture,CaptureBuffers& buffers,
+                                  ownership::DecoderCodec codec,uintptr_t context,
+                                  uint32_t stream,double time,unsigned epoch) {
+    int32_t delta=0;bool verified=decoder_ownership_layout_available;
+    if(codec==ownership::DecoderCodec::Ogg)delta=decoder_ownership_layout.ogg_capture_to_decoder;
+    else if(codec==ownership::DecoderCodec::Flac)delta=decoder_ownership_layout.flac_capture_to_decoder;
+    else verified=decoder_ownership_layout.aac_verified;
+    uintptr_t owner=0;
+    if(verified)ownership::NormalizeDecoderOwner(context,delta,owner);
+    capture.decoder_owner=owner;
+    if(buffers.ownership_tracker)
+        capture.capture_token=buffers.ownership_tracker->BeginCapture(codec,owner,stream,time,epoch);
+}
+static void CompleteCaptureOwnership(Capture& capture,CaptureBuffers& buffers,double time) {
+    if(buffers.ownership_tracker&&capture.capture_token)
+        buffers.ownership_tracker->CompleteCapture(capture.capture_token,time);
+}
 static void ObserveCodecQuality(const Slot& s,PlaybackQualityTracker& quality) {
     switch(s.kind) {
         case AudioEventKind::OggPage: quality.Ogg(s.context,s.bytes,s.length,s.time); break;
@@ -1092,23 +1120,24 @@ static void ProcessFlacCapture(const Slot& s,CaptureBuffers& buffers) {
     if(s.kind==AudioEventKind::FlacError && (found==active.end()||!found->second->lossless))
         LogCaptureContext(s,nullptr,ErrorOrigin(s.error_source));
     if(s.kind==AudioEventKind::FlacBegin) {
-        if(found!=active.end())buffers.RecordLostActive(found->second.get());
+        if(found!=active.end())buffers.RecordLostActive(found->second.get(),ownership::CaptureAbortReason::Reinitialized);
         if(found!=active.end())LogCaptureContext(s,found->second.get(),"context-reinitialized");
         auto c=std::make_unique<Capture>(); c->lossless=true; c->born=s.time;
+        BeginCaptureOwnership(*c,buffers,ownership::DecoderCodec::Flac,s.context,0,s.time,s.epoch);
         active[s.context]=std::move(c);return;
     }
     if(found==active.end() || !found->second->lossless) return;
     Capture& c=*found->second;
     if(s.kind==AudioEventKind::FlacError) {
         LogCaptureContext(s,&c,ErrorOrigin(s.error_source));
-        buffers.RecordLostActive(found->second.get());active.erase(found); Log(LogKind::Failure,"FLAC decoder error; stream discarded"); return;
+        buffers.RecordLostActive(found->second.get(),ownership::CaptureAbortReason::DecoderError);active.erase(found); Log(LogKind::Failure,"FLAC decoder error; stream discarded"); return;
     }
     if(s.kind==AudioEventKind::FlacBytes) {
         size_t reserved=publishing_reserved.load(); for(const auto& item:active) reserved+=item.second->Capacity();
         for(const auto& item:buffers.ogg_active) reserved+=item.second->Capacity();
         for(const auto& item:ready) reserved+=item->Capacity();
         size_t available=reserved<memory_limit ? memory_limit-reserved : 0;
-        if(!c.data.Append(s.bytes,s.length,available)) { buffers.RecordLostActive(found->second.get());active.erase(found); Log(LogKind::Failure,"FLAC capture memory limit; stream discarded"); return; }
+        if(!c.data.Append(s.bytes,s.length,available)) { buffers.RecordLostActive(found->second.get(),ownership::CaptureAbortReason::MemoryLimit);active.erase(found); Log(LogKind::Failure,"FLAC capture memory limit; stream discarded"); return; }
         c.bytes+=s.length;
         if(!c.metadata) {
             size_t audio=0; auto parsed=ParseFlacMetadata(c.data,c.flac,audio);
@@ -1140,6 +1169,7 @@ static void ProcessFlacCapture(const Slot& s,CaptureBuffers& buffers) {
         buffers.RecordLostActive(found->second.get());active.erase(found); Log(LogKind::Failure,"FLAC truncated before total samples; discarded"); return;
     }
     c.finished=s.time;
+    CompleteCaptureOwnership(c,buffers,s.time);
     char line[180]; snprintf(line,sizeof(line),"FLAC COMPLETE frames=%u samples=%llu bytes=%llu duration=%.6f",c.coverage.frames,static_cast<unsigned long long>(c.coverage.samples),static_cast<unsigned long long>(c.bytes),c.Duration()); Log(LogKind::Diagnostic,line);
     ready.push_back(std::move(found->second)); active.erase(found); return;
 }
@@ -1164,7 +1194,7 @@ static void ProcessOggCapture(const Slot& s,CaptureBuffers& buffers) {
             const CaptureBuffers::OggKey key{s.context,serial};auto damaged=active.find(key);
             if(damaged==active.end())isolated=true; // Invalid page for an inactive serial cannot poison peers.
             else {
-                buffers.RecordLostActive(damaged->second.get());active.erase(damaged);isolated=true;
+                buffers.RecordLostActive(damaged->second.get(),ownership::CaptureAbortReason::InvalidData);active.erase(damaged);isolated=true;
             }
         }
         if(!isolated)for(auto it=active.begin();it!=active.end();) {
@@ -1181,8 +1211,9 @@ static void ProcessOggCapture(const Slot& s,CaptureBuffers& buffers) {
             Log(LogKind::Failure,"Ogg logical stream limit reached; new stream ignored");return;
         }
         const auto previous=active.find(key);
-        if(previous!=active.end())buffers.RecordLostActive(previous->second.get());
+        if(previous!=active.end())buffers.RecordLostActive(previous->second.get(),ownership::CaptureAbortReason::Reinitialized);
         auto c=std::make_unique<Capture>(); c->born=s.time;
+        BeginCaptureOwnership(*c,buffers,ownership::DecoderCodec::Ogg,s.context,page.serial,s.time,s.epoch);
         active[key]=std::move(c);
         char line[160]; snprintf(line,sizeof(line),"BOS ctx=%llx seq=%u serial=%u rate=%u channels=%u",
             static_cast<unsigned long long>(s.context),page.sequence,page.serial,page.rate,page.channels); Log(LogKind::Diagnostic,line);
@@ -1211,6 +1242,7 @@ static void ProcessOggCapture(const Slot& s,CaptureBuffers& buffers) {
     c.bytes+=s.length;
     if(result==Result::Complete) {
         c.finished=s.time;
+        CompleteCaptureOwnership(c,buffers,s.time);
         char line[200]; snprintf(line,sizeof(line),"EOS pages=%u bytes=%llu duration=%.6f capture_seconds=%.3f",
           c.stream.pages,static_cast<unsigned long long>(c.bytes),c.stream.Duration(),c.finished-c.born); Log(LogKind::Diagnostic,line);
         ready.push_back(std::move(found->second)); active.erase(found);
@@ -1222,12 +1254,14 @@ static void ProcessAacCapture(const Slot& s,CaptureBuffers& buffers) {
     if(s.kind==AudioEventKind::AacBegin) {
         if(found==active.end()&&active.size()>=16){Log(LogKind::Failure,"AAC decoder limit reached; stream ignored");return;}
         auto capture=std::make_unique<Capture>();capture->aac=true;capture->born=s.time;
-        if(found!=active.end())buffers.RecordLostActive(found->second.get());
+        if(found!=active.end())buffers.RecordLostActive(found->second.get(),ownership::CaptureAbortReason::Reinitialized);
+        BeginCaptureOwnership(*capture,buffers,ownership::DecoderCodec::Aac,s.context,0,s.time,s.epoch);
         active[s.context]=std::move(capture);return;
     }
     if(found==active.end()||!found->second->aac)return;
     if(s.kind==AudioEventKind::AacDestroy||s.kind==AudioEventKind::AacError) {
-        buffers.RecordLostActive(found->second.get());active.erase(found);
+        buffers.RecordLostActive(found->second.get(),s.kind==AudioEventKind::AacError?
+            ownership::CaptureAbortReason::DecoderError:ownership::CaptureAbortReason::InvalidData);active.erase(found);
         if(s.kind==AudioEventKind::AacError)Log(LogKind::Failure,"AAC decoder input rejected; stream discarded");
         return;
     }
@@ -1255,6 +1289,7 @@ static void ProcessAacCapture(const Slot& s,CaptureBuffers& buffers) {
     c.bytes+=s.length;
     if(result==AacParse::Complete) {
         c.finished=s.time;
+        CompleteCaptureOwnership(c,buffers,s.time);
         char line[180];snprintf(line,sizeof(line),"AAC COMPLETE source_bytes=%llu rate=%u channels=%u samples=%u priming=%u duration=%.6f",
             static_cast<unsigned long long>(c.bytes),c.spac.info.rate,c.spac.info.channels,c.spac.info.total_samples,c.spac.info.priming,c.Duration());Log(LogKind::Diagnostic,line);
         ready.push_back(std::move(found->second));active.erase(found);
@@ -1329,7 +1364,7 @@ static void AssociateListen(Media media,Listen& listen,Media& current,std::vecto
             if(done.empty())
                 ready.erase(std::remove_if(ready.begin(),ready.end(),[&](const auto& c) {
                     if(!prior(c)||PendingCaptureDeadline(*c,heard))return false;
-                    CheckBeforeRelease(*c,"ineligible previous listen");return true;
+                    CheckBeforeRelease(*c,"ineligible previous listen",buffers.ownership_tracker);return true;
                 }),ready.end());
             for(auto it=active.begin();it!=active.end();) {
                 if(prior(it->second)) {
@@ -1337,7 +1372,7 @@ static void AssociateListen(Media media,Listen& listen,Media& current,std::vecto
                     // callback. Keep that bounded candidate for the completed
                     // listen; an unfinished stream cannot pass a duration check.
                     const auto deadline=PendingCaptureDeadline(*it->second,heard);
-                    if(deadline<=time) {buffers.RecordLostActive(it->second.get());it=active.erase(it);continue;}
+                    if(deadline<=time) {buffers.RecordLostActive(it->second.get(),ownership::CaptureAbortReason::Timeout);it=active.erase(it);continue;}
                     auto& retained=it->second->retained_until;
                     retained=retained?std::min(retained,deadline):deadline;
                 }
@@ -1346,7 +1381,7 @@ static void AssociateListen(Media media,Listen& listen,Media& current,std::vecto
             for(auto it=buffers.ogg_active.begin();it!=buffers.ogg_active.end();) {
                 if(prior(it->second)) {
                     const auto deadline=PendingCaptureDeadline(*it->second,heard);
-                    if(deadline<=time){buffers.RecordLostActive(it->second.get());it=buffers.ogg_active.erase(it);continue;}
+                    if(deadline<=time){buffers.RecordLostActive(it->second.get(),ownership::CaptureAbortReason::Timeout);it=buffers.ogg_active.erase(it);continue;}
                     auto& retained=it->second->retained_until;
                     retained=retained?std::min(retained,deadline):deadline;
                 }
@@ -1524,7 +1559,7 @@ static void SchedulePublications(std::vector<Heard>& heard,CaptureBuffers& buffe
     }
     while(ready.size()>5) {
         buffers.lost_capture_start_through=std::max(buffers.lost_capture_start_through,ready.front()->born+20);
-        CheckBeforeRelease(*ready.front(),"five-song capacity");ready.erase(ready.begin());
+        CheckBeforeRelease(*ready.front(),"five-song capacity",buffers.ownership_tracker);ready.erase(ready.begin());
     }
     // Release transition-only retention once its listen was queued/discarded,
     // or its original completion deadline passed. Do not extend it on repeats.
@@ -1533,14 +1568,14 @@ static void SchedulePublications(std::vector<Heard>& heard,CaptureBuffers& buffe
             (now>capture->retained_until || !PendingCaptureDeadline(*capture,heard));
     };
     for(auto it=buffers.active.begin();it!=buffers.active.end();) {
-        if(expired(it->second)){buffers.RecordLostActive(it->second.get());it=buffers.active.erase(it);}else ++it;
+        if(expired(it->second)){buffers.RecordLostActive(it->second.get(),ownership::CaptureAbortReason::Timeout);it=buffers.active.erase(it);}else ++it;
     }
     for(auto it=buffers.ogg_active.begin();it!=buffers.ogg_active.end();) {
-        if(expired(it->second)){buffers.RecordLostActive(it->second.get());it=buffers.ogg_active.erase(it);}else ++it;
+        if(expired(it->second)){buffers.RecordLostActive(it->second.get(),ownership::CaptureAbortReason::Timeout);it=buffers.ogg_active.erase(it);}else ++it;
     }
-    ready.erase(std::remove_if(ready.begin(),ready.end(),[](const auto& capture){
+    ready.erase(std::remove_if(ready.begin(),ready.end(),[&buffers](const auto& capture){
         if(!capture->retained_until||capture->finished<=capture->retained_until)return false;
-        CheckBeforeRelease(*capture,"decoder completed after deadline");return true;
+        CheckBeforeRelease(*capture,"decoder completed after deadline",buffers.ownership_tracker);return true;
     }),ready.end());
 }
 struct MediaWarningState {double since=-1;bool reported=false;};
@@ -1572,7 +1607,8 @@ static void ReportUnverifiedCaptures(CaptureBuffers& buffers,bool unavailable,
 static DWORD WINAPI Worker(LPVOID) {
     LONG overflow=0;
     ownership::DecoderOwnershipTracker ownership_tracker;
-    CaptureBuffers buffers;auto& active=buffers.active;auto& ready=buffers.ready;
+    CaptureBuffers buffers;buffers.ownership_tracker=&ownership_tracker;
+    auto& active=buffers.active;auto& ready=buffers.ready;
     std::vector<Heard> heard;RecentPlaybackHistory recent;
     Listen listen; PlaybackSnapshotReader reader; Media current; PlaybackQualityTracker quality; std::string client_quality;
     uint64_t media_sequence=0;
@@ -1598,10 +1634,11 @@ static DWORD WINAPI Worker(LPVOID) {
                 output=preferences.root; memory_limit=size_t(preferences.max_buffered_mib)*1024*1024;
                 bool capture=preferences.downloads && (preferences.ogg || preferences.flac || preferences.aac);
                 if(capture!=enabled || initial || preferences.capture_epoch!=epoch) {
-                    for(auto& c:buffers.active)CheckBeforeRelease(*c.second,"capture settings changed");
-                    for(auto& c:buffers.ogg_active)CheckBeforeRelease(*c.second,"capture settings changed");
-                    for(auto& c:ready)CheckBeforeRelease(*c,"capture settings changed");
-                    buffers={}; heard.clear();recent.Clear(); listen={}; current={};
+                    for(auto& c:buffers.active)buffers.RecordLostActive(c.second.get(),ownership::CaptureAbortReason::SettingsChange);
+                    for(auto& c:buffers.ogg_active)buffers.RecordLostActive(c.second.get(),ownership::CaptureAbortReason::SettingsChange);
+                    for(auto& c:ready)CheckBeforeRelease(*c,"capture settings changed",buffers.ownership_tracker);
+                    buffers={};buffers.ownership_tracker=&ownership_tracker;
+                    heard.clear();recent.Clear(); listen={}; current={};
                     last_media=minimum_media_time=now;media_unavailable=false;media_warning={};diagnostics.known=false;CancelFilenameChecks();
                     enabled=capture;
                     ownership_tracker.Reset(preferences.capture_epoch);
@@ -1619,9 +1656,10 @@ static DWORD WINAPI Worker(LPVOID) {
             }
             if(dropped!=overflow) {
                 overflow=dropped;
-                for(auto& c:active)CheckBeforeRelease(*c.second,"capture queue overflow");
-                for(auto& c:buffers.ogg_active)CheckBeforeRelease(*c.second,"capture queue overflow");
+                for(auto& c:active)buffers.RecordLostActive(c.second.get(),ownership::CaptureAbortReason::QueueLoss);
+                for(auto& c:buffers.ogg_active)buffers.RecordLostActive(c.second.get(),ownership::CaptureAbortReason::QueueLoss);
                 for(auto& c:ready)c->ambiguous=true;
+                ownership_tracker.ObservationLost(ownership::ObservationLoss::CaptureQueue,now);
                 active.clear(); buffers.ogg_active.clear(); heard.clear(); listen.eligible=false; quality.ClearStreams();
                 Log(LogKind::Failure,"capture queue overflow; active streams and listening coverage invalidated; complete captures retained for final audit");
             }
@@ -1682,17 +1720,23 @@ static DWORD WINAPI Worker(LPVOID) {
             ready.erase(std::remove_if(ready.begin(),ready.end(),[now,&buffers](const auto& c){
                 if(now-c->finished<=600)return false;
                 buffers.lost_capture_start_through=std::max(buffers.lost_capture_start_through,c->born+20);
-                CheckBeforeRelease(*c,"ten-minute cache expiry");return true;
+                CheckBeforeRelease(*c,"ten-minute cache expiry",buffers.ownership_tracker);return true;
             }),ready.end());
             for(auto it=active.begin();it!=active.end();) {
-                if(now-it->second->born>21600) {buffers.RecordLostActive(it->second.get());it=active.erase(it);} else ++it;
+                if(now-it->second->born>21600) {buffers.RecordLostActive(it->second.get(),ownership::CaptureAbortReason::Timeout);it=active.erase(it);} else ++it;
             }
             for(auto it=buffers.ogg_active.begin();it!=buffers.ogg_active.end();) {
-                if(now-it->second->born>21600){buffers.RecordLostActive(it->second.get());it=buffers.ogg_active.erase(it);}else ++it;
+                if(now-it->second->born>21600){buffers.RecordLostActive(it->second.get(),ownership::CaptureAbortReason::Timeout);it=buffers.ogg_active.erase(it);}else ++it;
             }
             WaitForSingleObject(event,50);
         }
     } catch(...) { Log(LogKind::Failure,"history worker stopped after an exception; playback remains with original parser"); }
+    for(auto& capture:buffers.active)
+        buffers.RecordLostActive(capture.second.get(),ownership::CaptureAbortReason::Shutdown);
+    for(auto& capture:buffers.ogg_active)
+        buffers.RecordLostActive(capture.second.get(),ownership::CaptureAbortReason::Shutdown);
+    for(auto& capture:buffers.ready)
+        CheckBeforeRelease(*capture,"worker shutdown",buffers.ownership_tracker);
     capture_progress_ms.store(0,std::memory_order_release);
     CancelFilenameChecks();
     reader.Stop(); // Nonblocking even if Windows is still servicing a COM call.

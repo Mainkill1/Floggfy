@@ -101,6 +101,76 @@ void CoverageAndFailures() {
     assert(diagnostic_lines.size()==2&&Contains("stream discarded")&&Contains("final cache check:"));
     InterlockedExchange(&history::debug_enabled,1);
 }
+void CaptureOwnershipLifecycle() {
+    decoder_ownership_layout={};decoder_ownership_layout.ogg_capture_to_decoder=-0x88;
+    decoder_ownership_layout.flac_capture_to_decoder=0;decoder_ownership_layout_available=true;
+    ownership::DecoderOwnershipTracker tracker;tracker.Reset(7);
+    CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+
+    Slot slot{};slot.context=0x2000;slot.kind=AudioEventKind::FlacBegin;slot.time=1;slot.epoch=7;
+    ProcessFlacCapture(slot,buffers);auto* flac=buffers.active.at(slot.context).get();
+    assert(flac->decoder_owner==0x2000&&flac->capture_token);
+    assert(tracker.Binding(flac->capture_token).state==ownership::OwnershipState::AwaitingOutput);
+    const auto flac_token=flac->capture_token;
+    const auto bytes=recording_fixture::fixture();slot.kind=AudioEventKind::FlacBytes;
+    slot.length=unsigned(bytes.size());memcpy(slot.bytes,bytes.data(),bytes.size());slot.time=1.1;
+    ProcessFlacCapture(slot,buffers);
+    uint32_t frame[8]={16,44100,2,0,16,0,0,0};slot.kind=AudioEventKind::FlacFrame;
+    slot.length=32;memcpy(slot.bytes,frame,32);slot.time=1.2;ProcessFlacCapture(slot,buffers);
+    assert(buffers.active.empty()&&buffers.ready.size()==1&&
+           buffers.ready.back()->capture_token==flac_token);
+
+    slot.kind=AudioEventKind::FlacBegin;slot.time=2;ProcessFlacCapture(slot,buffers);
+    const auto replaced=buffers.active.at(slot.context)->capture_token;
+    slot.time=2.1;ProcessFlacCapture(slot,buffers);
+    const auto replacement=buffers.active.at(slot.context)->capture_token;
+    assert(replaced!=replacement&&
+           tracker.Binding(replaced).state==ownership::OwnershipState::Invalidated);
+    slot.kind=AudioEventKind::FlacError;ProcessFlacCapture(slot,buffers);
+    assert(tracker.Binding(replacement).state==ownership::OwnershipState::Invalidated);
+
+    buffers={};buffers.ownership_tracker=&tracker;slot={};slot.context=0x3088;slot.kind=AudioEventKind::OggPage;
+    slot.time=3;slot.epoch=7;slot.capture=true;
+    const auto ogg=recording_fixture::ogg();std::uint64_t ogg_token=0;
+    for(size_t at=0;at<ogg.size();) {
+        const size_t header=27+ogg[at+26];size_t length=header;
+        for(size_t index=27;index<header;++index)length+=ogg[at+index];
+        slot.length=unsigned(length);memcpy(slot.bytes,ogg.data()+at,length);
+        ProcessOggCapture(slot,buffers);
+        if(!ogg_token&&!buffers.ogg_active.empty()) {
+            const auto& capture=*buffers.ogg_active.begin()->second;
+            ogg_token=capture.capture_token;assert(capture.decoder_owner==0x3000);
+        }
+        slot.time+=.1;at+=length;
+    }
+    assert(ogg_token&&buffers.ogg_active.empty()&&buffers.ready.size()==1&&
+           buffers.ready.back()->capture_token==ogg_token);
+
+    buffers={};buffers.ownership_tracker=&tracker;slot={};slot.context=0x4088;slot.kind=AudioEventKind::OggPage;
+    slot.time=4;slot.epoch=7;slot.capture=true;
+    const auto bos_a=recording_fixture::page(recording_fixture::identification(),0,2,0,41);
+    const auto bos_b=recording_fixture::page(recording_fixture::identification(),0,2,0,42);
+    slot.length=unsigned(bos_a.size());memcpy(slot.bytes,bos_a.data(),bos_a.size());ProcessOggCapture(slot,buffers);
+    slot.length=unsigned(bos_b.size());memcpy(slot.bytes,bos_b.data(),bos_b.size());ProcessOggCapture(slot,buffers);
+    assert(buffers.ogg_active.size()==2);
+    ownership::DecodedActivity activity{};activity.owner=0x4000;activity.calls=1;
+    activity.produced_floats=2;activity.first=4.1;activity.last=4.1;activity.epoch=7;
+    tracker.ObserveDecoded(activity);
+    for(const auto& entry:buffers.ogg_active)
+        assert(tracker.Binding(entry.second->capture_token).state==ownership::OwnershipState::Conflict);
+
+    buffers={};buffers.ownership_tracker=&tracker;slot={};slot.context=0x80;slot.kind=AudioEventKind::OggPage;
+    slot.time=5;slot.epoch=7;slot.capture=true;slot.length=unsigned(bos_a.size());
+    memcpy(slot.bytes,bos_a.data(),bos_a.size());ProcessOggCapture(slot,buffers);
+    assert(tracker.Binding(buffers.ogg_active.begin()->second->capture_token).state==
+           ownership::OwnershipState::Invalidated);
+
+    buffers={};buffers.ownership_tracker=&tracker;slot={};slot.context=0x5000;
+    slot.kind=AudioEventKind::AacBegin;slot.time=6;slot.epoch=7;ProcessAacCapture(slot,buffers);
+    const auto* aac=buffers.active.at(slot.context).get();assert(aac->capture_token&&
+        !aac->decoder_owner&&tracker.Binding(aac->capture_token).state==ownership::OwnershipState::Invalidated);
+    decoder_ownership_layout={};decoder_ownership_layout_available=false;
+}
 void ConcurrentOggLogicalStreams() {
     CaptureBuffers buffers;Slot slot{};slot.context=0x7788;slot.kind=AudioEventKind::OggPage;
     slot.time=100;slot.epoch=4;slot.capture=true;
@@ -651,7 +721,7 @@ void EnrichTags(const Media&,Tags&){}
 int wmain() {
     // Use in-memory preferences only. Never read or write the user's INI/music.
     InterlockedExchange(&history::debug_enabled,1);
-    Connectivity();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();AcceleratedUiClockRecovery();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();DurableAssociationEvidence();AppTailDeadline();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
+    Connectivity();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();AcceleratedUiClockRecovery();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();DurableAssociationEvidence();AppTailDeadline();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();CaptureOwnershipLifecycle();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
     puts("PASS: observed transitions, one FLAC failure context/outcome, original callback semantics, profiling-only intervals, basic-mode zero profiling and changed-only NLM observations");
     return 0;
 }
