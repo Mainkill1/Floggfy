@@ -20,6 +20,7 @@ int read_status=0,frame_status=0;
 bool oversized_read=false,empty_read=false;
 bool invalid_decoded_span=false;
 unsigned decode_calls=0;
+size_t decode_consumed=100;
 const void* expected_frame=nullptr;
 const void* expected_pcm=nullptr;
 void* Init(void* context,void* result) {
@@ -44,8 +45,8 @@ void Error(void* context,unsigned value) {
 void* Decode(void*,void* result,decoded_output::Span* decoded,decoded_output::Span* encoded,bool mode) {
     ++decode_calls;assert(mode&&decoded&&encoded);decoded->size-=80;
     decoded->data=static_cast<float*>(decoded->data)+(invalid_decoded_span?79:80);
-    encoded->data=static_cast<unsigned char*>(encoded->data)+100;
-    encoded->size-=100;SetLastError(1234);return result;
+    encoded->data=reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(encoded->data)+decode_consumed);
+    encoded->size-=decode_consumed;SetLastError(1234);return result;
 }
 std::vector<uint8_t> PodcastMp3() {
     std::vector<uint8_t> out={'I','D','3',4,0,0,0,0,0,0};
@@ -90,6 +91,26 @@ void PodcastCaptureEvents() {
     SchedulePublications(completed,buffers,19,100.4);SaveJob job;
     assert(saves.Pop(job)&&job.capture->mp3&&job.heard.generation==70);
     publishing_reserved.fetch_sub(job.reserved);
+
+    ownership::DecoderOwnershipTracker direct_tracker;direct_tracker.Reset(19);
+    CaptureBuffers direct;direct.ownership_tracker=&direct_tracker;
+    auto direct_capture=std::make_unique<Capture>();direct_capture->mp3=true;direct_capture->born=200;
+    direct_capture->last_input=200.2;direct_capture->capture_epoch=19;direct_capture->capture_context=0x6000;
+    assert(direct_capture->data.Append(source.data(),source.size(),source.size()+65536));direct_capture->bytes=source.size();
+    BeginCaptureOwnership(*direct_capture,direct,ownership::DecoderCodec::Mp3,0x6000,0,200,19);
+    direct.active[0x6000]=std::move(direct_capture);
+    activity.owner=0x6000;activity.first=200.01;activity.last=200.2;direct_tracker.ObserveDecoded(activity);
+    direct_tracker.ObservePlayback("episode-two",episode.spotify_uri,71,200.3);
+    auto second=episode;second.playback_instance="episode-two";
+    Listen direct_listen;direct_listen.identity=second.ListenKey();direct_listen.eligible=true;direct_listen.playing=true;
+    direct_listen.generation=71;direct_listen.start_time=200;direct_listen.last_time=200.3;
+    direct_listen.last_position=duration;direct_listen.duration=duration;direct_listen.capture_speed=1;
+    Media next=episode;next.spotify_uri="spotify:episode:0000000000000000000002";
+    next.playback_instance="episode-three";next.position=0;next.duration=1;next.playing=true;
+    std::vector<Heard> direct_heard;AssociateListen(next,direct_listen,second,direct_heard,direct,200.4);
+    assert(direct.active.empty()&&direct.ready.size()==1&&direct_heard.size()==1&&
+           direct_heard[0].generation==71&&direct_listen.generation==72&&
+           "an old-to-new identity transition finalizes the completed generation's exact MP3 decoder");
 }
 void ObservePlayback() {
     PlaybackDiagnostics state;Media media;media.title=L"Song";media.artist=L"Artist";
@@ -307,7 +328,12 @@ void HookBoundaries() {
     std::vector<uint8_t> captured;
     while(Pop(slot)){assert(slot.kind==AudioEventKind::Mp3Bytes);captured.insert(captured.end(),slot.bytes,slot.bytes+slot.length);}
     assert(captured==podcast&&"split ID3 signatures retain every original input byte");
-    ReleaseMp3Probe(podcast_context,7);
+    CaptureBuffers discarded;auto abandoned=std::make_unique<Capture>();abandoned->mp3=true;
+    abandoned->capture_context=podcast_context;abandoned->capture_epoch=7;discarded.active[podcast_context]=std::move(abandoned);
+    discarded.RecordLostActive(discarded.active[podcast_context].get(),ownership::CaptureAbortReason::Timeout);
+    discarded.active.clear();
+    assert(std::none_of(mp3_probes.begin(),mp3_probes.end(),[&](const auto& probe){return probe.context==podcast_context;})&&
+           "all generic MP3 removal paths release decoder probe state");
     original_flac_init=Init;original_flac_read=Read;original_flac_frame=Frame;original_flac_error=Error;
     auto* context=reinterpret_cast<void*>(0x1234);auto* result=reinterpret_cast<void*>(0x5678);
     assert(FlacInitHook(context,result)==result&&init_calls==1);assert(Pop(slot)&&slot.kind==AudioEventKind::FlacBegin);
@@ -350,13 +376,21 @@ void HookBoundaries() {
     assert(decoded.data==samples+8&&decoded.size==92&&GetLastError()==1234&&decode_calls==2);
     assert(PopDecodedActivity(activity)&&activity.produced_floats==80&&
            activity.consumed_bytes==100&&activity.kept_floats==8&&activity.epoch==7);
+    decoded_accelerator.Reset();decoded_fallback_requested=false;decoded_fallback_reason=0;
+    decode_consumed=max_decoded_callback_bytes+1;
+    decoded={samples,100};encoded={compressed,decode_consumed+1};
+    DecodedSinkHook(context,result,&decoded,&encoded,true);
+    assert(!decoded_accelerator.Enabled()&&decoded_fallback_requested.load()&&
+           decoded_fallback_reason.load()==unsigned(DecodedFallbackReason::EncodedSpan)&&
+           "oversized private-ABI spans fall back before any encoded-byte copy");
+    decode_consumed=100;decoded_accelerator.Reset();decoded_fallback_requested=false;decoded_fallback_reason=0;
     invalid_decoded_span=true;decoded={samples,100};encoded={compressed,200};
     const auto activity_loss=decoded_activity_dropped;
     DecodedSinkHook(context,result,&decoded,&encoded,true);
     assert(decoded.data==samples+79&&decoded.size==20&&!decoded_accelerator.Enabled()&&
            decoded_fallback_requested.load()&&decoded_activity_dropped==activity_loss+1&&
            decoded_fallback_reason.load()==unsigned(DecodedFallbackReason::DecodedSpan)&&
-           !PopDecodedActivity(activity)&&decode_calls==3);
+           !PopDecodedActivity(activity)&&decode_calls==4);
     ownership::DecoderOwnershipTracker invalid_tracker;invalid_tracker.Reset(7);
     const auto invalid_capture=invalid_tracker.BeginCapture(
         ownership::DecoderCodec::Flac,0x1000,0,Now(),7);
