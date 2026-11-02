@@ -56,6 +56,7 @@ x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/wind
     native/library_layout.cpp native/recording_file.cpp native/vorbis_headers.cpp native/existing_quality.cpp native/file_publication.cpp \
     native/lyrics_update.cpp native/metadata_update_core.cpp native/metadata_update_windows.cpp native/recent_downloads.cpp \
     native/song_destination.cpp native/spotify_hook_discovery.cpp native/async_log.cpp \
+    native/decoder_ownership.cpp \
     "$floggfy_diag_build"/*.o -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_diag_root/playback/test.exe"
 "$floggfy_diag_root/playback/test.exe"
 for component in debug connect networking playback; do node "tests/collector_${component}_test.js"; done

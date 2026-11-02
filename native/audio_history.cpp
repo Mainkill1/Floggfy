@@ -29,6 +29,7 @@
 #include "aac_stream.h"
 #include "spotify_hook_discovery.h"
 #include "decoded_output_speed.h"
+#include "decoder_ownership.h"
 #include "vendor/minhook/include/MinHook.h"
 #include <algorithm>
 #include <cmath>
@@ -69,6 +70,8 @@ DecodedProcess original_decoded_process=nullptr;
 void* decoded_sink_target=nullptr;
 decoded_output::Accelerator decoded_accelerator;
 std::atomic<bool> decoded_fallback_requested{false};
+spotify::DecoderOwnershipLayout decoder_ownership_layout{};
+bool decoder_ownership_layout_available=false;
 hooks::CallbackCounter audio_callbacks;
 enum class AudioEventKind : unsigned { OggPage,FlacBegin,FlacBytes,FlacFrame,FlacError,FlacEnd,
     AacBegin,AacBytes,AacError,AacDestroy };
@@ -83,6 +86,22 @@ unsigned head=0,tail=0,count=0;
 SRWLOCK queue_lock=SRWLOCK_INIT;
 HANDLE event;
 volatile LONG dropped=0;
+struct DecodedActivitySlot {
+    uintptr_t context=0;
+    uint64_t calls=0;
+    uint64_t produced_floats=0;
+    uint64_t consumed_bytes=0;
+    uint64_t kept_floats=0;
+    double first=0;
+    double last=0;
+    unsigned epoch=0;
+};
+constexpr unsigned decoded_activity_capacity=256;
+std::array<DecodedActivitySlot,decoded_activity_capacity> decoded_activity_queue{};
+unsigned decoded_activity_head=0,decoded_activity_tail=0,decoded_activity_count=0;
+SRWLOCK decoded_activity_lock=SRWLOCK_INIT;
+volatile LONG decoded_activity_dropped=0;
+LONG decoded_activity_loss_seen=0;
 std::atomic<bool> quality_enabled{false};
 std::wstring output;
 size_t memory_limit=500*1024*1024;
@@ -343,6 +362,77 @@ static void FlacErrorHook(void* context,unsigned error) {
     original_flac_error(context,error);timing.Finish();
     FlacEvent(context,AudioEventKind::FlacError,nullptr,0,error,FlacErrorSource::DecoderCallback);
 }
+static uint64_t SaturatingAdd(uint64_t left,uint64_t right) noexcept {
+    return left>std::numeric_limits<uint64_t>::max()-right?
+        std::numeric_limits<uint64_t>::max():left+right;
+}
+static void QueueDecodedActivity(uintptr_t context,size_t produced,size_t consumed,size_t kept,
+                                 double time,unsigned epoch) noexcept {
+    AcquireSRWLockExclusive(&decoded_activity_lock);
+    if(decoded_activity_count) {
+        const auto previous=(decoded_activity_tail+decoded_activity_capacity-1)%decoded_activity_capacity;
+        auto& slot=decoded_activity_queue[previous];
+        if(slot.context==context&&slot.epoch==epoch) {
+            slot.calls=SaturatingAdd(slot.calls,1);
+            slot.produced_floats=SaturatingAdd(slot.produced_floats,produced);
+            slot.consumed_bytes=SaturatingAdd(slot.consumed_bytes,consumed);
+            slot.kept_floats=SaturatingAdd(slot.kept_floats,kept);
+            slot.last=time;
+            ReleaseSRWLockExclusive(&decoded_activity_lock);
+            if(event)SetEvent(event);
+            return;
+        }
+    }
+    if(decoded_activity_count==decoded_activity_capacity) {
+        InterlockedIncrement(&decoded_activity_dropped);
+    } else {
+        auto& slot=decoded_activity_queue[decoded_activity_tail];
+        slot={context,1,produced,consumed,kept,time,time,epoch};
+        decoded_activity_tail=(decoded_activity_tail+1)%decoded_activity_capacity;
+        ++decoded_activity_count;
+    }
+    ReleaseSRWLockExclusive(&decoded_activity_lock);
+    if(event)SetEvent(event);
+}
+static bool PopDecodedActivity(DecodedActivitySlot& slot) noexcept {
+    AcquireSRWLockExclusive(&decoded_activity_lock);
+    const bool available=decoded_activity_count!=0;
+    if(available) {
+        slot=decoded_activity_queue[decoded_activity_head];
+        decoded_activity_queue[decoded_activity_head]={};
+        decoded_activity_head=(decoded_activity_head+1)%decoded_activity_capacity;
+        --decoded_activity_count;
+    }
+    ReleaseSRWLockExclusive(&decoded_activity_lock);
+    return available;
+}
+static void ResetDecodedActivityQueue() noexcept {
+    AcquireSRWLockExclusive(&decoded_activity_lock);
+    decoded_activity_queue={};decoded_activity_head=decoded_activity_tail=decoded_activity_count=0;
+    InterlockedExchange(&decoded_activity_dropped,0);decoded_activity_loss_seen=0;
+    ReleaseSRWLockExclusive(&decoded_activity_lock);
+}
+static void DrainDecodedActivity(ownership::DecoderOwnershipTracker& tracker,unsigned epoch) {
+    const auto losses=InterlockedCompareExchange(&decoded_activity_dropped,0,0);
+    if(losses!=decoded_activity_loss_seen) {
+        decoded_activity_loss_seen=losses;
+        tracker.ObservationLost(ownership::ObservationLoss::DecodedQueue,Now());
+    }
+    DecodedActivitySlot slot{};
+    while(PopDecodedActivity(slot)) {
+        if(slot.epoch!=epoch) {
+            tracker.ObservationLost(ownership::ObservationLoss::Epoch,slot.last);continue;
+        }
+        uintptr_t owner=0;
+        if(!ownership::NormalizeDecoderOwner(slot.context,0,owner)) {
+            tracker.ObservationLost(ownership::ObservationLoss::DecodedQueue,slot.last);continue;
+        }
+        ownership::DecodedActivity activity{};activity.owner=owner;activity.calls=slot.calls;
+        activity.produced_floats=slot.produced_floats;activity.consumed_bytes=slot.consumed_bytes;
+        activity.kept_floats=slot.kept_floats;activity.first=slot.first;activity.last=slot.last;
+        activity.epoch=slot.epoch;tracker.ObserveDecoded(activity);
+    }
+}
 static bool AdvancedSpan(const decoded_output::Span& before,const decoded_output::Span& after,
                          size_t element,size_t& consumed) noexcept {
     consumed=0;
@@ -362,16 +452,22 @@ static void* DecodedSinkHook(void* context,void* result,decoded_output::Span* de
     auto* native_result=original_decoded_process(context,result,decoded,encoded,mode);
     const auto native_error=GetLastError();
     const bool was_enabled=decoded_accelerator.Enabled();
-    const auto speed=CaptureSpeed();size_t produced=0,consumed=0;
-    if(speed>1) {
-        if(!decoded||!encoded||
-           !AdvancedSpan(decoded_before,*decoded,sizeof(float),produced)||
-           !AdvancedSpan(encoded_before,*encoded,1,consumed))decoded_accelerator.Disable();
-        else if(produced) {
+    const auto speed=CaptureSpeed();size_t produced=0,consumed=0,kept=0;
+    const bool valid=decoded&&encoded&&
+        AdvancedSpan(decoded_before,*decoded,sizeof(float),produced)&&
+        AdvancedSpan(encoded_before,*encoded,1,consumed);
+    if(!valid) {
+        decoded_accelerator.Disable();InterlockedIncrement(&decoded_activity_dropped);
+        if(event)SetEvent(event);
+    } else {
+        kept=produced;
+        if(speed>1&&produced) {
             const auto keep=decoded_accelerator.Keep(context,produced,speed);
             decoded->data=reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(decoded_before.data)+keep*sizeof(float));
             decoded->size=decoded_before.size-keep;
+            kept=keep;
         }
+        QueueDecodedActivity(reinterpret_cast<uintptr_t>(context),produced,consumed,kept,Now(),CaptureEpoch());
     }
     if(was_enabled&&!decoded_accelerator.Enabled())
         decoded_fallback_requested.store(true,std::memory_order_release);
@@ -1475,6 +1571,7 @@ static void ReportUnverifiedCaptures(CaptureBuffers& buffers,bool unavailable,
 }
 static DWORD WINAPI Worker(LPVOID) {
     LONG overflow=0;
+    ownership::DecoderOwnershipTracker ownership_tracker;
     CaptureBuffers buffers;auto& active=buffers.active;auto& ready=buffers.ready;
     std::vector<Heard> heard;RecentPlaybackHistory recent;
     Listen listen; PlaybackSnapshotReader reader; Media current; PlaybackQualityTracker quality; std::string client_quality;
@@ -1507,6 +1604,7 @@ static DWORD WINAPI Worker(LPVOID) {
                     buffers={}; heard.clear();recent.Clear(); listen={}; current={};
                     last_media=minimum_media_time=now;media_unavailable=false;media_warning={};diagnostics.known=false;CancelFilenameChecks();
                     enabled=capture;
+                    ownership_tracker.Reset(preferences.capture_epoch);
                     LogEvent(LogKind::Activity,"capture",enabled ? "enabled" : "disabled");
                 }
                 epoch=preferences.capture_epoch;
@@ -1516,6 +1614,7 @@ static DWORD WINAPI Worker(LPVOID) {
                 PublishPlaybackQuality({});
                 PublishSongDestination(0,L"",{},false,0);
                 Slot discard; while(Pop(discard)) {}
+                DrainDecodedActivity(ownership_tracker,epoch);
                 WaitForSingleObject(event,200); continue;
             }
             if(dropped!=overflow) {
@@ -1533,6 +1632,7 @@ static DWORD WINAPI Worker(LPVOID) {
                 NoteCaptureProgress();
                 if(HookDiagnosticsEnabled())DrainTiming(Now(),next_timing);
             }
+            DrainDecodedActivity(ownership_tracker,epoch);
             // Start only the basic media observer. All COM/WinRT work stays on
             // its thread; this consumer only try-locks a bounded RAM snapshot.
             // A still-stopping observer must finish before another can start.
@@ -1634,10 +1734,22 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
         auto* base=reinterpret_cast<unsigned char*>(spotify_module);
         auto* dos=reinterpret_cast<IMAGE_DOS_HEADER*>(base);
         auto* nt=reinterpret_cast<IMAGE_NT_HEADERS64*>(base+dos->e_lfanew);
-        spotify::DecodedOutputTarget decoded{};
-        const auto decoded_discovery=spotify::DiscoverDecodedOutputTarget(base,nt->OptionalHeader.SizeOfImage,decoded);
-        if(decoded_discovery==spotify::DiscoveryResult::Found)decoded_sink_target=base+decoded.rva;
-        else {
+        spotify::DecoderOwnershipLayout layout{};
+        const auto ownership_discovery=spotify::DiscoverDecoderOwnershipLayout(
+            base,nt->OptionalHeader.SizeOfImage,layout);
+        if(ownership_discovery==spotify::DiscoveryResult::Found) {
+            decoder_ownership_layout=layout;decoder_ownership_layout_available=true;
+            decoded_sink_target=base+layout.decoded_output;
+        } else {
+            char line[160];snprintf(line,sizeof(line),
+                "ownership event=layout-unavailable reason=%s",
+                DiscoveryFailure(ownership_discovery));Log(LogKind::Diagnostic,line);
+            spotify::DecodedOutputTarget decoded{};
+            const auto decoded_discovery=spotify::DiscoverDecodedOutputTarget(
+                base,nt->OptionalHeader.SizeOfImage,decoded);
+            if(decoded_discovery==spotify::DiscoveryResult::Found)decoded_sink_target=base+decoded.rva;
+        }
+        if(!decoded_sink_target) {
             SetCaptureAccelerationAvailable(false);
             if(preferences.capture_speed>1) {
                 SetCaptureSpeed(1);preferences=GetSettings();
@@ -1666,6 +1778,8 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
         for(auto& address:aac_targets)address=nullptr;
         original_aac_initialize=nullptr;original_aac_push=nullptr;original_aac_destroy=nullptr;
         original_decoded_process=nullptr;decoded_sink_target=nullptr;
+        decoder_ownership_layout={};decoder_ownership_layout_available=false;
+        ResetDecodedActivityQueue();
         decoded_accelerator.Reset();decoded_fallback_requested.store(false,std::memory_order_release);
         SetCaptureAccelerationAvailable(false);
     };

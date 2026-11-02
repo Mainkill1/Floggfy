@@ -18,6 +18,7 @@ unsigned init_calls=0,read_calls=0,frame_calls=0,error_calls=0;
 int read_status=0,frame_status=0;
 bool oversized_read=false,empty_read=false;
 bool invalid_decoded_span=false;
+unsigned decode_calls=0;
 const void* expected_frame=nullptr;
 const void* expected_pcm=nullptr;
 void* Init(void* context,void* result) {
@@ -40,7 +41,7 @@ void Error(void* context,unsigned value) {
     ++error_calls;assert(context==reinterpret_cast<void*>(0x1234));assert(value==2);
 }
 void* Decode(void*,void* result,decoded_output::Span* decoded,decoded_output::Span* encoded,bool mode) {
-    assert(mode&&decoded&&encoded);decoded->size-=80;
+    ++decode_calls;assert(mode&&decoded&&encoded);decoded->size-=80;
     decoded->data=static_cast<float*>(decoded->data)+(invalid_decoded_span?79:80);
     encoded->data=static_cast<unsigned char*>(encoded->data)+100;
     encoded->size-=100;SetLastError(1234);return result;
@@ -178,16 +179,41 @@ void HookBoundaries() {
     assert(Pop(slot)&&slot.error_source==FlacErrorSource::DecoderCallback&&slot.format==2);
     assert(pcm==42&&!memcmp(frame,original_frame.data(),32)&&!audio_callbacks.Active());
     original_decoded_process=Decode;decoded_accelerator.Reset();decoded_fallback_requested=false;
-    InterlockedExchange(&history::capture_speed_value,4);InterlockedExchange(&history::capture_epoch,7);
+    ResetDecodedActivityQueue();decode_calls=0;
+    InterlockedExchange(&history::capture_speed_value,1);InterlockedExchange(&history::capture_epoch,7);
     float samples[100]{};unsigned char compressed[200]{};
     decoded_output::Span decoded{samples,100},encoded{compressed,200};
     SetLastError(0);assert(DecodedSinkHook(context,result,&decoded,&encoded,true)==result);
-    assert(decoded.data==samples+20&&decoded.size==80&&
+    assert(decoded.data==samples+80&&decoded.size==20&&
            reinterpret_cast<unsigned char*>(encoded.data)==compressed+100&&encoded.size==100&&
-           GetLastError()==1234&&decoded_accelerator.Enabled()&&!audio_callbacks.Active());
+           GetLastError()==1234&&decoded_accelerator.Enabled()&&!audio_callbacks.Active()&&decode_calls==1);
+    DecodedActivitySlot activity{};assert(PopDecodedActivity(activity));
+    assert(activity.context==reinterpret_cast<uintptr_t>(context)&&activity.calls==1&&
+           activity.produced_floats==80&&activity.consumed_bytes==100&&activity.kept_floats==80&&
+           activity.first==activity.last&&activity.epoch==7&&!PopDecodedActivity(activity));
+
+    InterlockedExchange(&history::capture_speed_value,10);
+    decoded={samples,100};encoded={compressed,200};
+    SetLastError(0);assert(DecodedSinkHook(context,result,&decoded,&encoded,true)==result);
+    assert(decoded.data==samples+8&&decoded.size==92&&GetLastError()==1234&&decode_calls==2);
+    assert(PopDecodedActivity(activity)&&activity.produced_floats==80&&
+           activity.consumed_bytes==100&&activity.kept_floats==8&&activity.epoch==7);
     invalid_decoded_span=true;decoded={samples,100};encoded={compressed,200};
+    const auto activity_loss=decoded_activity_dropped;
     DecodedSinkHook(context,result,&decoded,&encoded,true);
-    assert(decoded.data==samples+79&&decoded.size==20&&!decoded_accelerator.Enabled()&&decoded_fallback_requested.load());
+    assert(decoded.data==samples+79&&decoded.size==20&&!decoded_accelerator.Enabled()&&
+           decoded_fallback_requested.load()&&decoded_activity_dropped==activity_loss+1&&
+           !PopDecodedActivity(activity)&&decode_calls==3);
+    ownership::DecoderOwnershipTracker invalid_tracker;invalid_tracker.Reset(7);
+    const auto invalid_capture=invalid_tracker.BeginCapture(
+        ownership::DecoderCodec::Flac,0x1000,0,Now(),7);
+    DrainDecodedActivity(invalid_tracker,7);
+    assert(invalid_tracker.Binding(invalid_capture).state==ownership::OwnershipState::Invalidated);
+    decoded_accelerator.Reset();decoded_fallback_requested=false;invalid_decoded_span=false;
+    InterlockedExchange(&history::capture_speed_value,1);InterlockedExchange(&history::debug_enabled,0);
+    decoded={samples,100};encoded={compressed,200};DecodedSinkHook(context,result,&decoded,&encoded,true);
+    assert(PopDecodedActivity(activity)&&activity.produced_floats==80&&activity.kept_floats==80);
+    InterlockedExchange(&history::debug_enabled,1);
     invalid_decoded_span=false;InterlockedExchange(&history::capture_speed_value,1);
     diagnostic_lines.clear();LogTiming();
     assert(diagnostic_lines.empty()&&native_read_timing.count.load()==0&&native_frame_timing.count.load()==0&&producer_wait_timing.count.load()==0);
@@ -201,6 +227,56 @@ void HookBoundaries() {
     diagnostic_lines.clear();empty_read=false;
     InterlockedExchange(&history::networking_enabled,0);InterlockedExchange(&history::hook_diagnostics_enabled,0);
     CloseHandle(event);event=nullptr;delete[] queue;queue=nullptr;
+}
+DWORD WINAPI QueueDecodedThread(void* argument) {
+    const auto context=reinterpret_cast<uintptr_t>(argument);
+    for(unsigned index=0;index<50;++index)
+        QueueDecodedActivity(context,2,1,2,100+index*.001,9);
+    return 0;
+}
+void DecodedActivityQueue() {
+    ResetDecodedActivityQueue();
+    QueueDecodedActivity(0x1000,80,100,8,1.0,7);
+    QueueDecodedActivity(0x1000,40,50,4,1.1,7);
+    DecodedActivitySlot slot{};assert(PopDecodedActivity(slot));
+    assert(slot.context==0x1000&&slot.calls==2&&slot.produced_floats==120&&
+           slot.consumed_bytes==150&&slot.kept_floats==12&&slot.first==1.0&&slot.last==1.1);
+    QueueDecodedActivity(0x1000,1,1,1,2.0,7);
+    QueueDecodedActivity(0x2000,1,1,1,2.1,7);
+    QueueDecodedActivity(0x2000,1,1,1,2.2,8);
+    assert(decoded_activity_count==3);
+    while(PopDecodedActivity(slot)) {}
+
+    QueueDecodedActivity(0x3000,1,1,1,3.0,7);
+    auto& saturated=decoded_activity_queue[decoded_activity_head];
+    saturated.calls=saturated.produced_floats=saturated.consumed_bytes=
+        saturated.kept_floats=std::numeric_limits<uint64_t>::max();
+    QueueDecodedActivity(0x3000,1,1,1,3.1,7);
+    assert(PopDecodedActivity(slot)&&slot.calls==std::numeric_limits<uint64_t>::max()&&
+           slot.produced_floats==std::numeric_limits<uint64_t>::max()&&
+           slot.consumed_bytes==std::numeric_limits<uint64_t>::max()&&
+           slot.kept_floats==std::numeric_limits<uint64_t>::max());
+
+    ResetDecodedActivityQueue();const auto compressed_loss=dropped;
+    for(unsigned index=0;index<decoded_activity_capacity;++index)
+        QueueDecodedActivity(0x1000+index*16,2,1,2,4.0+index*.001,7);
+    QueueDecodedActivity(0x5000,2,1,2,5.0,7);
+    assert(decoded_activity_count==decoded_activity_capacity&&decoded_activity_dropped==1&&
+           dropped==compressed_loss);
+    ownership::DecoderOwnershipTracker tracker;tracker.Reset(7);
+    const auto capture=tracker.BeginCapture(ownership::DecoderCodec::Flac,0x1000,0,3.9,7);
+    DrainDecodedActivity(tracker,7);
+    assert(tracker.Binding(capture).state==ownership::OwnershipState::Invalidated&&
+           decoded_activity_loss_seen==decoded_activity_dropped);
+
+    ResetDecodedActivityQueue();
+    HANDLE first=CreateThread(nullptr,0,QueueDecodedThread,reinterpret_cast<void*>(0x6000),0,nullptr);
+    HANDLE second=CreateThread(nullptr,0,QueueDecodedThread,reinterpret_cast<void*>(0x7000),0,nullptr);
+    assert(first&&second);HANDLE threads[]={first,second};
+    assert(WaitForMultipleObjects(2,threads,TRUE,5000)==WAIT_OBJECT_0);
+    CloseHandle(first);CloseHandle(second);
+    std::uint64_t calls=0;while(PopDecodedActivity(slot))calls+=slot.calls;
+    assert(calls==100&&decoded_activity_dropped==0);
 }
 void TimingVerbosity() {
     LARGE_INTEGER frequency{};assert(QueryPerformanceFrequency(&frequency)&&frequency.QuadPart>0);
@@ -575,7 +651,7 @@ void EnrichTags(const Media&,Tags&){}
 int wmain() {
     // Use in-memory preferences only. Never read or write the user's INI/music.
     InterlockedExchange(&history::debug_enabled,1);
-    Connectivity();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();AcceleratedUiClockRecovery();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();DurableAssociationEvidence();AppTailDeadline();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();HookBoundaries();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
+    Connectivity();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();AcceleratedUiClockRecovery();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();DurableAssociationEvidence();AppTailDeadline();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
     puts("PASS: observed transitions, one FLAC failure context/outcome, original callback semantics, profiling-only intervals, basic-mode zero profiling and changed-only NLM observations");
     return 0;
 }

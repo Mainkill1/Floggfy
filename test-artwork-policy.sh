@@ -23,7 +23,7 @@ x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/ve
 # as unnoticed integration dependencies. Hooks and live SMTC reads are not run.
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -static-libgcc -static-libstdc++ \
     -I native/vendor/libogg/include tests/windows_artwork_enrichment_test.cpp \
-    native/audio_history.cpp native/media_session.cpp native/playback_quality_windows.cpp native/playback_quality.cpp \
+    native/audio_history.cpp native/decoder_ownership.cpp native/media_session.cpp native/playback_quality_windows.cpp native/playback_quality.cpp \
     native/spotify_hook_discovery.cpp native/rich_metadata.cpp native/cached_metadata.cpp native/cached_metadata_windows.cpp \
     native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp native/ogg_history_core.cpp native/image_info.cpp \
     native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp native/vorbis_headers.cpp native/existing_quality.cpp native/library_layout.cpp \
