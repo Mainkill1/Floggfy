@@ -57,6 +57,7 @@ std::vector<uint8_t> PodcastMp3() {
 }
 void PodcastCaptureEvents() {
     const auto source=PodcastMp3();const double duration=3456.0/44100.0;
+    decoded_sink_target=reinterpret_cast<void*>(0x1000);
     ownership::DecoderOwnershipTracker tracker;tracker.Reset(19);
     CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
     Slot slot{};slot.context=0x5000;slot.time=100;slot.epoch=19;slot.capture=true;
@@ -111,6 +112,7 @@ void PodcastCaptureEvents() {
     assert(direct.active.empty()&&direct.ready.size()==1&&direct_heard.size()==1&&
            direct_heard[0].generation==71&&direct_listen.generation==72&&
            "an old-to-new identity transition finalizes the completed generation's exact MP3 decoder");
+    decoded_sink_target=nullptr;
 }
 void ObservePlayback() {
     PlaybackDiagnostics state;Media media;media.title=L"Song";media.artist=L"Artist";
@@ -170,6 +172,7 @@ void CoverageAndFailures() {
 void CaptureOwnershipLifecycle() {
     decoder_ownership_layout={};decoder_ownership_layout.ogg_capture_to_decoder=-0x88;
     decoder_ownership_layout.flac_capture_to_decoder=0;decoder_ownership_layout_available=true;
+    decoded_sink_target=reinterpret_cast<void*>(0x1000);
     ownership::DecoderOwnershipTracker tracker;tracker.Reset(7);
     CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
 
@@ -235,13 +238,13 @@ void CaptureOwnershipLifecycle() {
     slot.kind=AudioEventKind::AacBegin;slot.time=6;slot.epoch=7;ProcessAacCapture(slot,buffers);
     const auto* aac=buffers.active.at(slot.context).get();assert(aac->capture_token&&
         !aac->decoder_owner&&tracker.Binding(aac->capture_token).state==ownership::OwnershipState::Invalidated);
-    decoder_ownership_layout={};decoder_ownership_layout_available=false;
+    decoder_ownership_layout={};decoder_ownership_layout_available=false;decoded_sink_target=nullptr;
 }
 void OwnershipDiagnosticPrivacy() {
     diagnostic_lines.clear();ownership_output_logged={};
     ownership_output_logged_count=ownership_output_logged_next=0;
     decoder_ownership_layout={};decoder_ownership_layout.flac_capture_to_decoder=0;
-    decoder_ownership_layout_available=true;
+    decoder_ownership_layout_available=true;decoded_sink_target=reinterpret_cast<void*>(0x1000);
     ownership::DecoderOwnershipTracker tracker;tracker.Reset(12);
     CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
     Capture capture;capture.lossless=true;capture.born=1;
@@ -262,7 +265,7 @@ void OwnershipDiagnosticPrivacy() {
                line.find("spotify:track:private")==std::string::npos);
     }
     assert(saw_begin&&saw_output&&saw_binding);
-    decoder_ownership_layout={};decoder_ownership_layout_available=false;
+    decoder_ownership_layout={};decoder_ownership_layout_available=false;decoded_sink_target=nullptr;
 }
 void ConcurrentOggLogicalStreams() {
     CaptureBuffers buffers;Slot slot{};slot.context=0x7788;slot.kind=AudioEventKind::OggPage;
@@ -755,7 +758,8 @@ void DecoderOwnershipFinalReconciliation() {
     };
     add(0x2000,"play-one",10,100,100,100.1);
     add(0x3000,"play-two",11,100.5,100.5,100.6);
-    Heard first;first.media.duration=16;first.start=100;first.finish=101.8;first.generation=10;
+    Heard first;first.media.source=MediaSource::Spotify;first.media.playback_instance="play-one";
+    first.media.duration=16;first.start=100;first.finish=101.8;first.generation=10;
     std::vector<Heard> exact_heard{first};
     SchedulePublications(exact_heard,alternatives,8,101.8);
     assert(saves.Pop(job)&&job.heard.generation==10&&alternatives.ready.size()==1&&
@@ -944,6 +948,7 @@ void FinalReleaseReconciliation() {
     }
 }
 void CompactFailureIdentity() {
+    decoded_sink_target=reinterpret_cast<void*>(0x1000);
     ownership::DecoderOwnershipTracker tracker;tracker.Reset(23);
     CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
     auto capture=std::make_unique<Capture>();capture->mp3=true;capture->born=100;
@@ -970,6 +975,7 @@ void CompactFailureIdentity() {
     CaptureBuffers unbound;unbound.active[context]=std::make_unique<Capture>();
     diagnostic_lines.clear();unbound.RecordLostActive(unbound.active[context].get());
     assert(Contains("incomplete cache | unknown track")&&"unbound failures do not borrow current metadata");
+    decoded_sink_target=nullptr;
 }
 void DurableAssociationEvidence() {
     {
@@ -1013,6 +1019,42 @@ void DurableAssociationEvidence() {
     buffers={};pending.clear();for(unsigned i=0;i<6;++i)buffers.ready.push_back(capture(100+i*100,110+i*100));
     SchedulePublications(pending,buffers,0,112);assert(buffers.ready.size()==5);
     one.start=110;one.finish=120;pending={one};SchedulePublications(pending,buffers,0,121);assert(!saves.Pop(job));
+}
+void OwnershipCapabilityFallbacks() {
+    decoder_ownership_layout={};decoder_ownership_layout.flac_capture_to_decoder=0;
+    decoder_ownership_layout_available=true;decoded_sink_target=nullptr;
+    {
+        ownership::DecoderOwnershipTracker tracker;tracker.Reset(31);
+        CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+        auto capture=CompleteFlacCapture(100,110);
+        BeginCaptureOwnership(*capture,buffers,ownership::DecoderCodec::Flac,0x1000,0,100,31);
+        assert(!capture->decoder_owner&&
+               "layout discovery without an active decoded hook must not require ownership evidence");
+        buffers.ready.push_back(std::move(capture));
+        Heard heard;heard.start=100;heard.finish=110;heard.generation=1;heard.media.duration=16;
+        heard.media.source=MediaSource::Spotify;heard.media.playback_instance="app-instance";
+        std::vector<Heard> pending{heard};SchedulePublications(pending,buffers,0,111);SaveJob job;
+        assert(saves.Pop(job)&&"ordinary 1x capture remains publishable after optional decoded-hook failure");
+        publishing_reserved.fetch_sub(job.reserved);
+    }
+    decoded_sink_target=reinterpret_cast<void*>(0x2000);
+    {
+        ownership::DecoderOwnershipTracker tracker;tracker.Reset(32);
+        CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+        auto capture=CompleteFlacCapture(100,110);
+        BeginCaptureOwnership(*capture,buffers,ownership::DecoderCodec::Flac,0x3000,0,100,32);
+        ownership::DecodedActivity activity{};activity.owner=0x3000;activity.calls=1;
+        activity.produced_floats=4096;activity.first=100.1;activity.last=109.9;activity.epoch=32;
+        tracker.ObserveDecoded(activity);tracker.CompleteCapture(capture->capture_token,110);
+        assert(tracker.Binding(capture->capture_token).state==ownership::OwnershipState::AwaitingPlaybackInstance);
+        buffers.ready.push_back(std::move(capture));
+        Heard heard;heard.start=100;heard.finish=110;heard.generation=1;heard.media.duration=16;
+        heard.media.source=MediaSource::Windows;
+        std::vector<Heard> pending{heard};SchedulePublications(pending,buffers,0,111);SaveJob job;
+        assert(saves.Pop(job)&&"Windows-only playback remains publishable without an app instance ID");
+        publishing_reserved.fetch_sub(job.reserved);
+    }
+    decoded_sink_target=nullptr;decoder_ownership_layout={};decoder_ownership_layout_available=false;
 }
 void AppTailDeadline() {
     CaptureBuffers buffers;std::vector<Heard> heard;Listen listen;Media current,media;
@@ -1094,7 +1136,7 @@ void EnrichTags(const Media&,Tags&){}
 int wmain() {
     // Use in-memory preferences only. Never read or write the user's INI/music.
     InterlockedExchange(&history::debug_enabled,1);
-    Connectivity();PodcastCatalog();PodcastCaptureEvents();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();DurableAssociationEvidence();AppTailDeadline();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
+    Connectivity();PodcastCatalog();PodcastCaptureEvents();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailDeadline();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
     puts("PASS: observed transitions, one FLAC failure context/outcome, original callback semantics, profiling-only intervals, basic-mode zero profiling and changed-only NLM observations");
     return 0;
 }

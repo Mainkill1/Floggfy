@@ -1264,11 +1264,15 @@ static void RememberBoundCaptureIdentity(CaptureBuffers& buffers,const Media& me
 static void BeginCaptureOwnership(Capture& capture,CaptureBuffers& buffers,
                                   ownership::DecoderCodec codec,uintptr_t context,
                                   uint32_t stream,double time,unsigned epoch) {
-    int32_t delta=0;bool verified=decoder_ownership_layout_available;
+    // A discovered layout describes addresses; a retained decoded target proves
+    // the observation hook was prepared and the successful transaction made it
+    // usable before any capture callback can run.
+    const bool observing=decoded_sink_target!=nullptr;
+    int32_t delta=0;bool verified=decoder_ownership_layout_available&&observing;
     if(codec==ownership::DecoderCodec::Ogg)delta=decoder_ownership_layout.ogg_capture_to_decoder;
     else if(codec==ownership::DecoderCodec::Flac)delta=decoder_ownership_layout.flac_capture_to_decoder;
-    else if(codec==ownership::DecoderCodec::Aac)verified=decoder_ownership_layout.aac_verified;
-    else verified=true; // The decoded dispatcher context is the MP3 decoder owner.
+    else if(codec==ownership::DecoderCodec::Aac)verified=verified&&decoder_ownership_layout.aac_verified;
+    else verified=observing; // The decoded dispatcher context is the MP3 decoder owner.
     uintptr_t owner=0;
     if(verified)ownership::NormalizeDecoderOwner(context,delta,owner);
     capture.decoder_owner=owner;
@@ -1858,7 +1862,8 @@ static bool FinishAppTransition(const Media& next,Listen& listen,const Media& cu
 }
 static bool CaptureOwnershipCouldMatch(const Capture& capture,const Heard& heard,
                                        const ownership::DecoderOwnershipTracker* tracker) {
-    if(!tracker||!capture.decoder_owner||!capture.capture_token)return true;
+    if(!tracker||!capture.decoder_owner||!capture.capture_token||
+       heard.media.playback_instance.empty())return true;
     const auto binding=tracker->Binding(capture.capture_token);
     if(binding.state==ownership::OwnershipState::Bound)
         return binding.listen_generation&&binding.listen_generation==heard.generation;
@@ -1867,7 +1872,8 @@ static bool CaptureOwnershipCouldMatch(const Capture& capture,const Heard& heard
 }
 static bool CaptureEvidenceMatchesListen(const Capture& capture,const Heard& heard,
     const ownership::DecoderOwnershipTracker* tracker=nullptr) {
-    if(tracker&&capture.decoder_owner&&capture.capture_token) {
+    if(tracker&&capture.decoder_owner&&capture.capture_token&&
+       !heard.media.playback_instance.empty()) {
         const auto binding=tracker->Binding(capture.capture_token);
         const bool durable_mp3=capture.mp3&&capture.listen_generation==heard.generation&&
             binding.listen_generation==heard.generation&&binding.playback_token;
