@@ -100,7 +100,7 @@ Run:
 
 ```bash
 build/spotify-hook-discovery-test
-bash test-diagnostics.sh /mnt/c/Users/main/AppData/Roaming/Spotify/Spotify.dll
+bash test-diagnostics.sh /mnt/c/Users/example/AppData/Roaming/Spotify/Spotify.dll
 ```
 
 Expected: all tests pass; current client reports decoded RVA `0xd90d08`, Ogg delta `-136`, FLAC delta `0`, and AAC unverified.
@@ -225,7 +225,7 @@ At the beginning of each worker iteration after capture progress/timing maintena
 Run:
 
 ```bash
-bash test-diagnostics.sh /mnt/c/Users/main/AppData/Roaming/Spotify/Spotify.dll
+bash test-diagnostics.sh /mnt/c/Users/example/AppData/Roaming/Spotify/Spotify.dll
 bash test-native.sh
 ```
 
@@ -279,7 +279,7 @@ Have `CheckBeforeRelease` query the binding and include only numeric tokens/stat
 Run:
 
 ```bash
-bash test-diagnostics.sh /mnt/c/Users/main/AppData/Roaming/Spotify/Spotify.dll
+bash test-diagnostics.sh /mnt/c/Users/example/AppData/Roaming/Spotify/Spotify.dll
 bash test-native.sh
 bash test-native-windows.sh
 ```
@@ -340,7 +340,7 @@ Run:
 
 ```bash
 bash test-native.sh
-bash test-diagnostics.sh /mnt/c/Users/main/AppData/Roaming/Spotify/Spotify.dll
+bash test-diagnostics.sh /mnt/c/Users/example/AppData/Roaming/Spotify/Spotify.dll
 bash test-native-windows.sh
 ```
 
