@@ -183,6 +183,45 @@ void TestCaptureConflictsAndReuse() {
     State(tracker,old,OwnershipState::Bound);
 }
 
+void TestCompletedConflictDoesNotPoisonLaterCapture() {
+    DecoderOwnershipTracker tracker;tracker.Reset(1);
+    const auto first=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,1.0,1);
+    const auto second=tracker.BeginCapture(DecoderCodec::Flac,0x2000,0,1.0,1);
+    tracker.ObserveDecoded(Activity(0x1000,1.1,1.2));
+    tracker.ObserveDecoded(Activity(0x2000,1.3,1.4));
+    State(tracker,first,OwnershipState::Conflict);
+    State(tracker,second,OwnershipState::Conflict);
+    tracker.CompleteCapture(first,2.0);
+    tracker.CompleteCapture(second,2.0);
+
+    const auto fresh=tracker.BeginCapture(DecoderCodec::Flac,0x3000,0,102.0,1);
+    tracker.ObserveDecoded(Activity(0x3000,102.1,102.2));
+    tracker.ObservePlayback("fresh","uri:fresh",3,102.3);
+    const auto binding=State(tracker,fresh,OwnershipState::Bound);
+    assert(binding.listen_generation==3);
+}
+
+void TestDelayedDecodedEvidenceUsesCompletedLifetimeWindow() {
+    DecoderOwnershipTracker tracker;tracker.Reset(1);
+    const auto first=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,1.0,1);
+    tracker.CompleteCapture(first,2.0);
+    const auto reused=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,3.0,1);
+    tracker.CompleteCapture(reused,4.0);
+
+    tracker.ObserveDecoded(Activity(0x1000,1.1,1.9));
+    State(tracker,first,OwnershipState::AwaitingPlaybackInstance);
+    State(tracker,reused,OwnershipState::AwaitingOutput);
+    tracker.ObservePlayback("first-life","uri:first",1,2.1);
+    State(tracker,first,OwnershipState::Bound);
+
+    tracker.ObserveDecoded(Activity(0x1000,3.1,3.9));
+    State(tracker,reused,OwnershipState::AwaitingPlaybackInstance);
+    tracker.ObservePlayback("second-life","uri:second",2,4.1);
+    const auto second_binding=State(tracker,reused,OwnershipState::Bound);
+    assert(second_binding.playback_token==tracker.PlaybackToken("second-life"));
+    assert(second_binding.listen_generation==2);
+}
+
 void TestAbortLossEpochAndTime() {
     DecoderOwnershipTracker tracker;tracker.Reset(1);
     const auto aborted=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,1.0,1);
@@ -284,6 +323,8 @@ int main() {
     TestUnavailableInstanceAndPauseResume();
     TestSuccessorsAndSkips();
     TestCaptureConflictsAndReuse();
+    TestDelayedDecodedEvidenceUsesCompletedLifetimeWindow();
+    TestCompletedConflictDoesNotPoisonLaterCapture();
     TestAbortLossEpochAndTime();
     TestRetentionNeverChooses();
     TestBoundedCaptureAndOwnerStorage();

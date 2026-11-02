@@ -154,7 +154,7 @@ std::uint64_t DecoderOwnershipTracker::BeginCapture(DecoderCodec codec,std::uint
 
 void DecoderOwnershipTracker::CompleteCapture(std::uint64_t capture_token,double time) {
     Expire(time);auto* capture=FindCapture(capture_token);if(!capture)return;
-    if(!ValidTime(time)||time<=capture->begun)capture->state=OwnershipState::Conflict;
+    if(!ValidTime(time)||time<=capture->begun)Conflict(*capture);
     capture->active=false;capture->complete=true;capture->completed_at=time;
 }
 
@@ -167,6 +167,7 @@ void DecoderOwnershipTracker::AbortCapture(std::uint64_t capture_token,CaptureAb
 
 void DecoderOwnershipTracker::Conflict(CaptureRecord& capture) noexcept {
     if(capture.state!=OwnershipState::Invalidated)capture.state=OwnershipState::Conflict;
+    if(current_capture_==capture.token)current_capture_=current_playback_=0;
     if(pending_capture_==capture.token)pending_capture_=0;
 }
 
@@ -177,19 +178,21 @@ void DecoderOwnershipTracker::ObserveDecoded(const DecodedActivity& activity) {
     if(!owner||activity.epoch!=epoch_||owner->epoch!=activity.epoch) {
         InvalidateOwner(activity.owner);return;
     }
-    CaptureRecord* candidate=nullptr;unsigned live=0;
-    for(auto& capture:captures_) {
-        if(capture.token&&capture.owner==activity.owner&&capture.active&&
-           capture.state!=OwnershipState::Invalidated) {
-            candidate=&capture;++live;
-        }
-    }
-    if(!live)return;
     if(!ValidTime(activity.first)||!ValidTime(activity.last)||activity.last<activity.first) {
         for(auto& capture:captures_)if(capture.token&&capture.owner==activity.owner&&capture.active)
             Conflict(capture);
         return;
     }
+    CaptureRecord* candidate=nullptr;unsigned candidates=0;
+    for(auto& capture:captures_) {
+        if(!capture.token||capture.owner!=activity.owner||
+           capture.state==OwnershipState::Invalidated||capture.state==OwnershipState::Conflict)
+            continue;
+        const bool contains=capture.active ? activity.first>=capture.begun :
+            capture.complete&&activity.first>=capture.begun&&activity.last<=capture.completed_at;
+        if(contains){candidate=&capture;++candidates;}
+    }
+    if(!candidates)return;
     // GetTickCount64 is millisecond-granular. Distinct, structurally normalized
     // decoder owners routinely overlap on the same tick during preload; owner
     // identity and capture lifecycle disambiguate them. Only regression loses
@@ -206,9 +209,15 @@ void DecoderOwnershipTracker::ObserveDecoded(const DecodedActivity& activity) {
     }
     owner->first=owner->first?owner->first:activity.first;owner->last=activity.last;
     latest_decoded_time_=activity.last;
-    if(live!=1) {
-        for(auto& capture:captures_)if(capture.token&&capture.owner==activity.owner&&capture.active)
-            Conflict(capture);
+    if(candidates!=1) {
+        for(auto& capture:captures_) {
+            if(!capture.token||capture.owner!=activity.owner||
+               capture.state==OwnershipState::Invalidated||capture.state==OwnershipState::Conflict)
+                continue;
+            const bool contains=capture.active ? activity.first>=capture.begun :
+                capture.complete&&activity.first>=capture.begun&&activity.last<=capture.completed_at;
+            if(contains)Conflict(capture);
+        }
         return;
     }
     if(candidate->state==OwnershipState::Conflict)return;
