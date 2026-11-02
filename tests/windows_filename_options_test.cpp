@@ -157,7 +157,7 @@ void PublicationModes(const std::wstring& root) {
     const auto title=OutputPath(root,c,L".flac",false,false),numbered=OutputPath(root,c,L".flac",false,true);
     assert(numbered==Numbered(title));
     auto publish=[&] {
-        const auto source=recording_fixture::fixture();Capture capture;capture.lossless=true;capture.bytes=source.size();
+        const auto source=recording_fixture::fixture();Capture capture;capture.lossless=true;capture.metadata=true;capture.bytes=source.size();
         size_t offset=0;assert(ParseFlacMetadata(source,capture.flac,offset)==FlacParse::Valid);
         capture.coverage.samples=16;assert(capture.data.Append(source.data(),source.size(),1024*1024));
         Heard heard;heard.media=media;heard.start=1;heard.finish=2;

@@ -9,19 +9,21 @@ struct ClientPlaybackRecord {
     RichMetadata metadata;
     double position=0,sampled_ms=0;
     bool playing=false,buffering=false;
+    unsigned speed=1;
     int local=-1;
     std::string instance;
 };
 inline bool ParseClientPlayback(const std::string& input,ClientPlaybackRecord& out,std::string& error) {
     const auto fail=[&](const char* reason){error=reason;return false;};
     if(input.size()>16384)return fail("client-payload-too-large");
+    if(input.find('\0')!=std::string::npos)return fail("client-invalid-nul");
     std::map<std::string,std::string> timeline;
     std::string metadata;
     for(size_t p=0;p<input.size();) {
         auto end=input.find('&',p);if(end==std::string::npos)end=input.size();
         const auto eq=input.find('=',p);if(eq==std::string::npos||eq>=end)return fail("client-invalid-pair");
         const auto key=input.substr(p,eq-p),value=input.substr(eq+1,end-eq-1);
-        if(key=="position"||key=="sampled_ms"||key=="paused"||key=="buffering"||key=="local"||key=="instance") {
+        if(key=="position"||key=="sampled_ms"||key=="paused"||key=="buffering"||key=="local"||key=="instance"||key=="speed") {
             if(!timeline.emplace(key,value).second)return fail("client-duplicate-field");
         } else {
             if(!metadata.empty())metadata+='&';
@@ -45,6 +47,12 @@ inline bool ParseClientPlayback(const std::string& input,ClientPlaybackRecord& o
     if((timeline["paused"]!="0"&&timeline["paused"]!="1")||
        (timeline["buffering"]!="0"&&timeline["buffering"]!="1"))return fail("client-invalid-playback-flags");
     record.playing=timeline["paused"]=="0";record.buffering=timeline["buffering"]=="1";
+    if(timeline.count("speed")) {
+        const auto& speed=timeline["speed"];
+        if(speed=="1")record.speed=1;else if(speed=="2")record.speed=2;
+        else if(speed=="4")record.speed=4;else if(speed=="8")record.speed=8;
+        else if(speed=="10")record.speed=10;else return fail("client-invalid-speed");
+    }
     if(timeline["local"]=="1")record.local=1;
     else if(timeline["local"]=="0")record.local=0;
     else if(timeline["local"]!="unknown")return fail("client-invalid-device-flag");
@@ -63,14 +71,15 @@ inline bool ParseClientPlayback(const std::string& input,ClientPlaybackRecord& o
     }
     out=std::move(record);error.clear();return true;
 }
-struct ClientTransition {std::string uri,instance;double sampled_ms=0,transition_ms=0,position=-1;};
+struct ClientTransition {std::string uri,instance;double sampled_ms=0,transition_ms=0,position=-1;bool explicit_skip=false;};
 inline bool ParseClientTransition(const std::string& input,ClientTransition& out) {
+    if(input.size()>16384||input.find('\0')!=std::string::npos)return false;
     std::map<std::string,std::string> values;
     for(size_t p=0;p<input.size();) {
         auto end=input.find('&',p);if(end==std::string::npos)end=input.size();
         const auto eq=input.find('=',p);if(eq==std::string::npos||eq>=end)return false;
         const auto key=input.substr(p,eq-p);
-        if(key!="v"&&key!="blocked"&&key!="uri"&&key!="instance"&&key!="sampled_ms"&&key!="transition_ms"&&key!="position_ms")return false;
+        if(key!="v"&&key!="blocked"&&key!="uri"&&key!="instance"&&key!="sampled_ms"&&key!="transition_ms"&&key!="position_ms"&&key!="manual")return false;
         if(!values.emplace(key,input.substr(eq+1,end-eq-1)).second)return false;
         p=end+1;
     }
@@ -87,7 +96,10 @@ inline bool ParseClientTransition(const std::string& input,ClientTransition& out
         char* position_end=nullptr;position=std::strtod(values["position_ms"].c_str(),&position_end)/1000;
         if(!position_end||*position_end||!std::isfinite(position)||position<0||position>86400)return false;
     }
-    out={record.metadata.uri,record.instance,record.sampled_ms,changed,position};return true;
+    const auto manual=values.find("manual");
+    if(manual!=values.end()&&manual->second!="0"&&manual->second!="1")return false;
+    out={record.metadata.uri,record.instance,record.sampled_ms,changed,position,
+         manual!=values.end()&&manual->second=="1"};return true;
 }
 
 }

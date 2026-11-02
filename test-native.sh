@@ -24,6 +24,10 @@ g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/spotify_hook_discovery_test.cpp n
 build/spotify-hook-discovery-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/history_core_test.cpp native/ogg_history_core.cpp -o build/history-core-test
 build/history-core-test
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/capture_speed_test.cpp native/ogg_history_core.cpp -o build/capture-speed-test
+build/capture-speed-test
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/decoded_output_speed_test.cpp native/decoded_output_speed.cpp -o build/decoded-output-speed-test
+build/decoded-output-speed-test
 gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/ogg-framing-test.o
 g++ -std=c++17 -O2 -Wall -Wextra -Werror -I native/vendor/libogg/include \
     tests/ogg_tags_test.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/ogg-framing-test.o -o build/ogg-tags-test
@@ -35,6 +39,8 @@ g++ -std=c++17 -O2 -Wall -Wextra -Werror -I native/vendor/libogg/include \
 build/flac-history-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/compressed_buffer_test.cpp native/compressed_buffer.cpp -o build/compressed-buffer-test
 build/compressed-buffer-test
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/compressed_buffer_allocation_test.cpp native/compressed_buffer.cpp -o build/compressed-buffer-allocation-test
+build/compressed-buffer-allocation-test
 
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/rich_metadata_test.cpp native/rich_metadata.cpp -o build/rich-metadata-test
 build/rich-metadata-test

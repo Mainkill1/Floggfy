@@ -55,6 +55,9 @@ std::unique_ptr<Capture> Captured(const std::vector<uint8_t>& source) {
 void TestPipeline(const std::wstring& root) {
     const auto source=spac_fixture::stream(29,true);
     auto capture=Captured(source);
+    assert(ValidateFinalCapture(*capture)==FinalCaptureValidation::Valid);
+    auto inconsistent=Captured(source);++inconsistent->spac.info.total_samples;
+    assert(ValidateFinalCapture(*inconsistent)==FinalCaptureValidation::Invalid);
     Heard heard;heard.media.title=L"Native AAC";heard.media.artist=L"Artist";heard.media.album=L"Album";
     heard.media.duration=capture->Duration();heard.start=capture->born;heard.finish=heard.start+heard.media.duration;heard.generation=1;
     const auto catalog=CatalogFor(heard.media);const auto path=OutputPath(root,catalog,L".m4a",false);

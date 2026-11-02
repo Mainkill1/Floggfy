@@ -3,7 +3,10 @@
 #include "ogg_history_core.h"
 #include <deque>
 namespace history {
-struct PlaybackListen {Media media;double start=0,finish=0;uint64_t generation=0;bool ambiguous=false;};
+struct PlaybackListen {
+    Media media;double start=0,finish=0;uint64_t generation=0;bool ambiguous=false;
+    bool provisional=false;double deadline=0;
+};
 class RecentPlaybackHistory {
 public:
     struct Record {PlaybackListen listen;bool complete=false;};

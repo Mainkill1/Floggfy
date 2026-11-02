@@ -42,6 +42,19 @@ constexpr std::uint8_t flac_frame[] = {
 constexpr std::uint8_t flac_error[] = {
     0x48,0x8b,0xd9,0x48,0x63,0xfa,0x75,0x2b,0x85,0xd2,0x75,0x27,
 };
+constexpr std::uint8_t decoded_output[] = {
+    0x4c,0x8b,0xdc,0x49,0x89,0x5b,0x18,0x49,0x89,0x73,0x20,0x57,
+    0x48,0x83,0xec,0x40,0x49,0x8b,0x40,0x08,0x49,0x8b,0xf1,0x49,
+    0x89,0x43,0x08,0x49,0x8b,0xd8,
+};
+constexpr std::uint8_t decoded_output_decode[] = {
+    0x41,0xff,0xd2,0x48,0x8b,0x4c,0x24,0x50,0x48,0x29,0x4b,0x08,
+    0x48,0x8d,0x04,0x8d,0x00,0x00,0x00,0x00,
+};
+constexpr std::uint8_t decoded_output_finish[] = {
+    0x48,0x01,0x03,0x48,0x8b,0x44,0x24,0x58,0x48,0x01,0x06,
+    0x48,0x29,0x46,0x08,0x48,0x8b,0xc7,
+};
 
 struct Function {
     std::uint32_t begin;
@@ -82,6 +95,7 @@ std::vector<std::uint8_t> MappedImage(std::uint32_t shift = 0,
         {0x3550 + shift, 0x3761 + shift, 107, flac_init, sizeof(flac_init)},
         {0x3c60 + shift, 0x3d4e + shift, 112, flac_read, sizeof(flac_read)},
         {0x4000 + shift, 0x40b5 + shift, 48, flac_frame, sizeof(flac_frame)},
+        {0x4400 + shift, 0x448c + shift, 0, decoded_output, sizeof(decoded_output)},
         {static_cast<std::uint32_t>((inconsistent_layout ? 0x1a000 : 0x9000) + shift),
          static_cast<std::uint32_t>((inconsistent_layout ? 0x1aaf6 : 0x9af6) + shift),
          55, sniff, sizeof(sniff)},
@@ -90,6 +104,10 @@ std::vector<std::uint8_t> MappedImage(std::uint32_t shift = 0,
     if (duplicate_ogg)
         functions.push_back({0x3b000, 0x3b1b4, 103, ogg, sizeof(ogg)});
 
+    static constexpr std::uint8_t stereo[]={0x48,0x8b,0x53,0x20,0x48,0xd1,0xea,0x48,0x8b,0x01,0xff,0x90,0xc8,0x00,0x00,0x00};
+    functions.push_back({0x40000+shift,0x40700+shift,0x48c,stereo,sizeof(stereo)});
+    image[0x40000+shift+0x2c9]=0xe8;
+    Put<std::int32_t>(image,0x40000+shift+0x2ca,std::int32_t(0x4400)-std::int32_t(0x40000+0x2ce));
     Put<std::uint32_t>(image, 0x98 + 112 + 3 * 8 + 4,
                        static_cast<std::uint32_t>(functions.size() * 12));
     for (std::size_t index = 0; index < functions.size(); ++index) {
@@ -100,6 +118,8 @@ std::vector<std::uint8_t> MappedImage(std::uint32_t shift = 0,
         std::memcpy(image.data() + function.begin + function.anchor_offset,
                     function.anchor, function.anchor_size);
     }
+    std::memcpy(image.data()+0x4400+shift+0x4e,decoded_output_decode,sizeof(decoded_output_decode));
+    std::memcpy(image.data()+0x4400+shift+0x62,decoded_output_finish,sizeof(decoded_output_finish));
     return image;
 }
 
@@ -121,6 +141,9 @@ int main() {
     assert(Rva(targets, spotify::TargetKind::FlacFrame) == 0x4000);
     assert(Rva(targets, spotify::TargetKind::FormatSniff) == 0x9000);
     assert(Rva(targets, spotify::TargetKind::OggPageSeek) == 0x2b000);
+    spotify::DecodedOutputTarget decoded{};
+    assert(spotify::DiscoverDecodedOutputTarget(image.data(),image.size(),decoded)==spotify::DiscoveryResult::Found);
+    assert(decoded.rva==0x4400);
 
     image = MappedImage(0x1000);
     assert(spotify::DiscoverHookTargets(image.data(), image.size(), targets) ==
@@ -136,6 +159,28 @@ int main() {
     image = MappedImage(0, true);
     assert(spotify::DiscoverHookTargets(image.data(), image.size(), targets) ==
            spotify::DiscoveryResult::AmbiguousTarget);
+
+    image=MappedImage();
+    std::memcpy(image.data()+0x4600,decoded_output,sizeof(decoded_output));
+    std::memcpy(image.data()+0x4600+0x4e,decoded_output_decode,sizeof(decoded_output_decode));
+    std::memcpy(image.data()+0x4600+0x62,decoded_output_finish,sizeof(decoded_output_finish));
+    Put<std::uint32_t>(image,0x1000+5*12,0x4600);
+    Put<std::uint32_t>(image,0x1000+5*12+4,0x468c);
+    Put<std::uint32_t>(image,0x1000+5*12+8,0x1800);
+    Put<std::uint32_t>(image,0x1000+6*12,0x9000);
+    Put<std::uint32_t>(image,0x1000+6*12+4,0x9af6);
+    Put<std::uint32_t>(image,0x1000+6*12+8,0x1800);
+    Put<std::uint32_t>(image,0x1000+7*12,0x2b000);
+    Put<std::uint32_t>(image,0x1000+7*12+4,0x2b1b4);
+    Put<std::uint32_t>(image,0x1000+7*12+8,0x1800);
+    Put<std::uint32_t>(image,0x98+112+3*8+4,8*12);
+    assert(spotify::DiscoverDecodedOutputTarget(image.data(),image.size(),decoded)==spotify::DiscoveryResult::AmbiguousTarget);
+
+    image=MappedImage();image[0x4400]^=0xff;
+    assert(spotify::DiscoverDecodedOutputTarget(image.data(),image.size(),decoded)==spotify::DiscoveryResult::MissingTarget);
+
+    image=MappedImage();Put<std::uint32_t>(image,0x1000+4*12,0x43f0);
+    assert(spotify::DiscoverDecodedOutputTarget(image.data(),image.size(),decoded)==spotify::DiscoveryResult::InconsistentLayout);
 
     image = MappedImage(0, false, true);
     assert(spotify::DiscoverHookTargets(image.data(), image.size(), targets) ==

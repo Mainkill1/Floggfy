@@ -2,8 +2,9 @@
 
 The native `version.dll` provides complete-listen history and an optional legacy
 connectivity repair for the Windows x64 Spotify client. It copies the compressed
-Vorbis or FLAC bytes that Spotify already reads for playback. It does not request
-tracks, run FFmpeg, transcode audio, or require an external runtime helper.
+Vorbis, FLAC or optionally AAC bytes that Spotify already reads for playback. It
+does not request tracks, run FFmpeg, transcode audio, or require an external
+runtime helper.
 
 ## Requirements and startup
 
@@ -21,7 +22,8 @@ tracks, run FFmpeg, transcode audio, or require an external runtime helper.
 
 `SpotifyHistory.ini` is included with the release and is created beside
 `version.dll` on first launch when missing.
-The top-left menu contains **To Disk** with Downloads, Save Location, FLAC and Ogg.
+The top-left menu contains **To Disk** with Downloads, Save Location, FLAC, Ogg,
+Lyrics and Capture Speed.
 Checkbox labels and capture switches change immediately when clicked. INI
 persistence runs in a background worker.
 
@@ -33,6 +35,7 @@ NetworkPatch=0
 Save Location=
 Flac=1
 Ogg=1
+CaptureSpeed=1
 Metadata=1
 Lyrics=1
 UpdateExistingMetadata=1
@@ -63,6 +66,13 @@ MaxBufferedMiB=500
   subfolder, including redirected Music folders. A custom directory is accepted.
 - **FLAC/Ogg:** select which original source formats to retain. Enabling FLAC does
   not convert Vorbis playback into lossless audio. Spotify must supply FLAC.
+- **Capture Speed:** `1`, `2`, `4`, `8` or `10`; default `1`. Accelerated capture
+  shortens the decoded PCM output span only after Spotify has consumed the full
+  compressed input span, so saved bytes are not resampled or transcoded. It is
+  intended for muted, unattended capture. Live sound can be choppy, Spotify's
+  progress display may not track real time, and changing speed invalidates the
+  current track so it must be replayed from the beginning. If the decoded-output
+  hook is unavailable or becomes invalid, Floggfy safely falls back to `1x`.
 - **AAC:** INI-only, default `0`. Set `AAC=1` and restart to capture supported
   low-quality SpAC/AAC streams as M4A. Downloads still controls all saving.
 - **Metadata:** enriches tracks using existing client state, cached metadata, and Spotify's authenticated track/album services. Set 0 and restart to disable its hooks.
@@ -433,6 +443,13 @@ Matching must be unique in both directions across streams and completed listens.
 Ambiguous matches stay rejected after expiry or eviction; removing an alternative
 is never treated as evidence of ownership. Observation loss under lock contention
 also invalidates coverage instead of losing a guard silently.
+During a natural crossfade or buffering transition, the prior decoder and its
+complete compressed buffer can remain quarantined for up to 15 seconds while the
+new playback identity settles. Before publishing or clearing that provisional
+capture, Floggfy reruns full container validation and requires a unique one-to-one
+match with the completed listen. A false transition signal therefore does not
+discard an otherwise complete valid song. Explicit skips and seeks remain
+ineligible and are never recovered from the quarantine.
 Incomplete decoder tails retain their original ten-second deadline. Audio is
 published as a final file only after complete-listen and integrity checks pass.
 Destination resolution returns a verified matching-file snapshot or an explicit
@@ -446,8 +463,10 @@ matching recording, rather than scanning directories or maintaining another cach
 1. Quit Spotify and set **Metadata=0**, then restart. This isolates client metadata
    service/cache discovery changes while retaining basic Windows media tags and
    app playback observations. Audio still saves without a cover.
-2. If menu integration crashes or disappears, set **Menu=0** and restart. Configure
-   Downloads, FLAC and Ogg directly in the INI.
+2. If playback is choppy or progress looks wrong, set **Capture Speed** to **1x**
+   and replay the track from its beginning. If menu integration crashes or
+   disappears, set **Menu=0** and restart. Configure Downloads, FLAC, Ogg and
+   `CaptureSpeed` directly in the INI.
 3. Enable **Log=1** and, temporarily, **DebugLog=1**. Inspect `Floggfy.log` in the
    configured save root. Check `media-session` lines for the selected source,
    failure stage, reason and HRESULT. `source=spotify` works independently of
@@ -625,3 +644,19 @@ After, optional `Floggfy-diagnostics.log` adds facts rather than the save outcom
 
 Local action requests, received commands and observed playback states describe
 separate events. None alone identifies why playback paused.
+
+## Diagnosing an Ogg capture rejected mid-song
+
+Ogg capture rejections now name the failed guard: `serial-change`,
+`sequence-discontinuity`, `unexpected-bos`, `invalid-granule`,
+`granule-regression`, `invalid-eos-granule`, `inactive-stream`, or an invalid
+page. With `Log=1` and `DebugLog=1`, the matching bounded `Ogg observation`
+records context, serial/sequence/granule expectations, flags, format, page and
+byte counts, age, and queue-drop count. It never records raw audio, URI,
+playback-instance, device, or credential data.
+
+Spotify may decode crossfaded tracks concurrently. Floggfy therefore isolates
+logical Ogg streams by both native sync context and Ogg serial; a BOS or page
+from one serial cannot reset another valid serial on the same context. Missing,
+corrupt, backward, duplicated, or ambiguous pages remain fail-closed and require
+replay; Floggfy never guesses at or repairs a sequence gap.

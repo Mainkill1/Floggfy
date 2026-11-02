@@ -281,6 +281,51 @@ DiscoveryResult DiscoverAacHookTargets(const std::uint8_t* mapped_image,
     targets={ctor.rva,feed.rva,destroy};return DiscoveryResult::Found;
 }
 
+DiscoveryResult DiscoverDecodedOutputTarget(const std::uint8_t* mapped_image,
+    std::size_t available,DecodedOutputTarget& target) noexcept {
+    target={};Image image{};
+    if(!ParseImage(mapped_image,available,image))return DiscoveryResult::InvalidImage;
+    // Shared x64 decoder dispatcher in the supported client. It calls the
+    // codec-specific virtual decoder once, then advances both the float output
+    // span and compressed input span by the counts returned from that call.
+    // Hooking this wrapper preserves ownership and lets the detour shorten only
+    // the already-decoded output span after compressed input was consumed.
+    static constexpr std::uint8_t prefix[]={
+        0x4c,0x8b,0xdc,0x49,0x89,0x5b,0x18,0x49,0x89,0x73,0x20,0x57,
+        0x48,0x83,0xec,0x40,0x49,0x8b,0x40,0x08,0x49,0x8b,0xf1,0x49,
+        0x89,0x43,0x08,0x49,0x8b,0xd8};
+    static constexpr std::uint8_t decode[]={
+        0x41,0xff,0xd2,0x48,0x8b,0x4c,0x24,0x50,0x48,0x29,0x4b,0x08,
+        0x48,0x8d,0x04,0x8d,0x00,0x00,0x00,0x00};
+    static constexpr std::uint8_t finish[]={
+        0x48,0x01,0x03,0x48,0x8b,0x44,0x24,0x58,0x48,0x01,0x06,
+        0x48,0x29,0x46,0x08,0x48,0x8b,0xc7};
+    HookTarget found{};
+    const auto result=FindTarget(image,{TargetKind::DecodedOutput,prefix,sizeof(prefix),0x80,0xa0},found);
+    if(result!=DiscoveryResult::Found)return result;
+    if(!Range(image.image_size,found.rva,sizeof(prefix))||
+       std::memcmp(image.base+found.rva,prefix,sizeof(prefix))||
+       !Range(image.image_size,found.rva+0x4e,sizeof(decode))||
+       std::memcmp(image.base+found.rva+0x4e,decode,sizeof(decode))||
+       !Range(image.image_size,found.rva+0x62,sizeof(finish))||
+       std::memcmp(image.base+found.rva+0x62,finish,sizeof(finish)))
+        return DiscoveryResult::InconsistentLayout;
+    // Validate the owning playback pump's stereo-frame accounting and direct
+    // dispatcher call. Float counts are divided by two before frame accounting.
+    static constexpr std::uint8_t stereo[]={0x48,0x8b,0x53,0x20,0x48,0xd1,0xea,0x48,0x8b,0x01,0xff,0x90,0xc8,0x00,0x00,0x00};
+    HookTarget caller{};
+    const auto caller_result=FindTarget(image,{TargetKind::DecodedOutput,stereo,sizeof(stereo),0x600,0x800},caller);
+    if(caller_result!=DiscoveryResult::Found)return caller_result;
+    const auto call=caller.rva+0x2c9;
+    std::int32_t relative=0;
+    if(!Range(image.image_size,call,5)||image.base[call]!=0xe8||
+       !Read(image.base,image.image_size,call+1,relative)||
+       std::int64_t(call)+5+relative!=found.rva||
+       !Range(image.image_size,caller.rva+0x48c,sizeof(stereo))||
+       std::memcmp(image.base+caller.rva+0x48c,stereo,sizeof(stereo)))return DiscoveryResult::InconsistentLayout;
+    target.rva=found.rva;return DiscoveryResult::Found;
+}
+
 namespace {
 template<std::size_t N> bool ConnectBytes(const Image& image,std::uint32_t at,
                                         const std::uint8_t (&bytes)[N]) noexcept {

@@ -22,7 +22,9 @@ const relevant=()=>output.filter(x=>/^FLOGGFY_STATUS:(connect |control )/.test(x
 const last=()=>relevant().at(-1);
 const has=s=>relevant().some(x=>x.includes(s));
 const action=a=>{for(const fn of listeners.keys())assert.equal(fn({data:{action:a}}),undefined);};
-assert.equal(relevant().length,0);assert.equal(added,0);
+assert.equal(relevant().length,0);assert.equal(added,1);
+// The passive action listener remains active without diagnostics so explicit
+// skips can be distinguished from crossfade/buffering transitions.
 config.debug=true;poll();assert.equal(added,1);assert(has('target=local')&&has('initiator=unknown'));
 let count=relevant().length;poll();poll();assert.equal(relevant().length,count);assert.equal(added,1);
 playerState.isPaused=true;poll();assert(has('state=paused target=local initiator=unknown'));
@@ -38,24 +40,20 @@ const trap=(o,k)=>Object.defineProperty(o,k,{configurable:true,get(){getters++;t
 trap(connectState.activeDevice,'id');trap(connectState.activeDevice,'isLocal');trap(connectState,'connectionStatus');poll();
 assert(has('state=unknown target=unknown'));
 action('PRIVATE_ACTION');poll();assert(!relevant().some(x=>x.includes('PRIVATE_ACTION')));
-config.connect=false;poll();assert.equal(removed,1);assert.equal(listeners.size,0);
+config.connect=false;poll();assert.equal(removed,0);assert.equal(listeners.size,1);
 count=relevant().length;action('pause');poll();assert.equal(relevant().length,count);
-config.connect=true;poll();assert.equal(added,2);
+config.connect=true;poll();assert.equal(added,1);
 // Optional methods may disappear or throw without breaking the existing footer.
 connect.getConnectState=()=>{throw Error('changed API');};poll();assert(has('state=unknown target=unknown'));
 const data={};trap(data,'action');for(const fn of listeners.keys())fn({data});poll();
-trap(config,'connect');poll();assert.equal(listeners.size,0);
-// If an optional API refuses cleanup, retain one inert binding, never stack
-// listeners or let that old callback participate in command dispatch.
-Object.defineProperty(config,'connect',{value:true,writable:true,configurable:true});
-events.removeListener=()=>{throw Error('changed cleanup API');};poll();
-assert.equal(listeners.size,1);const registrations=added;
-config.connect=false;poll();config.connect=true;poll();
-assert.equal(added,registrations);count=relevant().length;
-action('pause');poll();assert.equal(relevant().length,count);assert.equal(listeners.size,1);
+trap(config,'connect');poll();assert.equal(listeners.size,1);
+// Losing diagnostic configuration does not disable skip detection or stack a
+// second listener; non-skip actions remain silent while diagnostics are off.
+const registrations=added;count=relevant().length;
+action('pause');poll();assert.equal(added,registrations);assert.equal(relevant().length,count);assert.equal(listeners.size,1);
 assert.equal(getters,0);assert.equal(network,0);
 assert(relevant().every(x=>x.length<100));
 assert(!relevant().some(x=>/PRIVATE_|session|token|response/i.test(x)));
 assert(output.some(x=>x.startsWith('FLOGGFY_PLAYBACK_V1:')&&x.includes('title=Song')));
 assert(!output.some(x=>x.startsWith('FLOGGFY_METADATA_V1:')));
-console.log('PASS: cached playback target, honest unknown controller, passive local requests, paused dedup, bounded queue, opt-out cleanup and privacy');
+console.log('PASS: cached playback target, honest unknown controller, passive local requests, always-on skip detection and privacy');

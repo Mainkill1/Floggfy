@@ -11,9 +11,19 @@ struct Page {
     bool vorbis_start = false;
 };
 bool ParsePage(const uint8_t* bytes, size_t length, Page& out);
+// Extract a structurally bounded serial/sequence before CRC validation. This is
+// used only to quarantine the exact failed logical stream; it never accepts or
+// publishes an invalid page.
+bool ParsePageIdentity(const uint8_t* bytes,size_t length,uint32_t& serial,uint32_t& sequence);
 enum class Result { Ignore, Begin, Append, Complete, Invalid };
+enum class OggRejection : uint8_t {
+    None,InvalidPage,Inactive,Serial,Sequence,Bos,Granule,
+    GranuleRegression,EosGranule
+};
+const char* OggRejectionName(OggRejection reason) noexcept;
 struct Stream {
     bool active = false, complete = false;
+    OggRejection rejection = OggRejection::None;
     uint32_t serial = 0, next = 0, rate = 0, pages = 0, bitrate = 0;
     uint8_t channels = 0;
     int64_t samples = -1;
@@ -37,8 +47,9 @@ struct Listen {
     // These describe the observed wrap. They are active only in AwaitingIdentity
     // or ProvisionalRepeat; confirmation must never extend wrap_time's deadline.
     double wrap_time = 0, wrap_start = 0, wrap_position = 0, wrap_length = 0;
+    unsigned capture_speed = 1;
     bool eligible = false, playing = false, transient = false, pending_start = false;
     std::string Observe(const std::string& key, double position, double length,
-                        bool is_playing, double time);
+                        bool is_playing, double time, unsigned speed=1);
 };
 }

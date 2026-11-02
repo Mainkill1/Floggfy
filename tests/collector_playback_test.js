@@ -15,7 +15,10 @@ const last=()=>{const value=output.filter(x=>x.startsWith('FLOGGFY_TIMELINE_V1:'
 assert.equal(last().get('position'),'6');assert.equal(last().get('paused'),'0');assert.equal(last().get('local'),'1');
 assert.equal(last().get('uri'),'spotify:track:0000000000000000000001');
 assert.equal(typeof listeners.get('update'),'function','app updates must preserve fast transitions between polls');
+assert.equal(typeof listeners.get('action'),'function','local skip evidence must be observed even when debug logging is disabled');
+listeners.get('action')({data:{action:'skipToNext'}});
 state.isBuffering=true;listeners.get('update')({data:state});assert.equal(last().get('blocked'),'buffering');
+assert.equal(last().get('manual'),'1','the buffering transition immediately following a local skip is disqualified');
 state.isBuffering=false;listeners.get('update')({data:state});assert.equal(last().get('position'),'6');
 now+=500;state.isPaused=true;state.positionAsOfTimestamp=7000;state.timestamp=now-10000;
 context.window.__floggfyPoll();assert.equal(last().get('position'),'7');assert.equal(last().get('paused'),'1');
@@ -24,6 +27,10 @@ local=true;state.isPaused=false;state.isBuffering=true;now+=500;context.window._
 state.item=undefined;now+=500;context.window.__floggfyPoll();assert.equal(last().get('blocked'),'buffering');
 state.item={uri:'spotify:track:0000000000000000000001',metadata:{title:'Song',artist_name:'Artist',album_title:'Album',duration:'180000'}};
 state.isBuffering=false;local=true;state.timestamp=now+10000;now+=500;context.window.__floggfyPoll();assert.equal(last().get('unavailable'),'timeline-fields');
+state.timestamp=now;state.positionAsOfTimestamp=1000;state.speed=4;now+=500;context.window.__floggfyPoll();
+assert.equal(last().get('speed'),'4');assert.equal(last().get('position'),'3','reported playback speed advances the bounded timeline');
+state.speed=3;now+=500;context.window.__floggfyPoll();assert.equal(last().get('unavailable'),'timeline-fields');
+state.speed=1;
 Object.defineProperty(state,'positionAsOfTimestamp',{get(){getters++;throw Error('getter forbidden');},configurable:true});
 now+=500;context.window.__floggfyPoll();assert.equal(getters,0);
 assert(!output.some(x=>x.startsWith('FLOGGFY_METADATA_V1:')));assert.equal(requests,0);

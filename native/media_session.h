@@ -10,10 +10,12 @@ struct Media {
     std::wstring title, artist, album, album_artist, app, genre;
     unsigned track = 0;
     double position = 0, duration = 0;
+    unsigned playback_speed = 1;
     bool playing = false;
     int playback_status = -1; // Raw Windows status; unknown for other providers.
     MediaSource source=MediaSource::Windows;
     std::string spotify_uri,playback_instance;
+    bool explicit_skip=false; // Validated local skip action attached to a transition.
     std::string Key() const;
     std::string ListenKey() const {return source==MediaSource::Spotify?spotify_uri+(playback_instance.empty()?std::string{}:"\x1f"+playback_instance):Key();}
 };

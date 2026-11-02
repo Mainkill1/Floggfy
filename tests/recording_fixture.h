@@ -20,10 +20,10 @@ static std::vector<uint8_t> fixture(unsigned rate=44100,unsigned bits=16) {
     bytes.insert(bytes.end(),frame.begin(),frame.end()); return bytes;
 }
 static std::vector<uint8_t> page_parts(const std::vector<uint8_t>& body,const std::vector<uint8_t>& lacing,
-                                     unsigned sequence,unsigned flags,uint64_t granule=0) {
+                                     unsigned sequence,unsigned flags,uint64_t granule=0,uint32_t serial=42) {
     std::vector<uint8_t> out={'O','g','g','S',0,uint8_t(flags)};
     for(unsigned i=0;i<8;i++) out.push_back(uint8_t(granule>>(8*i)));
-    for(unsigned value:{42u,sequence,0u}) for(unsigned i=0;i<4;i++) out.push_back(uint8_t(value>>(8*i)));
+    for(unsigned value:{serial,sequence,0u}) for(unsigned i=0;i<4;i++) out.push_back(uint8_t(value>>(8*i)));
     out.push_back(uint8_t(lacing.size()));out.insert(out.end(),lacing.begin(),lacing.end());
     out.insert(out.end(),body.begin(),body.end());
     uint32_t checksum=0;
@@ -31,9 +31,9 @@ static std::vector<uint8_t> page_parts(const std::vector<uint8_t>& body,const st
     for(unsigned i=0;i<4;i++) out[22+i]=uint8_t(checksum>>(8*i));
     return out;
 }
-static std::vector<uint8_t> page(const std::vector<uint8_t>& packet,unsigned sequence,unsigned flags,uint64_t granule=0) {
+static std::vector<uint8_t> page(const std::vector<uint8_t>& packet,unsigned sequence,unsigned flags,uint64_t granule=0,uint32_t serial=42) {
     std::vector<uint8_t> lacing(packet.size()/255,255);lacing.push_back(uint8_t(packet.size()%255));
-    return page_parts(packet,lacing,sequence,flags,granule);
+    return page_parts(packet,lacing,sequence,flags,granule,serial);
 }
 static std::vector<uint8_t> identification() {
     std::vector<uint8_t> id={1,'v','o','r','b','i','s'};id.resize(30);id[11]=2;id[12]=0x44;id[13]=0xac;

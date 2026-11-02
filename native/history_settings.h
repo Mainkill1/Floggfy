@@ -10,7 +10,7 @@ struct Settings {
     bool debug_networking=false; // Master deep-diagnostics hook + separate log; restart-only.
     bool debug_connect=true; // Requires DebugLog; observes cached Connect state/local actions.
     bool network_patch=false; // INI-only startup opt-in; requires a full restart.
-    unsigned max_buffered_mib=500,generation=0,capture_epoch=0;
+    unsigned max_buffered_mib=500,capture_speed=1,generation=0,capture_epoch=0;
     std::wstring root,save_location;
 };
 inline bool DiagnosticsEnabled(bool log,bool debug_log) noexcept {return log&&debug_log;}
@@ -27,6 +27,10 @@ bool OggEnabled();
 bool FlacEnabled();
 bool AACEnabled();
 unsigned CaptureEpoch();
+unsigned CaptureSpeed();
+bool SetCaptureSpeed(unsigned speed);
+bool CaptureAccelerationAvailable();
+void SetCaptureAccelerationAvailable(bool available);
 bool EnsureDirectory(const std::wstring& path);
 std::wstring WindowsPath(const std::wstring& path);
 void PickSaveLocation(HWND owner);

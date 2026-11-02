@@ -24,6 +24,7 @@ int main() {
           "generated INI loads complete default switches");
     check(defaults.save_location.empty() && defaults.max_buffered_mib==500,
           "generated INI uses default Music location and 500 MiB buffer");
+    check(defaults.capture_speed==1 && CaptureSpeed()==1,"capture speed defaults to 1x");
     check(GetPrivateProfileIntW(L"History",L"StopAfter",UINT(-1),ini.c_str())==UINT(-1),"generated INI omits history limit");
     auto low=dir+L"\\low.ogg",high=dir+L"\\high.ogg",target=dir+L"\\published.ogg";
     Quality qlow,qhigh,qflac; check(ReadQuality(low,qlow) && qlow.bitrate==160000,"real CRC Vorbis low bitrate header");
@@ -44,8 +45,15 @@ int main() {
     check(SetOgg(true) && SetDownloads(false) && !OggEnabled(),"Downloads off persists and bypasses capture");
     unsigned epoch=GetSettings().capture_epoch;
     check(SetDownloads(true) && SetDownloads(false) && GetSettings().capture_epoch==epoch+2 && CaptureEpoch()==epoch+2,"missed off-on transitions still advance capture epoch");
+    epoch=CaptureEpoch();
+    check(!SetCaptureSpeed(3) && CaptureSpeed()==1 && CaptureEpoch()==epoch,"unsupported speed is rejected without changing state");
+    check(!SetCaptureSpeed(4) && CaptureSpeed()==1,"accelerated speed is rejected until the native capability is active");
+    SetCaptureAccelerationAvailable(true);
+    check(SetCaptureSpeed(4) && CaptureSpeed()==4 && CaptureEpoch()==epoch+1,"supported speed advances capture epoch");
+    check(SetCaptureSpeed(4) && CaptureEpoch()==epoch+1,"same speed does not advance capture epoch");
     check(FlushSettings(5000),"background settings persisted");
     check(GetPrivateProfileIntW(L"To Disk",L"Downloads",9,ini.c_str())==0,"INI persists disabled setting");
+    check(GetPrivateProfileIntW(L"To Disk",L"CaptureSpeed",0,ini.c_str())==4,"INI persists strict capture speed");
     auto root=dir+L"\\Pending-"+std::to_wstring(GetCurrentProcessId()); epoch=GetSettings().capture_epoch;
     check(SetSaveLocation(root) && GetSettings().root==root,"save directory persistence");
     check(GetFileAttributesW(root.c_str())==INVALID_FILE_ATTRIBUTES && GetSettings().capture_epoch==epoch,"save location does not precreate folders or invalidate capture");

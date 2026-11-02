@@ -70,24 +70,28 @@ static void TestLateCapture(bool flac,bool repeat,LateCapture outcome,bool switc
     c->flac={44100,2,16,44100,44100,441000};c->coverage.samples=396900;c->coverage.frames=9;
     buffers.active[1]=std::move(c);
   } else {page(0,2,0);slot.time=109;page(1,0,396900);}
+  auto old_capture=[&]() -> Capture* {
+    if(flac) {const auto it=buffers.active.find(1);return it==buffers.active.end()?nullptr:it->second.get();}
+    return buffers.ogg_active.empty()?nullptr:buffers.ogg_active.begin()->second.get();
+  };
   for(unsigned i=1;i<=19;++i)sample(i*.5,100+i*.5);
   if(!repeat){media.title=L"Next song";if(switch_provider)media.spotify_uri="spotify:track:0000000000000000000002";}
   sample(.1,110.1);
   if(repeat)sample(1.2,111.2);
   assert(heard.size()==1&&heard[0].media.title==L"Late ending");
-  assert(buffers.active.count(1)&&buffers.active[1]->retained_until==120);
+  assert(old_capture()&&old_capture()->retained_until==120);
   // The next decoder is unrelated to retention and must survive its cleanup.
   auto next=std::make_unique<Capture>();next->born=110;buffers.active[2]=std::move(next);
   if(switch_provider) {
     media.source=provider==MediaSource::Spotify?MediaSource::Windows:MediaSource::Spotify;
     sample(4,114);
     assert(heard.size()==1&&heard[0].media.title==L"Late ending");
-    assert(buffers.active.count(1)&&buffers.active[1]->retained_until==120);
+    assert(old_capture()&&old_capture()->retained_until==120);
     assert(!listen.eligible); // Current B coverage restarts; completed A evidence survives.
   }
   const double tail_time=switch_provider?115:111.3;
   SchedulePublications(heard,buffers,7,switch_provider?114:111.2);
-  SaveJob job;assert(!saves.Pop(job)&&buffers.active.count(1));
+  SaveJob job;assert(!saves.Pop(job)&&old_capture());
   if(outcome!=LateCapture::Timeout) {
     slot.time=outcome==LateCapture::PastDeadline?120.1:tail_time;
     if(flac) {
@@ -110,7 +114,7 @@ static void TestLateCapture(bool flac,bool repeat,LateCapture outcome,bool switc
     assert(!saves.Pop(job)&&heard.size()==1);
     SchedulePublications(heard,buffers,7,711); // Recent completed records expire after ten minutes.
   }
-  assert(heard.empty()&&!buffers.active.count(1)&&buffers.active.count(2));
+  assert(heard.empty()&&!old_capture()&&buffers.active.count(2));
 }
 static void TestAssociationRejection() {
   CaptureBuffers buffers;Heard heard;heard.media.title=L"Expected";heard.media.duration=10;
@@ -158,13 +162,17 @@ static void TestTerminalPauseTail(bool flac,MediaSource provider,const TerminalT
     const auto bytes=recording_fixture::page(sequence?std::vector<uint8_t>{0}:recording_fixture::identification(),sequence,flags,samples);
     slot.length=unsigned(bytes.size());memcpy(slot.bytes,bytes.data(),bytes.size());ProcessOggCapture(slot,buffers);
   };
+  auto old_capture=[&]() -> Capture* {
+    if(flac) {const auto it=buffers.active.find(1);return it==buffers.active.end()?nullptr:it->second.get();}
+    return buffers.ogg_active.empty()?nullptr:buffers.ogg_active.begin()->second.get();
+  };
   auto begin=[&]{
     if(flac) {
       auto c=std::make_unique<Capture>();c->lossless=true;c->metadata=true;c->born=100;
       c->flac={44100,2,16,44100,44100,441000};c->coverage.samples=396900;c->coverage.frames=9;
       buffers.active[1]=std::move(c);
     } else {slot.time=100;page(0,2,0);slot.time=109;page(1,0,396900);}
-    buffers.active[1]->retained_until=scenario.earlier_deadline;
+    assert(old_capture());old_capture()->retained_until=scenario.earlier_deadline;
   };
   sample(0,100);if(!scenario.late_start)begin();
   for(unsigned i=1;i<=19;++i)sample(i*.5,100+i*.5);
@@ -176,7 +184,7 @@ static void TestTerminalPauseTail(bool flac,MediaSource provider,const TerminalT
   SaveJob job;
   if(scenario.expire_before_tail) {
     SchedulePublications(heard,buffers,7,121);
-    assert(!saves.Pop(job)&&heard.size()==1&&!buffers.active.count(1));
+    assert(!saves.Pop(job)&&heard.size()==1&&!old_capture());
   }
   slot.time=scenario.tail_time;
   if(flac) {
@@ -294,7 +302,7 @@ static void TestPublicationLogging() {
   std::wstring song_file;
   assert(!ReadSongDestination(PlaybackIdentity(heard.media.Key()),settings.generation,song_file));
   auto make=[](unsigned rate,unsigned bits){
-    auto c=std::make_unique<Capture>();c->lossless=true;c->flac={rate,2,bits,16,16,16};c->coverage.samples=16;c->coverage.frames=1;
+    auto c=std::make_unique<Capture>();c->lossless=true;c->metadata=true;c->flac={rate,2,bits,16,16,16};c->coverage.samples=16;c->coverage.frames=1;
     auto bytes=recording_fixture::fixture(rate,bits);
     c->bytes=bytes.size();assert(c->data.Append(bytes.data(),bytes.size(),65536));return c;
   };
@@ -331,7 +339,7 @@ static void TestPublicationLogging() {
   WaitLog("skipped capture settings changed or downloads/format disabled", "Log Artist - Log Track");
   assert(SetDownloads(true));capture=make(44100,24);capture->data.Flatten();
   assert(Publish(*capture,heard,CaptureEpoch())==Publication::Failed);
-  WaitLog("failed tagging failed:","Log Artist - Log Track");
+  WaitLog("failed final cached capture validation failed; no file published","Log Artist - Log Track");
   assert(ReadRecentDownloads(recent)&&recent.size()==2); // Only the two actual publication paths add entries.
   // Real publication paths and labels may contain every old classifier word.
   // Each successful save must have just its normal finished outcome.

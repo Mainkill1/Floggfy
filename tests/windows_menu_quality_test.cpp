@@ -88,6 +88,7 @@ bool ReadRecentDownloadsForMenuTest(std::vector<RecentDownload>& out) {
 #include <algorithm>
 #include <cassert>
 #include <memory>
+#include <map>
 #include <vector>
 struct Entry {
   int id = 0, type = 1;
@@ -100,6 +101,8 @@ struct Model {
   int refs = 1;
   std::vector<Entry> entries;
   std::unique_ptr<Model> child;
+  int child_id = 0;
+  std::map<int,std::unique_ptr<Model>> extra_children;
 };
 static Model &M(Menu *m) { return *reinterpret_cast<Model *>(m); }
 static void Retain(Base *b) { ++reinterpret_cast<Model *>(b)->refs; }
@@ -159,21 +162,22 @@ static int Check(Menu *m, int id, int value) {
   return 1;
 }
 static Menu *Child(Menu *m, int id) {
-  if (Index(m, id) < 0 || !M(m).child)
-    return nullptr;
-  Retain(&M(m).child->api.base);
-  return &M(m).child->api;
+  if (Index(m, id) < 0)return nullptr;
+  Model* child=M(m).child_id==id?M(m).child.get():nullptr;
+  if(!child) {auto found=M(m).extra_children.find(id);if(found!=M(m).extra_children.end())child=found->second.get();}
+  if(!child)return nullptr;
+  Retain(&child->api.base);return &child->api;
 }
 static void Init(Model &model);
 static Menu *AddChild(Menu *m, int id, const String *s) {
   Item(m, id, s);
   M(m).entries.back().type = 5;
-  M(m).child = std::make_unique<Model>();
-  Init(*M(m).child);
-  M(m).child->submenu = true;
-  Retain(&M(m).child->api.base);
+  auto next=std::make_unique<Model>();Init(*next);next->submenu=true;Model* result=next.get();
+  if(!M(m).child){M(m).child_id=id;M(m).child=std::move(next);}
+  else M(m).extra_children[id]=std::move(next);
+  Retain(&result->api.base);
   if(id==recent_id&&fail_recent_placeholder){fail_recent_placeholder=false;fail_menu_allocation=true;}
-  return &M(m).child->api;
+  return &result->api;
 }
 static void Init(Model &model) {
   model.api.base = {sizeof(Menu), Retain, Drop, OneRef, AnyRef};
@@ -222,6 +226,7 @@ int main() {
   assert(menu_init.State()==hooks::InitState::Unsupported);
   history::InitSettings(nullptr);
   assert(history::SetLyrics(true));
+  assert(history::SetCaptureSpeed(1));
   history::PlaybackQualitySnapshot initial;
   initial.rate = 44100;
   history::PublishPlaybackQuality(initial);
@@ -259,16 +264,19 @@ int main() {
   assert(!child.child->entries[0].enabled);
   assert(filesystem_calls==0 && shell_calls==0 && recent_reads==0);
   assert(child.entries[Index(&child.api,lyrics_id)].checked);
-  assert(child.entries.size() == 11); // Six controls, separator, four quality rows.
-  for (size_t i = 7; i < 11; i++)
+  assert(child.entries.size() == 12); // Seven controls, separator, four quality rows.
+  const auto speed_child=child.extra_children.find(speed_root_id);
+  assert(speed_child!=child.extra_children.end()&&speed_child->second->entries.size()==5);
+  assert(speed_child->second->entries[0].checked);
+  for (size_t i = 8; i < 12; i++)
     assert(child.entries[i].type == 1 && !child.entries[i].enabled && !child.entries[i].checked);
-  assert(child.entries[7].label.find(L"Example") != std::wstring::npos);
-  assert(child.entries[7].visible && child.entries[8].visible);
-  assert(!child.entries[9].visible && !child.entries[10].visible); // Non-FLAC details stay hidden, even after Ogg verification.
+  assert(child.entries[8].label.find(L"Example") != std::wstring::npos);
+  assert(child.entries[8].visible && child.entries[9].visible);
+  assert(!child.entries[10].visible && !child.entries[11].visible); // Non-FLAC details stay hidden, even after Ogg verification.
   type_calls=0;
   Populate(&root.api);
   assert(type_calls==0); // Existing insertion is not rescanned or repopulated.
-  assert(child.entries.size() == 11 && child.refs == 1);
+  assert(child.entries.size() == 12 && child.refs == 1);
   capability_queries=type_calls=index_calls=0;
   original_add_submenu=AddChild;
   Model unrelated;Init(unrelated);unrelated.submenu=true;
@@ -292,9 +300,9 @@ int main() {
     Populate(&translated.api);
     assert(translated.child && translated.entries.size()==4);
     assert(translated.entries.back().label==L"To Disk");
-    assert(translated.child->entries.size()==11 && translated.child->refs==1);
+    assert(translated.child->entries.size()==12 && translated.child->refs==1);
     Populate(&translated.api);
-    assert(translated.entries.size()==4 && translated.child->entries.size()==11);
+    assert(translated.entries.size()==4 && translated.child->entries.size()==12);
   }
   // The client changes first while SMTC still publishes the previous song.
   history::PlaybackQualitySnapshot actual;
@@ -326,6 +334,11 @@ int main() {
   original.format = OriginalFormat;
   Wrapped wrapped;
   wrapped.original = &original;
+  history::SetCaptureAccelerationAvailable(true);
+  auto& speed_menu=*child.extra_children.at(speed_root_id);
+  Retain(&speed_menu.api.base);Execute(&wrapped.api,&speed_menu.api,first_speed_id+2,0);
+  assert(history::CaptureSpeed()==4&&speed_menu.refs==1);
+  for(unsigned i=0;i<5;++i)assert(speed_menu.entries[i].checked==(i==2));
   // CEF builds visible labels BEFORE WillShow. FormatLabel is the public
   // callback that can update the first opening without an extra hook.
   set_string=SetText;
@@ -361,10 +374,10 @@ int main() {
   set_string=setter;
   Retain(&child.api.base);
   WillShow(&wrapped.api, &child.api);
-  assert(child.entries[9].label.find(L"FLAC") != std::wstring::npos &&
-         child.entries[10].label.find(L"96,000 Hz") != std::wstring::npos);
-  assert(child.entries[7].label==L"Song: Next");
-  assert(child.entries[9].visible && child.entries[10].visible); // Confirmed FLAC details remain.
+  assert(child.entries[10].label.find(L"FLAC") != std::wstring::npos &&
+         child.entries[11].label.find(L"96,000 Hz") != std::wstring::npos);
+  assert(child.entries[8].label==L"Song: Next");
+  assert(child.entries[10].visible && child.entries[11].visible); // Confirmed FLAC details remain.
   // Refresh the submenu before CEF builds its visible children, even when
   // changing codec while the same model is reused across menu openings.
   auto build_root=[&]{std::wstring label=L"To Disk";auto text=Text(label);Retain(&root.api.base);Format(&wrapped.api,&root.api,&text);if(text.dtor)text.dtor(text.str);};
@@ -553,26 +566,26 @@ int main() {
   assert(child.entries[Index(&child.api,song_id)].visible && !child.entries[Index(&child.api,song_id)].enabled);
   q.format=history::PlaybackFormat::Ogg;q.level=history::PlaybackLevel::VeryHigh;q.bits=0;
   actual.level=q.level;history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
-  build_root();assert(!child.entries[9].visible && !child.entries[10].visible);
+  build_root();assert(!child.entries[10].visible && !child.entries[11].visible);
   q.format=history::PlaybackFormat::Flac;q.level=history::PlaybackLevel::Lossless;q.bits=16;
   actual.level=q.level;history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
-  build_root();assert(child.entries[9].visible && child.entries[10].visible);
+  build_root();assert(child.entries[10].visible && child.entries[11].visible);
   q.format=history::PlaybackFormat::Unknown;history::PublishPlaybackQuality(q);
-  build_root();assert(!child.entries[9].visible && !child.entries[10].visible);
-  assert(child.entries[7].visible && child.entries[8].visible);
-  assert(child.entries.size()==11 && child.refs==1 && root.refs==1);
+  build_root();assert(!child.entries[10].visible && !child.entries[11].visible);
+  assert(child.entries[8].visible && child.entries[9].visible);
+  assert(child.entries.size()==12 && child.refs==1 && root.refs==1);
   actual.level=history::PlaybackLevel::Unknown;q.level=actual.level;
   history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
-  build_root();assert(!child.entries[8].visible); // No Quality: Unavailable placeholder.
+  build_root();assert(!child.entries[9].visible); // No Quality: Unavailable placeholder.
   actual.level=history::PlaybackLevel::Lossless;q.level=actual.level;
   q.format=history::PlaybackFormat::Flac;q.rate=0;
   history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
-  build_root();assert(child.entries[8].visible && child.entries[9].visible && !child.entries[10].visible);
+  build_root();assert(child.entries[9].visible && child.entries[10].visible && !child.entries[11].visible);
   history::client_updated=GetTickCount64()-4000;
   assert(history::ReadPlaybackQuality().identity==0); // Never regress to stale SMTC.
   history::PublishClientPlaybackQuality({});
   assert(history::ReadPlaybackQuality().title[0]==0); // No active cached song.
-  for (size_t i = 7; i < 11; i++) {
+  for (size_t i = 8; i < 12; i++) {
     Retain(&child.api.base);
     Execute(&wrapped.api, &child.api, child.entries[i].id, 0);
   }

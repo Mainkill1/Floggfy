@@ -20,6 +20,14 @@ for component in networking_log renderer_privacy pr13_settings connect_settings;
         -lole32 -luuid -lshell32 -o "$floggfy_diag_root/$component/test.exe"
     "$floggfy_diag_root/$component/test.exe"
 done
+mkdir -p "$floggfy_diag_root/decoded-output"
+x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_decoded_output_discovery_test.cpp \
+    native/spotify_hook_discovery.cpp -lole32 -luuid -lshell32 -o "$floggfy_diag_root/decoded-output/test.exe"
+if [[ $# == 1 ]]; then
+    "$floggfy_diag_root/decoded-output/test.exe" "$(wslpath -w "$1")"
+else
+    "$floggfy_diag_root/decoded-output/test.exe"
+fi
 mkdir -p "$floggfy_diag_root/deep"
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_deep_diagnostics_test.cpp \
     native/startup_launcher.cpp -lole32 -luuid -lshell32 -o "$floggfy_diag_root/deep/test.exe"

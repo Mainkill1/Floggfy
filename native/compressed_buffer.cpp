@@ -7,9 +7,9 @@ bool CompressedBuffer::Append(const uint8_t* bytes,size_t count,size_t available
     if(count && !bytes) return false;
     if(count>std::numeric_limits<size_t>::max()-length-block_size) return false;
     size_t required=(length+count+block_size-1)/block_size;
-    size_t extra=(required-blocks.size())*block_size;
+    size_t extra=required>blocks.size()?(required-blocks.size())*block_size:0;
     if(extra>available) return false;
-    while(blocks.size()<required) blocks.emplace_back(new uint8_t[block_size]);
+    while(blocks.size()<required) blocks.push_back(std::make_unique<uint8_t[]>(block_size));
     while(count) {
         size_t offset=length%block_size,n=std::min(count,block_size-offset);
         memcpy(blocks[length/block_size].get()+offset,bytes,n); length+=n; bytes+=n; count-=n;

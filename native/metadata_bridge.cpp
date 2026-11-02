@@ -221,7 +221,7 @@ static bool CurrentTimeline(const String* text) {
   if(payload=="v=1&blocked=buffering"||payload.rfind("v=1&blocked=buffering&",0)==0){
    ClientTransition transition;
    if(ParseClientTransition(payload,transition)) {
-    Media next;next.source=MediaSource::Spotify;next.spotify_uri=transition.uri;next.playback_instance=transition.instance;next.position=transition.position;
+    Media next;next.source=MediaSource::Spotify;next.spotify_uri=transition.uri;next.playback_instance=transition.instance;next.position=transition.position;next.explicit_skip=transition.explicit_skip;
     PublishClientBufferingTransition(std::move(next),transition.sampled_ms,transition.transition_ms);
    }else PublishClientMediaUnavailable("client-buffering",true);
    return true;
@@ -234,7 +234,7 @@ static bool CurrentTimeline(const String* text) {
   if(record.local<0){PublishClientMediaUnavailable("client-device-unknown");return true;}
   Media media;media.source=MediaSource::Spotify;media.spotify_uri=record.metadata.uri;media.playback_instance=record.instance;
   media.title=MetadataWide(record.metadata.title);media.artist=MetadataWide(record.metadata.artist);media.album=MetadataWide(record.metadata.album);
-  media.position=record.position;media.duration=record.metadata.duration;media.playing=record.playing;media.playback_status=record.playing?4:5;
+  media.position=record.position;media.duration=record.metadata.duration;media.playback_speed=record.speed;media.playing=record.playing;media.playback_status=record.playing?4:5;
   PublishClientMedia(std::move(media),record.sampled_ms);
  }catch(...){InvalidateClientMedia();try{PublishClientMediaUnavailable("client-timeline-exception");}catch(...){}}
  return true;

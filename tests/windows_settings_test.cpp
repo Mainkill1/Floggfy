@@ -8,7 +8,7 @@ void QueueDiagnostic(const char*) {}
 }
 int main(int argc,char** argv) {
   assert(argc==2);
-  assert(history::Settings{}.downloads&&history::Settings{}.update_existing_metadata&&!history::Settings{}.aac);
+  assert(history::Settings{}.downloads&&history::Settings{}.update_existing_metadata&&!history::Settings{}.aac&&history::Settings{}.capture_speed==1);
   assert(!history::AACEnabled());
   const std::string scenario=argv[1];
   wchar_t module[2048];assert(GetModuleFileNameW(nullptr,module,2048));
@@ -21,10 +21,15 @@ int main(int argc,char** argv) {
     if(scenario=="lyrics-zero") assert(WritePrivateProfileStringW(L"To Disk",L"Lyrics",L"0",path.c_str()));
     if(scenario=="zero") assert(WritePrivateProfileStringW(L"To Disk",L"Downloads",L"0",path.c_str()));
     if(scenario=="legacy-zero") assert(WritePrivateProfileStringW(L"History",L"Enabled",L"0",path.c_str()));
+    if(scenario=="speed-10") assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeed",L"10",path.c_str()));
+    if(scenario=="speed-invalid") assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeed",L"3",path.c_str()));
+    if(scenario=="speed-padded") assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeed",L"01",path.c_str()));
   }
   history::InitSettings(nullptr);
   auto s=history::GetSettings();
   assert(s.downloads==(scenario!="zero" && scenario!="legacy-zero"));
+  assert(s.capture_speed==(scenario=="speed-10"?10u:1u));
+  assert(history::CaptureSpeed()==s.capture_speed);
   if(scenario=="new") {
     assert(GetPrivateProfileIntW(L"To Disk",L"Downloads",9,path.c_str())==1);
     assert(GetPrivateProfileIntW(L"To Disk",L"AAC",9,path.c_str())==0);
@@ -46,6 +51,7 @@ int main(int argc,char** argv) {
   assert(history::CaptureEpoch()==epoch); // Enrichment preferences never discard audio.
   assert(!history::GetSettings().lyrics);
   assert(history::FlushSettings(5000));
+  assert(GetPrivateProfileIntW(L"To Disk",L"CaptureSpeed",0,path.c_str())==s.capture_speed);
   assert(GetPrivateProfileIntW(L"To Disk",L"Lyrics",9,path.c_str())==0);
   assert(history::SetLyrics(true) && history::FlushSettings(5000));
   assert(GetPrivateProfileIntW(L"To Disk",L"Lyrics",9,path.c_str())==1);

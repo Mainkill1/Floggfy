@@ -8,7 +8,7 @@
  let builder,activeRequests=0,connectDevices;
  let player,root,queue=[],seen=new Set(),walked=0,lastPlayback='',playbackTime=-Infinity;
  let timelineBinding;
- let timelineSeen=false,lastTimeline='',timelineTime=-Infinity,timelineBlocked='',timelineLocal='unknown';
+ let timelineSeen=false,lastTimeline='',timelineTime=-Infinity,timelineBlocked='',timelineLocal='unknown',lastSkipAt=-Infinity;
  function playback(data){
   const payload=Object.entries(data).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&');
   const now=performance.now();
@@ -35,6 +35,8 @@
     blocked.uri=uri;blocked.instance=typeof instance==='string'&&instance.length<=128?instance:'';
     blocked.sampled_ms=Date.now();blocked.transition_ms=stamp;
     const position=own(state,'positionAsOfTimestamp');if(typeof position==='number'&&Number.isFinite(position)&&position>=0)blocked.position_ms=position;
+    const skipAge=blocked.sampled_ms-lastSkipAt;
+    if(skipAge>=0&&skipAge<=3000){blocked.manual=1;lastSkipAt=-Infinity;}
    }
    timeline(blocked);
   }
@@ -43,19 +45,20 @@
   if(timelineBlocked)return;
   const stamp=own(state,'timestamp'),position=own(state,'positionAsOfTimestamp'),duration=own(state,'duration');
   const paused=own(state,'isPaused'),buffering=own(state,'isBuffering'),speed=own(state,'speed');
+  const rate=speed===undefined?1:speed;
   const sampled=Date.now(),elapsed=sampled-stamp;
   if(typeof stamp!=='number'||!Number.isFinite(stamp)||typeof position!=='number'||!Number.isFinite(position)||position<0||
      typeof duration!=='number'||!Number.isFinite(duration)||duration<=0||duration>86400000||position>duration||
-     typeof paused!=='boolean'||typeof buffering!=='boolean'||elapsed< -250||elapsed>86400000||(speed!==undefined&&speed!==1)){
+     typeof paused!=='boolean'||typeof buffering!=='boolean'||elapsed< -250||elapsed>86400000||![1,2,4,8,10].includes(rate)){
    unavailableTimeline('timeline-fields');return;
   }
 
   // Spicetify's Player.getProgress uses the same PlayerAPI clock/position.
   // Buffering is sent separately so native coverage cannot credit stalled audio.
-  const seconds=Math.min(duration,position+(paused||buffering?0:Math.max(0,elapsed)))/1000;
+  const seconds=Math.min(duration,position+(paused||buffering?0:Math.max(0,elapsed)*rate))/1000;
   timelineSeen=true;
   timeline({v:1,title:data.title,artist:data.artist||'',album:data.album||'',uri:data.uri,
-   duration:duration/1000,position:seconds,sampled_ms:sampled,instance:typeof own(state,'playbackId')==='string'?own(state,'playbackId'):'',paused:Number(paused),buffering:Number(buffering),local:timelineLocal});
+   duration:duration/1000,position:seconds,sampled_ms:sampled,instance:typeof own(state,'playbackId')==='string'?own(state,'playbackId'):'',paused:Number(paused),buffering:Number(buffering),local:timelineLocal,speed:rate});
  }
  function emitTimelineState(state){
   timelineBlocked='';
@@ -146,9 +149,11 @@
    const binding={player,events,remove,active:true};
    binding.listener=event=>{
     try{
-     if(!binding.active||!connectEnabled())return;
+     if(!binding.active)return;
      const action=own(own(event,'data'),'action');
      if(!['play','pause','resume','skipToNext','skipToPrevious'].includes(action))return;
+     if(action==='skipToNext'||action==='skipToPrevious')lastSkipAt=Date.now();
+     if(!connectEnabled())return;
      if(controlQueue.length<16)controlQueue.push(action);else controlOmitted=Math.min(1000000,controlOmitted+1);
     }catch{/* A diagnostic observer must never affect command dispatch. */}
    };
@@ -157,11 +162,11 @@
   }catch{/* Changed event APIs leave commands untouched. */}
  }
  function connectDiagnostics(state){
+  syncControls();
   if(!connectEnabled()){
-   detachControls();connectPrevious=undefined;connectPaused=undefined;connectPausedTarget=undefined;
+   connectPrevious=undefined;connectPaused=undefined;connectPausedTarget=undefined;
    controlQueue=[];controlOmitted=0;return;
   }
-  syncControls();
   let cached;
   try{const getter=method(connectDevices,'getConnectState');if(getter)cached=getter.call(connectDevices);}catch{}
   const raw=own(cached,'connectionStatus'),device=own(cached,'activeDevice');

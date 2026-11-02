@@ -56,6 +56,7 @@ hooks::InitController submenu_init;
 constexpr int root_id=28480,downloads_id=28481,location_id=28482,flac_id=28483,ogg_id=28484;
 constexpr int song_id=28485,last_quality_id=song_id+3,lyrics_id=28489;
 constexpr int recent_id=28490,first_recent_id=28491;
+constexpr int speed_root_id=28474,first_speed_id=28475,last_speed_id=28479;
 static_assert(root_id>=cef_menu::kUserCommandFirst &&
               first_recent_id+history::kRecentDownloadLimit-1<=cef_menu::kUserCommandLast,
               "Recent commands stay within the CEF user command range (26500..28500)");
@@ -164,6 +165,18 @@ static void Populate(Menu* menu) {
         }
         MenuMethods::SetEnabled(child,recent_id,0);
         MenuMethods::SetVisible(child,recent_id,0);
+    }
+    if(inserted) {
+        std::wstring label=L"Capture Speed";auto text=Text(label);
+        if(auto* speed_menu=MenuMethods::AddSubmenu(child,speed_root_id,&text)) {
+            MenuReference speed_reference(speed_menu);
+            constexpr unsigned speeds[]{1,2,4,8,10};
+            for(unsigned i=0;i<5;++i) {
+                const auto speed_label=std::to_wstring(speeds[i])+L"x";auto speed_text=Text(speed_label);
+                MenuMethods::AddCheckItem(speed_menu,first_speed_id+int(i),&speed_text);
+                MenuMethods::SetChecked(speed_menu,first_speed_id+int(i),int(state.capture_speed==speeds[i]));
+            }
+        }
     }
     item(flac_id,state.flac ? L"FLAC (Enabled)" : L"FLAC (Disabled)",state.flac,true);
     item(ogg_id,state.ogg ? L"Ogg (Enabled)" : L"Ogg (Disabled)",state.ogg,true);
@@ -344,6 +357,16 @@ static void Execute(Delegate* self,Menu* menu,int command,int flags) {
     }
     if(command==recent_id) {return;}
     if(command>=song_id && command<=last_quality_id) {return;}
+    if(command>=first_speed_id && command<=last_speed_id) {
+        constexpr unsigned speeds[]{1,2,4,8,10};const auto speed=speeds[command-first_speed_id];
+        const bool ok=history::SetCaptureSpeed(speed);
+        if(ok)for(int id=first_speed_id;id<=last_speed_id;++id)
+            if(MenuMethods::IndexOf(menu,id)>=0)MenuMethods::SetChecked(menu,id,int(id==command));
+        char line[160];snprintf(line,sizeof(line),"capture speed=%ux accepted=%d; replay the current track from the beginning",speed,ok);
+        history::LogEvent(ok?history::LogKind::Activity:history::LogKind::Failure,ok?"settings":"failed",line);
+        if(!ok)MessageBoxW(GetActiveWindow(),L"The capture speed could not be saved; 1x remains active.",L"To Disk",MB_OK|MB_ICONERROR);
+        return;
+    }
     auto* w=Self(self); auto settings=history::GetSettings(); bool handled=true,ok=true;
     switch(command) {
         case downloads_id: ok=history::SetDownloads(!settings.downloads); break;

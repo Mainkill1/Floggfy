@@ -28,6 +28,7 @@
 #include "image_info.h"
 #include "aac_stream.h"
 #include "spotify_hook_discovery.h"
+#include "decoded_output_speed.h"
 #include "vendor/minhook/include/MinHook.h"
 #include <algorithm>
 #include <cmath>
@@ -63,6 +64,11 @@ AacInitialize original_aac_initialize=nullptr;
 AacPush original_aac_push=nullptr;
 AacDestroy original_aac_destroy=nullptr;
 void* aac_targets[3]={};
+using DecodedProcess=void*(*)(void*,void*,decoded_output::Span*,decoded_output::Span*,bool);
+DecodedProcess original_decoded_process=nullptr;
+void* decoded_sink_target=nullptr;
+decoded_output::Accelerator decoded_accelerator;
+std::atomic<bool> decoded_fallback_requested{false};
 hooks::CallbackCounter audio_callbacks;
 enum class AudioEventKind : unsigned { OggPage,FlacBegin,FlacBytes,FlacFrame,FlacError,FlacEnd,
     AacBegin,AacBytes,AacError,AacDestroy };
@@ -337,6 +343,40 @@ static void FlacErrorHook(void* context,unsigned error) {
     original_flac_error(context,error);timing.Finish();
     FlacEvent(context,AudioEventKind::FlacError,nullptr,0,error,FlacErrorSource::DecoderCallback);
 }
+static bool AdvancedSpan(const decoded_output::Span& before,const decoded_output::Span& after,
+                         size_t element,size_t& consumed) noexcept {
+    consumed=0;
+    if(after.size>before.size||(!before.data&&before.size)||(!after.data&&after.size))return false;
+    consumed=before.size-after.size;
+    if(consumed>std::numeric_limits<size_t>::max()/element)return false;
+    const auto address=reinterpret_cast<uintptr_t>(before.data);
+    const auto bytes=consumed*element;
+    return address<=std::numeric_limits<uintptr_t>::max()-bytes &&
+           reinterpret_cast<uintptr_t>(after.data)==address+bytes;
+}
+static void* DecodedSinkHook(void* context,void* result,decoded_output::Span* decoded,
+                             decoded_output::Span* encoded,bool mode) {
+    auto callback=audio_callbacks.Enter();
+    const auto decoded_before=decoded?*decoded:decoded_output::Span{};
+    const auto encoded_before=encoded?*encoded:decoded_output::Span{};
+    auto* native_result=original_decoded_process(context,result,decoded,encoded,mode);
+    const auto native_error=GetLastError();
+    const bool was_enabled=decoded_accelerator.Enabled();
+    const auto speed=CaptureSpeed();size_t produced=0,consumed=0;
+    if(speed>1) {
+        if(!decoded||!encoded||
+           !AdvancedSpan(decoded_before,*decoded,sizeof(float),produced)||
+           !AdvancedSpan(encoded_before,*encoded,1,consumed))decoded_accelerator.Disable();
+        else if(produced) {
+            const auto keep=decoded_accelerator.Keep(context,produced,speed,CaptureEpoch());
+            decoded->data=reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(decoded_before.data)+keep*sizeof(float));
+            decoded->size=decoded_before.size-keep;
+        }
+    }
+    if(was_enabled&&!decoded_accelerator.Enabled())
+        decoded_fallback_requested.store(true,std::memory_order_release);
+    SetLastError(native_error);return native_result;
+}
 static void QueueAac(void* context,AudioEventKind kind,const unsigned char* bytes,size_t size,
                      double time,unsigned epoch,unsigned status=0) {
     {
@@ -414,6 +454,72 @@ struct Capture {
         return lossless?"native compressed FLAC input":"native compressed Ogg pages";
     }
 };
+enum class FinalCaptureValidation { Valid,Incomplete,Invalid };
+static FinalCaptureValidation ValidateOggCapture(const Capture& capture) {
+    Stream rebuilt;size_t at=0;
+    while(at<capture.data.size()) {
+        const auto remaining=capture.data.size()-at;
+        if(remaining<27)return FinalCaptureValidation::Invalid;
+        const size_t header=27+capture.data[at+26];
+        if(header>remaining)return FinalCaptureValidation::Invalid;
+        size_t body=0;
+        for(size_t i=at+27;i<at+header;++i)body+=capture.data[i];
+        if(body>remaining-header)return FinalCaptureValidation::Invalid;
+        const size_t length=header+body;std::vector<uint8_t> page(length);
+        for(size_t i=0;i<length;++i)page[i]=capture.data[at+i];
+        const auto result=rebuilt.Push(page.data(),page.size());at+=length;
+        if(result==Result::Invalid||result==Result::Ignore)return FinalCaptureValidation::Invalid;
+        if(result==Result::Complete&&at!=capture.data.size())return FinalCaptureValidation::Invalid;
+    }
+    if(!rebuilt.complete)return FinalCaptureValidation::Incomplete;
+    if(!capture.stream.complete||rebuilt.serial!=capture.stream.serial||rebuilt.rate!=capture.stream.rate||
+       rebuilt.channels!=capture.stream.channels||rebuilt.pages!=capture.stream.pages||
+       rebuilt.samples!=capture.stream.samples)return FinalCaptureValidation::Invalid;
+    return FinalCaptureValidation::Valid;
+}
+static FinalCaptureValidation ValidateAacCapture(const Capture& capture) {
+    SpacStream rebuilt;std::vector<uint8_t> chunk(65536);size_t at=0;
+    while(at<capture.data.size()) {
+        const size_t amount=std::min(chunk.size(),capture.data.size()-at);
+        for(size_t i=0;i<amount;++i)chunk[i]=capture.data[at+i];
+        const auto result=rebuilt.Push(chunk.data(),amount);
+        if(result==AacParse::Invalid||result==AacParse::Unsupported)return FinalCaptureValidation::Invalid;
+        at+=amount;
+    }
+    if(!rebuilt.Complete())return FinalCaptureValidation::Incomplete;
+    const auto& expected=capture.spac.info;const auto& actual=rebuilt.info;
+    if(!capture.spac.Complete()||actual.rate!=expected.rate||actual.channels!=expected.channels||
+       actual.samples_per_packet!=expected.samples_per_packet||actual.priming!=expected.priming||
+       actual.total_samples!=expected.total_samples||actual.config!=expected.config)
+        return FinalCaptureValidation::Invalid;
+    return FinalCaptureValidation::Valid;
+}
+static FinalCaptureValidation ValidateFinalCapture(const Capture& capture) {
+    if(capture.bytes!=capture.data.size())return FinalCaptureValidation::Invalid;
+    if(capture.lossless) {
+        FlacInfo parsed;size_t audio=0;
+        if(ParseFlacMetadata(capture.data,parsed,audio)!=FlacParse::Valid || audio>=capture.data.size())
+            return FinalCaptureValidation::Invalid;
+        if(parsed.rate!=capture.flac.rate||parsed.channels!=capture.flac.channels||
+           parsed.bits!=capture.flac.bits||parsed.min_block!=capture.flac.min_block||
+           parsed.max_block!=capture.flac.max_block||parsed.total_samples!=capture.flac.total_samples)
+            return FinalCaptureValidation::Invalid;
+        return capture.metadata&&capture.coverage.Complete(capture.flac)?
+            FinalCaptureValidation::Valid:FinalCaptureValidation::Incomplete;
+    }
+    if(capture.aac)return ValidateAacCapture(capture);
+    return ValidateOggCapture(capture);
+}
+static bool ValidateFlattenedCapture(const Capture& capture,const std::vector<uint8_t>& source) {
+    if(capture.aac)return true; // The complete SpAC stream was reparsed immediately before Flatten().
+    RecordingFile recording;
+    if(!InspectRecording(source.data(),source.size(),recording)||!recording.complete)return false;
+    const auto codec=capture.lossless?Codec::Flac:Codec::Vorbis;
+    if(recording.quality.codec!=codec||recording.quality.rate!=(capture.lossless?capture.flac.rate:capture.stream.rate)||
+       recording.quality.channels!=(capture.lossless?capture.flac.channels:capture.stream.channels))return false;
+    if(capture.lossless&&recording.quality.bits!=capture.flac.bits)return false;
+    return true;
+}
 static bool FormatEnabled(const Capture& capture,const Settings& settings) {
     return capture.aac?settings.aac:capture.lossless?settings.flac:settings.ogg;
 }
@@ -426,7 +532,7 @@ static bool CaptureTimingMatchesListen(const Capture& capture,const Heard& heard
 static double PendingCaptureDeadline(const Capture& capture,const std::vector<Heard>& heard) {
     double deadline=0;
     for(const auto& pending:heard)if(CaptureTimingMatchesListen(capture,pending)) {
-        const auto candidate=pending.finish+completion_wait;
+        const auto candidate=pending.provisional?pending.deadline:pending.finish+completion_wait;
         deadline=deadline?std::min(deadline,candidate):candidate;
     }
     return deadline;
@@ -636,7 +742,15 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
         if(!AacExtractionFitsBudget(c.data.capacity(),c.data.size(),size_t(count)))
             return finish(Publication::Failed,"failed","AAC extraction memory budget exceeded; no file published");
     }
+    // Every linked capture gets a final complete-buffer check immediately
+    // before its block storage is cleared. Ogg/AAC are rebuilt from the cached
+    // bytes; flattened FLAC/Ogg then receive the recording parser's whole-file
+    // frame/page checksum and trailing-data validation as well.
+    if(ValidateFinalCapture(c)!=FinalCaptureValidation::Valid)
+        return finish(Publication::Failed,"failed","final cached capture validation failed; no file published");
     auto source=c.data.Flatten();
+    if(!ValidateFlattenedCapture(c,source))
+        return finish(Publication::Failed,"failed","flattened capture integrity validation failed; no file published");
     bool tagged_ok=false;
     if(c.aac) {
         AacInfo info;std::vector<std::vector<uint8_t>> packets;
@@ -763,6 +877,13 @@ static DWORD WINAPI SaveWorker(LPVOID) {
 }
 struct CaptureBuffers {
     std::map<uintptr_t,std::unique_ptr<Capture>> active;
+    struct OggKey {
+        uintptr_t context=0;uint32_t serial=0;
+        bool operator<(const OggKey& other) const noexcept {
+            return context<other.context || (context==other.context&&serial<other.serial);
+        }
+    };
+    std::map<OggKey,std::unique_ptr<Capture>> ogg_active;
     std::vector<std::unique_ptr<Capture>> ready;
     // Lightweight evidence boundaries survive removal of unmatched bytes/records.
     double lost_capture_start_through=-std::numeric_limits<double>::infinity();
@@ -816,6 +937,7 @@ static void ProcessFlacCapture(const Slot& s,CaptureBuffers& buffers) {
     }
     if(s.kind==AudioEventKind::FlacBytes) {
         size_t reserved=publishing_reserved.load(); for(const auto& item:active) reserved+=item.second->Capacity();
+        for(const auto& item:buffers.ogg_active) reserved+=item.second->Capacity();
         for(const auto& item:ready) reserved+=item->Capacity();
         size_t available=reserved<memory_limit ? memory_limit-reserved : 0;
         if(!c.data.Append(s.bytes,s.length,available)) { active.erase(found); Log(LogKind::Failure,"FLAC capture memory limit; stream discarded"); return; }
@@ -853,24 +975,63 @@ static void ProcessFlacCapture(const Slot& s,CaptureBuffers& buffers) {
     char line[180]; snprintf(line,sizeof(line),"FLAC COMPLETE frames=%u samples=%llu bytes=%llu duration=%.6f",c.coverage.frames,static_cast<unsigned long long>(c.coverage.samples),static_cast<unsigned long long>(c.bytes),c.Duration()); Log(LogKind::Diagnostic,line);
     ready.push_back(std::move(found->second)); active.erase(found); return;
 }
+static void LogOggRejection(const Slot& slot,const Capture* capture,const Stream* previous,
+                            const Page* page,OggRejection reason) {
+    if(!DebugLoggingEnabled())return;
+    const Stream empty{};const auto& stream=previous?*previous:empty;
+    char line[640];snprintf(line,sizeof(line),
+        "Ogg observation reason=%s ctx=%llx epoch=%u capture_known=%d page_known=%d expected_serial=%u actual_serial=%u expected_seq=%u actual_seq=%u previous_granule=%lld incoming_granule=%lld flags=%u rate=%u channels=%u pages=%u bytes=%llu capture_age_ms=%.1f dropped_total=%ld",
+        OggRejectionName(reason),static_cast<unsigned long long>(slot.context),slot.epoch,capture!=nullptr,page!=nullptr,
+        stream.serial,page?page->serial:0,stream.next,page?page->sequence:0,
+        static_cast<long long>(stream.samples),static_cast<long long>(page?page->granule:-1),
+        page?unsigned(page->flags):0,stream.rate,unsigned(stream.channels),stream.pages,
+        static_cast<unsigned long long>(capture?capture->bytes:0),capture?(slot.time-capture->born)*1000:0,dropped);
+    Log(LogKind::Diagnostic,line);
+}
 static void ProcessOggCapture(const Slot& s,CaptureBuffers& buffers) {
-    auto& active=buffers.active;auto& ready=buffers.ready;
+    auto& active=buffers.ogg_active;auto& ready=buffers.ready;
     Page page; if(!ParsePage(s.bytes,s.length,page)) {
-        active.erase(s.context); Log(LogKind::Failure,"invalid Ogg page rejected"); return;
+        uint32_t serial=0,sequence=0;bool isolated=false;
+        if(ParsePageIdentity(s.bytes,s.length,serial,sequence)) {
+            const CaptureBuffers::OggKey key{s.context,serial};auto damaged=active.find(key);
+            if(damaged==active.end())isolated=true; // Invalid page for an inactive serial cannot poison peers.
+            else {
+                active.erase(damaged);isolated=true;
+            }
+        }
+        if(!isolated)for(auto it=active.begin();it!=active.end();) {
+            if(it->first.context==s.context)it=active.erase(it);else ++it;
+        }
+        LogOggRejection(s,nullptr,nullptr,nullptr,OggRejection::InvalidPage);
+        Log(LogKind::Failure,"invalid Ogg page rejected"); return;
     }
+    const CaptureBuffers::OggKey key{s.context,page.serial};
     if(page.vorbis_start) {
+        size_t streams=0;for(const auto& item:active)streams+=item.first.context==s.context;
+        if(active.find(key)==active.end()&&streams>=16) {
+            LogOggRejection(s,nullptr,nullptr,&page,OggRejection::Inactive);
+            Log(LogKind::Failure,"Ogg logical stream limit reached; new stream ignored");return;
+        }
         auto c=std::make_unique<Capture>(); c->born=s.time;
-        active[s.context]=std::move(c);
+        active[key]=std::move(c);
         char line[160]; snprintf(line,sizeof(line),"BOS ctx=%llx seq=%u serial=%u rate=%u channels=%u",
             static_cast<unsigned long long>(s.context),page.sequence,page.serial,page.rate,page.channels); Log(LogKind::Diagnostic,line);
     }
-    auto found=active.find(s.context); if(found==active.end()) return;
-    Capture& c=*found->second; Result result=c.stream.Push(s.bytes,s.length);
+    auto found=active.find(key);
+    if(found==active.end()) {
+        LogOggRejection(s,nullptr,nullptr,&page,OggRejection::Inactive);return;
+    }
+    Capture& c=*found->second;Stream previous;
+    const bool diagnostic=DebugLoggingEnabled();if(diagnostic)previous=c.stream;
+    Result result=c.stream.Push(s.bytes,s.length);
     if(result==Result::Invalid || result==Result::Ignore) {
-        active.erase(found); Log(LogKind::Failure,"stream discarded: page gap or integrity failure"); return;
+        LogOggRejection(s,&c,diagnostic?&previous:nullptr,&page,c.stream.rejection);
+        char message[160];snprintf(message,sizeof(message),"Ogg stream discarded: %s; replay from the beginning to save",OggRejectionName(c.stream.rejection));
+        active.erase(found);Log(LogKind::Failure,message);return;
     }
     size_t reserved=publishing_reserved.load();
-    for(const auto& item:active) reserved+=item.second->Capacity();
+    for(const auto& item:buffers.active) reserved+=item.second->Capacity();
+    for(const auto& item:active)reserved+=item.second->Capacity();
     for(const auto& item:ready) reserved+=item->Capacity();
     size_t available=reserved<memory_limit ? memory_limit-reserved : 0;
     if(!c.data.Append(s.bytes,s.length,available)) {
@@ -903,6 +1064,7 @@ static void ProcessAacCapture(const Slot& s,CaptureBuffers& buffers) {
     auto reserved=[&] {
         size_t total=publishing_reserved.load();
         for(const auto& entry:active)total+=entry.second->Capacity();
+        for(const auto& entry:buffers.ogg_active)total+=entry.second->Capacity();
         for(const auto& entry:ready)total+=entry->Capacity();
         return total;
     };
@@ -949,6 +1111,7 @@ static void BoundCompletedCaptureTails(CaptureBuffers& buffers,const std::vector
         if(deadline)capture.retained_until=capture.retained_until?std::min(capture.retained_until,deadline):deadline;
     };
     for(auto& item:buffers.active)bound(*item.second);
+    for(auto& item:buffers.ogg_active)bound(*item.second);
     for(auto& item:buffers.ready)bound(*item);
 }
 static void RecordCompletedListen(const Media& media,const Listen& listen,std::vector<Heard>& heard,
@@ -973,7 +1136,9 @@ static void AssociateListen(Media media,Listen& listen,Media& current,std::vecto
         listen.eligible=false;
         Log(LogKind::Diagnostic,"playback source changed; listening coverage restarted");
     }
-    std::string done=listen.Observe(media.ListenKey(),media.position,media.duration,media.playing,time);
+    const auto configured_speed=CaptureSpeed();
+    const auto effective_speed=configured_speed>1?configured_speed:media.playback_speed;
+    std::string done=listen.Observe(media.ListenKey(),media.position,media.duration,media.playing,time,effective_speed);
     if(was_eligible && !listen.eligible && done.empty()) {
         char line[300]; snprintf(line,sizeof(line),"listen invalidated old=%.6f/%.6f new=%.6f/%.6f delta=%.3f playing=%d",
             prior_position,prior_duration,media.position,media.duration,time-prior_time,media.playing); Log(LogKind::Diagnostic,line);
@@ -1006,6 +1171,15 @@ static void AssociateListen(Media media,Listen& listen,Media& current,std::vecto
                 }
                 ++it;
             }
+            for(auto it=buffers.ogg_active.begin();it!=buffers.ogg_active.end();) {
+                if(prior(it->second)) {
+                    const auto deadline=PendingCaptureDeadline(*it->second,heard);
+                    if(deadline<=time){it=buffers.ogg_active.erase(it);continue;}
+                    auto& retained=it->second->retained_until;
+                    retained=retained?std::min(retained,deadline):deadline;
+                }
+                ++it;
+            }
         }
     }
     if(listen.transient) Log(LogKind::Diagnostic,"timeline reset at natural end; waiting for matching title");
@@ -1018,23 +1192,40 @@ static bool FinishAppTransition(const Media& next,Listen& listen,const Media& cu
     // the old listen. The new track cannot accrue coverage until it is playing.
     auto ending=listen;
     std::string done;
-    if(!same)done=ending.Observe(next.ListenKey(),0,current.duration,false,time);
-    else if(next.position>=current.duration)done=ending.Observe(next.ListenKey(),next.position,current.duration,false,time);
+    if(!same)done=ending.Observe(next.ListenKey(),0,current.duration,false,time,ending.capture_speed);
+    else if(next.position>=current.duration)done=ending.Observe(next.ListenKey(),next.position,current.duration,false,time,ending.capture_speed);
     else if(next.position>=0&&next.position<=1.5) {
-        ending.Observe(next.ListenKey(),next.position,current.duration,true,time);
-        if(ending.transient && listen.last_position+time-listen.last_time>=listen.duration-0.1) {
+        ending.Observe(next.ListenKey(),next.position,current.duration,true,time,ending.capture_speed);
+        if(ending.transient && listen.last_position+(time-listen.last_time)*listen.capture_speed>=listen.duration-0.1) {
             listen=std::move(ending);return true; // Confirm a same-URI repeat on fresh unbuffered progress.
         }
     }
     if(!done.empty()) {
         RecordCompletedListen(current,ending,heard,buffers,recent);
-    } else if(listen.eligible)LogEvent(LogKind::Activity,"skipped",Utf8(current.artist)+" - "+Utf8(current.title)+" (incomplete app transition)");
+    } else if(listen.eligible) {
+        const double elapsed=std::max(0.0,time-listen.last_time);
+        const double projected=listen.last_position+(listen.playing?elapsed*listen.capture_speed:0);
+        const double shortfall=listen.duration-projected;
+        Heard pending{current,listen.start_time,time,listen.generation};
+        const auto timed=[&](const auto& capture){return CaptureTimingMatchesListen(*capture,pending);};
+        size_t candidates=0;
+        for(const auto& capture:buffers.active)candidates+=timed(capture.second);
+        for(const auto& capture:buffers.ogg_active)candidates+=timed(capture.second);
+        for(const auto& capture:buffers.ready)candidates+=timed(capture);
+        if(!next.explicit_skip&&shortfall>0&&shortfall<=15&&candidates==1) {
+            pending.provisional=true;pending.deadline=time+15;heard.push_back(std::move(pending));
+            BoundCompletedCaptureTails(buffers,heard);
+            if(recent)recent->Observe(current,listen);
+            Log(LogKind::Diagnostic,"incomplete app transition quarantined for final capture validation");
+        } else LogEvent(LogKind::Activity,"skipped",Utf8(current.artist)+" - "+Utf8(current.title)+" (incomplete app transition)");
+    }
     listen.identity.clear();listen.eligible=false;listen.playing=false;
     return false;
 }
 static bool CaptureEvidenceMatchesListen(const Capture& capture,const Heard& heard) {
     return CaptureTimingMatchesListen(capture,heard) &&
-           capture.finished<=heard.finish+completion_wait &&
+           capture.finished<=(heard.provisional?heard.deadline:heard.finish+completion_wait) &&
+           (!heard.provisional||ValidateFinalCapture(capture)==FinalCaptureValidation::Valid) &&
            (!capture.retained_until || capture.finished<=capture.retained_until) &&
            std::fabs(capture.Duration()-heard.media.duration)<=1.0;
 }
@@ -1054,15 +1245,25 @@ static std::string AssociationFailure(const Heard& heard,const CaptureBuffers& b
             if(c.lossless)++flac_active;else ++ogg_active;
         }
     }
+    for(const auto& entry:buffers.ogg_active) {
+        const auto& c=*entry.second;
+        if(CaptureTimingMatchesListen(c,heard)){++timing_active;++ogg_active;}
+    }
     char counts[260];
     snprintf(counts,sizeof(counts)," | matches=%zu ready=%zu timing_ready=%zu duration_ready=%zu active=%zu timing_active=%zu (FLAC=%zu Ogg=%zu) expected=%.3fs",
-        matches,buffers.ready.size(),timing_ready,duration_ready,buffers.active.size(),timing_active,flac_active,ogg_active,heard.media.duration);
+        matches,buffers.ready.size(),timing_ready,duration_ready,buffers.active.size()+buffers.ogg_active.size(),timing_active,flac_active,ogg_active,heard.media.duration);
     return std::string("completed listen discarded: ")+
         (matches>1?"ambiguous completed captures":"no matching complete capture")+counts+
         " | "+Utf8(heard.media.artist)+" - "+Utf8(heard.media.title);
 }
 static void SchedulePublications(std::vector<Heard>& heard,CaptureBuffers& buffers,unsigned epoch,double now) {
     auto& ready=buffers.ready;
+    for(auto it=heard.begin();it!=heard.end();) {
+        if(it->provisional&&now>it->deadline) {
+            LogEvent(LogKind::Failure,"failed","quarantined capture expired before final validation");
+            it=heard.erase(it);
+        } else ++it;
+    }
     // Late-discovered captures inherit the same cutoff before they can match.
     BoundCompletedCaptureTails(buffers,heard);
     // Assess every alternative before expiry/pressure can remove evidence.
@@ -1119,6 +1320,9 @@ static void SchedulePublications(std::vector<Heard>& heard,CaptureBuffers& buffe
     for(auto it=buffers.active.begin();it!=buffers.active.end();) {
         if(expired(it->second))it=buffers.active.erase(it);else ++it;
     }
+    for(auto it=buffers.ogg_active.begin();it!=buffers.ogg_active.end();) {
+        if(expired(it->second))it=buffers.ogg_active.erase(it);else ++it;
+    }
     ready.erase(std::remove_if(ready.begin(),ready.end(),[](const auto& capture){
         return capture->retained_until&&capture->finished>capture->retained_until;
     }),ready.end());
@@ -1129,7 +1333,7 @@ static void ReportMediaUnavailable(const CaptureBuffers& buffers,bool unavailabl
     // App state can settle just after the first decoder pages arrive. Give the
     // warning a grace period; coverage invalidation above remains immediate.
     // Completed-only captures have their own final failure outcome below.
-    if(!unavailable || buffers.active.empty() || std::strcmp(diagnostic.reason,"client-buffering-transition")==0) {
+    if(!unavailable || (buffers.active.empty()&&buffers.ogg_active.empty()) || std::strcmp(diagnostic.reason,"client-buffering-transition")==0) {
         warning={};return;
     }
     if(warning.since<0){warning.since=now;return;}
@@ -1165,6 +1369,11 @@ static DWORD WINAPI Worker(LPVOID) {
             NoteCaptureProgress();
             double now=Now();
             DrainTiming(now,next_timing);
+            if(decoded_fallback_requested.exchange(false,std::memory_order_acq_rel)) {
+                SetCaptureAccelerationAvailable(false);
+                SetCaptureSpeed(1);
+                Log(LogKind::Warning,"decoded audio layout became invalid; capture speed fell back to 1x");
+            }
             auto preferences=GetSettings();
             if(preferences.generation!=generation) {
                 bool initial=generation==~0u;
@@ -1187,7 +1396,7 @@ static DWORD WINAPI Worker(LPVOID) {
                 WaitForSingleObject(event,200); continue;
             }
             if(dropped!=overflow) {
-                overflow=dropped; active.clear(); ready.clear(); heard.clear(); listen.eligible=false; quality.ClearStreams();
+                overflow=dropped; active.clear(); buffers.ogg_active.clear(); ready.clear(); heard.clear(); listen.eligible=false; quality.ClearStreams();
                 Log(LogKind::Failure,"capture queue overflow; streams and listening coverage invalidated");
             }
             Slot s;
@@ -1251,6 +1460,9 @@ static DWORD WINAPI Worker(LPVOID) {
             for(auto it=active.begin();it!=active.end();) {
                 if(now-it->second->born>21600) it=active.erase(it); else ++it;
             }
+            for(auto it=buffers.ogg_active.begin();it!=buffers.ogg_active.end();) {
+                if(now-it->second->born>21600)it=buffers.ogg_active.erase(it);else ++it;
+            }
             WaitForSingleObject(event,50);
         }
     } catch(...) { Log(LogKind::Failure,"history worker stopped after an exception; playback remains with original parser"); }
@@ -1264,6 +1476,8 @@ static DWORD WINAPI Worker(LPVOID) {
     MH_DisableHook(target);
     for(auto address:flac_targets) if(address) MH_DisableHook(address);
     for(auto address:aac_targets) if(address) MH_DisableHook(address);
+    if(decoded_sink_target)MH_DisableHook(decoded_sink_target);
+    SetCaptureAccelerationAvailable(false);
     return 0;
 }
 }
@@ -1289,6 +1503,21 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
     flac_targets[1]=DiscoveredTarget(spotify_module,discovered,spotify::TargetKind::FlacRead);
     flac_targets[2]=DiscoveredTarget(spotify_module,discovered,spotify::TargetKind::FlacFrame);
     flac_targets[3]=DiscoveredTarget(spotify_module,discovered,spotify::TargetKind::FlacError);
+    {
+        auto* base=reinterpret_cast<unsigned char*>(spotify_module);
+        auto* dos=reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+        auto* nt=reinterpret_cast<IMAGE_NT_HEADERS64*>(base+dos->e_lfanew);
+        spotify::DecodedOutputTarget decoded{};
+        const auto decoded_discovery=spotify::DiscoverDecodedOutputTarget(base,nt->OptionalHeader.SizeOfImage,decoded);
+        if(decoded_discovery==spotify::DiscoveryResult::Found)decoded_sink_target=base+decoded.rva;
+        else {
+            SetCaptureAccelerationAvailable(false);
+            if(preferences.capture_speed>1) {
+                SetCaptureSpeed(1);preferences=GetSettings();
+                Log(LogKind::Warning,"capture acceleration unsupported on this Spotify build; 1x remains active");
+            }
+        }
+    }
     if(preferences.aac) {
         auto* base=reinterpret_cast<unsigned char*>(spotify_module);
         auto* dos=reinterpret_cast<IMAGE_DOS_HEADER*>(base);
@@ -1309,6 +1538,9 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
         for(auto& address:flac_targets) address=nullptr;
         for(auto& address:aac_targets)address=nullptr;
         original_aac_initialize=nullptr;original_aac_push=nullptr;original_aac_destroy=nullptr;
+        original_decoded_process=nullptr;decoded_sink_target=nullptr;
+        decoded_accelerator.Reset();decoded_fallback_requested.store(false,std::memory_order_release);
+        SetCaptureAccelerationAvailable(false);
     };
     save_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);
     queue=static_cast<Slot*>(HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof(Slot)*capacity));
@@ -1332,7 +1564,7 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
         return;
     }
     auto close_threads=[&] {CloseHandle(publisher);CloseHandle(worker);publisher=nullptr;worker=nullptr;};
-    void* created_targets[8]={};unsigned created_count=0;
+    void* created_targets[9]={};unsigned created_count=0;
     auto rollback=[&] {
         hooks::RollbackStatus result;
         auto disabled=[](MH_STATUS value){return value==MH_OK||value==MH_ERROR_DISABLED||value==MH_ERROR_NOT_CREATED;};
@@ -1386,6 +1618,10 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
             Log(LogKind::Warning,"optional AAC hook preparation failed; AAC capture unavailable");
         }
     }
+    if(status==MH_OK&&decoded_sink_target) {
+        status=create_hook(decoded_sink_target,reinterpret_cast<void*>(DecodedSinkHook),reinterpret_cast<void**>(&original_decoded_process));
+        if(status==MH_OK)status=MH_QueueEnableHook(decoded_sink_target);
+    }
     if(status==MH_OK) status=MH_QueueEnableHook(target);
     bool apply_attempted=false;
     if(status==MH_OK) {apply_attempted=true;status=MH_ApplyQueued();}
@@ -1406,5 +1642,10 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
         return;
     }
     close_threads();
+    SetCaptureAccelerationAvailable(decoded_sink_target!=nullptr);
+    if(decoded_sink_target) {
+        char message[96];snprintf(message,sizeof(message),"capture acceleration available; selected speed=%ux",CaptureSpeed());
+        Log(LogKind::Activity,message);
+    }
     audio_init.Activate();
 }

@@ -23,6 +23,9 @@ Save the music you play in Spotify on Windows.
 
 - Downloads are enabled by default. Open Spotify's top-left menu → **To Disk** to change settings.
 - Play songs from beginning to end without skipping or seeking.
+- **Capture Speed** defaults to **1x**. Faster settings are intended for muted,
+  unattended capture: the saved compressed audio is unchanged, but live playback
+  can sound choppy and Spotify's progress display may be inaccurate.
 - **Disable Automix** under **Edit → Preferences → Playback**. It trims songs and prevents complete saves.
 - Files save to `Music\Spotify\Artists\Artist\Album` by default. Change this with **Save Location**.
 - For FLAC, select lossless playback in Spotify.
@@ -33,7 +36,7 @@ Save the music you play in Spotify on Windows.
 
 ## Settings
 
-- **To Disk** provides **Downloads**, **Save Location**, **FLAC**, **Ogg** and **Lyrics** controls.
+- **To Disk** provides **Downloads**, **Save Location**, **FLAC**, **Ogg**, **Lyrics** and **Capture Speed** controls.
 - `SpotifyHistory.ini` is created automatically. Keep it when upgrading, and fully restart Spotify after editing it.
 - `UpdateExistingMetadata=1` fills missing details and improves artwork on existing songs. Set `0` to leave their metadata unchanged.
 - `TrackNumberInFilename=0` uses title-only filenames. Set `1` to add track numbers.
@@ -50,7 +53,8 @@ Save the music you play in Spotify on Windows.
 
 - **Doesn't load:** check that Spotify is x64 and try the launcher option.
 - **Songs aren't saved:** check **Downloads**, play a complete song and disable Automix.
-- **Playback problems:** try `Menu=0`, then `Metadata=0`, restarting after each change.
+- **Playback problems:** set **Capture Speed** to **1x** first. Then try `Menu=0`,
+  followed by `Metadata=0`, restarting after each change.
 - **Need help:** [report an issue](https://github.com/Mainkill1/Floggfy/issues) with your Spotify version and relevant log entries.
 - Spotify updates may require a newer Floggfy release.
 - To uninstall, quit Spotify and remove the Floggfy files you installed.

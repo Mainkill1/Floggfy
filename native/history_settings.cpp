@@ -10,6 +10,7 @@
 #include "async_log.h"
 #include "srw_guard.h"
 #include "settings_file.h"
+#include "capture_speed.h"
 namespace history {
 static SRWLOCK lock=SRWLOCK_INIT;
 static Settings settings;
@@ -19,7 +20,7 @@ static bool IsMusic(std::wstring root) {
     return !music_path.empty() && (_wcsicmp(root.c_str(),music_path.c_str())==0 ||
         _wcsicmp(root.c_str(),(music_path+L"\\Spotify").c_str())==0);
 }
-static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,aac_enabled=0,capture_epoch=0,log_enabled=1,debug_enabled=0,networking_enabled=0,connect_logging_enabled=1,hook_diagnostics_enabled=0;
+static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,aac_enabled=0,capture_epoch=0,capture_speed_value=1,capture_acceleration_available=0,log_enabled=1,debug_enabled=0,networking_enabled=0,connect_logging_enabled=1,hook_diagnostics_enabled=0;
 static HANDLE settings_signal=nullptr,persist_done=nullptr;
 // A failed attempt is observable without acknowledging bytes never committed.
 static volatile LONG persisted_generation=-1,failed_generation=-1,persist_failed=0;
@@ -27,6 +28,8 @@ static constexpr char default_ini[]=
     "[To Disk]\r\n"
     "; Settings also appear in the To Disk menu.\r\n"
     "Downloads=1\r\n"
+    "; Local capture rate: exactly 1, 2, 4, 8, or 10. Default is 1.\r\n"
+    "CaptureSpeed=1\r\n"
     "; Set Menu=0 before starting Spotify to disable native menu integration.\r\n"
     "Menu=1\r\n"
     "; Workaround when disabled/blocked Microsoft online checks (Windows NCSI)\r\n"
@@ -107,6 +110,19 @@ static bool ReadFilenameOptions(Settings& target,const std::wstring& path) {
     }
     return needs_persist;
 }
+static bool ReadCaptureSpeed(Settings& target,const std::wstring& path) {
+    wchar_t value[16]{};
+    if(!GetPrivateProfileStringW(L"To Disk",L"CaptureSpeed",L"",value,16,path.c_str())) {
+        target.capture_speed=1;return true;
+    }
+    if(!wcscmp(value,L"1"))target.capture_speed=1;
+    else if(!wcscmp(value,L"2"))target.capture_speed=2;
+    else if(!wcscmp(value,L"4"))target.capture_speed=4;
+    else if(!wcscmp(value,L"8"))target.capture_speed=8;
+    else if(!wcscmp(value,L"10"))target.capture_speed=10;
+    else {target.capture_speed=1;return true;}
+    return false;
+}
 // INI-only preferences are read once. Persistence inserts missing defaults,
 // but never writes a stale startup snapshot over values edited before restart.
 struct RestartFlag {
@@ -161,6 +177,7 @@ static DWORD WINAPI PersistSettings(LPVOID) {
             if(ok) {
                 auto flag=[&](const wchar_t* key,bool value){settings_file::Set(text,key,value?L"1":L"0");};
                 flag(L"Downloads",snapshot.downloads);flag(L"Ogg",snapshot.ogg);flag(L"FLAC",snapshot.flac);flag(L"AAC",snapshot.aac);flag(L"Lyrics",snapshot.lyrics);
+                settings_file::Set(text,L"CaptureSpeed",std::to_wstring(snapshot.capture_speed));
                 flag(L"UpdateExistingMetadata",snapshot.update_existing_metadata);
                 InsertMissingRestartDefaults(text);
                 flag(L"TrackNumberInFilename",snapshot.track_number_in_filename);
@@ -219,8 +236,9 @@ void InitSettings(HMODULE proxy) {
     settings.ogg=GetPrivateProfileIntW(L"To Disk",L"Ogg",1,ini.c_str())!=0;
     settings.flac=GetPrivateProfileIntW(L"To Disk",L"FLAC",1,ini.c_str())!=0;
     const bool filename_options_pending=ReadFilenameOptions(settings,ini);
+    const bool capture_speed_pending=ReadCaptureSpeed(settings,ini);
     const bool restart_options_pending=ReadRestartOptions(settings,ini);
-    const bool startup_options_pending=filename_options_pending||restart_options_pending;
+    const bool startup_options_pending=filename_options_pending||capture_speed_pending||restart_options_pending;
     settings.aac=GetPrivateProfileIntW(L"To Disk",L"AAC",0,ini.c_str())!=0;
     settings.metadata=GetPrivateProfileIntW(L"To Disk",L"Metadata",1,ini.c_str())!=0;
     settings.lyrics=GetPrivateProfileIntW(L"To Disk",L"Lyrics",1,ini.c_str())!=0;
@@ -239,6 +257,7 @@ void InitSettings(HMODULE proxy) {
     if(raw[0] && length && length<=4096) {settings.root=expanded;settings.save_location=raw;}
     settings.music_folder=IsMusic(settings.root);
     downloads_enabled=settings.downloads; ogg_enabled=settings.ogg; flac_enabled=settings.flac; aac_enabled=settings.aac;
+    capture_speed_value=LONG(settings.capture_speed);
     log_enabled=settings.log;debug_enabled=settings.debug_log;networking_enabled=settings.debug_networking;connect_logging_enabled=settings.debug_connect;hook_diagnostics_enabled=settings.debug_hook_diagnostics;
     StartLogger();
     settings_signal=CreateEventW(nullptr,FALSE,FALSE,nullptr);
@@ -269,6 +288,9 @@ bool OggEnabled() { return downloads_enabled && ogg_enabled; }
 bool FlacEnabled() { return downloads_enabled && flac_enabled; }
 bool AACEnabled() { return downloads_enabled && aac_enabled; }
 unsigned CaptureEpoch() { return unsigned(InterlockedCompareExchange(&capture_epoch,0,0)); }
+unsigned CaptureSpeed() { return unsigned(InterlockedCompareExchange(&capture_speed_value,0,0)); }
+bool CaptureAccelerationAvailable() {return InterlockedCompareExchange(&capture_acceleration_available,0,0)!=0;}
+void SetCaptureAccelerationAvailable(bool available) {InterlockedExchange(&capture_acceleration_available,available?1:0);}
 static bool Set(const wchar_t* key,bool value,bool& field,volatile LONG* fast,bool affects_capture=true) {
     bool ok=false;
     {
@@ -288,6 +310,23 @@ bool SetOgg(bool v) { return Set(L"Ogg",v,settings.ogg,&ogg_enabled); }
 bool SetFlac(bool v) { return Set(L"FLAC",v,settings.flac,&flac_enabled); }
 bool SetLyrics(bool v) { return Set(L"Lyrics",v,settings.lyrics,nullptr,false); }
 bool SetUpdateExistingMetadata(bool v) { return Set(L"UpdateExistingMetadata",v,settings.update_existing_metadata,nullptr,false); }
+bool SetCaptureSpeed(unsigned speed) {
+    if(!capture_speed::Supported(speed)||(speed>1&&!CaptureAccelerationAvailable()))return false;
+    bool ok=false;
+    {
+    ExclusiveSrw guard(lock);ok=settings_signal!=nullptr;
+    if(ok) {
+        if(settings.capture_speed!=speed) {
+            settings.capture_speed=speed;++settings.capture_epoch;
+            InterlockedExchange(&capture_epoch,LONG(settings.capture_epoch));
+            InterlockedExchange(&capture_speed_value,LONG(speed));
+        }
+        ++settings.generation;
+    }
+    }
+    if(ok)SetEvent(settings_signal);
+    return ok;
+}
 bool SetSaveLocation(const std::wstring& root) {
     if(root.empty() || root.size()>2047 || !(root.size()>2 && (root[1]==L':' || root.rfind(L"\\\\",0)==0))) return false;
     DWORD attributes=GetFileAttributesW(WindowsPath(root).c_str());

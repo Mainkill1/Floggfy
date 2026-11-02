@@ -17,6 +17,7 @@ bool Contains(const char* text) {
 unsigned init_calls=0,read_calls=0,frame_calls=0,error_calls=0;
 int read_status=0,frame_status=0;
 bool oversized_read=false,empty_read=false;
+bool invalid_decoded_span=false;
 const void* expected_frame=nullptr;
 const void* expected_pcm=nullptr;
 void* Init(void* context,void* result) {
@@ -37,6 +38,12 @@ int Frame(void* context,const void* frame,const void* pcm) {
 }
 void Error(void* context,unsigned value) {
     ++error_calls;assert(context==reinterpret_cast<void*>(0x1234));assert(value==2);
+}
+void* Decode(void*,void* result,decoded_output::Span* decoded,decoded_output::Span* encoded,bool mode) {
+    assert(mode&&decoded&&encoded);decoded->size-=80;
+    decoded->data=static_cast<float*>(decoded->data)+(invalid_decoded_span?79:80);
+    encoded->data=static_cast<unsigned char*>(encoded->data)+100;
+    encoded->size-=100;SetLastError(1234);return result;
 }
 void ObservePlayback() {
     PlaybackDiagnostics state;Media media;media.title=L"Song";media.artist=L"Artist";
@@ -92,6 +99,39 @@ void CoverageAndFailures() {
     assert(diagnostic_lines.size()==1&&Contains("stream discarded")); // Keep normal failure activity.
     InterlockedExchange(&history::debug_enabled,1);
 }
+void ConcurrentOggLogicalStreams() {
+    CaptureBuffers buffers;Slot slot{};slot.context=0x7788;slot.kind=AudioEventKind::OggPage;
+    slot.time=100;slot.epoch=4;slot.capture=true;
+    const auto send=[&](const std::vector<uint8_t>& page) {
+        slot.length=unsigned(page.size());memcpy(slot.bytes,page.data(),page.size());
+        ProcessOggCapture(slot,buffers);slot.time+=.1;
+    };
+    const auto bos_a=recording_fixture::page(recording_fixture::identification(),0,2,0,41);
+    const auto bos_b=recording_fixture::page(recording_fixture::identification(),0,2,0,42);
+    send(bos_a);send(bos_b);
+    assert(buffers.ogg_active.size()==2&&buffers.active.empty());
+    const auto unknown=recording_fixture::page({0},1,0,44100,99);
+    diagnostic_lines.clear();send(unknown);
+    assert(buffers.ogg_active.size()==2&&buffers.ready.empty()&&Contains("inactive-stream"));
+    send(recording_fixture::page({0},1,0,44100,41));
+    send(recording_fixture::page({0},1,0,44100,42));
+    send(recording_fixture::page({0},2,4,88200,41));
+    assert(buffers.ogg_active.size()==1&&buffers.ready.size()==1);
+    send(recording_fixture::page({0},2,4,88200,42));
+    assert(buffers.ogg_active.empty()&&buffers.ready.size()==2);
+    assert(buffers.ready[0]->stream.serial==41&&buffers.ready[1]->stream.serial==42);
+
+    buffers={};send(bos_a);diagnostic_lines.clear();
+    send(recording_fixture::page({0},2,4,88200,41));
+    assert(buffers.ogg_active.empty()&&buffers.ready.empty());
+    assert(Contains("sequence-discontinuity"));
+
+    buffers={};send(bos_a);send(bos_b);
+    auto damaged=recording_fixture::page({0},1,0,44100,41);damaged.back()^=1;
+    send(damaged);
+    assert(buffers.ogg_active.size()==1&&buffers.ogg_active.begin()->first.serial==42&&
+           "a CRC failure with an exact serial/sequence must not erase an interleaved peer");
+}
 void HookBoundaries() {
     queue=new Slot[capacity];event=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(event);
     original_flac_init=Init;original_flac_read=Read;original_flac_frame=Frame;original_flac_error=Error;
@@ -115,6 +155,18 @@ void HookBoundaries() {
     FlacErrorHook(context,2);assert(error_calls==1);
     assert(Pop(slot)&&slot.error_source==FlacErrorSource::DecoderCallback&&slot.format==2);
     assert(pcm==42&&!memcmp(frame,original_frame.data(),32)&&!audio_callbacks.Active());
+    original_decoded_process=Decode;decoded_accelerator.Reset();decoded_fallback_requested=false;
+    InterlockedExchange(&history::capture_speed_value,4);InterlockedExchange(&history::capture_epoch,7);
+    float samples[100]{};unsigned char compressed[200]{};
+    decoded_output::Span decoded{samples,100},encoded{compressed,200};
+    SetLastError(0);assert(DecodedSinkHook(context,result,&decoded,&encoded,true)==result);
+    assert(decoded.data==samples+20&&decoded.size==80&&
+           reinterpret_cast<unsigned char*>(encoded.data)==compressed+100&&encoded.size==100&&
+           GetLastError()==1234&&decoded_accelerator.Enabled()&&!audio_callbacks.Active());
+    invalid_decoded_span=true;decoded={samples,100};encoded={compressed,200};
+    DecodedSinkHook(context,result,&decoded,&encoded,true);
+    assert(decoded.data==samples+79&&decoded.size==20&&!decoded_accelerator.Enabled()&&decoded_fallback_requested.load());
+    invalid_decoded_span=false;InterlockedExchange(&history::capture_speed_value,1);
     diagnostic_lines.clear();LogTiming();
     assert(diagnostic_lines.empty()&&native_read_timing.count.load()==0&&native_frame_timing.count.load()==0&&producer_wait_timing.count.load()==0);
     diagnostic_lines.clear();LogTiming();assert(diagnostic_lines.empty());
@@ -208,6 +260,67 @@ void NaturalAppBufferingTransition() {
         AssociateListen(next,listen,current,heard,buffers,transition_time+.2);assert(listen.eligible);
     };
     run(110,true);run(109.6,false); // Time spent buffering cannot manufacture the missing tail.
+}
+std::unique_ptr<Capture> CompleteFlacCapture(double born,double finished) {
+    auto capture=std::make_unique<Capture>();capture->lossless=true;capture->born=born;capture->finished=finished;
+    const auto bytes=recording_fixture::fixture(1,16);
+    assert(capture->data.Append(bytes.data(),bytes.size(),bytes.size()+65536));capture->bytes=bytes.size();
+    size_t audio=0;assert(ParseFlacMetadata(capture->data,capture->flac,audio)==FlacParse::Valid);
+    capture->metadata=true;capture->coverage.samples=16;capture->coverage.frames=1;return capture;
+}
+void FinalCaptureRevalidation() {
+    auto valid=CompleteFlacCapture(100,111);
+    assert(ValidateFinalCapture(*valid)==FinalCaptureValidation::Valid);
+    auto corrupt=CompleteFlacCapture(100,111);corrupt->flac.total_samples=17;
+    assert(ValidateFinalCapture(*corrupt)==FinalCaptureValidation::Invalid);
+    auto truncated=CompleteFlacCapture(100,111);truncated->coverage.samples=15;
+    assert(ValidateFinalCapture(*truncated)==FinalCaptureValidation::Incomplete);
+    const auto ogg_bytes=recording_fixture::ogg();
+    auto ogg=[](const std::vector<uint8_t>& bytes) {
+        auto capture=std::make_unique<Capture>();capture->born=100;capture->finished=111;
+        assert(capture->data.Append(bytes.data(),bytes.size(),bytes.size()+65536));capture->bytes=bytes.size();
+        capture->stream.complete=true;capture->stream.serial=42;capture->stream.rate=44100;
+        capture->stream.channels=2;capture->stream.pages=9;capture->stream.samples=44100;return capture;
+    };
+    auto valid_ogg=ogg(ogg_bytes);assert(ValidateFinalCapture(*valid_ogg)==FinalCaptureValidation::Valid);
+    auto corrupt_ogg_bytes=ogg_bytes;corrupt_ogg_bytes.back()^=1;
+    auto corrupt_ogg=ogg(corrupt_ogg_bytes);assert(ValidateFinalCapture(*corrupt_ogg)==FinalCaptureValidation::Invalid);
+}
+void CrossfadeQuarantineRecovery() {
+    const auto run=[](bool explicit_skip,bool ambiguous,bool expire) {
+        CaptureBuffers buffers;std::vector<Heard> heard;Listen listen;Media current,media;
+        media.source=MediaSource::Spotify;media.spotify_uri="spotify:track:0000000000000000000001";
+        media.playback_instance="first";media.title=L"Previous";media.duration=16;media.playing=true;
+        for(unsigned i=0;i<=4;++i){media.position=i;AssociateListen(media,listen,current,heard,buffers,100+i);}
+        auto active=CompleteFlacCapture(100,0);active->coverage.samples=8;active->finished=0;
+        buffers.active[1]=std::move(active);
+        Media next;next.source=MediaSource::Spotify;next.spotify_uri="spotify:track:0000000000000000000002";
+        next.playback_instance="second";next.explicit_skip=explicit_skip;
+        FinishAppTransition(next,listen,current,heard,buffers,105);
+        if(explicit_skip) {
+            assert(heard.empty()&&!listen.eligible);return;
+        }
+        assert(heard.size()==1&&heard[0].provisional&&heard[0].deadline==120);
+        assert(buffers.active.size()==1&&buffers.active[1]->retained_until==120);
+        auto completed=std::move(buffers.active[1]);buffers.active.erase(1);
+        completed->coverage.samples=16;completed->finished=expire?121:110;
+        buffers.ready.push_back(std::move(completed));
+        if(ambiguous)buffers.ready.push_back(CompleteFlacCapture(100,110));
+        SchedulePublications(heard,buffers,0,expire?121:110);SaveJob job;
+        assert(saves.Pop(job)==(!ambiguous&&!expire));
+        if(!ambiguous&&!expire)assert(job.heard.provisional&&ValidateFinalCapture(*job.capture)==FinalCaptureValidation::Valid);
+    };
+    run(false,false,false);run(false,false,true);run(false,true,false);run(true,false,false);
+    CaptureBuffers buffers;std::vector<Heard> heard;Listen listen;Media current,media;
+    media.source=MediaSource::Spotify;media.spotify_uri="spotify:track:0000000000000000000001";
+    media.playback_instance="early";media.title=L"Early EOS";media.duration=16;media.playing=true;
+    for(unsigned i=0;i<=4;++i){media.position=i;AssociateListen(media,listen,current,heard,buffers,100+i);}
+    auto early=CompleteFlacCapture(100,104);early->coverage.samples=16;buffers.ready.push_back(std::move(early));
+    Media next;next.source=MediaSource::Spotify;next.spotify_uri="spotify:track:0000000000000000000002";
+    next.playback_instance="next";FinishAppTransition(next,listen,current,heard,buffers,105);
+    SchedulePublications(heard,buffers,0,105);SaveJob early_job;
+    assert(saves.Pop(early_job)&&early_job.heard.provisional&&early_job.capture->finished==104&&
+           "a uniquely matched, revalidated complete buffer survives a false natural transition flag");
 }
 void RecentPlaybackMatching() {
     RecentPlaybackHistory history;Media media;media.source=MediaSource::Spotify;
@@ -310,7 +423,7 @@ void EnrichTags(const Media&,Tags&){}
 int wmain() {
     // Use in-memory preferences only. Never read or write the user's INI/music.
     InterlockedExchange(&history::debug_enabled,1);
-    Connectivity();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();DurableAssociationEvidence();AppTailDeadline();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();HookBoundaries();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
+    Connectivity();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();DurableAssociationEvidence();AppTailDeadline();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();HookBoundaries();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
     puts("PASS: observed transitions, one FLAC failure context/outcome, original callback semantics, profiling-only intervals, basic-mode zero profiling and changed-only NLM observations");
     return 0;
 }
