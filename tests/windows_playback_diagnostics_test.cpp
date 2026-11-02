@@ -358,6 +358,46 @@ void CrossfadeQuarantineRecovery() {
         assert(pending.empty()&&!saves.Pop(rejected_job)&&"seek, pause, unknown/manual or stale transition cannot recover a listen");
     }
 }
+void AcceleratedUiClockRecovery() {
+    CaptureBuffers buffers;std::vector<Heard> heard;Listen listen;Media current;
+    current.source=MediaSource::Spotify;
+    current.spotify_uri="spotify:track:0000000000000000000001";
+    current.playback_instance="accelerated-first";current.title=L"Accelerated";
+    current.duration=16;current.position=0;current.playing=true;
+    assert(listen.Observe(current.ListenKey(),0,16,true,100,10).empty());
+    // The decoder reaches EOS at 10x while Spotify's public position remains
+    // near its old 1x value. The complete cached source is the final evidence.
+    assert(listen.Observe(current.ListenKey(),0,16,true,101.6,10).empty());
+    buffers.ready.push_back(CompleteFlacCapture(100,101.5));
+    auto preload=std::make_unique<Capture>();preload->lossless=true;preload->metadata=true;
+    preload->born=100.5;preload->flac.rate=1;preload->flac.total_samples=20;
+    buffers.active[2]=std::move(preload);
+    Media next;next.source=MediaSource::Spotify;
+    next.spotify_uri="spotify:track:0000000000000000000002";
+    next.playback_instance="accelerated-second";next.natural_transition=true;
+    FinishAppTransition(next,listen,current,heard,buffers,101.6);
+    assert(heard.size()==1&&heard[0].provisional&&
+           "a unique complete accelerated capture survives Spotify's 1x public clock");
+    SchedulePublications(heard,buffers,0,101.6);SaveJob job;
+    assert(saves.Pop(job)&&ValidateFinalCapture(*job.capture)==FinalCaptureValidation::Valid);
+}
+void KnownDurationAlternativeIsNotAmbiguous() {
+    for(bool discarded_before_matching:{false,true}) {
+        CaptureBuffers buffers;std::vector<Heard> heard(1);
+        heard[0].media.duration=16;heard[0].start=100;heard[0].finish=116;
+        heard[0].generation=1;buffers.ready.push_back(CompleteFlacCapture(100,115));
+        auto alternative=std::make_unique<Capture>();alternative->lossless=true;
+        alternative->metadata=true;alternative->born=100.5;
+        alternative->flac.rate=1;alternative->flac.total_samples=20;
+        buffers.active[2]=std::move(alternative);
+        if(discarded_before_matching) {
+            buffers.RecordLostActive(buffers.active[2].get());buffers.active.erase(2);
+        }
+        SchedulePublications(heard,buffers,0,116);SaveJob job;
+        assert(saves.Pop(job)&&job.heard.generation==1&&
+               "a known different-duration stream cannot make ownership ambiguous");
+    }
+}
 void RecentPlaybackMatching() {
     RecentPlaybackHistory history;Media media;media.source=MediaSource::Spotify;
     media.spotify_uri="spotify:track:0000000000000000000001";media.playback_instance="one";media.duration=10;
@@ -535,7 +575,7 @@ void EnrichTags(const Media&,Tags&){}
 int wmain() {
     // Use in-memory preferences only. Never read or write the user's INI/music.
     InterlockedExchange(&history::debug_enabled,1);
-    Connectivity();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();DurableAssociationEvidence();AppTailDeadline();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();HookBoundaries();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
+    Connectivity();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();AcceleratedUiClockRecovery();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();DurableAssociationEvidence();AppTailDeadline();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();HookBoundaries();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
     puts("PASS: observed transitions, one FLAC failure context/outcome, original callback semantics, profiling-only intervals, basic-mode zero profiling and changed-only NLM observations");
     return 0;
 }

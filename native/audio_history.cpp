@@ -564,6 +564,18 @@ static bool FormatEnabled(const Capture& capture,const Settings& settings) {
 }
 using Heard=PlaybackListen;
 constexpr double completion_wait=10;
+static double DeclaredCaptureDuration(const Capture& capture) {
+    if(capture.lossless&&capture.metadata&&capture.flac.rate&&capture.flac.total_samples)
+        return double(capture.flac.total_samples)/capture.flac.rate;
+    if(capture.aac&&capture.spac.info.rate&&capture.spac.info.total_samples)
+        return double(capture.spac.info.total_samples)/capture.spac.info.rate;
+    if(capture.stream.complete)return capture.Duration();
+    return 0;
+}
+static bool CaptureDurationCouldMatch(const Capture& capture,const Heard& heard) {
+    const auto declared=DeclaredCaptureDuration(capture);
+    return !declared||std::fabs(declared-heard.media.duration)<=1.0;
+}
 static bool CaptureTimingMatchesListen(const Capture& capture,const Heard& heard) {
     return (!capture.listen_generation || capture.listen_generation==heard.generation) &&
            capture.born>=heard.start-20 && capture.born<=heard.start+3 && capture.born<heard.finish;
@@ -927,21 +939,23 @@ struct CaptureBuffers {
     // Lightweight evidence boundaries survive removal of unmatched bytes/records.
     double lost_capture_start_through=-std::numeric_limits<double>::infinity();
     double lost_listen_born_through=-std::numeric_limits<double>::infinity();
-    std::array<double,32> lost_active_births{};
+    struct LostActiveEvidence {double born=0,duration=0;};
+    std::array<LostActiveEvidence,32> lost_active{};
     unsigned lost_active_count=0,next_lost_active=0;
     void RecordLostActive(Capture* capture) {
         if(!capture)return;
         CheckBeforeRelease(*capture,"active capture discarded");
-        if(lost_active_count==lost_active_births.size())
-            lost_capture_start_through=std::max(lost_capture_start_through,lost_active_births[next_lost_active]+20);
+        if(lost_active_count==lost_active.size())
+            lost_capture_start_through=std::max(lost_capture_start_through,lost_active[next_lost_active].born+20);
         else ++lost_active_count;
-        lost_active_births[next_lost_active]=capture->born;
-        next_lost_active=(next_lost_active+1)%lost_active_births.size();
+        lost_active[next_lost_active]={capture->born,DeclaredCaptureDuration(*capture)};
+        next_lost_active=(next_lost_active+1)%lost_active.size();
     }
     bool LostActiveMatches(const Heard& heard) const {
         for(unsigned i=0;i<lost_active_count;++i) {
-            const auto born=lost_active_births[i];
-            if(born>=heard.start-20&&born<=heard.start+3&&born<heard.finish)return true;
+            const auto& evidence=lost_active[i];
+            if(evidence.born>=heard.start-20&&evidence.born<=heard.start+3&&evidence.born<heard.finish&&
+               (!evidence.duration||std::fabs(evidence.duration-heard.media.duration)<=1.0))return true;
         }
         return false;
     }
@@ -1272,16 +1286,22 @@ static bool FinishAppTransition(const Media& next,Listen& listen,const Media& cu
         const double projected=listen.last_position+(listen.playing?elapsed*listen.capture_speed:0);
         const double shortfall=listen.duration-projected;
         Heard pending{current,listen.start_time,time,listen.generation};
-        const auto timed=[&](const auto& capture){return CaptureTimingMatchesListen(*capture,pending);};
-        size_t candidates=0;
-        for(const auto& capture:buffers.active)candidates+=timed(capture.second);
-        for(const auto& capture:buffers.ogg_active)candidates+=timed(capture.second);
-        for(const auto& capture:buffers.ready)candidates+=timed(capture);
+        const auto compatible=[&](const auto& capture){return CaptureTimingMatchesListen(*capture,pending)&&
+            CaptureDurationCouldMatch(*capture,pending);};
+        size_t candidates=0,complete_ready=0;
+        for(const auto& capture:buffers.active)candidates+=compatible(capture.second);
+        for(const auto& capture:buffers.ogg_active)candidates+=compatible(capture.second);
+        for(const auto& capture:buffers.ready)if(compatible(capture)) {
+            ++candidates;
+            if(std::fabs(capture->Duration()-current.duration)<=1.0&&
+               CachedFinalValidation(*capture)==FinalCaptureValidation::Valid)++complete_ready;
+        }
         const bool natural=next.natural_transition&&!next.explicit_skip&&!same&&
             !current.playback_instance.empty()&&!next.playback_instance.empty()&&
             current.playback_instance!=next.playback_instance&&listen.playing&&
             time>=listen.last_time&&time-listen.last_time<=3;
-        if(natural&&shortfall>0&&shortfall<=15&&candidates==1) {
+        const bool accelerated_complete=listen.capture_speed>1&&complete_ready==1;
+        if(natural&&candidates==1&&((shortfall>0&&shortfall<=15)||accelerated_complete)) {
             pending.provisional=true;pending.deadline=time+15;heard.push_back(std::move(pending));
             BoundCompletedCaptureTails(buffers,heard);
             if(recent)recent->Observe(current,listen);
@@ -1329,8 +1349,10 @@ static void SchedulePublications(std::vector<Heard>& heard,CaptureBuffers& buffe
     auto& ready=buffers.ready;
     if(recent)for(auto& pending:heard)recent->Refresh(pending);
     const auto active_alternative=[&](const Heard& h) {
-        for(const auto& c:buffers.active)if(CaptureTimingMatchesListen(*c.second,h))return true;
-        for(const auto& c:buffers.ogg_active)if(CaptureTimingMatchesListen(*c.second,h))return true;
+        for(const auto& c:buffers.active)
+            if(CaptureTimingMatchesListen(*c.second,h)&&CaptureDurationCouldMatch(*c.second,h))return true;
+        for(const auto& c:buffers.ogg_active)
+            if(CaptureTimingMatchesListen(*c.second,h)&&CaptureDurationCouldMatch(*c.second,h))return true;
         return false;
     };
     // Late-discovered captures inherit the same cutoff before they can match.
