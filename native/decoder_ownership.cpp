@@ -193,22 +193,15 @@ void DecoderOwnershipTracker::ObserveDecoded(const DecodedActivity& activity) {
         if(contains){candidate=&capture;++candidates;}
     }
     if(!candidates)return;
-    // GetTickCount64 is millisecond-granular. Distinct, structurally normalized
-    // decoder owners routinely overlap on the same tick during preload; owner
-    // identity and capture lifecycle disambiguate them. Only regression loses
-    // the event order needed by this state machine.
-    if(latest_decoded_time_&&activity.first<latest_decoded_time_) {
-        for(auto& capture:captures_)if(capture.token&&capture.owner==activity.owner&&capture.active)
-            Conflict(capture);
-        return;
-    }
+    // Distinct decoder owners routinely overlap during preload. Ordering is
+    // meaningful only within one normalized owner; playback identity and the
+    // capture lifecycle disambiguate owners from each other.
     if(owner->last&&activity.first<owner->last) {
         for(auto& capture:captures_)if(capture.token&&capture.owner==activity.owner&&capture.active)
             Conflict(capture);
         return;
     }
     owner->first=owner->first?owner->first:activity.first;owner->last=activity.last;
-    latest_decoded_time_=activity.last;
     if(candidates!=1) {
         for(auto& capture:captures_) {
             if(!capture.token||capture.owner!=activity.owner||
@@ -324,7 +317,6 @@ void DecoderOwnershipTracker::ObservationLost(ObservationLoss,double time) {
 void DecoderOwnershipTracker::Reset(unsigned epoch) {
     captures_={};owners_={};playbacks_={};
     current_capture_=pending_capture_=current_playback_=latest_playback_=0;
-    latest_decoded_time_=0;
     epoch_=epoch;
 }
 

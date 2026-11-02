@@ -1200,6 +1200,9 @@ static DWORD WINAPI SaveWorker(LPVOID) {
 struct CaptureBuffers {
     ownership::DecoderOwnershipTracker* ownership_tracker=nullptr;
     uint64_t ownership_hold_generation=0;
+    uint64_t pending_natural_generation=0;
+    double pending_natural_time=0;
+    Listen pending_natural_listen{};
     std::map<uintptr_t,std::unique_ptr<Capture>> active;
     struct OggKey {
         uintptr_t context=0;uint32_t serial=0;
@@ -1758,12 +1761,24 @@ static Capture* UniqueCompleteUnownedAacForListen(CaptureBuffers& buffers,const 
 }
 static bool FinishAppTransition(const Media& next,Listen& listen,const Media& current,std::vector<Heard>& heard,CaptureBuffers& buffers,double time,RecentPlaybackHistory* recent=nullptr) {
     if(listen.identity.empty()||current.source!=MediaSource::Spotify) {
-        buffers.ownership_hold_generation=0;return false;
+        buffers.ownership_hold_generation=0;buffers.pending_natural_generation=0;
+        buffers.pending_natural_time=0;buffers.pending_natural_listen={};return false;
     }
     if(next.explicit_skip||next.explicit_control) {
-        buffers.ownership_hold_generation=0;
+        buffers.ownership_hold_generation=0;buffers.pending_natural_generation=0;
+        buffers.pending_natural_time=0;buffers.pending_natural_listen={};
         AbortBoundMp3Capture(buffers,listen.generation,ownership::CaptureAbortReason::InvalidData);
         listen.identity.clear();listen.eligible=false;listen.playing=false;return false;
+    }
+    // Spotify clears the playback ID during some natural buffering
+    // transitions. Keep the old listen intact until the first Ready snapshot
+    // supplies the successor ID; all ordinary completion checks still run then.
+    if(next.natural_transition&&next.playback_instance.empty()&&
+       next.control_monitoring&&listen.eligible&&listen.playing) {
+        buffers.pending_natural_generation=listen.generation;
+        buffers.pending_natural_time=time;
+        buffers.pending_natural_listen=listen;
+        return true;
     }
     FinalizeBoundMp3Capture(buffers,listen,current,time);
     const bool same=listen.identity==next.ListenKey();
@@ -1822,9 +1837,19 @@ static bool FinishAppTransition(const Media& next,Listen& listen,const Media& cu
             unowned_aac_transition?unowned_aac->finished:time,listen.generation};
         const auto compatible=[&](const auto& capture){return CaptureTimingMatchesListen(*capture,pending)&&
             CaptureDurationCouldMatch(*capture,pending);};
-        size_t candidates=0,complete_ready=0;
-        for(const auto& capture:buffers.active)candidates+=compatible(capture.second);
-        for(const auto& capture:buffers.ogg_active)candidates+=compatible(capture.second);
+        const auto exactly_bound=[&](const Capture& capture) {
+            if(!buffers.ownership_tracker||!capture.capture_token)return false;
+            const auto binding=buffers.ownership_tracker->Binding(capture.capture_token);
+            return binding.state==ownership::OwnershipState::Bound&&
+                binding.listen_generation==listen.generation;
+        };
+        size_t candidates=0,complete_ready=0,bound_active=0;
+        for(const auto& capture:buffers.active)if(compatible(capture.second)) {
+            ++candidates;bound_active+=exactly_bound(*capture.second);
+        }
+        for(const auto& capture:buffers.ogg_active)if(compatible(capture.second)) {
+            ++candidates;bound_active+=exactly_bound(*capture.second);
+        }
         for(const auto& capture:buffers.ready)if(compatible(capture)) {
             ++candidates;
             if(std::fabs(capture->Duration()-current.duration)<=1.0&&
@@ -1838,16 +1863,35 @@ static bool FinishAppTransition(const Media& next,Listen& listen,const Media& cu
         if((new_owned_instance&&ownership_hold_proven&&next.control_monitoring&&
             (complete_flac_decode||complete_ogg_decode||complete_aac_decode||complete_mp3_decode)&&listen.playing)||
            (unowned_aac_transition&&candidates==1&&complete_ready==1)||
-           (natural&&candidates==1&&((shortfall>0&&shortfall<=15)||accelerated_complete))) {
+           (natural&&candidates==1&&((shortfall>0&&shortfall<=15)||accelerated_complete||bound_active==1))) {
             pending.provisional=true;pending.deadline=time+15;heard.push_back(std::move(pending));
             BoundCompletedCaptureTails(buffers,heard);
             if(recent)recent->Observe(current,listen);
             Log(LogKind::Diagnostic,"incomplete app transition quarantined for final capture validation");
         } else LogEvent(LogKind::Activity,"skipped",Utf8(current.artist)+" - "+Utf8(current.title)+" (incomplete app transition)");
     }
-    buffers.ownership_hold_generation=0;
+    buffers.ownership_hold_generation=0;buffers.pending_natural_generation=0;
+    buffers.pending_natural_time=0;buffers.pending_natural_listen={};
     listen.identity.clear();listen.eligible=false;listen.playing=false;
     return false;
+}
+static bool FinishPendingNaturalTransition(const Media& next,Listen& listen,const Media& current,
+                                           std::vector<Heard>& heard,CaptureBuffers& buffers,
+                                           RecentPlaybackHistory* recent=nullptr) {
+    if(!buffers.pending_natural_generation)return false;
+    if(!listen.eligible||buffers.pending_natural_generation!=listen.generation) {
+        buffers.pending_natural_generation=0;buffers.pending_natural_time=0;
+        buffers.pending_natural_listen={};return false;
+    }
+    if(next.playback_instance.empty())return false;
+    if(next.ListenKey()==listen.identity)return false;
+    auto transition=next;transition.natural_transition=true;transition.control_monitoring=true;
+    transition.explicit_skip=false;transition.explicit_control=false;
+    const auto transition_time=buffers.pending_natural_time;
+    auto pending=std::move(buffers.pending_natural_listen);
+    FinishAppTransition(transition,pending,current,heard,buffers,transition_time,recent);
+    listen=std::move(pending);
+    return true;
 }
 static bool CaptureOwnershipCouldMatch(const Capture& capture,const Heard& heard,
                                        const ownership::DecoderOwnershipTracker* tracker) {
@@ -2144,7 +2188,10 @@ static DWORD WINAPI Worker(LPVOID) {
                 client_quality=ReadClientPlaybackQuality(media);
                 const auto playback_id=media.playback_instance;
                 const auto playback_uri=media.spotify_uri;
-                if(enabled)AssociateListen(std::move(media),listen,current,heard,buffers,observed_at,&recent);
+                if(enabled) {
+                    FinishPendingNaturalTransition(media,listen,current,heard,buffers,&recent);
+                    AssociateListen(std::move(media),listen,current,heard,buffers,observed_at,&recent);
+                }
                 ownership_tracker.ObservePlayback(playback_id,playback_uri,listen.generation,observed_at);
                 const auto playback_token=ownership_tracker.PlaybackToken(playback_id);
                 RememberBoundCaptureIdentity(buffers,current,listen.generation,playback_token);

@@ -645,6 +645,88 @@ void CrossfadeQuarantineRecovery() {
         assert(pending.empty()&&!saves.Pop(rejected_job)&&"seek, pause, unknown/manual or stale transition cannot recover a listen");
     }
 }
+void EmptyPlaybackIdNaturalTransitionIsRetried() {
+    CaptureBuffers buffers;std::vector<Heard> heard;Listen listen;Media current,media;
+    media.source=MediaSource::Spotify;media.spotify_uri="spotify:track:0000000000000000000001";
+    media.playback_instance="first";media.title=L"Previous";media.duration=16;media.playing=true;
+    for(unsigned i=0;i<=4;++i){media.position=i;AssociateListen(media,listen,current,heard,buffers,100+i);}
+    auto active=CompleteFlacCapture(100,0);active->coverage.samples=8;active->finished=0;
+    buffers.active[1]=std::move(active);
+
+    Media buffering;buffering.source=MediaSource::Spotify;buffering.natural_transition=true;
+    buffering.control_monitoring=true;
+    auto controlled_listen=listen;CaptureBuffers controlled_buffers;
+    auto controlled=buffering;controlled.explicit_control=true;
+    assert(!FinishAppTransition(controlled,controlled_listen,current,heard,controlled_buffers,105)&&
+           !controlled_buffers.pending_natural_generation&&!controlled_listen.eligible&&
+           "an explicit control cannot become a pending natural transition");
+    assert(FinishAppTransition(buffering,listen,current,heard,buffers,105)&&heard.empty()&&
+           buffers.pending_natural_generation==listen.generation&&listen.eligible&&
+           "a natural buffering snapshot without the next playback ID stays pending");
+
+    auto same=media;same.position=4.2;same.control_monitoring=true;
+    assert(!FinishPendingNaturalTransition(same,listen,current,heard,buffers)&&
+           buffers.pending_natural_generation==listen.generation&&
+           "an intermediate Ready snapshot with the old ID keeps waiting");
+    AssociateListen(same,listen,current,heard,buffers,105.2);
+
+    auto seek_listen=listen;auto seek_current=current;CaptureBuffers seek_buffers;
+    seek_buffers.pending_natural_generation=seek_listen.generation;
+    auto seek=same;seek.position=13;
+    assert(!FinishPendingNaturalTransition(seek,seek_listen,seek_current,heard,seek_buffers));
+    AssociateListen(seek,seek_listen,seek_current,heard,seek_buffers,105.3);
+
+    Media next;next.source=MediaSource::Spotify;
+    next.spotify_uri="spotify:track:0000000000000000000002";
+    next.playback_instance="second";next.title=L"Next";next.duration=20;next.position=.2;
+    next.playing=true;next.control_monitoring=true;
+    assert(FinishPendingNaturalTransition(next,listen,current,heard,buffers)&&
+           heard.size()==1&&heard[0].provisional&&buffers.active[1]->retained_until==120&&
+           "the first real next-track snapshot retries final capture reconciliation");
+    assert(!FinishPendingNaturalTransition(next,seek_listen,seek_current,heard,seek_buffers)&&
+           !seek_buffers.pending_natural_generation&&
+           "a same-ID seek invalidates the pending natural transition");
+}
+void BoundNaturalTransitionUsesFinalCaptureEvidence() {
+    ownership::DecoderOwnershipTracker tracker;tracker.Reset(24);
+    CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+    auto capture=CompleteFlacCapture(100,0);capture->coverage.samples=8;capture->finished=0;
+    capture->decoder_owner=0x7000;
+    capture->capture_token=tracker.BeginCapture(
+        ownership::DecoderCodec::Flac,capture->decoder_owner,0,100,24);
+    ownership::DecodedActivity activity{};activity.owner=capture->decoder_owner;
+    activity.calls=1;activity.produced_floats=4096;activity.first=100;activity.last=100.1;
+    activity.epoch=24;tracker.ObserveDecoded(activity);
+    tracker.ObservePlayback("first","spotify:track:0000000000000000000001",90,100.2);
+    assert(tracker.Binding(capture->capture_token).state==ownership::OwnershipState::Bound);
+    buffers.active[1]=std::move(capture);
+
+    Media current;current.source=MediaSource::Spotify;
+    current.spotify_uri="spotify:track:0000000000000000000001";
+    current.playback_instance="first";current.title=L"Crossfade";current.duration=16;
+    current.playing=true;
+    Listen listen;listen.identity=current.ListenKey();listen.eligible=true;listen.playing=true;
+    listen.start_time=100;listen.last_time=100.2;listen.last_position=0;
+    listen.duration=16;listen.generation=90;listen.capture_speed=1;
+    std::vector<Heard> heard;
+    Media buffering;buffering.source=MediaSource::Spotify;buffering.natural_transition=true;
+    buffering.control_monitoring=true;
+    assert(FinishAppTransition(buffering,listen,current,heard,buffers,100.8));
+    Media next;next.source=MediaSource::Spotify;
+    next.spotify_uri="spotify:track:0000000000000000000002";
+    next.playback_instance="second";next.playing=true;next.control_monitoring=true;
+    assert(FinishPendingNaturalTransition(next,listen,current,heard,buffers)&&heard.size()==1&&
+           heard[0].provisional&&
+           "an exact bound decoder can await final validation beyond the generic timing estimate");
+
+    auto complete=std::move(buffers.active[1]);buffers.active.erase(1);
+    complete->coverage.samples=16;complete->finished=102;
+    tracker.CompleteCapture(complete->capture_token,102);buffers.ready.push_back(std::move(complete));
+    SchedulePublications(heard,buffers,24,102);SaveJob job;
+    assert(saves.Pop(job)&&ValidateFinalCapture(*job.capture)==FinalCaptureValidation::Valid&&
+           "only a complete, valid bound capture is published after the natural transition");
+    publishing_reserved.fetch_sub(job.reserved);
+}
 void AcceleratedUiClockRecovery() {
     CaptureBuffers buffers;std::vector<Heard> heard;Listen listen;Media current;
     current.source=MediaSource::Spotify;
@@ -1136,7 +1218,7 @@ void EnrichTags(const Media&,Tags&){}
 int wmain() {
     // Use in-memory preferences only. Never read or write the user's INI/music.
     InterlockedExchange(&history::debug_enabled,1);
-    Connectivity();PodcastCatalog();PodcastCaptureEvents();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailDeadline();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
+    Connectivity();PodcastCatalog();PodcastCaptureEvents();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();EmptyPlaybackIdNaturalTransitionIsRetried();BoundNaturalTransitionUsesFinalCaptureEvidence();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailDeadline();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
     puts("PASS: observed transitions, one FLAC failure context/outcome, original callback semantics, profiling-only intervals, basic-mode zero profiling and changed-only NLM observations");
     return 0;
 }

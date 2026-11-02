@@ -107,6 +107,31 @@ void TestPreloadedSuccessorWaitsForNewPlaybackInstance() {
     assert(binding.listen_generation==2);
 }
 
+void TestPreloadedSuccessorAllowsConcurrentOutgoingOutput() {
+    DecoderOwnershipTracker tracker;tracker.Reset(1);
+    const auto outgoing=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,1.0,1);
+    tracker.ObserveDecoded(Activity(0x1000,1.1,1.2));
+    tracker.ObservePlayback("instance-old","uri:old",1,1.3);
+    State(tracker,outgoing,OwnershipState::Bound);
+
+    const auto preload=tracker.BeginCapture(DecoderCodec::Flac,0x2000,0,9.0,1);
+    tracker.ObserveDecoded(Activity(0x2000,9.2,9.3));
+    State(tracker,preload,OwnershipState::AwaitingPlaybackInstance);
+
+    // Decoder callbacks from the outgoing stream and its preloaded successor
+    // can overlap. Cross-owner timestamp order is not ownership evidence.
+    tracker.ObserveDecoded(Activity(0x1000,9.1,9.25));
+    assert(tracker.Binding(outgoing).state==OwnershipState::Bound);
+    assert(tracker.Binding(preload).state==OwnershipState::AwaitingPlaybackInstance);
+
+    tracker.ObserveTransition("","",9.35,false,true);
+    assert(tracker.Binding(outgoing).state==OwnershipState::Bound);
+    tracker.ObservePlayback("instance-new","uri:new",2,9.4);
+    const auto binding=State(tracker,preload,OwnershipState::Bound);
+    assert(binding.playback_token==tracker.PlaybackToken("instance-new"));
+    assert(binding.listen_generation==2);
+}
+
 void TestUnavailableInstanceAndPauseResume() {
     DecoderOwnershipTracker tracker;tracker.Reset(1);
     const auto capture=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,1.0,1);
@@ -271,7 +296,7 @@ void TestAbortLossEpochAndTime() {
     tracker.ObserveDecoded(Activity(0xa000,9.1,9.2,4));
     const auto decoded_regression=tracker.BeginCapture(DecoderCodec::Flac,0xb000,0,9.0,4);
     tracker.ObserveDecoded(Activity(0xb000,9.15,9.3,4));
-    State(tracker,decoded_first,OwnershipState::AwaitingPlaybackInstance);
+    State(tracker,decoded_first,OwnershipState::Conflict);
     State(tracker,decoded_regression,OwnershipState::Conflict);
 }
 
@@ -320,6 +345,7 @@ int main() {
     TestSingleOwnerBinds();
     TestSameSongRepeatNeedsNewInstance();
     TestPreloadedSuccessorWaitsForNewPlaybackInstance();
+    TestPreloadedSuccessorAllowsConcurrentOutgoingOutput();
     TestUnavailableInstanceAndPauseResume();
     TestSuccessorsAndSkips();
     TestCaptureConflictsAndReuse();

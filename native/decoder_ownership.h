@@ -141,7 +141,6 @@ private:
     std::uint64_t pending_capture_=0;
     std::uint64_t current_playback_=0;
     std::uint64_t latest_playback_=0;
-    double latest_decoded_time_=0;
     unsigned epoch_=0;
 };
 
