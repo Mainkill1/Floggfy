@@ -8,7 +8,7 @@
  let builder,activeRequests=0,connectDevices;
  let player,root,queue=[],seen=new Set(),walked=0,lastPlayback='',playbackTime=-Infinity;
  let timelineBinding,lastReadyTimeline;
- let timelineSeen=false,lastTimeline='',timelineTime=-Infinity,timelineBlocked='',timelineLocal='unknown',lastSkipAt=-Infinity;
+ let timelineSeen=false,lastTimeline='',timelineTime=-Infinity,timelineBlocked='',timelineLocal='unknown',lastSkipAt=-Infinity,controlPending=false;
  function playback(data){
   const payload=Object.entries(data).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&');
   const now=performance.now();
@@ -37,6 +37,8 @@
     const position=own(state,'positionAsOfTimestamp');if(typeof position==='number'&&Number.isFinite(position)&&position>=0)blocked.position_ms=position;
     const skipAge=blocked.sampled_ms-lastSkipAt;
     if(skipAge>=0&&skipAge<=3000){blocked.manual=1;lastSkipAt=-Infinity;}
+    if(controlPending){blocked.controlled=1;controlPending=false;}
+    blocked.monitoring=Number(!!(controlBinding?.active&&controlBinding.observing&&controlBinding.player===player));
     const prior=lastReadyTimeline,age=prior?blocked.sampled_ms-prior.sampled:Infinity;
     // Missing/failed action monitoring is unknown, never evidence of natural end.
     if(controlBinding?.active&&controlBinding.observing&&controlBinding.player===player&&
@@ -161,6 +163,7 @@
      // Any observed control action (including changed/unknown seek names)
      // breaks the evidence chain used for natural-transition recovery.
      lastReadyTimeline=undefined;
+     if(action!=='play'&&action!=='resume')controlPending=true;
      if(!['play','pause','resume','skipToNext','skipToPrevious'].includes(action))return;
      if(action==='skipToNext'||action==='skipToPrevious')lastSkipAt=Date.now();
      if(!connectEnabled())return;
@@ -395,14 +398,15 @@
    if(level==='hifi24')level='lossless_24';
    if(['low','normal','high','very_high','lossless','lossless_24','hifi'].includes(level))data.playback_quality=level;
    playback({v:1,title:data.title,artist:data.artist,album:data.album,uri,duration:data.duration,playback_quality:data.playback_quality});
-   if(!track)return; // Episode footer does not enter music-tag enrichment.
-   automatic(uri);
+   if(track)automatic(uri); // Episodes use only the current client snapshot; no music service requests.
    if(options().metadata===false)return;
-   const fetched=serviceCache.get(uri);
-   if(fetched){merge(data,fetched.metadata.data);merge(data,fetched.album.data);if(options().lyrics!==false)merge(data,fetched.lyrics.data);}
-   for(const record of records)cached(data,record);
-   merge(data,item,true); // Current playback snapshot wins over older cached data.
-   if(options().lyrics===false)delete data.LYRICS;
+   if(track) {
+    const fetched=serviceCache.get(uri);
+    if(fetched){merge(data,fetched.metadata.data);merge(data,fetched.album.data);if(options().lyrics!==false)merge(data,fetched.lyrics.data);}
+    for(const record of records)cached(data,record);
+    merge(data,item,true); // Current playback snapshot wins over older cached data.
+    if(options().lyrics===false)delete data.LYRICS;
+   } else if(data.artist)data.PUBLISHER=data.artist;
    const encode=()=>Object.entries(data).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&');
    let payload=encode();if(payload.length>131072){delete data.LYRICS;payload=encode();}
    const last=seenPayload.get(uri),now=performance.now();

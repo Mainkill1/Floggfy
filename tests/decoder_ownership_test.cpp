@@ -46,21 +46,27 @@ void TestSingleOwnerBinds() {
     DecoderOwnershipTracker tracker;tracker.Reset(1);
     const auto capture=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,1.0,1);
     assert(capture);State(tracker,capture,OwnershipState::AwaitingOutput);
+    tracker.ObserveDecoded(Activity(0x1000,1.0,1.0));
+    State(tracker,capture,OwnershipState::AwaitingPlaybackInstance);
+    tracker.Reset(1);
+    const auto restarted=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,1.0,1);
     auto empty=Activity(0x1000,1.05,1.05);empty.produced_floats=0;
     tracker.ObserveDecoded(empty);
-    State(tracker,capture,OwnershipState::AwaitingOutput);
+    State(tracker,restarted,OwnershipState::AwaitingOutput);
     tracker.ObserveDecoded(Activity(0x1000,1.1,1.2));
-    State(tracker,capture,OwnershipState::AwaitingPlaybackInstance);
+    State(tracker,restarted,OwnershipState::AwaitingPlaybackInstance);
+    tracker.ObserveDecoded(Activity(0x1000,1.2,1.2));
+    State(tracker,restarted,OwnershipState::AwaitingPlaybackInstance);
     tracker.ObservePlayback("play-1","uri:one",7,1.3);
-    const auto binding=State(tracker,capture,OwnershipState::Bound);
+    const auto binding=State(tracker,restarted,OwnershipState::Bound);
     assert(binding.owner_token&&binding.playback_token&&binding.listen_generation==7);
     assert(tracker.OwnerToken(0x1000)==binding.owner_token&&
            tracker.PlaybackToken("play-1")==binding.playback_token);
     tracker.ObserveDecoded(Activity(0x1000,1.4,1.5));
-    const auto continued=State(tracker,capture,OwnershipState::Bound);
+    const auto continued=State(tracker,restarted,OwnershipState::Bound);
     assert(continued.playback_token==binding.playback_token);
-    tracker.CompleteCapture(capture,4.0);
-    State(tracker,capture,OwnershipState::Bound);
+    tracker.CompleteCapture(restarted,4.0);
+    State(tracker,restarted,OwnershipState::Bound);
 }
 
 void TestSameSongRepeatNeedsNewInstance() {
@@ -100,8 +106,10 @@ void TestSuccessorsAndSkips() {
     tracker.ObservePlayback("old","uri:old",1,1.3);
     State(tracker,outgoing,OwnershipState::Bound);
 
+    tracker.ObserveDecoded(Activity(0x1000,2.0,2.0));
     const auto successor=tracker.BeginCapture(DecoderCodec::Flac,0x2000,0,2.0,1);
-    tracker.ObserveDecoded(Activity(0x2000,2.1,2.2));
+    tracker.ObserveDecoded(Activity(0x2000,2.0,2.0));
+    State(tracker,outgoing,OwnershipState::Bound);
     State(tracker,successor,OwnershipState::AwaitingPlaybackInstance);
     tracker.ObserveTransition("new","uri:new",2.3,true,false);
     const auto skipped=State(tracker,successor,OwnershipState::Bound);
@@ -113,6 +121,16 @@ void TestSuccessorsAndSkips() {
     tracker.ObserveDecoded(Activity(0x4000,3.3,3.4));
     State(tracker,second,OwnershipState::Conflict);
     State(tracker,third,OwnershipState::Conflict);
+
+    tracker.Reset(3);
+    const auto delayed=tracker.BeginCapture(DecoderCodec::Flac,0x7000,0,5.0,3);
+    tracker.ObserveDecoded(Activity(0x7000,5.1,5.2,3));
+    tracker.ObserveTransition("early","uri:early",5.05,false,true);
+    State(tracker,delayed,OwnershipState::AwaitingPlaybackInstance);
+    tracker.ObserveTransition("early","uri:early",5.04,false,true);
+    State(tracker,delayed,OwnershipState::AwaitingPlaybackInstance);
+    tracker.ObservePlayback("early","uri:early",8,5.3);
+    State(tracker,delayed,OwnershipState::Bound);
 
     tracker.Reset(2);
     const auto unknown_first=tracker.BeginCapture(DecoderCodec::Flac,0x5000,0,4.0,2);

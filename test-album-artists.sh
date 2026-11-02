@@ -24,7 +24,7 @@ x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -municode -static-li
     native/image_info.cpp native/playback_quality_windows.cpp native/playback_quality.cpp native/flac_history_core.cpp \
     native/compressed_buffer.cpp native/ogg_tags.cpp native/ogg_history_core.cpp native/library_layout.cpp \
     native/existing_quality.cpp native/recording_file.cpp native/file_publication.cpp native/metadata_update_core.cpp \
-    native/aac_container.cpp native/spac_stream.cpp native/vorbis_headers.cpp \
+    native/aac_container.cpp native/spac_stream.cpp native/mp3_stream.cpp native/vorbis_headers.cpp \
     build/album-artists/*.o -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_album_root/album-artist-test.exe"
 node tests/album_artist_collector_test.js
 exec "$floggfy_album_root/album-artist-test.exe"

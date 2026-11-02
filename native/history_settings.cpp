@@ -20,7 +20,7 @@ static bool IsMusic(std::wstring root) {
     return !music_path.empty() && (_wcsicmp(root.c_str(),music_path.c_str())==0 ||
         _wcsicmp(root.c_str(),(music_path+L"\\Spotify").c_str())==0);
 }
-static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,aac_enabled=0,capture_epoch=0,capture_speed_value=1,capture_acceleration_available=0,log_enabled=1,debug_enabled=0,networking_enabled=0,connect_logging_enabled=1,hook_diagnostics_enabled=0;
+static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,aac_enabled=0,podcasts_enabled=0,capture_epoch=0,capture_speed_value=1,capture_acceleration_available=0,log_enabled=1,debug_enabled=0,networking_enabled=0,connect_logging_enabled=1,hook_diagnostics_enabled=0;
 static HANDLE settings_signal=nullptr,persist_done=nullptr;
 // A failed attempt is observable without acknowledging bytes never committed.
 static volatile LONG persisted_generation=-1,failed_generation=-1,persist_failed=0;
@@ -52,6 +52,8 @@ static constexpr char default_ini[]=
     "Flac=1\r\n"
     "; AAC is usually a low-quality source; opt in explicitly.\r\n"
     "Aac=0\r\n"
+    "; Save fully listened podcast episodes as native MP3 under Podcasts.\r\n"
+    "Podcasts=0\r\n"
     "; Enables metadata enrichment using the local Spotify client.\r\n"
     "Metadata=1\r\n"
     "; Automatically obtains lyrics; Metadata=0 disables all enrichment.\r\n"
@@ -176,7 +178,7 @@ static DWORD WINAPI PersistSettings(LPVOID) {
             ok=settings_file::Read(ini,text,unicode);
             if(ok) {
                 auto flag=[&](const wchar_t* key,bool value){settings_file::Set(text,key,value?L"1":L"0");};
-                flag(L"Downloads",snapshot.downloads);flag(L"Ogg",snapshot.ogg);flag(L"FLAC",snapshot.flac);flag(L"AAC",snapshot.aac);flag(L"Lyrics",snapshot.lyrics);
+                flag(L"Downloads",snapshot.downloads);flag(L"Ogg",snapshot.ogg);flag(L"FLAC",snapshot.flac);flag(L"AAC",snapshot.aac);flag(L"Podcasts",snapshot.podcasts);flag(L"Lyrics",snapshot.lyrics);
                 settings_file::Set(text,L"CaptureSpeed",std::to_wstring(snapshot.capture_speed));
                 flag(L"UpdateExistingMetadata",snapshot.update_existing_metadata);
                 InsertMissingRestartDefaults(text);
@@ -240,6 +242,7 @@ void InitSettings(HMODULE proxy) {
     const bool restart_options_pending=ReadRestartOptions(settings,ini);
     const bool startup_options_pending=filename_options_pending||capture_speed_pending||restart_options_pending;
     settings.aac=GetPrivateProfileIntW(L"To Disk",L"AAC",0,ini.c_str())!=0;
+    settings.podcasts=GetPrivateProfileIntW(L"To Disk",L"Podcasts",0,ini.c_str())!=0;
     settings.metadata=GetPrivateProfileIntW(L"To Disk",L"Metadata",1,ini.c_str())!=0;
     settings.lyrics=GetPrivateProfileIntW(L"To Disk",L"Lyrics",1,ini.c_str())!=0;
     settings.update_existing_metadata=GetPrivateProfileIntW(L"To Disk",L"UpdateExistingMetadata",1,ini.c_str())!=0;
@@ -256,7 +259,7 @@ void InitSettings(HMODULE proxy) {
     DWORD length=ExpandEnvironmentStringsW(raw,expanded,4096);
     if(raw[0] && length && length<=4096) {settings.root=expanded;settings.save_location=raw;}
     settings.music_folder=IsMusic(settings.root);
-    downloads_enabled=settings.downloads; ogg_enabled=settings.ogg; flac_enabled=settings.flac; aac_enabled=settings.aac;
+    downloads_enabled=settings.downloads; ogg_enabled=settings.ogg; flac_enabled=settings.flac; aac_enabled=settings.aac; podcasts_enabled=settings.podcasts;
     capture_speed_value=LONG(settings.capture_speed);
     log_enabled=settings.log;debug_enabled=settings.debug_log;networking_enabled=settings.debug_networking;connect_logging_enabled=settings.debug_connect;hook_diagnostics_enabled=settings.debug_hook_diagnostics;
     StartLogger();
@@ -287,6 +290,7 @@ bool HookDiagnosticsEnabled() { return hook_diagnostics_enabled!=0 && Networking
 bool OggEnabled() { return downloads_enabled && ogg_enabled; }
 bool FlacEnabled() { return downloads_enabled && flac_enabled; }
 bool AACEnabled() { return downloads_enabled && aac_enabled; }
+bool PodcastsEnabled() { return downloads_enabled && podcasts_enabled; }
 unsigned CaptureEpoch() { return unsigned(InterlockedCompareExchange(&capture_epoch,0,0)); }
 unsigned CaptureSpeed() { return unsigned(InterlockedCompareExchange(&capture_speed_value,0,0)); }
 bool CaptureAccelerationAvailable() {return InterlockedCompareExchange(&capture_acceleration_available,0,0)!=0;}
@@ -308,6 +312,7 @@ static bool Set(const wchar_t* key,bool value,bool& field,volatile LONG* fast,bo
 bool SetDownloads(bool v) { return Set(L"Downloads",v,settings.downloads,&downloads_enabled); }
 bool SetOgg(bool v) { return Set(L"Ogg",v,settings.ogg,&ogg_enabled); }
 bool SetFlac(bool v) { return Set(L"FLAC",v,settings.flac,&flac_enabled); }
+bool SetPodcasts(bool v) { return Set(L"Podcasts",v,settings.podcasts,&podcasts_enabled); }
 bool SetLyrics(bool v) { return Set(L"Lyrics",v,settings.lyrics,nullptr,false); }
 bool SetUpdateExistingMetadata(bool v) { return Set(L"UpdateExistingMetadata",v,settings.update_existing_metadata,nullptr,false); }
 bool SetCaptureSpeed(unsigned speed) {

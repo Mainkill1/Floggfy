@@ -23,8 +23,8 @@ int main() {
     check(RelativePath(c,L".ogg").find(L"Music\\Various Artists\\")==0,"various artist routing");
     c.kind=MediaKind::Audiobook; c.author=L"Author"; c.series=L"Series"; c.book=L"Book";
     check(RelativePath(c,L".flac")==L"Audiobooks\\Author\\Series\\Book\\Test Track.flac","book series routing");
-    c.kind=MediaKind::Podcast; c.show=L"Podcast Name"; c.episode_year=2026; c.track=0;
-    check(RelativePath(c,L".ogg")==L"Podcasts\\Podcast Name\\2026\\Test Track.ogg","podcast year routing");
+    c.kind=MediaKind::Podcast; c.show=L"Podcast Name"; c.episode_year=0; c.track=0;
+    check(RelativePath(c,L".mp3")==L"Podcasts\\Podcast Name\\Test Track.mp3","podcasts use a dedicated show folder");
     c.kind=MediaKind::MusicVideo;
     check(RelativePath(c,L".ogg")==L"Music Videos\\Test Track.ogg","music video routing");
     c.kind=MediaKind::Concert;

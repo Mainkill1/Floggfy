@@ -54,12 +54,14 @@ for(const mode of ['observed','missing','throws','manual','seek','paused','same'
   current={...current,item:{uri:'spotify:track:0000000000000000000001',metadata:{title:'Song',artist_name:'Artist',album_title:'Album'}}};
  }
  if(mode==='replacement')sandbox.window.Spicetify.Platform.PlayerAPI={...api};
- clock+=500;current={...current,timestamp:clock,isBuffering:true,playbackId:mode==='same'?'one':'two',
+ clock+=mode==='seek'?4000:500;current={...current,timestamp:clock,isBuffering:true,playbackId:mode==='same'?'one':'two',
   item:{...current.item,uri:'spotify:track:0000000000000000000002'}};
  sandbox.window.__floggfyPoll();
  const message=messages.filter(line=>line.startsWith('FLOGGFY_TIMELINE_V1:')).at(-1);
  const fields=new URLSearchParams(message.slice('FLOGGFY_TIMELINE_V1:'.length));
  assert.equal(fields.get('natural'),mode==='observed'?'1':null,mode);
+ assert.equal(fields.get('controlled'),mode==='manual'||mode==='seek'?'1':null,mode);
+ assert.equal(fields.get('monitoring'),mode==='missing'||mode==='throws'?'0':'1',mode);
 }
 console.log('PASS: natural transition evidence requires successful action monitoring, playing state and changed instance');
 

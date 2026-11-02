@@ -189,12 +189,16 @@ void DecoderOwnershipTracker::ObserveDecoded(const DecodedActivity& activity) {
             Conflict(capture);
         return;
     }
-    if(latest_decoded_time_&&activity.first<=latest_decoded_time_) {
+    // GetTickCount64 is millisecond-granular. Distinct, structurally normalized
+    // decoder owners routinely overlap on the same tick during preload; owner
+    // identity and capture lifecycle disambiguate them. Only regression loses
+    // the event order needed by this state machine.
+    if(latest_decoded_time_&&activity.first<latest_decoded_time_) {
         for(auto& capture:captures_)if(capture.token&&capture.owner==activity.owner&&capture.active)
             Conflict(capture);
         return;
     }
-    if(owner->last&&activity.first<=owner->last) {
+    if(owner->last&&activity.first<owner->last) {
         for(auto& capture:captures_)if(capture.token&&capture.owner==activity.owner&&capture.active)
             Conflict(capture);
         return;
@@ -208,7 +212,10 @@ void DecoderOwnershipTracker::ObserveDecoded(const DecodedActivity& activity) {
     }
     if(candidate->state==OwnershipState::Conflict)return;
     const auto was_bound=candidate->state==OwnershipState::Bound;
-    if(activity.first<=candidate->begun) {Conflict(*candidate);return;}
+    // Capture-begin and the first decoded callback use a millisecond boot clock.
+    // Equality is routine for this already-proven owner edge; only a genuinely
+    // earlier decoded observation contradicts the lifecycle.
+    if(activity.first<candidate->begun) {Conflict(*candidate);return;}
     candidate->first_output=candidate->first_output?candidate->first_output:activity.first;
     candidate->last_output=activity.last;
     if(was_bound)return;
@@ -238,7 +245,13 @@ void DecoderOwnershipTracker::ObserveDecoded(const DecodedActivity& activity) {
 void DecoderOwnershipTracker::TryBind(CaptureRecord& capture,PlaybackRecord& playback,
                                       double observed) noexcept {
     if(capture.state!=OwnershipState::AwaitingPlaybackInstance||!capture.first_output)return;
-    if(!ValidTime(observed)||observed<=capture.first_output) {Conflict(capture);return;}
+    if(!ValidTime(observed)) {Conflict(capture);return;}
+    // A transition snapshot can predate the first decoded callback for its new
+    // owner and be drained afterward. It is not binding evidence yet; the next
+    // fresh Ready observation must establish the ordering. Exact equality is
+    // still ambiguous across queues and remains a conflict.
+    if(observed<capture.first_output)return;
+    if(observed==capture.first_output) {Conflict(capture);return;}
     if(observed-capture.first_output>kRetentionSeconds) {
         capture.state=OwnershipState::Invalidated;return;
     }
@@ -259,7 +272,9 @@ void DecoderOwnershipTracker::ObservePlaybackImpl(const std::string& playback_id
         return;
     }
     if(prior&&observed<=prior->observed) {
-        if(auto* target=FindCapture(pending_capture_?pending_capture_:current_capture_))Conflict(*target);
+        // The media collector can repeat one buffering transition with small
+        // timestamp jitter. Same-ID stale observations provide no new evidence;
+        // ignore them and require a later fresh observation to bind.
         return;
     }
     auto& playback=EnsurePlayback(playback_id,uri,listen_generation,observed);

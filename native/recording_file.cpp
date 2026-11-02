@@ -1,4 +1,5 @@
 #include "recording_file.h"
+#include "mp3_stream.h"
 #include "ogg_history_core.h"
 #include "image_info.h"
 #include "vorbis_headers.h"
@@ -345,11 +346,25 @@ bool InspectRecording(const uint8_t* bytes,size_t size,RecordingFile& out) {
                     out.artwork=std::move(image);
             }
         }
+    } else if(!std::memcmp(bytes,"ID3",3)||(bytes[0]==0xff&&(bytes[1]&0xe0)==0xe0)) {
+        Mp3Info mp3;std::string error;
+        valid=InspectOwnedMp3(bytes,size,mp3,out.tags,error);
+        if(valid) {
+            out.quality={Codec::Mp3,mp3.rate,mp3.channels,0,
+                mp3.Duration()>0?unsigned((mp3.audio_size*8)/mp3.Duration()):0};
+            out.complete=true;
+            if(!out.tags.cover.empty()) {
+                out.has_artwork=ReadRecordingArtwork(out.tags.cover,out.artwork);
+                out.artwork_edit_safe=out.has_artwork;
+                if(out.has_artwork)out.artworks.push_back(out.artwork);
+            }
+        }
     }
     out.owned=valid && Field(out.tags,"HISTORY_COMPLETE_LISTEN")=="1" &&
         ((out.quality.codec==Codec::Flac && Field(out.tags,"HISTORY_CAPTURE")=="native compressed FLAC input") ||
          (out.quality.codec==Codec::Vorbis && Field(out.tags,"HISTORY_CAPTURE")=="native compressed Ogg pages") ||
-         (out.quality.codec==Codec::Aac && Field(out.tags,"HISTORY_CAPTURE")=="native compressed SpAC AAC packets"));
+         (out.quality.codec==Codec::Aac && Field(out.tags,"HISTORY_CAPTURE")=="native compressed SpAC AAC packets") ||
+         (out.quality.codec==Codec::Mp3 && Field(out.tags,"HISTORY_CAPTURE")=="native compressed MP3 input"));
     return valid;
 }
 bool MatchesRecording(const RecordingFile& file,const Catalog& c) {

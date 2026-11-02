@@ -8,8 +8,9 @@ void QueueDiagnostic(const char*) {}
 }
 int main(int argc,char** argv) {
   assert(argc==2);
-  assert(history::Settings{}.downloads&&history::Settings{}.update_existing_metadata&&!history::Settings{}.aac&&history::Settings{}.capture_speed==1);
+  assert(history::Settings{}.downloads&&history::Settings{}.update_existing_metadata&&!history::Settings{}.aac&&!history::Settings{}.podcasts&&history::Settings{}.capture_speed==1);
   assert(!history::AACEnabled());
+  assert(!history::PodcastsEnabled());
   const std::string scenario=argv[1];
   wchar_t module[2048];assert(GetModuleFileNameW(nullptr,module,2048));
   std::wstring path=module;path=path.substr(0,path.find_last_of(L'\\'))+L"\\SpotifyHistory.ini";
@@ -17,6 +18,7 @@ int main(int argc,char** argv) {
   if(scenario!="new") {
     assert(WritePrivateProfileStringW(L"To Disk",L"Menu",L"0",path.c_str()));
     if(scenario=="aac-one") assert(WritePrivateProfileStringW(L"To Disk",L"AAC",L"1",path.c_str()));
+    if(scenario=="podcasts-one") assert(WritePrivateProfileStringW(L"To Disk",L"Podcasts",L"1",path.c_str()));
     if(scenario=="updates-zero") assert(WritePrivateProfileStringW(L"To Disk",L"UpdateExistingMetadata",L"0",path.c_str()));
     if(scenario=="lyrics-zero") assert(WritePrivateProfileStringW(L"To Disk",L"Lyrics",L"0",path.c_str()));
     if(scenario=="zero") assert(WritePrivateProfileStringW(L"To Disk",L"Downloads",L"0",path.c_str()));
@@ -33,13 +35,22 @@ int main(int argc,char** argv) {
   if(scenario=="new") {
     assert(GetPrivateProfileIntW(L"To Disk",L"Downloads",9,path.c_str())==1);
     assert(GetPrivateProfileIntW(L"To Disk",L"AAC",9,path.c_str())==0);
+    assert(GetPrivateProfileIntW(L"To Disk",L"Podcasts",9,path.c_str())==0);
     assert(GetPrivateProfileIntW(L"To Disk",L"UpdateExistingMetadata",9,path.c_str())==1);
     HANDLE file=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,0,nullptr);
     assert(file!=INVALID_HANDLE_VALUE);unsigned char bom[2]{};DWORD count=0;
     assert(ReadFile(file,bom,2,&count,nullptr)&&count==2&&bom[0]==0xff&&bom[1]==0xfe);CloseHandle(file);
   }
   assert(s.aac==(scenario=="aac-one"));
+  assert(s.podcasts==(scenario=="podcasts-one"));
   assert(history::AACEnabled()==(s.downloads&&s.aac));
+  assert(history::PodcastsEnabled()==(s.downloads&&s.podcasts));
+  if(s.podcasts) {
+    const auto podcast_epoch=history::CaptureEpoch();
+    assert(history::SetPodcasts(false)&&!history::PodcastsEnabled());
+    assert(history::CaptureEpoch()==podcast_epoch+1);
+    assert(history::SetPodcasts(true)&&history::PodcastsEnabled()==s.downloads);
+  }
   if(s.aac) {
     assert(history::SetDownloads(false)&&!history::AACEnabled());
     assert(history::SetDownloads(s.downloads)&&history::AACEnabled()==s.downloads);
@@ -64,6 +75,7 @@ int main(int argc,char** argv) {
   assert(GetPrivateProfileIntW(L"To Disk",L"UpdateExistingMetadata",9,path.c_str())==(scenario=="updates-zero"?0:1));
   assert(history::GetSettings().aac==s.aac);
   assert(GetPrivateProfileIntW(L"To Disk",L"AAC",9,path.c_str())==(s.aac?1:0));
+  assert(GetPrivateProfileIntW(L"To Disk",L"Podcasts",9,path.c_str())==(s.podcasts?1:0));
   DeleteFileW(path.c_str());
   puts("PASS: Windows installation defaults and explicit zero preservation");
 }

@@ -264,19 +264,22 @@ int main() {
   assert(!child.child->entries[0].enabled);
   assert(filesystem_calls==0 && shell_calls==0 && recent_reads==0);
   assert(child.entries[Index(&child.api,lyrics_id)].checked);
-  assert(child.entries.size() == 12); // Seven controls, separator, four quality rows.
+  assert(!child.entries[Index(&child.api,podcasts_id)].checked);
+  assert(child.entries[Index(&child.api,podcasts_id)].label==L"Podcasts (Disabled)");
+  assert(child.entries.size() == 13); // Eight controls, separator, four quality rows.
   const auto speed_child=child.extra_children.find(speed_root_id);
   assert(speed_child!=child.extra_children.end()&&speed_child->second->entries.size()==5);
   assert(speed_child->second->entries[0].checked);
-  for (size_t i = 8; i < 12; i++)
+  const auto quality_index=size_t(Index(&child.api,song_id));
+  for (size_t i = quality_index; i < quality_index+4; i++)
     assert(child.entries[i].type == 1 && !child.entries[i].enabled && !child.entries[i].checked);
-  assert(child.entries[8].label.find(L"Example") != std::wstring::npos);
-  assert(child.entries[8].visible && child.entries[9].visible);
-  assert(!child.entries[10].visible && !child.entries[11].visible); // Non-FLAC details stay hidden, even after Ogg verification.
+  assert(child.entries[quality_index].label.find(L"Example") != std::wstring::npos);
+  assert(child.entries[quality_index].visible && child.entries[quality_index+1].visible);
+  assert(!child.entries[quality_index+2].visible && !child.entries[quality_index+3].visible); // Non-FLAC details stay hidden, even after Ogg verification.
   type_calls=0;
   Populate(&root.api);
   assert(type_calls==0); // Existing insertion is not rescanned or repopulated.
-  assert(child.entries.size() == 12 && child.refs == 1);
+  assert(child.entries.size() == 13 && child.refs == 1);
   capability_queries=type_calls=index_calls=0;
   original_add_submenu=AddChild;
   Model unrelated;Init(unrelated);unrelated.submenu=true;
@@ -300,9 +303,9 @@ int main() {
     Populate(&translated.api);
     assert(translated.child && translated.entries.size()==4);
     assert(translated.entries.back().label==L"To Disk");
-    assert(translated.child->entries.size()==12 && translated.child->refs==1);
+    assert(translated.child->entries.size()==13 && translated.child->refs==1);
     Populate(&translated.api);
-    assert(translated.entries.size()==4 && translated.child->entries.size()==12);
+    assert(translated.entries.size()==4 && translated.child->entries.size()==13);
   }
   // The client changes first while SMTC still publishes the previous song.
   history::PlaybackQualitySnapshot actual;
@@ -374,10 +377,10 @@ int main() {
   set_string=setter;
   Retain(&child.api.base);
   WillShow(&wrapped.api, &child.api);
-  assert(child.entries[10].label.find(L"FLAC") != std::wstring::npos &&
-         child.entries[11].label.find(L"96,000 Hz") != std::wstring::npos);
-  assert(child.entries[8].label==L"Song: Next");
-  assert(child.entries[10].visible && child.entries[11].visible); // Confirmed FLAC details remain.
+  assert(child.entries[quality_index+2].label.find(L"FLAC") != std::wstring::npos &&
+         child.entries[quality_index+3].label.find(L"96,000 Hz") != std::wstring::npos);
+  assert(child.entries[quality_index].label==L"Song: Next");
+  assert(child.entries[quality_index+2].visible && child.entries[quality_index+3].visible); // Confirmed FLAC details remain.
   // Refresh the submenu before CEF builds its visible children, even when
   // changing codec while the same model is reused across menu openings.
   auto build_root=[&]{std::wstring label=L"To Disk";auto text=Text(label);Retain(&root.api.base);Format(&wrapped.api,&root.api,&text);if(text.dtor)text.dtor(text.str);};
@@ -566,30 +569,36 @@ int main() {
   assert(child.entries[Index(&child.api,song_id)].visible && !child.entries[Index(&child.api,song_id)].enabled);
   q.format=history::PlaybackFormat::Ogg;q.level=history::PlaybackLevel::VeryHigh;q.bits=0;
   actual.level=q.level;history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
-  build_root();assert(!child.entries[10].visible && !child.entries[11].visible);
+  build_root();assert(!child.entries[quality_index+2].visible && !child.entries[quality_index+3].visible);
   q.format=history::PlaybackFormat::Flac;q.level=history::PlaybackLevel::Lossless;q.bits=16;
   actual.level=q.level;history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
-  build_root();assert(child.entries[10].visible && child.entries[11].visible);
+  build_root();assert(child.entries[quality_index+2].visible && child.entries[quality_index+3].visible);
   q.format=history::PlaybackFormat::Unknown;history::PublishPlaybackQuality(q);
-  build_root();assert(!child.entries[10].visible && !child.entries[11].visible);
-  assert(child.entries[8].visible && child.entries[9].visible);
-  assert(child.entries.size()==12 && child.refs==1 && root.refs==1);
+  build_root();assert(!child.entries[quality_index+2].visible && !child.entries[quality_index+3].visible);
+  assert(child.entries[quality_index].visible && child.entries[quality_index+1].visible);
+  assert(child.entries.size()==13 && child.refs==1 && root.refs==1);
   actual.level=history::PlaybackLevel::Unknown;q.level=actual.level;
   history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
-  build_root();assert(!child.entries[9].visible); // No Quality: Unavailable placeholder.
+  build_root();assert(!child.entries[quality_index+1].visible); // No Quality: Unavailable placeholder.
   actual.level=history::PlaybackLevel::Lossless;q.level=actual.level;
   q.format=history::PlaybackFormat::Flac;q.rate=0;
   history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
-  build_root();assert(child.entries[9].visible && child.entries[10].visible && !child.entries[11].visible);
+  build_root();assert(child.entries[quality_index+1].visible && child.entries[quality_index+2].visible && !child.entries[quality_index+3].visible);
   history::client_updated=GetTickCount64()-4000;
   assert(history::ReadPlaybackQuality().identity==0); // Never regress to stale SMTC.
   history::PublishClientPlaybackQuality({});
   assert(history::ReadPlaybackQuality().title[0]==0); // No active cached song.
-  for (size_t i = 8; i < 12; i++) {
+  for (size_t i = quality_index; i < quality_index+4; i++) {
     Retain(&child.api.base);
     Execute(&wrapped.api, &child.api, child.entries[i].id, 0);
   }
   assert(original_commands == 0 && child.refs == 1);
+  Retain(&child.api.base);Execute(&wrapped.api,&child.api,podcasts_id,0);
+  assert(history::GetSettings().podcasts);
+  assert(child.entries[Index(&child.api,podcasts_id)].checked);
+  assert(child.entries[Index(&child.api,podcasts_id)].label==L"Podcasts (Enabled)");
+  Retain(&child.api.base);Execute(&wrapped.api,&child.api,podcasts_id,0);
+  assert(!history::GetSettings().podcasts);
   Retain(&child.api.base);Execute(&wrapped.api,&child.api,lyrics_id,0);
   assert(!history::GetSettings().lyrics);
   assert(!child.entries[Index(&child.api,lyrics_id)].checked);

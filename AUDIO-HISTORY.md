@@ -2,7 +2,7 @@
 
 The native `version.dll` provides complete-listen history and an optional legacy
 connectivity repair for the Windows x64 Spotify client. It copies the compressed
-Vorbis, FLAC or optionally AAC bytes that Spotify already reads for playback. It
+Vorbis, FLAC, optionally AAC, or explicitly enabled podcast MP3 bytes that Spotify already reads for playback. It
 does not request tracks, run FFmpeg, transcode audio, or require an external
 runtime helper.
 
@@ -23,7 +23,7 @@ runtime helper.
 `SpotifyHistory.ini` is included with the release and is created beside
 `version.dll` on first launch when missing.
 The top-left menu contains **To Disk** with Downloads, Save Location, FLAC, Ogg,
-Lyrics and Capture Speed.
+Podcasts, Lyrics and Capture Speed.
 Checkbox labels and capture switches change immediately when clicked. INI
 persistence runs in a background worker.
 
@@ -35,6 +35,7 @@ NetworkPatch=0
 Save Location=
 Flac=1
 Ogg=1
+Podcasts=0
 CaptureSpeed=1
 Metadata=1
 Lyrics=1
@@ -75,6 +76,9 @@ MaxBufferedMiB=500
   hook is unavailable or becomes invalid, Floggfy safely falls back to `1x`.
 - **AAC:** INI-only, default `0`. Set `AAC=1` and restart to capture supported
   low-quality SpAC/AAC streams as M4A. Downloads still controls all saving.
+- **Podcasts:** menu/INI toggle, default `0`. When enabled, fully listened
+  `spotify:episode:` items save their original MP3 frames under
+  `Podcasts\<Show>\<Episode>.mp3`. No PCM recording or transcoding is used.
 - **Metadata:** enriches tracks using existing client state, cached metadata, and Spotify's authenticated track/album services. Set 0 and restart to disable its hooks.
 - **UpdateExistingMetadata:** default on. Set 0 to disable metadata-only changes
   to existing files, including lyrics and artwork upgrades. New audio saves and
@@ -87,11 +91,12 @@ MaxBufferedMiB=500
   `Floggfy.log` contains normal activity, warnings and actionable failures.
 - **DebugLog:** default `0`; requires `Log=1`. Optional playback, metadata and
   troubleshooting detail goes only to `Floggfy-diagnostics.log`. It also adds
-  experimental decoder-ownership evidence using bounded numeric capture, owner,
-  and playback tokens. Raw native addresses, playback IDs, and URIs are never
-  written in ownership records. These observations do not affect saving: a
-  `Bound` result is diagnostic only, and missing, conflicting, or lost evidence
-  fails closed for a future ownership design rather than selecting metadata.
+  decoder-ownership evidence using bounded numeric capture, owner, and playback
+  tokens. Raw native addresses, playback IDs, and URIs are never written in
+  ownership records. For a structurally verified FLAC/Ogg decoder, only an exact
+  `Bound` listen generation can resolve overlapping metadata candidates. Missing,
+  conflicting, or lost evidence fails closed; unverified AAC retains the legacy
+  association path.
 - **DebugConnect:** default `1`; requires `Log=1` and `DebugLog=1`. Enables cached
   Connect target observations and passive local action requests. `0` opts out of
   those observations even with deep networking enabled. No discovery, playback
@@ -134,7 +139,8 @@ enqueue-time timestamps; per-queue omission summaries report contention/overflow
 without globally deduplicating real events.
 
 - **MaxBufferedMiB:** 8–512 MiB, default 500, limits compressed capture allocations.
-  There is also an approximately 8 MiB event queue, artwork, and a temporary
+  There is also an approximately 16 MiB event queue sized for bounded 10x
+  transition bursts, artwork, and a temporary
   completed-file buffer during native tagging. Oversized tracks are discarded.
 
 The four restart-only switches above accept only an unquoted `1` (surrounding
@@ -152,6 +158,7 @@ Default music paths are:
 ```text
 <Windows Music>\Spotify\Artists\Artist\Album\Title.ogg
 <Windows Music>\Spotify\Artists\Artist\Album\Title.flac
+<Windows Music>\Spotify\Podcasts\Show\Episode.mp3
 ```
 
 Album folders have no year prefix. New filenames use the title alone by default.
@@ -236,9 +243,9 @@ replaced speculatively. The new compressed audio is not re-encoded.
 Choosing a custom `Media` root retains the requested `Music\Artists` branch.
 The default Music/Spotify root uses `Artists` directly to avoid another Music
 folder. The path builder also supports Compilations, Soundtracks, Various Artists,
-Audiobooks/Author/Series/Book, Podcasts/Show/Year, Music Videos and Concerts. These
+Audiobooks/Author/Series/Book, Podcasts/Show, Music Videos and Concerts. These
 folders are never precreated. Live Windows media metadata currently identifies
-music and Various Artists; reliable category, book-series and podcast-year
+music, Various Artists and Spotify episodes; reliable category and book-series
 metadata enrichment remains additional work. Video extraction is not implemented.
 
 ## Verification and limits
@@ -465,6 +472,11 @@ retained audio before releasing it. The final cache-check log distinguishes vali
 unmatched audio, ambiguous ownership, deferred publication, incomplete audio, and
 invalid data. A full publication queue retains the candidate for retry within the
 same cache limits. Final checks never invent missing listening coverage.
+When a complete, revalidated FLAC/Ogg capture is already bound to the active
+playback instance, a buffering snapshot that repeats that instance does not flush
+the listen. Floggfy waits for a positively different playback instance and then
+uses the bound listen generation for final metadata reconciliation. This also
+separates consecutive plays of the same URI without relying on title or timing.
 Incomplete decoder tails retain their original ten-second deadline. Audio is
 published as a final file only after complete-listen and integrity checks pass.
 Destination resolution returns a verified matching-file snapshot or an explicit

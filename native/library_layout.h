@@ -18,7 +18,7 @@ struct Catalog {
 };
 std::wstring RelativePath(const Catalog& item,const std::wstring& extension,bool track_numbers=false);
 std::wstring OutputPath(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder=false,bool track_numbers=false);
-enum class Codec { Vorbis, Flac, Aac };
+enum class Codec { Vorbis, Flac, Aac, Mp3 };
 struct Quality { Codec codec=Codec::Vorbis; unsigned rate=0,channels=0,bits=0,bitrate=0; };
 bool HigherQuality(const Quality& incoming,const Quality& existing);
 }

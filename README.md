@@ -27,7 +27,7 @@ Save the music you play in Spotify on Windows.
   unattended capture: the saved compressed audio is unchanged, but live playback
   can sound choppy and Spotify's progress display may be inaccurate.
 - **Disable Automix** under **Edit → Preferences → Playback**. It trims songs and prevents complete saves.
-- Files save to `Music\Spotify\Artists\Artist\Album` by default. Change this with **Save Location**.
+- Music saves under `Music\Spotify\Artists\Artist\Album`; enabled podcasts save under `Podcasts\Show`.
 - For FLAC, select lossless playback in Spotify.
 - Click **Song** to open a saved song's folder. Unsaved songs stay greyed out.
 - **Latest Downloads** lists the last ten songs saved during the current run.
@@ -36,12 +36,13 @@ Save the music you play in Spotify on Windows.
 
 ## Settings
 
-- **To Disk** provides **Downloads**, **Save Location**, **FLAC**, **Ogg**, **Lyrics** and **Capture Speed** controls.
+- **To Disk** provides **Downloads**, **Save Location**, **FLAC**, **Ogg**, **Podcasts**, **Lyrics** and **Capture Speed** controls.
 - `SpotifyHistory.ini` is created automatically. Keep it when upgrading, and fully restart Spotify after editing it.
 - `UpdateExistingMetadata=1` fills missing details and improves artwork on existing songs. Set `0` to leave their metadata unchanged.
 - `TrackNumberInFilename=0` uses title-only filenames. Set `1` to add track numbers.
 - `ConvertNumberedFilenames=0`: set `1` to remove old track-number prefixes. Numbering disables conversion.
 - `AAC=1` enables AAC saving as M4A. It defaults to `0`.
+- **Podcasts** is a default-off live toggle. Complete episodes retain their native MP3 audio under `Podcasts\Show`.
 - `Menu=0` disables the menu; configured saving continues.
 - Playback tracking uses Spotify app state and track URIs, with Windows media sessions as a fallback.
 - `Metadata=0` disables enrichment while retaining app playback tracking.

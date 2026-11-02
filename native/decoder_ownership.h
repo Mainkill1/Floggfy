@@ -11,7 +11,7 @@ bool NormalizeDecoderOwner(std::uintptr_t capture_context,
                            std::int32_t capture_to_decoder,
                            std::uintptr_t& owner) noexcept;
 
-enum class DecoderCodec : std::uint8_t { Ogg, Flac, Aac };
+enum class DecoderCodec : std::uint8_t { Ogg, Flac, Aac, Mp3 };
 enum class OwnershipState : std::uint8_t {
     AwaitingOutput,
     AwaitingPlaybackInstance,
