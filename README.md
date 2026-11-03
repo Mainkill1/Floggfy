@@ -44,7 +44,7 @@ Save the music you play in Spotify on Windows.
 - `AAC=1` enables AAC saving as M4A. It defaults to `0`.
 - **Podcasts** is a default-off live toggle. Complete episodes retain their native MP3 audio under `Podcasts\Show`.
 - `Menu=0` disables the menu; configured saving continues.
-- Playback tracking uses Spotify app state and track URIs, with Windows media sessions as a fallback.
+- Playback tracking uses Spotify app state and track URIs. `Windows Playback Fallback=1` enables the Windows media-session compatibility fallback; it defaults to `0`.
 - `Metadata=0` disables enrichment while retaining app playback tracking.
 - `Log=1` writes normal activity, warnings and failures to `Floggfy.log`. `DebugLog=1` writes optional detail only to `Floggfy-diagnostics.log`. Each file is capped at 5 MiB.
 - `NetworkPatch=1` enables a workaround for Windows incorrectly reporting no Internet. It defaults to `0`.

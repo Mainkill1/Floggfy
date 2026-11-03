@@ -425,11 +425,13 @@ source-clock regressions, identity changes, larger discontinuities and transitio
 event times retain the existing guards. Seeks, missing observations and
 source changes cannot be stitched into a complete listen.
 
-When app observations are unavailable or incompatible, public Windows media
-sessions provide a fallback on a dedicated observer thread. An empty first
-Spotify session no longer masks another usable session, and a disconnected
-session manager is recreated. Windows fallback requires Spotify's **Settings >
-Display > Show desktop overlay when using media keys** to be enabled.
+When app observations are unavailable or incompatible, the default behavior is
+to keep playback verification unavailable. Set `Windows Playback Fallback=1` in
+`[To Disk]` to opt into public Windows media sessions on a dedicated observer
+thread. An empty first Spotify session no longer masks another usable session,
+and a disconnected session manager is recreated. Windows fallback also requires
+Spotify's **Settings > Display > Show desktop overlay when using media keys** to
+be enabled.
 Normal position/timestamp refreshes are accepted when movement agrees with
 uninterrupted playback, allowing 250 ms of rounding difference and clamping at
 the track end. Source/session changes, discontinuous jumps, regressing clocks

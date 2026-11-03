@@ -50,8 +50,9 @@ from whichever stream finishes first.
 2. **Decoded output observed.** Output from that owner proves that the decoder was
    active for the capture lifetime.
 3. **Playback stage corroborated.** A Ready listen generation, media kind, and
-   codec-declared duration select exactly one decoded capture. The URI may come
-   from the app transition while playback state and duration come from Windows.
+   codec-declared duration select exactly one decoded capture. With the explicit
+   Windows fallback enabled, the URI may come from the app transition while
+   playback state and duration come from Windows.
    After binding, that URI remains the listen identity while Windows refines its
    title or artist; it is not carried across a successor transition.
 4. **Capture completed.** Codec-specific structural evidence proves that the
@@ -72,7 +73,8 @@ media kind prevent a guess. See
 Playback observations come primarily from the injected client collector. It emits
 URI, playback instance, position, duration, local-device state, pause/buffering
 state, speed, and observed controls. Windows Global System Media Transport Controls
-provide a bounded fallback snapshot when the client timeline is unavailable.
+provide a bounded fallback snapshot only when `Windows Playback Fallback=1`; the
+option defaults to `0`, so unavailable Spotify state otherwise remains unavailable.
 
 [`ogg_history_core.cpp`](../../native/ogg_history_core.cpp) maintains a listen
 generation and media-position coverage. Starting mid-track, seeking, skipping,

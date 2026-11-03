@@ -16,7 +16,19 @@ int main(int argc,char** argv) {
   std::wstring path=module;path=path.substr(0,path.find_last_of(L'\\'))+L"\\SpotifyHistory.ini";
   DeleteFileW(path.c_str());
   if(scenario!="new") {
-    assert(WritePrivateProfileStringW(L"To Disk",L"Menu",L"0",path.c_str()));
+    const auto fallback_fixture=[&](const wchar_t* value,const wchar_t* duplicate=nullptr) {
+      std::wstring text=L"[To Disk]\r\nMenu=0\r\nWindows Playback Fallback=";
+      text+=value;text+=L"\r\n";
+      if(duplicate){text+=L"Windows Playback Fallback=";text+=duplicate;text+=L"\r\n";}
+      return history::settings_file::Write(path,text,true);
+    };
+    if(scenario=="fallback-blank") assert(fallback_fixture(L""));
+    else if(scenario=="fallback-leading-space") assert(fallback_fixture(L" 1"));
+    else if(scenario=="fallback-trailing-space") assert(fallback_fixture(L"1 "));
+    else if(scenario=="fallback-tab") assert(fallback_fixture(L"\t1"));
+    else if(scenario=="fallback-word") assert(fallback_fixture(L"true"));
+    else if(scenario=="fallback-duplicate") assert(fallback_fixture(L"1",L"1"));
+    else assert(WritePrivateProfileStringW(L"To Disk",L"Menu",L"0",path.c_str()));
     if(scenario=="aac-one") assert(WritePrivateProfileStringW(L"To Disk",L"AAC",L"1",path.c_str()));
     if(scenario=="podcasts-one") assert(WritePrivateProfileStringW(L"To Disk",L"Podcasts",L"1",path.c_str()));
     if(scenario=="updates-zero") assert(WritePrivateProfileStringW(L"To Disk",L"UpdateExistingMetadata",L"0",path.c_str()));
@@ -87,6 +99,19 @@ int main(int argc,char** argv) {
   assert(GetPrivateProfileIntW(L"To Disk",L"AAC",9,path.c_str())==(s.aac?1:0));
   assert(GetPrivateProfileIntW(L"To Disk",L"Podcasts",9,path.c_str())==(s.podcasts?1:0));
   assert(GetPrivateProfileIntW(L"To Disk",L"Windows Playback Fallback",9,path.c_str())==(s.windows_playback_fallback?1:0));
+  std::wstring persisted;bool unicode=false;assert(history::settings_file::Read(path,persisted,unicode));
+  const std::wstring fallback_key=L"Windows Playback Fallback=";
+  const auto fallback_at=persisted.find(fallback_key);assert(fallback_at!=std::wstring::npos);
+  assert(persisted.find(fallback_key,fallback_at+fallback_key.size())==std::wstring::npos);
+  if(scenario=="fallback-duplicate") {
+    auto value=history::settings_file::Find(persisted,L"Windows Playback Fallback");
+    assert(value.present&&!value.duplicate&&value.value==L"0");
+    assert(history::SetWindowsPlaybackFallback(true)&&history::FlushSettings(5000));
+    assert(history::settings_file::Read(path,persisted,unicode));
+    value=history::settings_file::Find(persisted,L"Windows Playback Fallback");
+    assert(value.present&&!value.duplicate&&value.value==L"1");
+    history::Settings reloaded;assert(!history::ReadWindowsPlaybackFallback(reloaded,path)&&reloaded.windows_playback_fallback);
+  }
   DeleteFileW(path.c_str());
   puts("PASS: Windows installation defaults and explicit zero preservation");
 }

@@ -26,7 +26,8 @@ Capabilities are activated independently where possible:
 3. Decoded-output discovery and successful hook activation add ownership evidence,
    podcast MP3 input, and acceleration.
 4. Client metadata injection provides the preferred timeline and enrichment.
-5. Windows media sessions provide fallback playback observations.
+5. Windows media sessions provide fallback playback observations only when the
+   default-off `Windows Playback Fallback=1` INI option explicitly enables them.
 
 Discovery success is not treated as activation success. If an optional hook cannot
 be installed or enabled safely, it is removed and its feature is disabled. Ordinary
@@ -50,6 +51,7 @@ Important controls include:
 | Podcasts | Enable native MP3 episode capture and the Podcasts layout |
 | Lyrics / Metadata | Control enrichment and later metadata filling |
 | Capture Speed | Select 1x or an available accelerated mode |
+| Windows Playback Fallback | INI-only, default-off compatibility source when Spotify state is unavailable |
 | TrackNumberInFilename | Add track prefixes to filenames |
 | ConvertNumberedFilenames | Safely remove recognized old prefixes when numbering is disabled |
 

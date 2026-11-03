@@ -135,8 +135,8 @@ static bool ReadWindowsPlaybackFallback(Settings& target,const std::wstring& pat
         return false;
     }
     const auto value=settings_file::Find(text,L"Windows Playback Fallback");
-    target.windows_playback_fallback=value.present&&!value.duplicate&&value.value==L"1";
-    return !value.present||value.duplicate||(value.value!=L"0"&&value.value!=L"1");
+    target.windows_playback_fallback=value.present&&!value.duplicate&&value.raw_value==L"1";
+    return !value.present||value.duplicate||(value.raw_value!=L"0"&&value.raw_value!=L"1");
 }
 // INI-only preferences are read once. Persistence inserts missing defaults,
 // but never writes a stale startup snapshot over values edited before restart.

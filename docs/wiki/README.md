@@ -8,7 +8,7 @@ it, and publishes it without silently replacing unrelated files.
 flowchart LR
     S[Spotify desktop client] --> H[Audio hooks]
     S --> C[Client-state collector]
-    S --> W[Windows media session fallback]
+    S --> W[Windows media fallback<br/>explicit opt-in]
     H --> Q[Bounded capture queues]
     H --> D[Decoded-output observations]
     C --> L[Playback and metadata observations]
@@ -48,7 +48,7 @@ and settings remain in the project [README](../../README.md).
 | Decoder/playback ownership stages | [`decoder_ownership.cpp`](../../native/decoder_ownership.cpp) |
 | Spotify client timeline and enrichment collector | [`metadata_collector.js`](../../native/metadata_collector.js) |
 | Collector injection and native message bridge | [`metadata_bridge.cpp`](../../native/metadata_bridge.cpp) |
-| Windows media-session fallback | [`media_session.cpp`](../../native/media_session.cpp) |
+| Optional Windows media-session fallback | [`media_session.cpp`](../../native/media_session.cpp) |
 | Recording inspection and destination resolution | [`recording_file.cpp`](../../native/recording_file.cpp), [`existing_quality.cpp`](../../native/existing_quality.cpp) |
 | Metadata merge and codec-specific tagging | [`metadata_update_core.cpp`](../../native/metadata_update_core.cpp) |
 | Staged, no-overwrite file publication | [`file_publication.cpp`](../../native/file_publication.cpp) |

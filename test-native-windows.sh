@@ -81,7 +81,7 @@ x86_64-w64-mingw32-g++ "${common[@]}" tests/album_artwork_test.cpp native/album_
 floggfy_settings_test_root="$floggfy_test_root/settings-defaults"
 mkdir -p "$floggfy_settings_test_root"
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_settings_test.cpp -lole32 -luuid -lshell32 -o "$floggfy_settings_test_root/windows-settings-test.exe"
-for scenario in new missing zero legacy-zero lyrics-zero updates-zero aac-one podcasts-one speed-10 speed-invalid speed-padded fallback-one fallback-zero fallback-invalid fallback-padded; do
+for scenario in new missing zero legacy-zero lyrics-zero updates-zero aac-one podcasts-one speed-10 speed-invalid speed-padded fallback-one fallback-zero fallback-invalid fallback-padded fallback-blank fallback-leading-space fallback-trailing-space fallback-tab fallback-word fallback-duplicate; do
     "$floggfy_settings_test_root/windows-settings-test.exe" "$scenario"
 done
 
