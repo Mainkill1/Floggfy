@@ -124,6 +124,9 @@ std::vector<std::uint8_t> MappedImage(std::uint32_t shift = 0,
          55, sniff, sizeof(sniff)},
         {0x2b000 + shift, 0x2b1b4 + shift, 103, ogg, sizeof(ogg)},
     };
+    // GCC 15 can diagnose the first growth from an initializer-list-sized
+    // allocation as an out-of-bounds construction under -Warray-bounds.
+    functions.reserve(functions.size()+2);
     if (duplicate_ogg)
         functions.push_back({0x3b000, 0x3b1b4, 103, ogg, sizeof(ogg)});
 
