@@ -14,9 +14,13 @@ FilenameConversion ConvertRecordingFilename(const std::wstring& source,const std
 // merely its sanitized filename. Every publication stages before rename.
 FilePublication PublishBytes(const std::wstring& path,const Quality& quality,const void* bytes,size_t size,const Catalog& catalog,
                              size_t* published_bytes=nullptr);
+// Replace a verified complete owned Ogg with a better FLAC at its format path.
+// The Ogg stays locked and present until the FLAC is complete, identity matched,
+// quality checked and supplied with the Ogg's retained metadata. A pre-existing
+// matching FLAC is repaired in place before the exact Ogg object is retired.
+FilePublication PublishFormatUpgrade(const std::wstring& source,const std::wstring& destination,
+    const Quality& quality,const void* bytes,size_t size,const Catalog& catalog,size_t* published_bytes=nullptr);
 // Caller retains a GENERIC_READ|DELETE handle denying writes/deletes from the
 // original metadata read through this exact-object replacement.
 FilePublication PublishMetadataBytes(const std::wstring& path,const void* bytes,size_t size,const Catalog& catalog,void* locked_file);
-// Compatibility entry point derives identity from the incoming file's tags.
-FilePublication PublishBytes(const std::wstring& path,const Quality& quality,const void* bytes,size_t size);
 }

@@ -3,10 +3,12 @@
 #include <string_view>
 namespace history {
 void StartLogger();
-enum class LogKind {Activity,Warning,Failure,Diagnostic};
+enum class LogKind {Finished,Activity,Warning,Failure,Diagnostic};
 // The producer owns classification. Message wording never selects a destination.
 void LogEvent(LogKind kind,const char* event,const std::string& detail);
 void QueueDiagnostic(const char* message);
+// Trusted, constructed callback/stall summaries only; written to the hook lane.
+void QueueHookDiagnostic(const char* message) noexcept;
 // Claims all reserved renderer diagnostics, including rejected/disabled input.
 // False means an unrelated console message; never forwards raw renderer text.
 bool QueueRendererDiagnostic(std::wstring_view message) noexcept;

@@ -18,7 +18,7 @@ x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -DFLOGGFY_SONG_SHORT
     -static-libgcc -static-libstdc++ -I native/vendor/libogg/include \
     tests/windows_song_destination_test.cpp tests/windows_menu_quality_test.cpp tests/library_layout_test.cpp \
     native/library_layout.cpp native/existing_quality.cpp native/recording_file.cpp \
-    native/aac_container.cpp native/spac_stream.cpp native/vorbis_headers.cpp \
+    native/aac_container.cpp native/spac_stream.cpp native/mp3_stream.cpp native/vorbis_headers.cpp \
     native/playback_quality.cpp native/flac_history_core.cpp native/compressed_buffer.cpp \
     native/ogg_history_core.cpp native/ogg_tags.cpp native/image_info.cpp native/history_settings.cpp native/async_log.cpp \
     build/song-shortcut/*.o -lole32 -luuid -lshell32 -o "$floggfy_shortcut_root/song-shortcut-test.exe"

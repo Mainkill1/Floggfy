@@ -70,12 +70,10 @@ void PlaybackQualityTracker::Ogg(uintptr_t context, const uint8_t *bytes, size_t
   if (!c || (bytes[5] & 2))
     c = &Begin(context, PlaybackFormat::Ogg, time);
   auto result = c->ogg.Push(bytes, length);
-  if (result == Result::Invalid || result == Result::Ignore ||
-      length > (uint64_t(1) << 40) - c->bytes) {
+  if (result == Result::Invalid || result == Result::Ignore) {
     c->broken = true;
     return;
   }
-  c->bytes += length;
   c->metadata = c->ogg.rate != 0;
   c->complete = result == Result::Complete;
 }
@@ -88,12 +86,10 @@ void PlaybackQualityTracker::FlacBytes(uintptr_t context, const uint8_t *bytes, 
   auto c = Find(context, PlaybackFormat::Flac);
   if (!c || c->broken)
     return;
-  if (length > encoded_bytes || (length && !bytes) ||
-      encoded_bytes > (uint64_t(1) << 40) - c->bytes) {
+  if (length > encoded_bytes || (length && !bytes)) {
     c->broken = true;
     return;
   }
-  c->bytes += encoded_bytes;
   const auto n = std::min(length, c->prefix.size() - c->prefix_size);
   if (n) memcpy(c->prefix.data() + c->prefix_size, bytes, n);
   c->prefix_size += n;
@@ -179,6 +175,7 @@ PlaybackQualitySnapshot PlaybackQualityTracker::Snapshot(const std::string &clie
     return out;
   out.format = c.format;
   out.rate = c.format == PlaybackFormat::Flac ? c.flac.rate : c.ogg.rate;
+  out.channels = c.format == PlaybackFormat::Flac ? c.flac.channels : c.ogg.channels;
   if (c.format == PlaybackFormat::Flac) {
     out.bits = c.flac.bits;
     out.level = c.flac.bits == 24 ? PlaybackLevel::Lossless24 : PlaybackLevel::Lossless;
@@ -187,12 +184,6 @@ PlaybackQualitySnapshot PlaybackQualityTracker::Snapshot(const std::string &clie
                 c.ogg.bitrate == 160000 ? PlaybackLevel::High :
                 c.ogg.bitrate == 96000 ? PlaybackLevel::Normal : PlaybackLevel::Lossy;
   }
-  if (c.complete) {
-    const double length = c.format == PlaybackFormat::Flac
-                              ? double(c.flac.total_samples) / c.flac.rate : c.ogg.Duration();
-    out.bitrate = double(c.bytes) * 8 / length;
-  }
-  // Never divide read-ahead bytes by partial decoded coverage.
   return out;
 }
 uint64_t PlaybackIdentity(const std::string &key) {

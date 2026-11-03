@@ -51,7 +51,7 @@ void DecodedSettings() {
 void CallbackBoundary() {
     using namespace history;
     decoded_original=NativeParse;decoded_plain_return=0x1111;decoded_compressed_return=0x2222;
-    decoded_enabled.store(true);InterlockedExchange(&networking_enabled,1);InterlockedExchange(&debug_enabled,1);InterlockedExchange(&log_enabled,1);
+    decoded_enabled.store(true);InterlockedExchange(&networking_enabled,1);InterlockedExchange(&log_level_value,4);
     const std::string pause=R"({"message_id":5,"sent_by_device_id":"PRIVATE_SENDER_A","command":{"endpoint":"pause","logging_params":{"token":"PRIVATE_TOKEN"}}})";
     const auto original_bytes=pause;
     TestString input(pause);const auto before=input;unsigned output=0;
@@ -63,10 +63,10 @@ void CallbackBoundary() {
     DrainDecodedConnectMessages();assert(Has("sender=peer-1")&&Has("source=decompressed"));
     const auto count=native_calls;decoded_lines.clear();
     assert(ForwardDecodedCall(&output,&input,0x3333)==1&&native_calls==count+1);DrainDecodedConnectMessages();assert(decoded_lines.empty());
-    InterlockedExchange(&debug_enabled,0);assert(ForwardDecodedCall(&output,&input,decoded_plain_return)==1);
-    DrainDecodedConnectMessages();assert(decoded_lines.empty());InterlockedExchange(&debug_enabled,1);
-    InterlockedExchange(&log_enabled,0);assert(ForwardDecodedCall(&output,&input,decoded_plain_return)==1);
-    DrainDecodedConnectMessages();assert(decoded_lines.empty());InterlockedExchange(&log_enabled,1);
+    InterlockedExchange(&log_level_value,1);assert(ForwardDecodedCall(&output,&input,decoded_plain_return)==1);
+    DrainDecodedConnectMessages();assert(decoded_lines.empty());InterlockedExchange(&log_level_value,4);
+    InterlockedExchange(&log_level_value,0);assert(ForwardDecodedCall(&output,&input,decoded_plain_return)==1);
+    DrainDecodedConnectMessages();assert(decoded_lines.empty());InterlockedExchange(&log_level_value,4);
     native_result=0;assert(ForwardDecodedCall(&output,&input,decoded_plain_return)==0&&GetLastError()==0x10203040);
     decoded_summary_due=0;DrainDecodedConnectMessages();assert(Has("json_invalid=1")&&!Has("action=pause"));native_result=1;
     decoded_lines.clear();input.size=max_connect_message+1;input.capacity=input.size;

@@ -28,7 +28,7 @@ void EnrichStoredMetadata(RichMetadata& metadata){
  if(pass==2){SetEvent(refresh_blocked);WaitForSingleObject(release_refresh,10000);}
  metadata.fields["COMMENT"]="slow enrichment";
 }
-void CacheAlbumArtwork(const std::string&,const std::string&){}
+bool CacheAlbumArtwork(const std::string&,const std::string&){return false;}
 bool GetAlbumArtwork(const std::string&,std::vector<uint8_t>&,std::string&){return false;}
 }
 int main(){

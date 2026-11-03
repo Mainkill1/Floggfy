@@ -30,11 +30,12 @@ Catalog Identity(const std::wstring& title) {
     Catalog c;c.title=title;c.artist=L"Artist";c.album=L"Album";c.track=3;c.disc=2;c.duration=1;
     c.spotify_uri="spotify:track:"+Utf8(title);return c;
 }
-std::vector<uint8_t> Tagged(const Catalog& c,const wchar_t* extension,bool owned=true,unsigned bits=16) {
+std::vector<uint8_t> Tagged(const Catalog& c,const wchar_t* extension,bool owned=true,unsigned bits=16,bool spotify_identity=true) {
     Tags tags;tags.fields={{"TITLE",Utf8(c.title)},{"ARTIST",Utf8(c.artist)},{"ALBUMARTIST",Utf8(c.artist)},
         {"ALBUM",Utf8(c.album)},{"TRACKNUMBER",std::to_string(c.track)},{"DISCNUMBER",std::to_string(c.disc)},
-        {"SPOTIFY_URI",c.spotify_uri},{"HISTORY_MEDIA_DURATION","1"},{"HISTORY_COMPLETE_LISTEN","1"},
+        {"HISTORY_MEDIA_DURATION","1"},{"HISTORY_COMPLETE_LISTEN","1"},
         {"CUSTOM","Preserve me"},{"LYRICS","[00:00.100]Unicode \xe9\x9f\xb3\xe6\xa5\xbd"}};
+    if(spotify_identity)tags.fields.emplace_back("SPOTIFY_URI",c.spotify_uri);
     const std::wstring ext=extension;
     if(owned)tags.fields.emplace_back("HISTORY_CAPTURE",ext==L".flac"?"native compressed FLAC input":
         ext==L".ogg"?"native compressed Ogg pages":"native compressed SpAC AAC packets");
@@ -157,7 +158,7 @@ void PublicationModes(const std::wstring& root) {
     const auto title=OutputPath(root,c,L".flac",false,false),numbered=OutputPath(root,c,L".flac",false,true);
     assert(numbered==Numbered(title));
     auto publish=[&] {
-        const auto source=recording_fixture::fixture();Capture capture;capture.lossless=true;capture.bytes=source.size();
+        const auto source=recording_fixture::fixture();Capture capture;capture.lossless=true;capture.metadata=true;capture.bytes=source.size();
         size_t offset=0;assert(ParseFlacMetadata(source,capture.flac,offset)==FlacParse::Valid);
         capture.coverage.samples=16;assert(capture.data.Append(source.data(),source.size(),1024*1024));
         Heard heard;heard.media=media;heard.start=1;heard.finish=2;
@@ -173,9 +174,48 @@ void PublicationModes(const std::wstring& root) {
     while(!ReadSongDestination(777,GetSettings().generation,menu_path)){assert(GetTickCount64()<end);Sleep(1);}
     assert(menu_path==title);StartSongDestinationWorker(false);
     assert(DeleteFileW(WindowsPath(title).c_str()));
+
+    // A verified FLAC capture upgrades the same recording's legacy numbered
+    // Ogg instead of leaving two formats behind. The old Ogg metadata must be
+    // present in the FLAC before the exact old object is retired.
+    SetNaming(false,true);
+    auto upgrade=MediaFor(L"Cross format upgrade");const auto upgrade_c=CatalogFor(upgrade);
+    const auto upgrade_flac=OutputPath(root,upgrade_c,L".flac");
+    const auto upgrade_ogg=Numbered(OutputPath(root,upgrade_c,L".ogg"));
+    WriteBytes(upgrade_ogg,Tagged(upgrade_c,L".ogg",true,16,false));
+    auto publish_flac=[&](const Media& value) {
+        const auto source=recording_fixture::fixture();Capture capture;capture.lossless=true;capture.metadata=true;capture.bytes=source.size();
+        size_t offset=0;assert(ParseFlacMetadata(source,capture.flac,offset)==FlacParse::Valid);
+        capture.coverage.samples=16;assert(capture.data.Append(source.data(),source.size(),1024*1024));
+        Heard heard;heard.media=value;heard.start=1;heard.finish=2;
+        return Publish(capture,heard,CaptureEpoch());
+    };
+    assert(publish_flac(upgrade)==Publication::Saved);
+    RecordingFile upgraded;
+    assert(MissingFile(upgrade_ogg)&&ReadRecording(upgrade_flac,upgraded)&&
+           upgraded.complete&&upgraded.quality.codec==Codec::Flac&&upgraded.tags.cover==artwork_fixture::png());
+    bool custom=false,synced=false;
+    for(const auto& field:upgraded.tags.fields) {
+        custom=custom||(field.first=="CUSTOM"&&field.second=="Preserve me");
+        synced=synced||(field.first=="LYRICS"&&field.second=="[00:00.100]Unicode \xe9\x9f\xb3\xe6\xa5\xbd");
+    }
+    assert(custom&&synced&&DeleteFileW(WindowsPath(upgrade_flac).c_str()));
+
+    // Repair the exact state produced by the old bug: a matching FLAC already
+    // exists beside a numbered Ogg. A replay verifies the FLAC, retires only
+    // the matching owned Ogg, and reports the disk change.
+    auto repair=MediaFor(L"Cross format repair");const auto repair_c=CatalogFor(repair);
+    const auto repair_flac=OutputPath(root,repair_c,L".flac");
+    const auto repair_ogg=Numbered(OutputPath(root,repair_c,L".ogg"));
+    const auto repair_flac_bytes=Tagged(repair_c,L".flac");
+    WriteBytes(repair_flac,repair_flac_bytes);WriteBytes(repair_ogg,Tagged(repair_c,L".ogg"));
+    assert(publish_flac(repair)==Publication::Saved&&MissingFile(repair_ogg));
+    RecordingFile repaired;assert(ReadRecording(repair_flac,repaired)&&repaired.complete&&repaired.quality.codec==Codec::Flac);
+    assert(DeleteFileW(WindowsPath(repair_flac).c_str()));
 }
 }
 namespace history {
+std::uint64_t MetadataRevision(){return 0;}
 std::string ReadClientPlaybackQuality(const Media&){return {};}
 void EnrichCatalog(const Media& media,Catalog& c){c.disc=2;c.spotify_uri=media.title==L"Raw/A"||media.title==L"Raw:A"?"":"spotify:track:"+Utf8(media.title);}
 void EnrichTags(const Media&,Tags&) {}

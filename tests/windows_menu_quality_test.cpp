@@ -88,6 +88,7 @@ bool ReadRecentDownloadsForMenuTest(std::vector<RecentDownload>& out) {
 #include <algorithm>
 #include <cassert>
 #include <memory>
+#include <map>
 #include <vector>
 struct Entry {
   int id = 0, type = 1;
@@ -100,6 +101,8 @@ struct Model {
   int refs = 1;
   std::vector<Entry> entries;
   std::unique_ptr<Model> child;
+  int child_id = 0;
+  std::map<int,std::unique_ptr<Model>> extra_children;
 };
 static Model &M(Menu *m) { return *reinterpret_cast<Model *>(m); }
 static void Retain(Base *b) { ++reinterpret_cast<Model *>(b)->refs; }
@@ -159,21 +162,22 @@ static int Check(Menu *m, int id, int value) {
   return 1;
 }
 static Menu *Child(Menu *m, int id) {
-  if (Index(m, id) < 0 || !M(m).child)
-    return nullptr;
-  Retain(&M(m).child->api.base);
-  return &M(m).child->api;
+  if (Index(m, id) < 0)return nullptr;
+  Model* child=M(m).child_id==id?M(m).child.get():nullptr;
+  if(!child) {auto found=M(m).extra_children.find(id);if(found!=M(m).extra_children.end())child=found->second.get();}
+  if(!child)return nullptr;
+  Retain(&child->api.base);return &child->api;
 }
 static void Init(Model &model);
 static Menu *AddChild(Menu *m, int id, const String *s) {
   Item(m, id, s);
   M(m).entries.back().type = 5;
-  M(m).child = std::make_unique<Model>();
-  Init(*M(m).child);
-  M(m).child->submenu = true;
-  Retain(&M(m).child->api.base);
+  auto next=std::make_unique<Model>();Init(*next);next->submenu=true;Model* result=next.get();
+  if(!M(m).child){M(m).child_id=id;M(m).child=std::move(next);}
+  else M(m).extra_children[id]=std::move(next);
+  Retain(&result->api.base);
   if(id==recent_id&&fail_recent_placeholder){fail_recent_placeholder=false;fail_menu_allocation=true;}
-  return &M(m).child->api;
+  return &result->api;
 }
 static void Init(Model &model) {
   model.api.base = {sizeof(Menu), Retain, Drop, OneRef, AnyRef};
@@ -213,6 +217,15 @@ int RunMenuQualityTests() {
 #else
 int main() {
 #endif
+  char setting_line[96]{};
+  SettingOutcomeLine(podcasts_id,true,true,setting_line,sizeof(setting_line));
+  assert(std::string(setting_line)=="Podcasts enabled");
+  SettingOutcomeLine(lyrics_id,true,false,setting_line,sizeof(setting_line));
+  assert(std::string(setting_line)=="Lyrics disabled");
+  SettingOutcomeLine(lyrics_id,false,true,setting_line,sizeof(setting_line));
+  assert(std::string(setting_line)=="Lyrics change failed; remains enabled");
+  SettingOutcomeLine(auto_skip_id,true,true,setting_line,sizeof(setting_line));
+  assert(std::string(setting_line)=="Auto Skip Downloaded enabled");
   assert(menu_init.TryBegin(GetTickCount64()));menu_prepared=true;
   FinishMenuStartup(false,false);
   assert(menu_init.State()==hooks::InitState::RetryableFailure);
@@ -220,8 +233,13 @@ int main() {
   menu_init.Retry(0);assert(menu_init.TryBegin(GetTickCount64()));menu_prepared=true;
   FinalizeToDiskMenu(false);
   assert(menu_init.State()==hooks::InitState::Unsupported);
+  wchar_t module[2048];assert(GetModuleFileNameW(nullptr,module,2048));
+  std::wstring ini=module;ini=ini.substr(0,ini.find_last_of(L'\\'))+L"\\SpotifyHistory.ini";
+  DeleteFileW(ini.c_str());
+  assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeedLimit",L"4",ini.c_str()));
   history::InitSettings(nullptr);
   assert(history::SetLyrics(true));
+  assert(history::SetCaptureSpeed(1));
   history::PlaybackQualitySnapshot initial;
   initial.rate = 44100;
   history::PublishPlaybackQuality(initial);
@@ -246,7 +264,6 @@ int main() {
   std::copy_n(L"Example", 7, q.title.begin());
   q.format = history::PlaybackFormat::Ogg;
   q.rate = 44100;
-  q.bitrate = 320000;
   q.level = history::PlaybackLevel::VeryHigh;
   history::PublishPlaybackQuality(q);
   Populate(&root.api);
@@ -259,16 +276,25 @@ int main() {
   assert(!child.child->entries[0].enabled);
   assert(filesystem_calls==0 && shell_calls==0 && recent_reads==0);
   assert(child.entries[Index(&child.api,lyrics_id)].checked);
-  assert(child.entries.size() == 11); // Six controls, separator, four quality rows.
-  for (size_t i = 7; i < 11; i++)
+  assert(Index(&child.api,auto_skip_id)==Index(&child.api,lyrics_id)+1);
+  assert(!child.entries[Index(&child.api,auto_skip_id)].checked);
+  assert(child.entries[Index(&child.api,auto_skip_id)].label==L"Auto Skip Downloaded (Disabled)");
+  assert(!child.entries[Index(&child.api,podcasts_id)].checked);
+  assert(child.entries[Index(&child.api,podcasts_id)].label==L"Podcasts (Disabled)");
+  assert(child.entries.size() == 14); // Nine controls, separator, four quality rows.
+  const auto speed_child=child.extra_children.find(speed_root_id);
+  assert(speed_child!=child.extra_children.end()&&speed_child->second->entries.size()==5);
+  assert(speed_child->second->entries[0].checked);
+  const auto quality_index=size_t(Index(&child.api,song_id));
+  for (size_t i = quality_index; i < quality_index+4; i++)
     assert(child.entries[i].type == 1 && !child.entries[i].enabled && !child.entries[i].checked);
-  assert(child.entries[7].label.find(L"Example") != std::wstring::npos);
-  assert(child.entries[7].visible && child.entries[8].visible);
-  assert(!child.entries[9].visible && !child.entries[10].visible); // Non-FLAC details stay hidden, even after Ogg verification.
+  assert(child.entries[quality_index].label.find(L"Example") != std::wstring::npos);
+  assert(child.entries[quality_index].visible && child.entries[quality_index+1].visible);
+  assert(!child.entries[quality_index+2].visible && !child.entries[quality_index+3].visible); // Non-FLAC details stay hidden, even after Ogg verification.
   type_calls=0;
   Populate(&root.api);
   assert(type_calls==0); // Existing insertion is not rescanned or repopulated.
-  assert(child.entries.size() == 11 && child.refs == 1);
+  assert(child.entries.size() == 14 && child.refs == 1);
   capability_queries=type_calls=index_calls=0;
   original_add_submenu=AddChild;
   Model unrelated;Init(unrelated);unrelated.submenu=true;
@@ -292,9 +318,9 @@ int main() {
     Populate(&translated.api);
     assert(translated.child && translated.entries.size()==4);
     assert(translated.entries.back().label==L"To Disk");
-    assert(translated.child->entries.size()==11 && translated.child->refs==1);
+    assert(translated.child->entries.size()==14 && translated.child->refs==1);
     Populate(&translated.api);
-    assert(translated.entries.size()==4 && translated.child->entries.size()==11);
+    assert(translated.entries.size()==4 && translated.child->entries.size()==14);
   }
   // The client changes first while SMTC still publishes the previous song.
   history::PlaybackQualitySnapshot actual;
@@ -326,6 +352,32 @@ int main() {
   original.format = OriginalFormat;
   Wrapped wrapped;
   wrapped.original = &original;
+  history::SetCaptureAccelerationAvailable(true);
+  auto& speed_menu=*child.extra_children.at(speed_root_id);
+  const auto capture_epoch=history::CaptureEpoch();
+  Retain(&child.api.base);WillShow(&wrapped.api,&child.api);
+  assert(speed_menu.entries[0].enabled&&speed_menu.entries[1].enabled&&speed_menu.entries[2].enabled);
+  assert(!speed_menu.entries[3].enabled&&!speed_menu.entries[4].enabled);
+  const auto messages_before_limit=message_calls;
+  Retain(&speed_menu.api.base);Execute(&wrapped.api,&speed_menu.api,first_speed_id+3,0);
+  assert(history::CaptureSpeed()==1&&message_calls==messages_before_limit+1);
+  Retain(&speed_menu.api.base);Execute(&wrapped.api,&speed_menu.api,first_speed_id+2,0);
+  assert(history::CaptureSpeed()==4&&history::CaptureEpoch()==capture_epoch&&speed_menu.refs==1);
+  for(unsigned i=0;i<5;++i)assert(speed_menu.entries[i].checked==(i==2));
+  const auto messages_while_active=message_calls;
+  Retain(&speed_menu.api.base);Execute(&wrapped.api,&speed_menu.api,first_speed_id+3,0);
+  assert(history::CaptureSpeed()==4&&message_calls==messages_while_active+1);
+  assert(last_message.find(L"current speed")!=std::wstring::npos&&last_message.find(L"1x remains")==std::wstring::npos);
+  // Native fallback can change speed/capability while CEF retains this model.
+  history::SetCaptureAccelerationAvailable(false);assert(history::SetCaptureSpeed(1));
+  Retain(&child.api.base);WillShow(&wrapped.api,&child.api);
+  assert(speed_menu.entries[0].checked&&speed_menu.entries[0].enabled);
+  for(unsigned i=1;i<5;++i)assert(!speed_menu.entries[i].checked&&!speed_menu.entries[i].enabled);
+  const auto messages_before_unsupported=message_calls;
+  Retain(&speed_menu.api.base);Execute(&wrapped.api,&speed_menu.api,first_speed_id+2,0);
+  assert(history::CaptureSpeed()==1&&message_calls==messages_before_unsupported+1);
+  assert(last_message.find(L"unavailable")!=std::wstring::npos);
+  history::SetCaptureAccelerationAvailable(true);
   // CEF builds visible labels BEFORE WillShow. FormatLabel is the public
   // callback that can update the first opening without an extra hook.
   set_string=SetText;
@@ -361,10 +413,10 @@ int main() {
   set_string=setter;
   Retain(&child.api.base);
   WillShow(&wrapped.api, &child.api);
-  assert(child.entries[9].label.find(L"FLAC") != std::wstring::npos &&
-         child.entries[10].label.find(L"96,000 Hz") != std::wstring::npos);
-  assert(child.entries[7].label==L"Song: Next");
-  assert(child.entries[9].visible && child.entries[10].visible); // Confirmed FLAC details remain.
+  assert(child.entries[quality_index+2].label.find(L"FLAC") != std::wstring::npos &&
+         child.entries[quality_index+3].label.find(L"96,000 Hz") != std::wstring::npos);
+  assert(child.entries[quality_index].label==L"Song: Next");
+  assert(child.entries[quality_index+2].visible && child.entries[quality_index+3].visible); // Confirmed FLAC details remain.
   // Refresh the submenu before CEF builds its visible children, even when
   // changing codec while the same model is reused across menu openings.
   auto build_root=[&]{std::wstring label=L"To Disk";auto text=Text(label);Retain(&root.api.base);Format(&wrapped.api,&root.api,&text);if(text.dtor)text.dtor(text.str);};
@@ -424,7 +476,7 @@ int main() {
   assert(selected_path==L"C:\\Music\\earlier.ogg" && shell_calls==2 && recent.refs==1);
   saved_file_exists=false;
   Retain(&recent.api.base);Execute(&wrapped.api,&recent.api,first_recent_id,0);
-  assert(shell_calls==2 && message_calls==1 && original_commands==0 && recent.refs==1);
+  assert(shell_calls==2 && message_calls==messages_before_unsupported+2 && original_commands==0 && recent.refs==1);
   saved_file_exists=true;recent_ready=true;
   build_root();assert(recent.entries.size()==1 && recent.entries[0].label==L"Arrived while menu open");
   Retain(&recent.api.base);Execute(&wrapped.api,&recent.api,first_recent_id,0);
@@ -553,36 +605,49 @@ int main() {
   assert(child.entries[Index(&child.api,song_id)].visible && !child.entries[Index(&child.api,song_id)].enabled);
   q.format=history::PlaybackFormat::Ogg;q.level=history::PlaybackLevel::VeryHigh;q.bits=0;
   actual.level=q.level;history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
-  build_root();assert(!child.entries[9].visible && !child.entries[10].visible);
+  build_root();assert(!child.entries[quality_index+2].visible && !child.entries[quality_index+3].visible);
   q.format=history::PlaybackFormat::Flac;q.level=history::PlaybackLevel::Lossless;q.bits=16;
   actual.level=q.level;history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
-  build_root();assert(child.entries[9].visible && child.entries[10].visible);
+  build_root();assert(child.entries[quality_index+2].visible && child.entries[quality_index+3].visible);
   q.format=history::PlaybackFormat::Unknown;history::PublishPlaybackQuality(q);
-  build_root();assert(!child.entries[9].visible && !child.entries[10].visible);
-  assert(child.entries[7].visible && child.entries[8].visible);
-  assert(child.entries.size()==11 && child.refs==1 && root.refs==1);
+  build_root();assert(!child.entries[quality_index+2].visible && !child.entries[quality_index+3].visible);
+  assert(child.entries[quality_index].visible && child.entries[quality_index+1].visible);
+  assert(child.entries.size()==14 && child.refs==1 && root.refs==1);
   actual.level=history::PlaybackLevel::Unknown;q.level=actual.level;
   history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
-  build_root();assert(!child.entries[8].visible); // No Quality: Unavailable placeholder.
+  build_root();assert(!child.entries[quality_index+1].visible); // No Quality: Unavailable placeholder.
   actual.level=history::PlaybackLevel::Lossless;q.level=actual.level;
   q.format=history::PlaybackFormat::Flac;q.rate=0;
   history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
-  build_root();assert(child.entries[8].visible && child.entries[9].visible && !child.entries[10].visible);
+  build_root();assert(child.entries[quality_index+1].visible && child.entries[quality_index+2].visible && !child.entries[quality_index+3].visible);
   history::client_updated=GetTickCount64()-4000;
   assert(history::ReadPlaybackQuality().identity==0); // Never regress to stale SMTC.
   history::PublishClientPlaybackQuality({});
   assert(history::ReadPlaybackQuality().title[0]==0); // No active cached song.
-  for (size_t i = 7; i < 11; i++) {
+  for (size_t i = quality_index; i < quality_index+4; i++) {
     Retain(&child.api.base);
     Execute(&wrapped.api, &child.api, child.entries[i].id, 0);
   }
   assert(original_commands == 0 && child.refs == 1);
+  Retain(&child.api.base);Execute(&wrapped.api,&child.api,podcasts_id,0);
+  assert(history::GetSettings().podcasts);
+  assert(child.entries[Index(&child.api,podcasts_id)].checked);
+  assert(child.entries[Index(&child.api,podcasts_id)].label==L"Podcasts (Enabled)");
+  Retain(&child.api.base);Execute(&wrapped.api,&child.api,podcasts_id,0);
+  assert(!history::GetSettings().podcasts);
   Retain(&child.api.base);Execute(&wrapped.api,&child.api,lyrics_id,0);
   assert(!history::GetSettings().lyrics);
   assert(!child.entries[Index(&child.api,lyrics_id)].checked);
   assert(child.entries[Index(&child.api,lyrics_id)].label==L"Lyrics (Disabled)");
   Retain(&child.api.base);Execute(&wrapped.api,&child.api,lyrics_id,0);
   assert(history::GetSettings().lyrics && history::FlushSettings(5000));
+  const auto auto_skip_epoch=history::CaptureEpoch();
+  Retain(&child.api.base);Execute(&wrapped.api,&child.api,auto_skip_id,0);
+  assert(history::GetSettings().auto_skip_downloaded&&history::CaptureEpoch()==auto_skip_epoch);
+  assert(child.entries[Index(&child.api,auto_skip_id)].checked);
+  assert(child.entries[Index(&child.api,auto_skip_id)].label==L"Auto Skip Downloaded (Enabled)");
+  Retain(&child.api.base);Execute(&wrapped.api,&child.api,auto_skip_id,0);
+  assert(!history::GetSettings().auto_skip_downloaded&&history::FlushSettings(5000));
   Retain(&child.api.base);
   Closed(&wrapped.api,&child.api);
   assert(child.refs==1 && !wrapped.capability.validated);

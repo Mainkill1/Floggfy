@@ -233,9 +233,13 @@ bool PreserveUpgradeMetadata(const std::vector<uint8_t>& source,const std::vecto
     const Catalog& catalog,std::vector<uint8_t>& output,std::string& error) {
     output.clear();error.clear();
     RecordingFile old,next;
+    const auto representable=[&] {
+        return old.quality.codec==next.quality.codec ||
+            (old.quality.codec==Codec::Vorbis && next.quality.codec==Codec::Flac);
+    };
     if(!InspectRecording(source.data(),source.size(),old) || !old.complete || !old.owned ||
        !MatchesRecording(old,catalog) || !InspectRecording(incoming.data(),incoming.size(),next) ||
-       !next.complete || !next.owned || !MatchesRecording(next,catalog) || old.quality.codec!=next.quality.codec) {
+       !next.complete || !next.owned || !MatchesRecording(next,catalog) || !representable()) {
         error="upgrade metadata requires complete owned matching recordings";
         return false;
     }
@@ -262,7 +266,7 @@ bool PreserveUpgradeMetadata(const std::vector<uint8_t>& source,const std::vecto
     // Legacy picture comments are retained too; they can be opaque or use a
     // format we cannot compare. A valid new front cover only replaces them
     // when the shared artwork policy explicitly authorizes that replacement.
-    if(!plan.picture)for(const auto& picture:old.picture_comments)
+    if(!plan.picture && old.quality.codec==next.quality.codec)for(const auto& picture:old.picture_comments)
         merged.fields.emplace_back("METADATA_BLOCK_PICTURE",picture);
 
     // Already-approved incoming metadata needs no second retagging pass. Keep
@@ -279,7 +283,13 @@ bool PreserveUpgradeMetadata(const std::vector<uint8_t>& source,const std::vecto
             std::vector<uint8_t> picture;
             if(!BuildPicture(next.tags,picture))return false;
             pictures.push_back(std::move(picture));
-        } else if(!FlacPictures(source,pictures))return false;
+        } else if(old.quality.codec==Codec::Flac) {
+            if(!FlacPictures(source,pictures))return false;
+        } else if(old.has_artwork) {
+            std::vector<uint8_t> picture;
+            if(!BuildPicture(old.tags,picture))return false;
+            pictures.push_back(std::move(picture));
+        }
         std::vector<uint8_t> prepared;
         if(!ReplaceFlacPictures(incoming,pictures,prepared))return false;
         tagged=TagFlac(prepared,merged,output,error);

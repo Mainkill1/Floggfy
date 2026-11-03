@@ -55,6 +55,9 @@ std::unique_ptr<Capture> Captured(const std::vector<uint8_t>& source) {
 void TestPipeline(const std::wstring& root) {
     const auto source=spac_fixture::stream(29,true);
     auto capture=Captured(source);
+    assert(ValidateFinalCapture(*capture)==FinalCaptureValidation::Valid);
+    auto inconsistent=Captured(source);++inconsistent->spac.info.total_samples;
+    assert(ValidateFinalCapture(*inconsistent)==FinalCaptureValidation::Invalid);
     Heard heard;heard.media.title=L"Native AAC";heard.media.artist=L"Artist";heard.media.album=L"Album";
     heard.media.duration=capture->Duration();heard.start=capture->born;heard.finish=heard.start+heard.media.duration;heard.generation=1;
     const auto catalog=CatalogFor(heard.media);const auto path=OutputPath(root,catalog,L".m4a",false);
@@ -148,7 +151,7 @@ void TestPipeline(const std::wstring& root) {
     tags.fields.back()={"HISTORY_CAPTURE","native compressed SpAC AAC packets"};
     for(auto& field:tags.fields)if(field.first=="SPOTIFY_URI")field.second="spotify:track:unrelated";
     std::vector<uint8_t> unrelated;assert(MakeAacM4a(info,packets,tags,unrelated,error));Write(path,unrelated);
-    const auto alternate=ResolveRecordingPath(path,catalog);assert(!alternate.empty()&&alternate!=path);
+    const auto alternate=ResolveRecordingDestination(path,catalog).path;assert(!alternate.empty()&&alternate!=path);
     capture=Captured(source);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Saved&&Read(path)==unrelated);
     assert(ReadRecording(alternate,inspected)&&MatchesRecording(inspected,catalog));
     assert(DeleteFileW(path.c_str())&&DeleteFileW(alternate.c_str()));
@@ -183,6 +186,7 @@ void RealSample(const std::wstring& input,const std::wstring& output) {
 }
 }
 namespace history {
+std::uint64_t MetadataRevision(){return 0;}
 std::string ReadClientPlaybackQuality(const Media&){return {};}
 void EnrichCatalog(const Media&,Catalog& catalog){catalog.spotify_uri="spotify:track:aac-fixture";}
 void EnrichTags(const Media&,Tags& tags) {

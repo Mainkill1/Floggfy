@@ -10,6 +10,7 @@
 #include "async_log.h"
 #include "srw_guard.h"
 #include "settings_file.h"
+#include "capture_speed.h"
 namespace history {
 static SRWLOCK lock=SRWLOCK_INIT;
 static Settings settings;
@@ -19,7 +20,7 @@ static bool IsMusic(std::wstring root) {
     return !music_path.empty() && (_wcsicmp(root.c_str(),music_path.c_str())==0 ||
         _wcsicmp(root.c_str(),(music_path+L"\\Spotify").c_str())==0);
 }
-static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,aac_enabled=0,capture_epoch=0,log_enabled=1,debug_enabled=0,networking_enabled=0,connect_logging_enabled=1,hook_diagnostics_enabled=0;
+static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,aac_enabled=0,podcasts_enabled=0,capture_epoch=0,capture_speed_value=1,capture_speed_limit_value=0,capture_acceleration_available=0,log_level_value=1,networking_enabled=0,connect_logging_enabled=1,hook_diagnostics_enabled=0;
 static HANDLE settings_signal=nullptr,persist_done=nullptr;
 // A failed attempt is observable without acknowledging bytes never committed.
 static volatile LONG persisted_generation=-1,failed_generation=-1,persist_failed=0;
@@ -27,8 +28,16 @@ static constexpr char default_ini[]=
     "[To Disk]\r\n"
     "; Settings also appear in the To Disk menu.\r\n"
     "Downloads=1\r\n"
+    "; Local capture rate: exactly 1, 2, 4, 8, or 10. Default is 1.\r\n"
+    "CaptureSpeed=1\r\n"
+    "; Hidden accelerated-capture ceiling. Missing/0/1=off; 2-10=limit; above 10=10.\r\n"
+    "; Fully quit and restart Spotify after changing.\r\n"
+    "CaptureSpeedLimit=0\r\n"
     "; Set Menu=0 before starting Spotify to disable native menu integration.\r\n"
     "Menu=1\r\n"
+    "; Use Windows media state only when Spotify's own playback state is unavailable.\r\n"
+    "; 0=off (default), exactly 1=on.\r\n"
+    "Windows Playback Fallback=0\r\n"
     "; Workaround when disabled/blocked Microsoft online checks (Windows NCSI)\r\n"
     "; make Windows report \"No Internet\" despite a working connection.\r\n"
     "; Reports an active adapter with a usable IP as Internet-connected to Spotify,\r\n"
@@ -49,35 +58,37 @@ static constexpr char default_ini[]=
     "Flac=1\r\n"
     "; AAC is usually a low-quality source; opt in explicitly.\r\n"
     "Aac=0\r\n"
+    "; Save fully listened podcast episodes as native MP3 under Podcasts.\r\n"
+    "Podcasts=0\r\n"
     "; Enables metadata enrichment using the local Spotify client.\r\n"
     "Metadata=1\r\n"
     "; Automatically obtains lyrics; Metadata=0 disables all enrichment.\r\n"
     "Lyrics=1\r\n"
     "; Allows metadata-only upgrades to existing saved files.\r\n"
     "UpdateExistingMetadata=1\r\n"
+    "; Skip verified downloaded music after its metadata check; default off.\r\n"
+    "AutoSkipDownloaded=0\r\n"
     "\r\n"
-    "; Normal activity, warnings and failures: Floggfy.log in Save Location (5 MiB).\r\n"
-    "; Log=0 also disables ALL debug output, hooks and timing instrumentation below.\r\n"
-    "Log=1\r\n"
+    "; 0=off; 1=finished tracks/failures; 2=visible lifecycle; 4=diagnostics.\r\n"
+    "LogLevel=1\r\n"
     "\r\n"
-    "; Debug options require Log=1. Fully restart Spotify after INI edits.\r\n"
-    "; Optional details go only to Floggfy-diagnostics.log (5 MiB), never Floggfy.log.\r\n"
-    "DebugLog=0\r\n"
-    "; Requires DebugLog=1: cached playback target and local actions.\r\n"
+    "; Debug options require LogLevel=4. Fully restart Spotify after INI edits.\r\n"
+    "; Cached playback target and local actions go to Floggfy-diagnostics.log.\r\n"
     "; Set 0 to opt out, including when DebugNetworking=1.\r\n"
     "; Use exactly 1 to enable. Device names/IDs are omitted; senders may be unknown.\r\n"
     "DebugConnect=1\r\n"
     "; Deep read-only networking diagnostics; default off. Fully restart after edits.\r\n"
-    "; Requires Log=1 and DebugLog=1. Use exactly 1 to enable; 0/invalid values disable.\r\n"
+    "; Requires LogLevel=4. Use exactly 1 to enable; 0/invalid values disable.\r\n"
     "; Disabled means no decoded-message hook or enrichment network observations.\r\n"
-    "; 1 adds networking observations to Floggfy-diagnostics.log.\r\n"
+    "; 1 adds networking observations to Floggfy-networking.log.\r\n"
     "; Summarizes known Connect/control and enrichment I/O with timing for correlation.\r\n"
     "; No raw messages, media, credentials, URLs, device names or device IDs are logged.\r\n"
     "; Unobserved traffic and command execution remain unknown; no commands are changed.\r\n"
     "DebugNetworking=0\r\n"
-    "; Extra callback/stall diagnostics. Requires DebugNetworking=1, Log=1, DebugLog=1.\r\n"
+    "; Extra callback/stall diagnostics in Floggfy-hook-diagnostics.log.\r\n"
+    "; Requires LogLevel=4.\r\n"
     "; Default off; exactly 1 enables callback profiling and slow/pending activities.\r\n"
-    "; Basic DebugLog does no per-callback profiling; no dumps or raw payloads.\r\n"
+    "; LogLevel=4 alone does no callback profiling; no dumps or raw payloads.\r\n"
     "DebugHookDiagnostics=0\r\n"
     "\r\n"
     "[History]\r\n"
@@ -106,6 +117,71 @@ static bool ReadFilenameOptions(Settings& target,const std::wstring& path) {
         needs_persist=true;
     }
     return needs_persist;
+}
+static bool ReadCaptureSpeed(Settings& target,const std::wstring& path) {
+    wchar_t value[16]{};
+    if(!GetPrivateProfileStringW(L"To Disk",L"CaptureSpeed",L"",value,16,path.c_str())) {
+        target.capture_speed=1;return true;
+    }
+    if(!wcscmp(value,L"1"))target.capture_speed=1;
+    else if(!wcscmp(value,L"2"))target.capture_speed=2;
+    else if(!wcscmp(value,L"4"))target.capture_speed=4;
+    else if(!wcscmp(value,L"8"))target.capture_speed=8;
+    else if(!wcscmp(value,L"10"))target.capture_speed=10;
+    else {target.capture_speed=1;return true;}
+    return false;
+}
+static bool ReadCaptureSpeedLimit(Settings& target,const std::wstring& path) {
+    std::wstring text;bool unicode=false;
+    if(!settings_file::Read(path,text,unicode)) {target.capture_speed_limit=0;return false;}
+    const auto option=settings_file::Find(text,L"CaptureSpeedLimit");
+    if(!option.present||option.duplicate||option.value.empty()||option.value!=option.raw_value||
+       (option.value.size()>1&&option.value.front()==L'0')) {
+        target.capture_speed_limit=0;
+        return !option.present;
+    }
+    unsigned value=0;
+    for(const auto c:option.value) {
+        if(c<L'0'||c>L'9') {target.capture_speed_limit=0;return false;}
+        if(value<=10)value=value*10+unsigned(c-L'0');
+    }
+    target.capture_speed_limit=value<=1?0:std::min(value,10u);
+    return false;
+}
+static bool ReadWindowsPlaybackFallback(Settings& target,const std::wstring& path) {
+    std::wstring text;bool unicode=false;
+    if(!settings_file::Read(path,text,unicode)) {
+        target.windows_playback_fallback=false;
+        return false;
+    }
+    const auto value=settings_file::Find(text,L"Windows Playback Fallback");
+    target.windows_playback_fallback=value.present&&!value.duplicate&&value.raw_value==L"1";
+    return !value.present||value.duplicate||(value.raw_value!=L"0"&&value.raw_value!=L"1");
+}
+static bool ReadAutoSkipDownloaded(Settings& target,const std::wstring& path) {
+    std::wstring text;bool unicode=false;
+    if(!settings_file::Read(path,text,unicode)) {
+        target.auto_skip_downloaded=false;
+        return false;
+    }
+    const auto value=settings_file::Find(text,L"AutoSkipDownloaded");
+    target.auto_skip_downloaded=value.present&&!value.duplicate&&value.raw_value==L"1";
+    return !value.present||value.duplicate||(value.raw_value!=L"0"&&value.raw_value!=L"1");
+}
+static bool ReadLogLevel(Settings& target,const std::wstring& path) {
+    std::wstring text;bool unicode=false;
+    if(!settings_file::Read(path,text,unicode)) {target.log_level=1;return false;}
+    const auto value=settings_file::Find(text,L"LogLevel");
+    if(value.present&&!value.duplicate) {
+        if(value.raw_value==L"0")target.log_level=0;
+        else if(value.raw_value==L"1")target.log_level=1;
+        else if(value.raw_value==L"2")target.log_level=2;
+        else if(value.raw_value==L"4")target.log_level=4;
+        else {target.log_level=1;return true;}
+        return settings_file::Find(text,L"Log").present||settings_file::Find(text,L"DebugLog").present;
+    }
+    target.log_level=1;
+    return true;
 }
 // INI-only preferences are read once. Persistence inserts missing defaults,
 // but never writes a stale startup snapshot over values edited before restart.
@@ -142,6 +218,8 @@ static void InsertMissingRestartDefaults(std::wstring& text) {
     for(const auto& flag:restart_flags)
         if(!settings_file::Find(text,flag.key).present)
             settings_file::Set(text,flag.key,flag.default_value?L"1":L"0");
+    if(!settings_file::Find(text,L"CaptureSpeedLimit").present)
+        settings_file::Set(text,L"CaptureSpeedLimit",L"0");
 }
 static bool ReachedGeneration(volatile LONG& progress,unsigned expected) {
     return static_cast<LONG>(unsigned(InterlockedCompareExchange(&progress,0,0))-expected)>=0;
@@ -160,8 +238,13 @@ static DWORD WINAPI PersistSettings(LPVOID) {
             ok=settings_file::Read(ini,text,unicode);
             if(ok) {
                 auto flag=[&](const wchar_t* key,bool value){settings_file::Set(text,key,value?L"1":L"0");};
-                flag(L"Downloads",snapshot.downloads);flag(L"Ogg",snapshot.ogg);flag(L"FLAC",snapshot.flac);flag(L"AAC",snapshot.aac);flag(L"Lyrics",snapshot.lyrics);
+                flag(L"Downloads",snapshot.downloads);flag(L"Ogg",snapshot.ogg);flag(L"FLAC",snapshot.flac);flag(L"AAC",snapshot.aac);flag(L"Podcasts",snapshot.podcasts);flag(L"Lyrics",snapshot.lyrics);
+                flag(L"Windows Playback Fallback",snapshot.windows_playback_fallback);
+                settings_file::Set(text,L"CaptureSpeed",std::to_wstring(snapshot.capture_speed));
                 flag(L"UpdateExistingMetadata",snapshot.update_existing_metadata);
+                flag(L"AutoSkipDownloaded",snapshot.auto_skip_downloaded);
+                settings_file::Set(text,L"LogLevel",std::to_wstring(snapshot.log_level));
+                settings_file::Erase(text,L"Log");settings_file::Erase(text,L"DebugLog");
                 InsertMissingRestartDefaults(text);
                 flag(L"TrackNumberInFilename",snapshot.track_number_in_filename);
                 flag(L"ConvertNumberedFilenames",snapshot.convert_numbered_filenames && !snapshot.track_number_in_filename);
@@ -219,14 +302,20 @@ void InitSettings(HMODULE proxy) {
     settings.ogg=GetPrivateProfileIntW(L"To Disk",L"Ogg",1,ini.c_str())!=0;
     settings.flac=GetPrivateProfileIntW(L"To Disk",L"FLAC",1,ini.c_str())!=0;
     const bool filename_options_pending=ReadFilenameOptions(settings,ini);
+    const bool capture_speed_pending=ReadCaptureSpeed(settings,ini);
+    const bool capture_speed_limit_pending=ReadCaptureSpeedLimit(settings,ini);
+    const bool capture_speed_disallowed=settings.capture_speed>1&&settings.capture_speed>settings.capture_speed_limit;
+    if(capture_speed_disallowed)settings.capture_speed=1;
+    const bool windows_playback_fallback_pending=ReadWindowsPlaybackFallback(settings,ini);
+    const bool auto_skip_pending=ReadAutoSkipDownloaded(settings,ini);
+    const bool log_level_pending=ReadLogLevel(settings,ini);
     const bool restart_options_pending=ReadRestartOptions(settings,ini);
-    const bool startup_options_pending=filename_options_pending||restart_options_pending;
+    const bool startup_options_pending=filename_options_pending||capture_speed_pending||capture_speed_limit_pending||capture_speed_disallowed||windows_playback_fallback_pending||auto_skip_pending||log_level_pending||restart_options_pending;
     settings.aac=GetPrivateProfileIntW(L"To Disk",L"AAC",0,ini.c_str())!=0;
+    settings.podcasts=GetPrivateProfileIntW(L"To Disk",L"Podcasts",0,ini.c_str())!=0;
     settings.metadata=GetPrivateProfileIntW(L"To Disk",L"Metadata",1,ini.c_str())!=0;
     settings.lyrics=GetPrivateProfileIntW(L"To Disk",L"Lyrics",1,ini.c_str())!=0;
     settings.update_existing_metadata=GetPrivateProfileIntW(L"To Disk",L"UpdateExistingMetadata",1,ini.c_str())!=0;
-    settings.log=GetPrivateProfileIntW(L"To Disk",L"Log",1,ini.c_str())!=0;
-    settings.debug_log=GetPrivateProfileIntW(L"To Disk",L"DebugLog",0,ini.c_str())!=0;
     settings.max_buffered_mib=std::max(8u,std::min(512u,GetPrivateProfileIntW(L"History",L"MaxBufferedMiB",500,ini.c_str())));
     wchar_t raw[2048],expanded[4096];
     GetPrivateProfileStringW(L"To Disk",L"Save Location",L"",raw,2048,ini.c_str());
@@ -238,8 +327,10 @@ void InitSettings(HMODULE proxy) {
     DWORD length=ExpandEnvironmentStringsW(raw,expanded,4096);
     if(raw[0] && length && length<=4096) {settings.root=expanded;settings.save_location=raw;}
     settings.music_folder=IsMusic(settings.root);
-    downloads_enabled=settings.downloads; ogg_enabled=settings.ogg; flac_enabled=settings.flac; aac_enabled=settings.aac;
-    log_enabled=settings.log;debug_enabled=settings.debug_log;networking_enabled=settings.debug_networking;connect_logging_enabled=settings.debug_connect;hook_diagnostics_enabled=settings.debug_hook_diagnostics;
+    downloads_enabled=settings.downloads; ogg_enabled=settings.ogg; flac_enabled=settings.flac; aac_enabled=settings.aac; podcasts_enabled=settings.podcasts;
+    capture_speed_value=LONG(settings.capture_speed);
+    capture_speed_limit_value=LONG(settings.capture_speed_limit);
+    log_level_value=LONG(settings.log_level);networking_enabled=settings.debug_networking;connect_logging_enabled=settings.debug_connect;hook_diagnostics_enabled=settings.debug_hook_diagnostics;
     StartLogger();
     settings_signal=CreateEventW(nullptr,FALSE,FALSE,nullptr);
     persist_done=CreateEventW(nullptr,FALSE,FALSE,nullptr);
@@ -260,15 +351,25 @@ void InitSettings(HMODULE proxy) {
 Settings GetSettings() {
     SharedSrw guard(lock);return settings;
 }
-bool LoggingEnabled() { return log_enabled!=0; }
-bool DebugLoggingEnabled() { return DiagnosticsEnabled(log_enabled!=0,debug_enabled!=0); }
+bool LoggingEnabled() { return LogLevel()!=0; }
+unsigned LogLevel() {return unsigned(InterlockedCompareExchange(&log_level_value,0,0));}
+bool DebugLoggingEnabled() { return LogLevel()>=4; }
 bool ConnectLoggingEnabled() { return connect_logging_enabled!=0 && DebugLoggingEnabled(); }
 bool NetworkingLoggingEnabled() { return networking_enabled!=0 && DebugLoggingEnabled(); }
-bool HookDiagnosticsEnabled() { return hook_diagnostics_enabled!=0 && NetworkingLoggingEnabled(); }
+bool HookDiagnosticsEnabled() { return hook_diagnostics_enabled!=0 && DebugLoggingEnabled(); }
 bool OggEnabled() { return downloads_enabled && ogg_enabled; }
 bool FlacEnabled() { return downloads_enabled && flac_enabled; }
 bool AACEnabled() { return downloads_enabled && aac_enabled; }
+bool PodcastsEnabled() { return downloads_enabled && podcasts_enabled; }
 unsigned CaptureEpoch() { return unsigned(InterlockedCompareExchange(&capture_epoch,0,0)); }
+unsigned CaptureSpeed() { return unsigned(InterlockedCompareExchange(&capture_speed_value,0,0)); }
+unsigned CaptureSpeedLimit() { return unsigned(InterlockedCompareExchange(&capture_speed_limit_value,0,0)); }
+bool CaptureAccelerationAvailable() {return InterlockedCompareExchange(&capture_acceleration_available,0,0)!=0;}
+void SetCaptureAccelerationAvailable(bool available) {InterlockedExchange(&capture_acceleration_available,available?1:0);}
+bool CaptureSpeedAvailable(unsigned speed) {
+    return capture_speed::Supported(speed)&&(speed==1||
+        (speed<=CaptureSpeedLimit()&&CaptureAccelerationAvailable()));
+}
 static bool Set(const wchar_t* key,bool value,bool& field,volatile LONG* fast,bool affects_capture=true) {
     bool ok=false;
     {
@@ -286,8 +387,30 @@ static bool Set(const wchar_t* key,bool value,bool& field,volatile LONG* fast,bo
 bool SetDownloads(bool v) { return Set(L"Downloads",v,settings.downloads,&downloads_enabled); }
 bool SetOgg(bool v) { return Set(L"Ogg",v,settings.ogg,&ogg_enabled); }
 bool SetFlac(bool v) { return Set(L"FLAC",v,settings.flac,&flac_enabled); }
+bool SetPodcasts(bool v) { return Set(L"Podcasts",v,settings.podcasts,&podcasts_enabled); }
+bool SetWindowsPlaybackFallback(bool v) { return Set(L"Windows Playback Fallback",v,settings.windows_playback_fallback,nullptr,false); }
 bool SetLyrics(bool v) { return Set(L"Lyrics",v,settings.lyrics,nullptr,false); }
+bool SetAutoSkipDownloaded(bool v) { return Set(L"AutoSkipDownloaded",v,settings.auto_skip_downloaded,nullptr,false); }
 bool SetUpdateExistingMetadata(bool v) { return Set(L"UpdateExistingMetadata",v,settings.update_existing_metadata,nullptr,false); }
+bool SetCaptureSpeed(unsigned speed) {
+    if(!CaptureSpeedAvailable(speed))return false;
+    bool ok=false;
+    {
+    ExclusiveSrw guard(lock);ok=settings_signal!=nullptr;
+    if(ok) {
+        if(settings.capture_speed!=speed) {
+            // Decoded-output pacing does not alter the compressed Ogg/FLAC/AAC
+            // bytes already being retained. Keep their capture lifecycle alive;
+            // Listen::Observe independently invalidates mixed-speed coverage.
+            settings.capture_speed=speed;
+            InterlockedExchange(&capture_speed_value,LONG(speed));
+        }
+        ++settings.generation;
+    }
+    }
+    if(ok)SetEvent(settings_signal);
+    return ok;
+}
 bool SetSaveLocation(const std::wstring& root) {
     if(root.empty() || root.size()>2047 || !(root.size()>2 && (root[1]==L':' || root.rfind(L"\\\\",0)==0))) return false;
     DWORD attributes=GetFileAttributesW(WindowsPath(root).c_str());

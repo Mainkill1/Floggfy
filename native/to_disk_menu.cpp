@@ -56,10 +56,24 @@ hooks::InitController submenu_init;
 constexpr int root_id=28480,downloads_id=28481,location_id=28482,flac_id=28483,ogg_id=28484;
 constexpr int song_id=28485,last_quality_id=song_id+3,lyrics_id=28489;
 constexpr int recent_id=28490,first_recent_id=28491;
+constexpr int speed_root_id=28474,first_speed_id=28475,last_speed_id=28479;
+constexpr int podcasts_id=28473,auto_skip_id=28472;
 static_assert(root_id>=cef_menu::kUserCommandFirst &&
               first_recent_id+history::kRecentDownloadLimit-1<=cef_menu::kUserCommandLast,
               "Recent commands stay within the CEF user command range (26500..28500)");
 static String Text(const std::wstring& s) { return {const_cast<wchar_t*>(s.c_str()),s.size(),nullptr}; }
+static const char* SettingName(int command) noexcept {
+    if(command==downloads_id)return "Downloads";
+    if(command==ogg_id)return "Ogg";
+    if(command==podcasts_id)return "Podcasts";
+    if(command==lyrics_id)return "Lyrics";
+    if(command==auto_skip_id)return "Auto Skip Downloaded";
+    return "FLAC";
+}
+static void SettingOutcomeLine(int command,bool accepted,bool enabled,char* line,size_t size) noexcept {
+    if(accepted)snprintf(line,size,"%s %s",SettingName(command),enabled?"enabled":"disabled");
+    else snprintf(line,size,"%s change failed; remains %s",SettingName(command),enabled?"enabled":"disabled");
+}
 static bool Executable(const void* address) {
     if(!address) return false;
     MEMORY_BASIC_INFORMATION memory{};
@@ -123,6 +137,17 @@ static void UpdateQuality(Menu* menu,const history::PlaybackQualitySnapshot* son
         MenuMethods::SetVisible(menu,id,int(visible));
     }
 }
+static void RefreshSpeedMenu(Menu* parent) {
+    if(!parent||MenuMethods::IndexOf(parent,speed_root_id)<0)return;
+    auto* speed_menu=MenuMethods::GetSubmenu(parent,speed_root_id);if(!speed_menu)return;
+    MenuReference speed_reference(speed_menu);
+    constexpr unsigned speeds[]{1,2,4,8,10};
+    const auto selected=history::CaptureSpeed();
+    for(unsigned i=0;i<5;++i)if(MenuMethods::IndexOf(speed_menu,first_speed_id+int(i))>=0) {
+        MenuMethods::SetChecked(speed_menu,first_speed_id+int(i),int(selected==speeds[i]));
+        MenuMethods::SetEnabled(speed_menu,first_speed_id+int(i),int(history::CaptureSpeedAvailable(speeds[i])));
+    }
+}
 static void Populate(Menu* menu) {
     static thread_local MenuCapabilities capability;
     if(!capability.Check(menu) || MenuMethods::IsSubmenu(menu)) return;
@@ -165,9 +190,24 @@ static void Populate(Menu* menu) {
         MenuMethods::SetEnabled(child,recent_id,0);
         MenuMethods::SetVisible(child,recent_id,0);
     }
+    if(inserted) {
+        std::wstring label=L"Capture Speed";auto text=Text(label);
+        if(auto* speed_menu=MenuMethods::AddSubmenu(child,speed_root_id,&text)) {
+            MenuReference speed_reference(speed_menu);
+            constexpr unsigned speeds[]{1,2,4,8,10};
+            for(unsigned i=0;i<5;++i) {
+                const auto speed_label=std::to_wstring(speeds[i])+L"x";auto speed_text=Text(speed_label);
+                MenuMethods::AddCheckItem(speed_menu,first_speed_id+int(i),&speed_text);
+                MenuMethods::SetChecked(speed_menu,first_speed_id+int(i),int(state.capture_speed==speeds[i]));
+            }
+        }
+    }
     item(flac_id,state.flac ? L"FLAC (Enabled)" : L"FLAC (Disabled)",state.flac,true);
     item(ogg_id,state.ogg ? L"Ogg (Enabled)" : L"Ogg (Disabled)",state.ogg,true);
+    item(podcasts_id,state.podcasts ? L"Podcasts (Enabled)" : L"Podcasts (Disabled)",state.podcasts,true);
     item(lyrics_id,state.lyrics ? L"Lyrics (Enabled)" : L"Lyrics (Disabled)",state.lyrics,true);
+    item(auto_skip_id,state.auto_skip_downloaded ? L"Auto Skip Downloaded (Enabled)" : L"Auto Skip Downloaded (Disabled)",state.auto_skip_downloaded,true);
+    RefreshSpeedMenu(child);
     UpdateQuality(child);
 }
 static Menu* AddSubmenuHook(Menu* menu,int id,const String* text) {
@@ -344,23 +384,44 @@ static void Execute(Delegate* self,Menu* menu,int command,int flags) {
     }
     if(command==recent_id) {return;}
     if(command>=song_id && command<=last_quality_id) {return;}
+    if(command>=first_speed_id && command<=last_speed_id) {
+        constexpr unsigned speeds[]{1,2,4,8,10};const auto speed=speeds[command-first_speed_id];
+        if(!history::CaptureSpeedAvailable(speed)) {
+            const auto active=history::CaptureSpeed();char line[128];
+            snprintf(line,sizeof(line),"request=%ux rejected; active=%ux; acceleration disabled or unavailable",speed,active);
+            history::LogEvent(history::LogKind::Warning,"capture-speed",line);
+            MessageBoxW(GetActiveWindow(),L"Accelerated capture is disabled or unavailable; the current speed remains active.",L"To Disk",MB_OK|MB_ICONINFORMATION);
+            return;
+        }
+        const bool ok=history::SetCaptureSpeed(speed);
+        if(ok)for(int id=first_speed_id;id<=last_speed_id;++id)
+            if(MenuMethods::IndexOf(menu,id)>=0)MenuMethods::SetChecked(menu,id,int(id==command));
+        const auto active=history::CaptureSpeed();char line[160];
+        snprintf(line,sizeof(line),"request=%ux accepted=%d active=%ux; replay the current track from the beginning",speed,ok,active);
+        history::LogEvent(ok?history::LogKind::Activity:history::LogKind::Failure,ok?"settings":"failed",line);
+        if(!ok)MessageBoxW(GetActiveWindow(),L"The capture speed could not be saved; the current speed remains active.",L"To Disk",MB_OK|MB_ICONERROR);
+        return;
+    }
     auto* w=Self(self); auto settings=history::GetSettings(); bool handled=true,ok=true;
     switch(command) {
         case downloads_id: ok=history::SetDownloads(!settings.downloads); break;
         case ogg_id: ok=history::SetOgg(!settings.ogg); break;
+        case podcasts_id: ok=history::SetPodcasts(!settings.podcasts); break;
         case location_id: history::PickSaveLocation(GetActiveWindow()); break;
         case lyrics_id: ok=history::SetLyrics(!settings.lyrics); break;
+        case auto_skip_id: ok=history::SetAutoSkipDownloaded(!settings.auto_skip_downloaded); break;
         case flac_id: ok=history::SetFlac(!settings.flac); break;
         default: handled=false;
     }
     if(handled) {
-        if(command==downloads_id || command==ogg_id || command==flac_id || command==lyrics_id) {
+        if(command==downloads_id || command==ogg_id || command==flac_id || command==podcasts_id || command==lyrics_id || command==auto_skip_id) {
             auto updated=history::GetSettings();
-            bool value=command==downloads_id ? updated.downloads : command==ogg_id ? updated.ogg : command==lyrics_id ? updated.lyrics : updated.flac;
-            std::wstring label=command==downloads_id ? L"Downloads" : command==ogg_id ? L"Ogg" : command==lyrics_id ? L"Lyrics" : L"FLAC";
+            bool value=command==downloads_id ? updated.downloads : command==ogg_id ? updated.ogg : command==podcasts_id ? updated.podcasts : command==lyrics_id ? updated.lyrics : command==auto_skip_id ? updated.auto_skip_downloaded : updated.flac;
+            std::wstring label=command==downloads_id ? L"Downloads" : command==ogg_id ? L"Ogg" : command==podcasts_id ? L"Podcasts" : command==lyrics_id ? L"Lyrics" : command==auto_skip_id ? L"Auto Skip Downloaded" : L"FLAC";
             label+=value ? L" (Enabled)" : L" (Disabled)"; auto text=Text(label);
             MenuMethods::SetLabel(menu,command,&text); MenuMethods::SetChecked(menu,command,int(value));
-            char line[160]; snprintf(line,sizeof(line),"To Disk command=%d accepted=%d enabled=%d",command,ok,value); history::LogEvent(ok?history::LogKind::Activity:history::LogKind::Failure,ok?"settings":"failed",line);
+            char line[96];SettingOutcomeLine(command,ok,value,line,sizeof(line));
+            history::LogEvent(ok?history::LogKind::Activity:history::LogKind::Failure,ok?"settings":"failed",line);
         }
         if(!ok) MessageBoxW(GetActiveWindow(),L"The setting could not be saved.",L"To Disk",MB_OK|MB_ICONERROR);
         return;
@@ -375,6 +436,7 @@ static void WillShow(Delegate* self,Menu* menu) {
     history::HookDiagnosticScope diagnostic(history::diagnostics::Phase::MenuWillShow);
     MenuReference reference(menu);
     try {
+    RefreshSpeedMenu(menu);
     if(Self(self)->CapableCached(menu) && MenuMethods::IndexOf(menu,root_id)>=0) Self(self)->opening.Show();
     auto* o=Self(self)->original;
     // CEF transfers one menu reference into every delegate callback. Retain
@@ -412,6 +474,7 @@ static int Format(Delegate* self,Menu* menu,String* label) {
        Self(self)->CapableCached(menu) && MenuMethods::IndexOf(menu,root_id)>=0) {
         if(auto* child=MenuMethods::GetSubmenu(menu,root_id)) {
             MenuReference child_reference(child);
+            RefreshSpeedMenu(child);
             try { if(Self(self)->CapableCached(child) && MenuMethods::IndexOf(child,song_id)>=0 &&
                      MenuMethods::IndexOf(child,downloads_id)>=0) {
                          if(!Self(self)->opening.Visible()) BindSong(Self(self));
@@ -515,7 +578,4 @@ bool PrepareToDiskMenu(HMODULE cef) {
         FinishMenuStartup(false,false);return false;
     }
     return true;
-}
-void StartToDiskMenu(HMODULE cef) {
-    if(PrepareToDiskMenu(cef))FinalizeToDiskMenu(MH_ApplyQueued()==MH_OK);
 }

@@ -2,7 +2,6 @@
 #include "metadata_bridge.h"
 #include "cef_identity.h"
 #include "hook_init_state.h"
-#include "hook_installation.h"
 #include "hook_rollback.h"
 #include "hook_startup_minhook.h"
 #include "rich_metadata.h"
@@ -74,7 +73,7 @@ static int PollDrop(Base* b){auto t=reinterpret_cast<PollTask*>(b);if(--t->refs)
 static int PollOne(Base* b){return reinterpret_cast<PollTask*>(b)->refs==1;}
 static int PollAny(Base* b){return reinterpret_cast<PollTask*>(b)->refs>0;}
 static std::wstring CollectorOptions() {
- return BuildCollectorOptions(GetSettings());
+ return BuildCollectorOptions(GetSettings(),ReadAutoSkipRequest());
 }
 static void PollExecute(Task*) {
  Frame* frame=nullptr;
@@ -95,11 +94,11 @@ static void SchedulePoll(){
  if(!post_task(0,&t->task))poll_pending=false; // The public CEF function consumes the task reference.
 }
 static MetadataCache cache;static SRWLOCK cache_lock=SRWLOCK_INIT,message_lock=SRWLOCK_INIT;
+static std::atomic<std::uint64_t> metadata_revision{1};
 static hooks::InitController metadata_init;
 static hooks::CallbackCounter metadata_callbacks;
 static std::atomic<bool> metadata_running{false},metadata_polling{false};
 static hooks::QueuedHookSet<3> metadata_startup_hooks;
-static hooks::InstallCounts metadata_startup_counts;
 static HANDLE metadata_preparation_thread=nullptr;
 static bool metadata_prepared=false;
 struct Message { ULONGLONG time=0; char data[131073];size_t length=0;};
@@ -131,6 +130,11 @@ static void MergeAvailableFields(const RichMetadata& available,RichMetadata& liv
  // win, while unchanged messages retain already obtained enrichment.
  MergeCachedMetadata(cached,live);
 }
+static bool SameRecordingMetadata(const RichMetadata& left,const RichMetadata& right) {
+ return left.title==right.title&&left.artist==right.artist&&left.album==right.album&&
+        left.uri==right.uri&&left.artwork_url==right.artwork_url&&left.duration==right.duration&&
+        left.fields==right.fields;
+}
 
 static DWORD WINAPI EnrichmentWorker(LPVOID) {
  SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL);
@@ -144,8 +148,9 @@ static DWORD WINAPI EnrichmentWorker(LPVOID) {
    auto preferences=GetSettings();
    if(!preferences.metadata || preferences.generation!=job.generation)continue;
    try {EnrichStoredMetadata(metadata);}catch(...){QueueDiagnostic("cached metadata unavailable; ordinary tags retained");}
+   bool artwork_changed=false;
    if(!metadata.artwork_url.empty()) {
-    try {CacheAlbumArtwork(metadata.uri,metadata.artwork_url);}catch(...){QueueDiagnostic("Spotify artwork unavailable; audio publication remains enabled");}
+    try {artwork_changed=CacheAlbumArtwork(metadata.uri,metadata.artwork_url);}catch(...){QueueDiagnostic("Spotify artwork unavailable; audio publication remains enabled");}
    }
    preferences=GetSettings();
    if(!preferences.metadata || preferences.generation!=job.generation)continue;
@@ -155,7 +160,9 @@ static DWORD WINAPI EnrichmentWorker(LPVOID) {
     if(current && current->uri==metadata.uri) {
      auto merged=*current;MergeAvailableFields(metadata,merged);
      if(!preferences.lyrics)merged.fields.erase("LYRICS");
+     const bool changed=!SameRecordingMetadata(*current,merged);
      cache.Put(merged);
+     if(changed||artwork_changed)metadata_revision.fetch_add(1,std::memory_order_release);
     }}
   }catch(...) {QueueDiagnostic("metadata enrichment failed; current client metadata retained");}
  }
@@ -204,7 +211,9 @@ static DWORD WINAPI MetadataWorker(LPVOID) {
     const auto previous=cache.Find(metadata.title,metadata.artist,metadata.album,metadata.duration);
     if(previous && previous->uri==metadata.uri)MergeAvailableFields(*previous,metadata);
     if(!preferences.lyrics)metadata.fields.erase("LYRICS");
-    cache.Put(metadata);}
+    const bool changed=!previous||!SameRecordingMetadata(*previous,metadata);
+    cache.Put(metadata);
+    if(changed)metadata_revision.fetch_add(1,std::memory_order_release);}
    QueueEnrichment(metadata,preferences.generation);
   }catch(...) {QueueDiagnostic("metadata message failed; next client snapshot will retry");}
  }
@@ -221,7 +230,7 @@ static bool CurrentTimeline(const String* text) {
   if(payload=="v=1&blocked=buffering"||payload.rfind("v=1&blocked=buffering&",0)==0){
    ClientTransition transition;
    if(ParseClientTransition(payload,transition)) {
-    Media next;next.source=MediaSource::Spotify;next.spotify_uri=transition.uri;next.playback_instance=transition.instance;next.position=transition.position;
+    Media next;next.source=MediaSource::Spotify;next.spotify_uri=transition.uri;next.playback_instance=transition.instance;next.position=transition.position;next.explicit_skip=transition.explicit_skip;next.explicit_control=transition.explicit_control;next.control_monitoring=transition.control_monitoring;next.natural_transition=transition.natural;next.transition_pending=transition.pending;
     PublishClientBufferingTransition(std::move(next),transition.sampled_ms,transition.transition_ms);
    }else PublishClientMediaUnavailable("client-buffering",true);
    return true;
@@ -234,7 +243,9 @@ static bool CurrentTimeline(const String* text) {
   if(record.local<0){PublishClientMediaUnavailable("client-device-unknown");return true;}
   Media media;media.source=MediaSource::Spotify;media.spotify_uri=record.metadata.uri;media.playback_instance=record.instance;
   media.title=MetadataWide(record.metadata.title);media.artist=MetadataWide(record.metadata.artist);media.album=MetadataWide(record.metadata.album);
-  media.position=record.position;media.duration=record.metadata.duration;media.playing=record.playing;media.playback_status=record.playing?4:5;
+  media.position=record.position;media.duration=record.metadata.duration;media.playback_speed=record.speed;media.playing=record.playing;media.playback_status=record.playing?4:5;
+  media.explicit_control=record.explicit_control;
+  media.prior_control=record.prior_control;
   PublishClientMedia(std::move(media),record.sampled_ms);
  }catch(...){InvalidateClientMedia();try{PublishClientMediaUnavailable("client-timeline-exception");}catch(...){}}
  return true;
@@ -330,6 +341,7 @@ static int CreateHook(const void* win,Client* client,const String* url,const voi
 static Browser* SyncHook(const void* win,Client* client,const String* url,const void* settings,void* extra,void* context){auto callback=metadata_callbacks.Enter();return original_sync(win,ObserveClient(client),url,settings,extra,context);}
 static void* ViewHook(Client* client,const String* url,const void* settings,void* extra,void* context,void* delegate){auto callback=metadata_callbacks.Enter();return original_view(ObserveClient(client),url,settings,extra,context,delegate);}
 }
+std::uint64_t MetadataRevision() {return metadata_revision.load(std::memory_order_acquire);}
 static bool ReadCachedMetadata(const Media& media,RichMetadata& metadata) {
  const auto title=Utf8(media.title),artist=Utf8(media.artist),album=Utf8(media.album);
  SharedSrw guard(cache_lock);
@@ -457,7 +469,7 @@ bool PrepareMetadataCollector(HMODULE cef) {
  metadata_polling.store(false,std::memory_order_release);metadata_running.store(true,std::memory_order_release);
  metadata_preparation_thread=CreateThread(nullptr,0,MetadataWorker,nullptr,0,nullptr);
  if(!metadata_preparation_thread){metadata_running.store(false,std::memory_order_release);CloseHandle(message_event);message_event=nullptr;LogEvent(LogKind::Warning,"warning","metadata worker startup failed; retry scheduled");metadata_init.Retry(now);return false;}
- metadata_prepared=true;metadata_startup_counts={};
+ metadata_prepared=true;
  auto status=MH_Initialize();if(status==MH_ERROR_ALREADY_INITIALIZED)status=MH_OK;
  if(status!=MH_OK){QueueDiagnostic("metadata MinHook initialization failed");FinishMetadataStartup(false,false);return false;}
  const char* names[]={"cef_browser_host_create_browser","cef_browser_host_create_browser_sync","cef_browser_view_create"};
@@ -466,7 +478,7 @@ bool PrepareMetadataCollector(HMODULE cef) {
  bool complete=true;
  for(unsigned i=0;i<3;i++){
   auto target=reinterpret_cast<void*>(GetProcAddress(cef,names[i]));if(!target)continue;
-  metadata_startup_counts.Found();status=MH_CreateHook(target,callbacks[i],originals[i]);metadata_startup_counts.Created(status==MH_OK);
+  status=MH_CreateHook(target,callbacks[i],originals[i]);
   if(status!=MH_OK){char line[200];snprintf(line,sizeof(line),"metadata hook %s create failed: %s",names[i],MH_StatusToString(status));QueueDiagnostic(line);complete=false;continue;}
   metadata_startup_hooks.Add(target);
  }
@@ -474,8 +486,5 @@ bool PrepareMetadataCollector(HMODULE cef) {
   QueueDiagnostic("metadata startup hook preparation unavailable");FinishMetadataStartup(false,false);return false;
  }
  return true;
-}
-void StartMetadataCollector(HMODULE cef) {
- if(PrepareMetadataCollector(cef))FinalizeMetadataCollector(MH_ApplyQueued()==MH_OK);
 }
 }

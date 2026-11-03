@@ -1,8 +1,10 @@
 #include "recording_file.h"
+#include "mp3_stream.h"
 #include "ogg_history_core.h"
 #include "image_info.h"
 #include "vorbis_headers.h"
 #include "aac_stream.h"
+#include "compressed_buffer.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -15,6 +17,17 @@ uint32_t Little(const uint8_t* p) { return uint32_t(p[0])|(uint32_t(p[1])<<8)|(u
 std::string Field(const Tags& tags,const char* name) {
     for(const auto& field:tags.fields) if(field.first==name) return field.second;
     return {};
+}
+bool UnsignedField(const Tags& tags,const char* name,uint64_t& out) {
+    const auto value=Field(tags,name);if(value.empty())return false;
+    uint64_t result=0;
+    for(const unsigned char digit:value) {
+        if(digit<'0'||digit>'9'||result>(std::numeric_limits<uint64_t>::max()-(digit-'0'))/10)
+            return false;
+        result=result*10+(digit-'0');
+    }
+    if(!result)return false;
+    out=result;return true;
 }
 uint32_t Big(const uint8_t* bytes) {return (uint32_t(bytes[0])<<24)|(uint32_t(bytes[1])<<16)|(uint32_t(bytes[2])<<8)|bytes[3];}
 void Picture(const uint8_t* bytes,size_t size,RecordingFile& record) {
@@ -108,18 +121,26 @@ bool Comments(const uint8_t* b,size_t size,RecordingFile& record,bool vorbis) {
     }
     return vorbis ? p+1==size && b[p]==1 : p==size;
 }
-uint8_t Crc8(const uint8_t* b,size_t n) {
+struct PointerBytes {
+    const uint8_t* bytes;
+    uint8_t operator[](size_t at) const noexcept {return bytes[at];}
+};
+struct BufferedBytes {
+    const CompressedBuffer& bytes;size_t base;
+    uint8_t operator[](size_t at) const noexcept {return bytes[base+at];}
+};
+template<class Source> uint8_t Crc8(const Source& b,size_t n) {
     uint8_t crc=0;
-    while(n--) { crc^=*b++; for(unsigned j=0;j<8;j++) crc=uint8_t((crc<<1)^((crc&128)?7:0)); }
+    for(size_t i=0;i<n;++i) { crc^=b[i]; for(unsigned j=0;j<8;j++) crc=uint8_t((crc<<1)^((crc&128)?7:0)); }
     return crc;
 }
-uint16_t Crc16(const uint8_t* b,size_t n) {
+template<class Source> uint16_t Crc16(const Source& b,size_t n) {
     uint16_t crc=0;
-    while(n--) { crc^=uint16_t(*b++)<<8; for(unsigned j=0;j<8;j++) crc=uint16_t((crc<<1)^((crc&32768)?0x8005:0)); }
+    for(size_t i=0;i<n;++i) { crc^=uint16_t(b[i])<<8; for(unsigned j=0;j<8;j++) crc=uint16_t((crc<<1)^((crc&32768)?0x8005:0)); }
     return crc;
 }
-struct Bits {
-    const uint8_t* bytes; size_t size,position=0; bool ok=true;
+template<class Source> struct Bits {
+    const Source& bytes; size_t size,position=0; bool ok=true;
     uint64_t Read(unsigned count) {
         if(count>64 || count>size*8-position) { ok=false; return 0; }
         uint64_t result=0;
@@ -136,7 +157,7 @@ struct Bits {
         return ok;
     }
 };
-bool Residual(Bits& bits,unsigned block,unsigned order) {
+template<class Source> bool Residual(Bits<Source>& bits,unsigned block,unsigned order) {
     unsigned method=unsigned(bits.Read(2)), partitions=unsigned(bits.Read(4));
     if(method>1 || !bits.ok || (block&((1u<<partitions)-1))) return false;
     unsigned samples=block>>partitions;
@@ -153,7 +174,7 @@ bool Residual(Bits& bits,unsigned block,unsigned order) {
     }
     return bits.ok;
 }
-bool Subframe(Bits& bits,unsigned block,unsigned depth) {
+template<class Source> bool Subframe(Bits<Source>& bits,unsigned block,unsigned depth) {
     if(bits.Read(1)) return false;
     unsigned type=unsigned(bits.Read(6)); bool wasted=bits.Read(1)!=0;
     if(wasted) {
@@ -177,9 +198,9 @@ bool Subframe(Bits& bits,unsigned block,unsigned depth) {
     return Residual(bits,block,order);
 }
 // RFC 9639 sections 9.1-9.3: walk each subframe, not a sync-byte scan.
-bool FlacFrame(const uint8_t* b,size_t size,const Quality& quality,unsigned max_block,
+template<class Source> bool FlacFrame(const Source& b,size_t size,const Quality& quality,unsigned max_block,
                uint64_t expected_sample,uint64_t frame_number,size_t& consumed,unsigned& block) {
-    Bits bits{b,size};
+    Bits<Source> bits{b,size};
     if(bits.Read(14)!=0x3ffe || bits.Read(1)) return false;
     bool variable=bits.Read(1)!=0;
     unsigned block_code=unsigned(bits.Read(4)),rate_code=unsigned(bits.Read(4));
@@ -248,7 +269,8 @@ bool Flac(const uint8_t* b,size_t size,RecordingFile& out) {
     uint64_t samples=0,frames=0;
     while(p<size) {
         size_t consumed=0; unsigned block=0;
-        if(!FlacFrame(b+p,size-p,out.quality,maximum,samples,frames,consumed,block)) return true;
+        const PointerBytes frame{b+p};
+        if(!FlacFrame(frame,size-p,out.quality,maximum,samples,frames,consumed,block)) return true;
         samples+=block; ++frames; p+=consumed;
         if(samples>total || (samples<total && block!=maximum && !(b[p-consumed+1]&1))) return true;
     }
@@ -314,6 +336,21 @@ std::string Utf8(const std::wstring& value) {
     return result;
 }
 }
+bool FindValidatedFlacFrame(const CompressedBuffer& bytes,const Quality& quality,
+                            unsigned max_block,uint64_t expected_sample,
+                            uint64_t frame_number,size_t begin,size_t& offset) {
+    if(begin>=bytes.size())return false;
+    bool found=false;
+    for(size_t at=begin;at+2<=bytes.size();++at) {
+        if(bytes[at]!=0xff||(bytes[at+1]&0xfe)!=0xf8)continue;
+        size_t length=0;unsigned samples=0;
+        const BufferedBytes frame{bytes,at};
+        if(!FlacFrame(frame,bytes.size()-at,quality,max_block,expected_sample,
+                      frame_number,length,samples))continue;
+        offset=at;found=true;
+    }
+    return found;
+}
 bool ReadRecordingArtwork(const std::vector<uint8_t>& bytes,RecordingArtwork& out) {
     out={};ImageInfo info;if(!ReadImageInfo(bytes,info))return false;
     out.valid=true;out.width=info.width;out.height=info.height;out.bytes=bytes.size();out.mime=info.mime;
@@ -345,11 +382,31 @@ bool InspectRecording(const uint8_t* bytes,size_t size,RecordingFile& out) {
                     out.artwork=std::move(image);
             }
         }
+    } else if(!std::memcmp(bytes,"ID3",3)||(bytes[0]==0xff&&(bytes[1]&0xe0)==0xe0)) {
+        Mp3Info mp3;std::string error;
+        const auto inspected=InspectOwnedMp3Result(bytes,size,mp3,out.tags,error);
+        valid=inspected==Mp3InspectionResult::Valid;
+        if(inspected==Mp3InspectionResult::ResourceFailure)out.inspection_resource_failure=true;
+        if(valid) {
+            out.quality={Codec::Mp3,mp3.rate,mp3.channels,0,
+                mp3.Duration()>0?unsigned((mp3.audio_size*8)/mp3.Duration()):0};
+            const bool owned=Field(out.tags,"HISTORY_COMPLETE_LISTEN")=="1"&&
+                Field(out.tags,"HISTORY_CAPTURE")=="native compressed MP3 input";
+            uint64_t expected_samples=0;
+            out.complete=mp3.complete&&(!owned||
+                (UnsignedField(out.tags,"HISTORY_SAMPLES",expected_samples)&&expected_samples==mp3.samples));
+            if(!out.tags.cover.empty()) {
+                out.has_artwork=ReadRecordingArtwork(out.tags.cover,out.artwork);
+                out.artwork_edit_safe=out.has_artwork;
+                if(out.has_artwork)out.artworks.push_back(out.artwork);
+            }
+        }
     }
     out.owned=valid && Field(out.tags,"HISTORY_COMPLETE_LISTEN")=="1" &&
         ((out.quality.codec==Codec::Flac && Field(out.tags,"HISTORY_CAPTURE")=="native compressed FLAC input") ||
          (out.quality.codec==Codec::Vorbis && Field(out.tags,"HISTORY_CAPTURE")=="native compressed Ogg pages") ||
-         (out.quality.codec==Codec::Aac && Field(out.tags,"HISTORY_CAPTURE")=="native compressed SpAC AAC packets"));
+         (out.quality.codec==Codec::Aac && Field(out.tags,"HISTORY_CAPTURE")=="native compressed SpAC AAC packets") ||
+         (out.quality.codec==Codec::Mp3 && Field(out.tags,"HISTORY_CAPTURE")=="native compressed MP3 input"));
     return valid;
 }
 bool MatchesRecording(const RecordingFile& file,const Catalog& c) {

@@ -6,7 +6,7 @@ const query={queryKey:['track',uri],state:{data:{artists:[{name:'Lead'},{name:'G
 const player={getState:()=>state,getEvents:()=>({})};
 const registry={_map:new Map([[Symbol('PlayerAPI'),{instance:player}]])};
 const main={__reactContainer$test:{memoizedProps:{value:{query,registry}}}};
-const context={window:{__floggfyNative:true},document:{querySelector:()=>main},performance,console:{info:x=>output.push(x)},setInterval:()=>{},encodeURIComponent};
+const context={window:{},document:{querySelector:()=>main},performance,console:{info:x=>output.push(x)},setInterval:()=>{},encodeURIComponent};
 vm.runInNewContext(script,context);
 const fields=()=>Object.fromEntries(output.filter(x=>x.startsWith('FLOGGFY_METADATA_V1:')).at(-1).split(':').slice(1).join(':').split('&').map(x=>x.split('=').map(decodeURIComponent)));
 for(let i=0;i<8;i++)context.window.__floggfyPoll();

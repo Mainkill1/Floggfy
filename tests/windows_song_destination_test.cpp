@@ -8,6 +8,7 @@ static std::atomic<bool> hold_probe{false};
 #include "../native/existing_quality.h"
 #include "../native/flac_history_core.h"
 #include "../native/aac_stream.h"
+#include "../native/mp3_stream.h"
 #include "recording_fixture.h"
 static std::atomic<unsigned> verification_reads{0},probe_attempts{0},collision_searches{0};
 static BOOL WINAPI BlockingAttributes(LPCWSTR path,GET_FILEEX_INFO_LEVELS level,LPVOID data) {
@@ -77,9 +78,14 @@ static void WriteAudio(const std::wstring& file,const history::Catalog& item) {
     Tags tags;tags.fields={{"TITLE",Utf8Text(item.title)},{"ARTIST",Utf8Text(item.artist)},{"ALBUM",Utf8Text(item.album)},
         {"TRACKNUMBER",std::to_string(item.track)},{"DISCNUMBER",std::to_string(item.disc)},
         {"SPOTIFY_URI",item.spotify_uri},{"HISTORY_MEDIA_DURATION",std::to_string(item.duration)},
-        {"HISTORY_COMPLETE_LISTEN","1"},{"HISTORY_CAPTURE",file.find(L".ogg")!=std::wstring::npos ? "native compressed Ogg pages" : file.find(L".m4a")!=std::wstring::npos ? "native compressed SpAC AAC packets" : "native compressed FLAC input"}};
+        {"HISTORY_COMPLETE_LISTEN","1"},{"HISTORY_CAPTURE",file.find(L".ogg")!=std::wstring::npos ? "native compressed Ogg pages" : file.find(L".m4a")!=std::wstring::npos ? "native compressed SpAC AAC packets" : file.find(L".mp3")!=std::wstring::npos ? "native compressed MP3 input" : "native compressed FLAC input"}};
     std::vector<uint8_t> bytes;std::string error;
-    if(file.find(L".m4a")!=std::wstring::npos) {
+    if(file.find(L".mp3")!=std::wstring::npos) {
+        std::vector<uint8_t> source(417*4,0);
+        for(size_t at=0;at<source.size();at+=417){source[at]=0xff;source[at+1]=0xfb;source[at+2]=0x90;}
+        tags.fields.push_back({"HISTORY_SAMPLES","4608"});
+        assert(MakeOwnedMp3(source.data(),source.size(),tags,bytes,error));
+    } else if(file.find(L".m4a")!=std::wstring::npos) {
         // Synthetic access units exercise the supported container, not decoding.
         AacInfo info{44100,2,2048,100,2500,{0xeb,0x8a,0x08,0x00}};
         assert(MakeAacM4a(info,{{0x21,0x10,0x04},{0x21,0x10,0x04}},tags,bytes,error));
@@ -100,7 +106,7 @@ static void LegacyNames(const std::wstring& root) {
     WriteAudio(numbered,song);
     Quality quality;
     assert(ExistingRecording(numbered,song,quality));
-    assert(ResolveRecordingPath(canonical,song)==numbered&&DecideSave(numbered,quality,song)==SaveDecision::Skip);
+    assert(ResolveRecordingDestination(canonical,song).path==numbered&&DecideSave(numbered,quality,song)==SaveDecision::Skip);
     assert(GetFileAttributesW(canonical.c_str())==INVALID_FILE_ATTRIBUTES);
     RecordingFile stored;assert(ReadRecording(numbered,stored));
     bool disc_tag=false,track_tag=false;
@@ -110,18 +116,18 @@ static void LegacyNames(const std::wstring& root) {
     }
     assert(disc_tag&&track_tag);
     assert(MoveFileW(numbered.c_str(),prefixed.c_str()));
-    assert(ResolveRecordingPath(canonical,song)==prefixed&&DecideSave(prefixed,quality,song)==SaveDecision::Skip);
+    assert(ResolveRecordingDestination(canonical,song).path==prefixed&&DecideSave(prefixed,quality,song)==SaveDecision::Skip);
     const auto suffixed=prefixed.substr(0,prefixed.size()-5)+RecordingSuffix(song)+L".flac";
     assert(MoveFileW(prefixed.c_str(),suffixed.c_str()));
-    assert(ResolveRecordingPath(canonical,song)==suffixed&&DecideSave(suffixed,quality,song)==SaveDecision::Skip);
+    assert(ResolveRecordingDestination(canonical,song).path==suffixed&&DecideSave(suffixed,quality,song)==SaveDecision::Skip);
     assert(DeleteFileW(suffixed.c_str()));
     auto other=song;other.disc=1;other.spotify_uri="spotify:track:other-disc-song";
     WriteAudio(canonical,other);
-    const auto alternate=ResolveRecordingPath(canonical,song);
+    const auto alternate=ResolveRecordingDestination(canonical,song).path;
     assert(!alternate.empty()&&alternate!=canonical);
     assert(alternate.substr(alternate.find_last_of(L'\\')+1).rfind(L"Legacy song [",0)==0);
     WriteAudio(alternate,song);
-    assert(ResolveRecordingPath(canonical,song)==alternate&&DecideSave(alternate,quality,song)==SaveDecision::Skip);
+    assert(ResolveRecordingDestination(canonical,song).path==alternate&&DecideSave(alternate,quality,song)==SaveDecision::Skip);
     assert(ExistingRecording(canonical,other,quality));
     assert(DeleteFileW(alternate.c_str())&&DeleteFileW(canonical.c_str()));
 }
@@ -250,6 +256,23 @@ int main() {
     assert(ReadSongDestination(17,11,saved_file)&&saved_file==aac_file);
     assert(verification_reads==before_aac_reads+1&&collision_searches==before_aac_searches);
     assert(DeleteFileW(WindowsPath(aac_file).c_str()));
+    Catalog episode;episode.kind=MediaKind::Podcast;episode.title=L"Episode";episode.artist=L"Publisher";
+    episode.album=episode.show=L"Show";episode.track=12;episode.duration=.10449;
+    episode.spotify_uri="spotify:episode:0000000000000000000001";
+    const auto mp3=OutputPath(root,episode,L".mp3");WriteAudio(mp3,episode);
+    PublishSongDestination(18,root,episode,false,11);AwaitProbe();
+    assert(ReadSongDestination(18,11,saved_file)&&saved_file==mp3);
+    const auto slash=mp3.find_last_of(L'\\');
+    const auto numbered=mp3.substr(0,slash+1)+L"12 - "+mp3.substr(slash+1);
+    assert(MoveFileW(WindowsPath(mp3).c_str(),WindowsPath(numbered).c_str()));
+    RefreshSongDestination();AwaitProbe();
+    assert(ReadSongDestination(18,11,saved_file)&&saved_file==numbered);
+    const auto candidates=RecordingPathCandidates(mp3,episode,true,false);
+    const auto suffixed=std::find_if(candidates.begin(),candidates.end(),[&](const auto& path){return path!=mp3&&path!=numbered&&path.find(L" [")!=std::wstring::npos;});
+    assert(suffixed!=candidates.end()&&MoveFileW(WindowsPath(numbered).c_str(),WindowsPath(*suffixed).c_str()));
+    RefreshSongDestination();AwaitProbe();
+    assert(ReadSongDestination(18,11,saved_file)&&saved_file==*suffixed);
+    assert(DeleteFileW(WindowsPath(*suffixed).c_str()));
     PublishSongDestination(7,root,item,true,11);AwaitProbe();
     assert(ReadSongDestination(7,11,saved_file)&&saved_file==ogg);
     const auto before=saved_file;
@@ -276,7 +299,7 @@ int main() {
     assert(!ReadSongDestination(7,11,saved_file) && saved_file==before);
     auto other=item;other.spotify_uri="spotify:track:other-probe";
     WriteAudio(ogg,other); // Preserve a different recording occupying the legacy filename.
-    const auto alternate=ResolveRecordingPath(ogg,item);assert(alternate!=ogg && !alternate.empty());
+    const auto alternate=ResolveRecordingDestination(ogg,item).path;assert(alternate!=ogg && !alternate.empty());
     WriteAudio(alternate,item);SubmitSong(7,root,item,true,11);
     assert(ReadSongDestination(7,11,saved_file) && saved_file==alternate);
     assert(DeleteFileW(WindowsPath(alternate).c_str()));assert(DeleteFileW(WindowsPath(ogg).c_str()));

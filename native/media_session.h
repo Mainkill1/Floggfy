@@ -10,15 +10,26 @@ struct Media {
     std::wstring title, artist, album, album_artist, app, genre;
     unsigned track = 0;
     double position = 0, duration = 0;
+    unsigned playback_speed = 1;
     bool playing = false;
     int playback_status = -1; // Raw Windows status; unknown for other providers.
     MediaSource source=MediaSource::Windows;
     std::string spotify_uri,playback_instance;
+    bool explicit_skip=false; // Validated local skip action attached to a transition.
+    bool explicit_control=false; // Any observed local playback control, including seeks.
+    bool prior_control=false; // A control on the prior instance acknowledged by this Ready successor.
+    bool control_monitoring=false; // Action listener was attached for this transition.
+    bool natural_transition=false; // Positive renderer transition evidence; absent is unknown.
+    bool transition_pending=false; // Natural-transition candidate awaiting a successor playback ID.
     std::string Key() const;
-    std::string ListenKey() const {return source==MediaSource::Spotify?spotify_uri+(playback_instance.empty()?std::string{}:"\x1f"+playback_instance):Key();}
+    std::string ListenKey() const {
+        if(source==MediaSource::Spotify)
+            return spotify_uri+(playback_instance.empty()?std::string{}:
+                "\x1f"+playback_instance);
+        return spotify_uri.empty()?Key():spotify_uri;
+    }
 };
 std::string Utf8(const std::wstring& s);
-std::string Json(const std::string& s);
 enum class MediaRead { Pending,Ready,Failed,Transition };
 enum class ClientMediaRead { Pending,Ready,Unavailable,Blocked,Transition };
 // Validated renderer snapshots only. Publishing/polling never performs I/O.
@@ -69,15 +80,16 @@ private:
     static DWORD WINAPI Run(void*);
 };
 // App snapshots are primary. Explicit remote/buffering states block capture;
-// missing/incompatible app snapshots permit the independently sequenced WinRT fallback.
+// missing/incompatible app snapshots permit WinRT only after explicit opt-in.
 class PlaybackSnapshotReader {
     MediaSnapshotReader windows_;
     uint64_t client_sequence_=0,windows_sequence_=0,sequence_=0;
-    bool running_=false,windows_started_=false;
+    bool running_=false,windows_started_=false,windows_fallback_=false;
 public:
     explicit PlaybackSnapshotReader(MediaSnapshotReader::Fetch fetch=nullptr,void* context=nullptr) noexcept:windows_(fetch,context){}
     bool Start() noexcept {running_=true;return true;}
     void Stop() noexcept {running_=false;windows_started_=false;windows_.Stop();}
+    void SetWindowsFallback(bool enabled) noexcept;
     bool IsStopped() const noexcept {return windows_.IsStopped();}
     MediaRead TryRead(Media&,double& observed_at,uint64_t& sequence,MediaDiagnostic* diagnostic=nullptr) noexcept;
 };

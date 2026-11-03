@@ -78,15 +78,6 @@ std::string Utf8(const std::wstring& s) {
     if(n) WideCharToMultiByte(CP_UTF8,0,s.data(),int(s.size()),out.data(),n,nullptr,nullptr);
     return out;
 }
-std::string Json(const std::string& s) {
-    const char* hex="0123456789abcdef"; std::string out="\"";
-    for(unsigned char c:s) {
-        if(c=='"' || c=='\\') { out+='\\'; out+=char(c); }
-        else if(c<32) { out+="\\u00"; out+=hex[c>>4]; out+=hex[c&15]; }
-        else out+=char(c);
-    }
-    return out+'"';
-}
 std::string Media::Key() const {
     return Utf8(title)+"\x1f"+Utf8(artist)+"\x1f"+Utf8(album);
 }
@@ -427,6 +418,13 @@ DWORD WINAPI MediaSnapshotReader::Run(void* argument) {
     }
     state->finished.store(true,std::memory_order_release);return 0;
 }
+void PlaybackSnapshotReader::SetWindowsFallback(bool enabled) noexcept {
+    windows_fallback_=enabled;
+    if(!enabled&&windows_started_) {
+        windows_started_=false;
+        windows_.Stop();
+    }
+}
 MediaRead PlaybackSnapshotReader::TryRead(Media& out,double& observed,uint64_t& sequence,MediaDiagnostic* diagnostic) noexcept {
     if(!running_)return MediaRead::Pending;
     MediaDiagnostic detail;
@@ -436,12 +434,17 @@ MediaRead PlaybackSnapshotReader::TryRead(Media& out,double& observed,uint64_t& 
     else if(client==ClientMediaRead::Blocked)result=MediaRead::Failed;
     else if(client==ClientMediaRead::Transition)result=MediaRead::Transition;
     else if(client==ClientMediaRead::Unavailable) {
-        const char* client_reason=detail.reason;
-        detail={};
-        if(!windows_started_)windows_started_=windows_.Start();
-        if(windows_started_)result=windows_.TryRead(out,observed,windows_sequence_,&detail);
-        else {detail.stage="observer-start";detail.reason="thread-start-failed";observed=double(GetTickCount64())/1000;result=MediaRead::Failed;}
-        detail.client_reason=client_reason;
+        if(!windows_fallback_) {
+            observed=double(GetTickCount64())/1000;
+            result=MediaRead::Failed;
+        } else {
+            const char* client_reason=detail.reason;
+            detail={};
+            if(!windows_started_)windows_started_=windows_.Start();
+            if(windows_started_)result=windows_.TryRead(out,observed,windows_sequence_,&detail);
+            else {detail.stage="observer-start";detail.reason="thread-start-failed";observed=double(GetTickCount64())/1000;result=MediaRead::Failed;}
+            detail.client_reason=client_reason;
+        }
     }
     if(diagnostic)*diagnostic=detail;
     if(result!=MediaRead::Pending)sequence=++sequence_;

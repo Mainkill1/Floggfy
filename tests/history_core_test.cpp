@@ -19,9 +19,9 @@ static void checksum(std::vector<uint8_t>& v) {
     } put(v,22,crc,4);
 }
 static std::vector<uint8_t> page(uint32_t seq, uint8_t flags, int64_t samples,
-                                 bool vorbis = false) {
+                                 bool vorbis = false,uint32_t serial=1234) {
     std::vector<uint8_t> v(58,0); std::memcpy(v.data(),"OggS",4);
-    v[5]=flags; put(v,6,uint64_t(samples),8); put(v,14,1234,4); put(v,18,seq,4);
+    v[5]=flags; put(v,6,uint64_t(samples),8); put(v,14,serial,4); put(v,18,seq,4);
     v[26]=1; v[27]=30;
     if(vorbis) { std::memcpy(v.data()+28,"\x01vorbis",7); v[39]=2; put(v,40,44100,4); }
     checksum(v); return v;
@@ -138,18 +138,31 @@ int main(int argc,char** argv) {
     check(p.vorbis_start && p.rate==44100 && p.channels==2,"Vorbis identification parsed");
     auto bad=first; bad.back()^=1;
     check(!ParsePage(bad.data(),bad.size(),p),"bad CRC rejected");
+    uint32_t bad_serial=0,bad_sequence=0;
+    check(ParsePageIdentity(bad.data(),bad.size(),bad_serial,bad_sequence)&&
+          bad_serial==1234&&bad_sequence==1,
+          "bounded identity remains available for isolated corruption cleanup");
     check(!ParsePage(first.data(),first.size()-1,p),"truncated page rejected");
     Stream s; check(push(s,page(0,2,0))==Result::Ignore,"custom Spotify page ignored");
     check(push(s,first)==Result::Begin,"first Vorbis sequence may be one");
     check(push(s,middle)==Result::Append,"contiguous page appended");
     check(push(s,end)==Result::Complete && s.pages==3 && s.Duration()==2,"EOS publishes full stream");
     Stream gap; push(gap,first);
-    check(push(gap,end)==Result::Invalid && !gap.complete,"page gap cannot publish");
-    Stream partial; check(push(partial,middle)==Result::Ignore,"partial listen without BOS ignored");
+    check(push(gap,end)==Result::Invalid && !gap.complete && gap.rejection==OggRejection::Sequence,
+          "page gap cannot publish and reports sequence discontinuity");
+    Stream partial; check(push(partial,middle)==Result::Ignore && partial.rejection==OggRejection::Inactive,
+          "partial listen without BOS ignored with inactive reason");
     Stream corrupt; push(corrupt,first);
-    check(push(corrupt,bad)==Result::Invalid,"CRC failure invalidates stream");
+    check(push(corrupt,bad)==Result::Invalid && corrupt.rejection==OggRejection::InvalidPage,
+          "CRC failure invalidates stream with invalid-page reason");
     Stream backwards; push(backwards,first); push(backwards,middle);
-    check(push(backwards,page(3,4,100))==Result::Invalid,"backward granule rejected");
+    check(push(backwards,page(3,4,100))==Result::Invalid && backwards.rejection==OggRejection::GranuleRegression,
+          "backward granule rejected with precise reason");
+    Stream serial;push(serial,first);
+    check(push(serial,page(2,0,44100,false,4321))==Result::Invalid && serial.rejection==OggRejection::Serial,
+          "different logical stream reports serial change");
+    check(push(serial,first)==Result::Begin && serial.rejection==OggRejection::None,
+          "new valid BOS clears previous rejection");
     Listen listen; listen.Observe("one",0,10,true,0);
     for(int i=1;i<10;i++) check(listen.Observe("one",i,10,true,i).empty(),"read-ahead not a completed listen");
     check(listen.Observe("two",0,10,true,10)=="one","natural track completion retained");
@@ -223,6 +236,45 @@ int main(int argc,char** argv) {
     for(int i=6;i<10;++i)pause_end.Observe("one",i,10,true,7+i-5);
     check(pause_end.Observe("two",0,10,true,12)=="one" && pause_end.completed_time==12,
           "pause duration cannot shift completed boundary to an earlier or new instance");
+    Listen long_pause;long_pause.Observe("one",0,10,true,0);
+    for(int i=1;i<=5;++i)long_pause.Observe("one",i,10,true,i);
+    long_pause.Observe("one",5,10,false,5);
+    check(long_pause.Observe("one",5,10,false,25).empty()&&long_pause.eligible,
+          "long stationary pause preserves listening coverage");
+    check(long_pause.Observe("one",5.1,10,true,25.1).empty()&&long_pause.eligible&&long_pause.generation==1,
+          "resume continues the paused listen generation");
+    for(int i=6;i<10;++i)long_pause.Observe("one",i,10,true,20+i);
+    check(long_pause.Observe("two",0,10,true,30)=="one"&&near(long_pause.completed_time,30),
+          "long pause time is excluded from the natural completion boundary");
+
+    Listen accelerated_pause;accelerated_pause.Observe("fast",0,100,true,0,10);
+    accelerated_pause.Observe("fast",1,100,true,1,10);
+    accelerated_pause.Observe("fast",1.2,100,false,1.2,10);
+    check(accelerated_pause.Observe("fast",1.2,100,false,30,10).empty()&&accelerated_pause.eligible,
+          "long 10x pause preserves coverage");
+    check(accelerated_pause.Observe("fast",1.45,100,true,30.1,10).empty()&&accelerated_pause.eligible,
+          "10x resume tolerates bounded playback-clock sampling drift");
+
+    Listen paused_seek;paused_seek.Observe("one",0,100,true,0);
+    paused_seek.Observe("one",5,100,true,5);paused_seek.Observe("one",5,100,false,5);
+    paused_seek.Observe("one",20,100,false,20);
+    check(!paused_seek.eligible,"forward seek during a pause invalidates coverage");
+
+    Listen paused_scrub;paused_scrub.Observe("one",0,100,true,0);
+    for(int i=1;i<=5;++i)paused_scrub.Observe("one",i,100,true,i);
+    paused_scrub.Observe("one",5,100,false,5);
+    paused_scrub.Observe("one",6,100,false,10);paused_scrub.Observe("one",7,100,false,20);
+    check(!paused_scrub.eligible,"incremental seek cannot walk the pause-position tolerance");
+
+    Listen paused_restart;paused_restart.Observe("one",0,100,true,0);
+    paused_restart.Observe("one",5,100,true,5);paused_restart.Observe("one",5,100,false,5);
+    paused_restart.Observe("one",5,100,false,20);paused_restart.Observe("one",0,100,true,20.1);
+    check(paused_restart.eligible&&paused_restart.generation==2&&paused_restart.completed_generation==0,
+          "seek to start after a pause begins new coverage without completing the old listen");
+
+    Listen unexplained_gap;unexplained_gap.Observe("one",0,100,true,0);
+    unexplained_gap.Observe("one",1,100,true,1);unexplained_gap.Observe("one",1,100,true,20);
+    check(!unexplained_gap.eligible,"long playing gap remains invalid without an observed pause");
     Listen invalidated_wrap;invalidated_wrap.Observe("one",0,10,true,0);
     for(int i=1;i<10;++i)invalidated_wrap.Observe("one",i,10,true,i);
     invalidated_wrap.Observe("one",.1,10,true,10.1);invalidated_wrap.eligible=false;

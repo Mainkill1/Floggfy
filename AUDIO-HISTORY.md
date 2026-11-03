@@ -2,8 +2,9 @@
 
 The native `version.dll` provides complete-listen history and an optional legacy
 connectivity repair for the Windows x64 Spotify client. It copies the compressed
-Vorbis or FLAC bytes that Spotify already reads for playback. It does not request
-tracks, run FFmpeg, transcode audio, or require an external runtime helper.
+Vorbis, FLAC, optionally AAC, or explicitly enabled podcast MP3 bytes that Spotify already reads for playback. It
+does not request tracks, run FFmpeg, transcode audio, or require an external
+runtime helper.
 
 ## Requirements and startup
 
@@ -21,7 +22,8 @@ tracks, run FFmpeg, transcode audio, or require an external runtime helper.
 
 `SpotifyHistory.ini` is included with the release and is created beside
 `version.dll` on first launch when missing.
-The top-left menu contains **To Disk** with Downloads, Save Location, FLAC and Ogg.
+The top-left menu contains **To Disk** with Downloads, Save Location, FLAC, Ogg,
+Podcasts, Lyrics and Capture Speed.
 Checkbox labels and capture switches change immediately when clicked. INI
 persistence runs in a background worker.
 
@@ -33,11 +35,12 @@ NetworkPatch=0
 Save Location=
 Flac=1
 Ogg=1
+Podcasts=0
+CaptureSpeed=1
 Metadata=1
 Lyrics=1
 UpdateExistingMetadata=1
-Log=1
-DebugLog=0
+LogLevel=1
 DebugConnect=1
 DebugNetworking=0
 DebugHookDiagnostics=0
@@ -63,8 +66,18 @@ MaxBufferedMiB=500
   subfolder, including redirected Music folders. A custom directory is accepted.
 - **FLAC/Ogg:** select which original source formats to retain. Enabling FLAC does
   not convert Vorbis playback into lossless audio. Spotify must supply FLAC.
+- **Capture Speed:** `1`, `2`, `4`, `8` or `10`; default `1`. Accelerated capture
+  shortens the decoded PCM output span only after Spotify has consumed the full
+  compressed input span, so saved bytes are not resampled or transcoded. It is
+  intended for muted, unattended capture. Live sound can be choppy, Spotify's
+  progress display may not track real time, and changing speed invalidates the
+  current track so it must be replayed from the beginning. If the decoded-output
+  hook is unavailable or becomes invalid, Floggfy safely falls back to `1x`.
 - **AAC:** INI-only, default `0`. Set `AAC=1` and restart to capture supported
   low-quality SpAC/AAC streams as M4A. Downloads still controls all saving.
+- **Podcasts:** menu/INI toggle, default `0`. When enabled, fully listened
+  `spotify:episode:` items save their original MP3 frames under
+  `Podcasts\<Show>\<Episode>.mp3`. No PCM recording or transcoding is used.
 - **Metadata:** enriches tracks using existing client state, cached metadata, and Spotify's authenticated track/album services. Set 0 and restart to disable its hooks.
 - **UpdateExistingMetadata:** default on. Set 0 to disable metadata-only changes
   to existing files, including lyrics and artwork upgrades. New audio saves and
@@ -73,23 +86,31 @@ MaxBufferedMiB=500
   existing client service, even with the lyrics panel closed. Set 0 in the INI or
   use the menu toggle to stop lyric discovery, cancel pending lyric work, and
   disable lyric enrichment while retaining other metadata and artwork.
-- **Log:** default `1`; the master switch for both logs and all optional diagnostics.
-  `Floggfy.log` contains normal activity, warnings and actionable failures.
-- **DebugLog:** default `0`; requires `Log=1`. Optional playback, metadata and
-  troubleshooting detail goes only to `Floggfy-diagnostics.log`.
-- **DebugConnect:** default `1`; requires `Log=1` and `DebugLog=1`. Enables cached
+- **LogLevel:** default `1`; `0` disables logging, `1` records newly finished
+  tracks plus warnings/failures, `2` also records visible lifecycle activity,
+  and `4` enables the main diagnostic lane. `Floggfy.log` contains general
+  activity and outcomes; troubleshooting detail goes to
+  `Floggfy-diagnostics.log`. Level 4 also adds
+  decoder-ownership evidence using bounded numeric capture, owner, and playback
+  tokens. Raw native addresses, playback IDs, and URIs are never written in
+  ownership records. For a structurally verified FLAC/Ogg decoder, only an exact
+  `Bound` listen generation can resolve overlapping metadata candidates. Missing,
+  conflicting, or lost evidence fails closed; unverified AAC retains the legacy
+  association path.
+- **DebugConnect:** default `1`; requires `LogLevel=4`. Enables cached
   Connect target observations and passive local action requests. `0` opts out of
   those observations even with deep networking enabled. No discovery, playback
   transfer or extra network request is performed. Basic playback identification
   remains independent of this diagnostic option and of `Metadata`.
-- **DebugNetworking:** default `0`; requires `Log=1` and `DebugLog=1`. Enables the
+- **DebugNetworking:** default `0`; requires `LogLevel=4`. Enables the
   read-only decoded Connect observer and allowlisted enrichment I/O observations
-  in the same diagnostics file. No raw payloads, media, credentials, URLs or
+  in `Floggfy-networking.log`. No raw payloads, media, credentials, URLs or
   real device identifiers are written. Receipt is distinct from command execution;
   unobserved traffic and initiators remain unknown. This optional decoded-message
   hook is independent of `NetworkPatch` and the `DebugConnect` cached-state option.
-- **DebugHookDiagnostics:** default `0`; requires `DebugNetworking=1`, `Log=1`
-  and `DebugLog=1`. Enables callback and queue-lock profiling, interval timing
+- **DebugHookDiagnostics:** default `0`; requires `LogLevel=4` and is independent
+  of `DebugNetworking`. It writes `Floggfy-hook-diagnostics.log` with callback
+  and queue-lock profiling, interval timing
   drains, slow/pending menu and startup spans, and capture-worker progress checks.
   Basic debug mode performs no per-callback profiling. Completed spans at least
   10 ms, pending spans after 250 ms, and worker progress gaps after 1 s are sampled
@@ -100,14 +121,14 @@ MaxBufferedMiB=500
 All debug keys retain their defaults and require a full Spotify restart after
 INI edits. `NetworkPatch` remains a separate startup option.
 
-| Effective settings | Normal file | Diagnostics file | Optional callback profiling |
-| --- | --- | --- | --- |
-| `Log=0` (any debug keys) | Off | Off | Off |
-| `Log=1`, `DebugLog=0` | Activity, warnings, failures | Off | Off |
-| `Log=1`, `DebugLog=1` | Same normal events | Playback and metadata detail | Off |
-| Above + `DebugConnect=1` | Same normal events | Adds cached Connect/local action observations | Off |
-| Above + `DebugNetworking=1` | Same normal events | Adds decoded command receipts and enrichment I/O | Off |
-| Above + `DebugHookDiagnostics=1` | Same normal events | Adds timing, slow/pending activity and progress observations | On |
+| Effective settings | `Floggfy.log` | Main diagnostics | Networking | Hook diagnostics |
+| --- | --- | --- | --- | --- |
+| `LogLevel=0` | Off | Off | Off | Off |
+| `LogLevel=1` | Finishes, warnings, failures | Off | Off | Off |
+| `LogLevel=2` | Adds starts, upgrades, renames and other lifecycle activity | Off | Off | Off |
+| `LogLevel=4` | Same lifecycle events | Playback, metadata and ownership detail | Off | Off |
+| Above + `DebugNetworking=1` | Same | Same | Sanitized networking observations | Off |
+| Above + `DebugHookDiagnostics=1` | Same | Same | Independently controlled | Timing, slow/pending activity and progress |
 
 `DebugConnect=0` always disables its cached Connect/action observations;
 `DebugHookDiagnostics=0` always disables callback profiling. An unavailable save
@@ -119,7 +140,8 @@ enqueue-time timestamps; per-queue omission summaries report contention/overflow
 without globally deduplicating real events.
 
 - **MaxBufferedMiB:** 8–512 MiB, default 500, limits compressed capture allocations.
-  There is also an approximately 8 MiB event queue, artwork, and a temporary
+  There is also an approximately 16 MiB event queue sized for bounded 10x
+  transition bursts, artwork, and a temporary
   completed-file buffer during native tagging. Oversized tracks are discarded.
 
 The four restart-only switches above accept only an unquoted `1` (surrounding
@@ -137,6 +159,7 @@ Default music paths are:
 ```text
 <Windows Music>\Spotify\Artists\Artist\Album\Title.ogg
 <Windows Music>\Spotify\Artists\Artist\Album\Title.flac
+<Windows Music>\Spotify\Podcasts\Show\Episode.mp3
 ```
 
 Album folders have no year prefix. New filenames use the title alone by default.
@@ -221,9 +244,9 @@ replaced speculatively. The new compressed audio is not re-encoded.
 Choosing a custom `Media` root retains the requested `Music\Artists` branch.
 The default Music/Spotify root uses `Artists` directly to avoid another Music
 folder. The path builder also supports Compilations, Soundtracks, Various Artists,
-Audiobooks/Author/Series/Book, Podcasts/Show/Year, Music Videos and Concerts. These
+Audiobooks/Author/Series/Book, Podcasts/Show, Music Videos and Concerts. These
 folders are never precreated. Live Windows media metadata currently identifies
-music and Various Artists; reliable category, book-series and podcast-year
+music, Various Artists and Spotify episodes; reliable category and book-series
 metadata enrichment remains additional work. Video extraction is not implemented.
 
 ## Verification and limits
@@ -258,7 +281,7 @@ Unknown/malformed/oversized, embedded-NUL and non-ASCII renderer statuses are
 dropped. Direct generic logger calls with these reserved prefixes also use the
 same sanitizer, so failure words cannot copy a rejected payload into activity
 logs. Explicit enrichment request summaries still require deep mode. Native
-capture failures continue to log normally when `DebugLog=0` and `Log=1`.
+capture failures continue to log normally at `LogLevel=1` or higher.
 
 Activity and outcomes have one producer-selected category and one destination.
 Message wording, track titles and paths never determine severity. Successful
@@ -272,7 +295,7 @@ are reduced to change flags or rejected by the renderer allowlists.
 There is no routine ten-second status heartbeat and no diagnostic format-sniff
 capture detour. The FormatSniff discovery anchor and structural validation remain.
 FLAC errors emit one normal failure and, when enabled, one useful context record.
-Basic `DebugLog` does not measure native callbacks, queue-lock times or empty FLAC
+`LogLevel=4` alone does not measure native callbacks, queue-lock times or empty FLAC
 reads. With profiling explicitly enabled, counters and maxima are drained by a
 separate periodic timing interval, including during pauses; empty intervals stay
 silent. The logger performs file work; audio callbacks never do.
@@ -403,11 +426,13 @@ source-clock regressions, identity changes, larger discontinuities and transitio
 event times retain the existing guards. Seeks, missing observations and
 source changes cannot be stitched into a complete listen.
 
-When app observations are unavailable or incompatible, public Windows media
-sessions provide a fallback on a dedicated observer thread. An empty first
-Spotify session no longer masks another usable session, and a disconnected
-session manager is recreated. Windows fallback requires Spotify's **Settings >
-Display > Show desktop overlay when using media keys** to be enabled.
+When app observations are unavailable or incompatible, the default behavior is
+to keep playback verification unavailable. Set `Windows Playback Fallback=1` in
+`[To Disk]` to opt into public Windows media sessions on a dedicated observer
+thread. An empty first Spotify session no longer masks another usable session,
+and a disconnected session manager is recreated. Windows fallback also requires
+Spotify's **Settings > Display > Show desktop overlay when using media keys** to
+be enabled.
 Normal position/timestamp refreshes are accepted when movement agrees with
 uninterrupted playback, allowing 250 ms of rounding difference and clamping at
 the track end. Source/session changes, discontinuous jumps, regressing clocks
@@ -415,7 +440,7 @@ and observation gaps invalidate coverage. Capture consumes sequenced RAM
 snapshots without waiting for COM, disk, enrichment or network work. Stopping an
 observer does not wait for a stalled COM operation. No Windows artwork is fetched.
 
-With `Log=1` and `DebugLog=1`, `media-session` diagnostics report `source=spotify`
+With `LogLevel=4`, `media-session` diagnostics report `source=spotify`
 or `source=windows`, the failed stage, reason, HRESULT, session/candidate counts,
 and numeric timeline values. Persistent failures are summarized at most every
 30 seconds; recovery and source changes are reported immediately. These summaries
@@ -433,6 +458,28 @@ Matching must be unique in both directions across streams and completed listens.
 Ambiguous matches stay rejected after expiry or eviction; removing an alternative
 is never treated as evidence of ownership. Observation loss under lock contention
 also invalidates coverage instead of losing a guard silently.
+During a natural crossfade or buffering transition, the prior decoder and its
+complete compressed buffer can remain quarantined for up to 15 seconds while the
+new playback identity settles. Recovery requires a changed playback instance,
+recent local playing observations, and working action monitoring with no observed
+skip. Missing or failed action monitoring leaves the transition unverified;
+same-instance buffering or paused playback cannot recover missing coverage.
+Before publishing a provisional capture, Floggfy validates the immutable completed
+buffer once and requires a unique one-to-one match with no unresolved active
+alternatives. The save worker independently checks integrity before publication.
+Explicit skips and seeks remain
+ineligible and are never recovered from the quarantine.
+Complete unmatched recordings stay in the existing bounded RAM cache. Before
+expiry or capacity eviction, Floggfy tries association once more, then checks the
+retained audio before releasing it. The final cache-check log distinguishes valid
+unmatched audio, ambiguous ownership, deferred publication, incomplete audio, and
+invalid data. A full publication queue retains the candidate for retry within the
+same cache limits. Final checks never invent missing listening coverage.
+When a complete, revalidated FLAC/Ogg capture is already bound to the active
+playback instance, a buffering snapshot that repeats that instance does not flush
+the listen. Floggfy waits for a positively different playback instance and then
+uses the bound listen generation for final metadata reconciliation. This also
+separates consecutive plays of the same URI without relying on title or timing.
 Incomplete decoder tails retain their original ten-second deadline. Audio is
 published as a final file only after complete-listen and integrity checks pass.
 Destination resolution returns a verified matching-file snapshot or an explicit
@@ -446,15 +493,18 @@ matching recording, rather than scanning directories or maintaining another cach
 1. Quit Spotify and set **Metadata=0**, then restart. This isolates client metadata
    service/cache discovery changes while retaining basic Windows media tags and
    app playback observations. Audio still saves without a cover.
-2. If menu integration crashes or disappears, set **Menu=0** and restart. Configure
-   Downloads, FLAC and Ogg directly in the INI.
-3. Enable **Log=1** and, temporarily, **DebugLog=1**. Inspect `Floggfy.log` in the
-   configured save root. Check `media-session` lines for the selected source,
+2. If playback is choppy or progress looks wrong, set **Capture Speed** to **1x**
+   and replay the track from its beginning. If menu integration crashes or
+   disappears, set **Menu=0** and restart. Configure Downloads, FLAC, Ogg and
+   `CaptureSpeed` directly in the INI.
+3. Set **LogLevel=4** temporarily. Inspect `Floggfy.log` and
+   `Floggfy-diagnostics.log` in the configured save root. Check `media-session`
+   lines for the selected source,
    failure stage, reason and HRESULT. `source=spotify` works independently of
    Windows media controls. For `source=windows` with `no-spotify-session`, enable
    Spotify's **Settings > Display > Show desktop overlay when using media keys**.
    Replay a fresh track from its beginning after observation recovers. Turn
-   debug logging off afterward.
+   diagnostic logging back to level 1 afterward.
 4. Confirm Downloads is on and the actual source format is enabled. Lossless
    playback produces FLAC; its Ogg parser is unused. Enabling FLAC cannot turn a
    lossy Spotify stream into lossless audio.
@@ -613,15 +663,37 @@ finished Ogg Vorbis ... | Example Artist - Song
 failed FLAC decoder error; stream discarded
 ```
 
-After, optional `Floggfy-diagnostics.log` adds facts rather than the save outcome:
+At `LogLevel=4`, `Floggfy-diagnostics.log` adds facts rather than the save outcome:
 
 ```text
 ... source=spotify ... pos=0.018/231.000 ...
 ... FLAC observation ... epoch=2 ... queue_lag_ms=0.5 ...
 ... direction=local source=client-control request=pause source=local-client
-... direction=in service=connect ... action=pause ... execution=unobserved
 ... direction=local source=client-state paused=1 buf=0 ...
+```
+
+With `DebugNetworking=1`, `Floggfy-networking.log` separately records sanitized
+network observations such as:
+
+```text
+... direction=in service=connect ... action=pause ... execution=unobserved
 ```
 
 Local action requests, received commands and observed playback states describe
 separate events. None alone identifies why playback paused.
+
+## Diagnosing an Ogg capture rejected mid-song
+
+Ogg capture rejections now name the failed guard: `serial-change`,
+`sequence-discontinuity`, `unexpected-bos`, `invalid-granule`,
+`granule-regression`, `invalid-eos-granule`, `inactive-stream`, or an invalid
+page. With `LogLevel=4`, the matching bounded `Ogg observation`
+records context, serial/sequence/granule expectations, flags, format, page and
+byte counts, age, and queue-drop count. It never records raw audio, URI,
+playback-instance, device, or credential data.
+
+Spotify may decode crossfaded tracks concurrently. Floggfy therefore isolates
+logical Ogg streams by both native sync context and Ogg serial; a BOS or page
+from one serial cannot reset another valid serial on the same context. Missing,
+corrupt, backward, duplicated, or ambiguous pages remain fail-closed and require
+replay; Floggfy never guesses at or repairs a sequence gap.

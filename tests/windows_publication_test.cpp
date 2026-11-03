@@ -3,6 +3,7 @@
 #include "recording_fixture.h"
 #include "../native/file_publication.h"
 #include "../native/flac_history_core.h"
+#include "../native/mp3_stream.h"
 #include <cstdio>
 #include <cstdlib>
 using namespace history;
@@ -17,10 +18,26 @@ static void write(const std::wstring& path,const std::vector<uint8_t>& bytes) {
     HANDLE file=CreateFileW(path.c_str(),GENERIC_WRITE,FILE_SHARE_READ,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     DWORD written=0;check(file!=INVALID_HANDLE_VALUE&&WriteFile(file,bytes.data(),DWORD(bytes.size()),&written,nullptr)&&written==bytes.size(),"fixture write");CloseHandle(file);
 }
+static bool complete_quality(const std::wstring& path,Quality& quality) {
+    RecordingFile recording;if(!ReadRecording(path,recording)||!recording.complete)return false;
+    quality=recording.quality;return true;
+}
 static std::vector<uint8_t> tagged(const Catalog& catalog,unsigned bits=16) {
     Tags tags; tags.fields={{"TITLE","Track"},{"ARTIST","Artist"},{"ALBUM","Album"},{"SPOTIFY_URI",catalog.spotify_uri},{"HISTORY_COMPLETE_LISTEN","1"},{"HISTORY_CAPTURE","native compressed FLAC input"}};
     std::vector<uint8_t> result;std::string error;
     check(TagFlac(recording_fixture::fixture(44100,bits),tags,result,error),"tag fixture");return result;
+}
+static std::vector<uint8_t> podcast(const Catalog& catalog) {
+    std::vector<uint8_t> source(417*4,0);
+    for(size_t at=0;at<source.size();at+=417) {
+        source[at]=0xff;source[at+1]=0xfb;source[at+2]=0x90;source[at+3]=0;
+    }
+    Tags tags;tags.fields={{"TITLE","Episode"},{"ARTIST","Publisher"},{"ALBUM","Show"},
+        {"SPOTIFY_URI",catalog.spotify_uri},{"HISTORY_MEDIA_DURATION","0.10449"},
+        {"HISTORY_COMPLETE_LISTEN","1"},{"HISTORY_CAPTURE","native compressed MP3 input"},
+        {"HISTORY_SAMPLES","4608"}};
+    std::vector<uint8_t> result;std::string error;
+    check(MakeOwnedMp3(source.data(),source.size(),tags,result,error),"tag podcast fixture");return result;
 }
 static std::wstring test_mode;
 namespace history {
@@ -52,33 +69,50 @@ int wmain(int argc,wchar_t** argv) {
     check(ExistingRecording(path,catalog,actual)&&actual.bits==24,"upgrade published complete recording");
     auto other=catalog;other.spotify_uri="spotify:track:two";
     check(PublishBytes(path,better,high.data(),high.size(),other)==FilePublication::Failed,"mismatched incoming recording rejected");
-    auto collision=ResolveRecordingPath(path,other);
-    check(collision!=path&&!collision.empty()&&collision==ResolveRecordingPath(path,other),"stable alternate destination for different recording");
+    auto collision=ResolveRecordingDestination(path,other).path;
+    check(collision!=path&&!collision.empty()&&collision==ResolveRecordingDestination(path,other).path,"stable alternate destination for different recording");
     auto different=tagged(other);
     check(PublishBytes(collision,quality,different.data(),different.size(),other)==FilePublication::Saved,"different recording saved separately");
     auto partial=root+L"\\partial.flac";auto broken=bytes;broken.pop_back();write(partial,broken);
-    check(!ReadQuality(partial,actual),"partial owned FLAC never suppresses complete save");
-    check(ResolveRecordingPath(partial,catalog)==partial,"matching old Floggfy partial can be repaired");
+    check(!complete_quality(partial,actual),"partial owned FLAC never suppresses complete save");
+    check(ResolveRecordingDestination(partial,catalog).path==partial,"matching old Floggfy partial can be repaired");
     check(PublishBytes(partial,quality,bytes.data(),bytes.size(),catalog)==FilePublication::Upgraded,"owned partial repaired even at equal quality");
+    Catalog episode;episode.kind=MediaKind::Podcast;episode.title=L"Episode";episode.artist=L"Publisher";
+    episode.album=episode.show=L"Show";episode.spotify_uri="spotify:episode:0000000000000000000001";episode.duration=.10449;
+    auto complete_mp3=podcast(episode);RecordingFile mp3_recording;
+    check(InspectRecording(complete_mp3.data(),complete_mp3.size(),mp3_recording)&&mp3_recording.complete,"complete podcast fixture");
+    Mp3Info mp3_info;Tags mp3_tags;std::string mp3_error;
+    check(InspectOwnedMp3(complete_mp3.data(),complete_mp3.size(),mp3_info,mp3_tags,mp3_error),"podcast audio bounds");
+    auto partial_mp3=root+L"\\partial.mp3";auto frame_aligned=complete_mp3;
+    frame_aligned.resize(mp3_info.audio_offset+417*2);write(partial_mp3,frame_aligned);
+    check(ResolveRecordingDestination(partial_mp3,episode).path==partial_mp3,"frame-aligned owned MP3 remains at its repair path");
+    check(PublishBytes(partial_mp3,mp3_recording.quality,complete_mp3.data(),complete_mp3.size(),episode)==FilePublication::Upgraded,
+          "equal-quality complete MP3 repairs frame-aligned truncation");
+    check(ExistingRecording(partial_mp3,episode,actual),"frame-aligned MP3 repair is complete");
+    auto inside_mp3=root+L"\\inside.mp3";auto inside=complete_mp3;inside.pop_back();write(inside_mp3,inside);
+    check(ResolveRecordingDestination(inside_mp3,episode).path==inside_mp3,"inside-frame owned MP3 remains at its repair path");
+    check(PublishBytes(inside_mp3,mp3_recording.quality,complete_mp3.data(),complete_mp3.size(),episode)==FilePublication::Upgraded,
+          "equal-quality complete MP3 repairs inside-frame truncation");
+    check(ExistingRecording(inside_mp3,episode,actual),"inside-frame MP3 repair is complete");
     auto unknown=root+L"\\unknown.flac";auto header=recording_fixture::fixture();header.resize(42);write(unknown,header);
-    check(!ReadQuality(unknown,actual)&&ResolveRecordingPath(unknown,catalog)!=unknown,"unowned header-only file preserved and disambiguated");
+    check(!complete_quality(unknown,actual)&&ResolveRecordingDestination(unknown,catalog).path!=unknown,"unowned header-only file preserved and disambiguated");
     check(PublishBytes(unknown,quality,bytes.data(),bytes.size(),catalog)==FilePublication::Skipped,"unknown file never overwritten");
     auto locked=root+L"\\locked.flac";write(locked,bytes);
     HANDLE lock=CreateFileW(locked.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr);
     check(lock!=INVALID_HANDLE_VALUE,"lock target");
     check(PublishBytes(locked,better,high.data(),high.size(),catalog)==FilePublication::Failed,"locked target prevents upgrade without damaging old file");CloseHandle(lock);
-    check(ReadQuality(locked,actual)&&actual.bits==16,"locked target unchanged");
+    check(complete_quality(locked,actual)&&actual.bits==16,"locked target unchanged");
     auto raced_new=root+L"\\raced-new.flac";
     test_mode=L"race-new";
     check(PublishBytes(raced_new,quality,bytes.data(),bytes.size(),catalog)==FilePublication::Failed,"unexpected first-save destination never overwritten");
     test_mode.clear();
-    check(GetFileAttributesW(raced_new.c_str())!=INVALID_FILE_ATTRIBUTES&&!ReadQuality(raced_new,actual),"racing user's file survives first save");
+    check(GetFileAttributesW(raced_new.c_str())!=INVALID_FILE_ATTRIBUTES&&!complete_quality(raced_new,actual),"racing user's file survives first save");
     auto raced_upgrade=root+L"\\raced-upgrade.flac";write(raced_upgrade,bytes);
     test_mode=L"race-upgrade";
     check(PublishBytes(raced_upgrade,better,high.data(),high.size(),catalog)==FilePublication::Failed,"unexpected upgrade destination never overwritten");
     test_mode.clear();
-    check(!ReadQuality(raced_upgrade,actual),"racing user's upgrade target survives rollback failure");
-    auto recovered_race=ResolveRecordingPath(raced_upgrade,catalog);
+    check(!complete_quality(raced_upgrade,actual),"racing user's upgrade target survives rollback failure");
+    auto recovered_race=ResolveRecordingDestination(raced_upgrade,catalog).path;
     check(recovered_race!=raced_upgrade&&ExistingRecording(recovered_race,catalog,actual),"old recording recovered beside racing target on next operation");
     auto retained=root+L"\\retained.flac";write(retained,bytes);write(retained+L".previous",bytes);
     check(PublishBytes(retained,better,high.data(),high.size(),catalog)==FilePublication::Upgraded,
@@ -104,7 +138,7 @@ int wmain(int argc,wchar_t** argv) {
     check(WaitForSingleObject(process.hProcess,10000)==WAIT_OBJECT_0,"interrupted publisher exits");
     DWORD status=0;GetExitCodeProcess(process.hProcess,&status);CloseHandle(process.hThread);CloseHandle(process.hProcess);
     check(status==77&&GetFileAttributesW(interrupted.c_str())==INVALID_FILE_ATTRIBUTES,"terminated after old recording reserved");
-    check(ResolveRecordingPath(interrupted,catalog)==interrupted&&ExistingRecording(interrupted,catalog,actual)&&actual.bits==16,"next operation restores old recording after process termination");
+    check(ResolveRecordingDestination(interrupted,catalog).path==interrupted&&ExistingRecording(interrupted,catalog,actual)&&actual.bits==16,"next operation restores old recording after process termination");
     WIN32_FIND_DATAW abandoned={};HANDLE stages=FindFirstFileW((interrupted+L".complete-*").c_str(),&abandoned);
     if(stages!=INVALID_HANDLE_VALUE) { do {DeleteFileW((root+L"\\"+abandoned.cFileName).c_str());}while(FindNextFileW(stages,&abandoned));FindClose(stages); }
     auto interrupted_new=root+L"\\interrupted-new.flac";
@@ -122,7 +156,7 @@ int wmain(int argc,wchar_t** argv) {
     WIN32_FIND_DATAW data={};HANDLE listing=FindFirstFileW((root+L"\\*.complete-*").c_str(),&data);
     check(listing==INVALID_HANDLE_VALUE,"no staged files remain after handled outcomes");
     listing=FindFirstFileW((root+L"\\*.previous").c_str(),&data);check(listing==INVALID_HANDLE_VALUE,"successful upgrades remove protected backup");
-    for(const auto& file:{path,collision,partial,unknown,locked,raced_new,raced_upgrade,recovered_race,interrupted,retained,preserved,recovered_best,interrupted_new,retained_partial,recovered_partial})DeleteFileW(file.c_str());
+    for(const auto& file:{path,collision,partial,partial_mp3,inside_mp3,unknown,locked,raced_new,raced_upgrade,recovered_race,interrupted,retained,preserved,recovered_best,interrupted_new,retained_partial,recovered_partial})DeleteFileW(file.c_str());
     check(RemoveDirectoryW(root.c_str())!=0,"test cleanup");
     std::puts("PASS: identity-safe publication, first-save staging, partial recovery, collisions and locked files");
     return 0;

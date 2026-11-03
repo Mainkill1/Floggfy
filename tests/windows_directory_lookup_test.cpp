@@ -102,7 +102,7 @@ void Conversion(const std::wstring& root) {
     Write(old,Audio(c,16,true));
     {ExclusiveSrw guard(history::lock);history::settings.root=root;history::settings.convert_numbered_filenames=true;
      history::settings.track_number_in_filename=false;history::settings.generation=7;}
-    FilenameCheck check{c,GetSettings(),filename_check_serial.load()};
+    FilenameCheck check;check.catalog=c;check.settings=GetSettings();check.serial=filename_check_serial.load();
     ResetCounts();ProcessFilenameCheck(check);
     assert(listings==1&&attribute_checks==0); // One list shared by FLAC/Ogg/M4A checks.
     assert(GetFileAttributesW(WindowsPath(old).c_str())==INVALID_FILE_ATTRIBUTES);
@@ -202,7 +202,7 @@ void StableArtistFolder(const std::wstring& root) {
     Write(old,Audio(original));
     {ExclusiveSrw guard(history::lock);history::settings.root=root;history::settings.convert_numbered_filenames=true;
      history::settings.track_number_in_filename=false;history::settings.metadata=false;history::settings.generation=7;}
-    FilenameCheck check{catalog,GetSettings(),filename_check_serial.load()};
+    FilenameCheck check;check.catalog=catalog;check.settings=GetSettings();check.serial=filename_check_serial.load();
     ResetCounts();ProcessFilenameCheck(check);assert(listings==2); // Each of the two exact artist folders is listed once.
     assert(GetFileAttributesW(WindowsPath(old).c_str())==INVALID_FILE_ATTRIBUTES);
     RecordingFile saved;assert(ReadRecording(title,saved)&&saved.complete&&MatchesRecording(saved,catalog));
@@ -227,6 +227,7 @@ void StableArtistFolder(const std::wstring& root) {
 }
 }
 namespace history {
+std::uint64_t MetadataRevision(){return 0;}
 std::string ReadClientPlaybackQuality(const Media&){return {};}
 void EnrichCatalog(const Media& media,Catalog& c){c.disc=2;c.spotify_uri="spotify:track:"+Utf8(media.title);if(media.title==L"Collaborative track")c.artist=L"Artist; Guest";}
 void EnrichTags(const Media&,Tags&) {}
@@ -234,7 +235,7 @@ void EnrichTags(const Media&,Tags&) {}
 int wmain(int argc,wchar_t** argv) {
     wchar_t executable[32768];assert(GetModuleFileNameW(nullptr,executable,32768));
     const std::wstring exe=executable,root=exe.substr(0,exe.find_last_of(L'\\'))+L"\\Music-\u97f3\u697d";
-    history::log_enabled=history::debug_enabled=0;
+    history::log_level_value=0;
     if(argc==2&&std::wstring(argv[1])==L"--song-cache") {
         MenuLookup(root);StableArtistFolder(root);
         puts("PASS: verified Song cache avoids directory listings; misses back off; refresh bypasses cooldown; enriched artist tags retain stable folder lookup, prefix conversion and equal-quality reuse");

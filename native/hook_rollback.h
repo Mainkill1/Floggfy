@@ -3,6 +3,13 @@
 #include <atomic>
 
 namespace hooks {
+enum class OptionalPreparation { Ready,Unavailable,UnsafeRollback };
+template<class Create,class Queue,class Remove>
+OptionalPreparation PrepareOptional(Create create,Queue queue,Remove remove) {
+    if(!create())return OptionalPreparation::Unavailable;
+    if(queue())return OptionalPreparation::Ready;
+    return remove()?OptionalPreparation::Unavailable:OptionalPreparation::UnsafeRollback;
+}
 
 struct RollbackStatus {
     bool disabled = true;

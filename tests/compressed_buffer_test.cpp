@@ -1,4 +1,5 @@
 #include "../native/compressed_buffer.h"
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 using namespace history;
@@ -10,6 +11,13 @@ int main() {
     check(b.Append(bytes.data()+65530,bytes.size()-65530,2*65536) && b.capacity()==3*65536,"cross-block append allocates only new blocks");
     check(!b.Append(bytes.data(),65536,0) && b.size()==bytes.size() && b.capacity()==3*65536,"memory cap rejection preserves bytes and allocations");
     for(size_t i=0;i<bytes.size();i++) check(b[i]==bytes[i],"random-access metadata bytes");
+    CompressedBuffer compact;check(compact.Append(bytes.data(),bytes.size(),3*65536),"restart fixture append");
+    check(!compact.RetainPrefixAndSuffix(20,10)&&compact.size()==bytes.size(),"invalid compaction preserves bytes");
+    check(compact.RetainPrefixAndSuffix(17,70000)&&compact.size()==bytes.size()-70000+17,"prefix/suffix compaction");
+    auto compacted=compact.Flatten();
+    check(std::equal(compacted.begin(),compacted.begin()+17,bytes.begin())&&
+          std::equal(compacted.begin()+17,compacted.end(),bytes.begin()+70000),
+          "compaction retains exact selected bytes");
     check(b.Flatten()==bytes && b.size()==0 && b.capacity()==0,"completed compilation preserves bytes and releases blocks");
     puts("PASS: bounded fixed RAM blocks, rejection preservation and complete-buffer compilation");
 }

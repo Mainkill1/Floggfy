@@ -1,0 +1,25 @@
+name: Native code-path tests
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  portable:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Portable native suite
+        run: bash ./test-native.sh
+
+  sanitizer-fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deterministic 50,000-mutation sanitizer campaign
+        run: bash ./test-capture-fuzz.sh 50000 4043931417

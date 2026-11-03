@@ -16,7 +16,6 @@
 #include "async_log.h"
 #include "hook_diagnostics.h"
 #include "metadata_bridge.h"
-#include "module_pending.h"
 #include "pe_imports.h"
 #include "to_disk_menu.h"
 #include "startup_ready.h"
@@ -28,7 +27,6 @@ static INIT_ONCE version_once = INIT_ONCE_STATIC_INIT;
 static HMODULE real_version;
 static bool spotify_main;
 static HMODULE proxy_module;
-static hooks::PendingModule pending_spotify;
 static hooks::InitController connectivity_init;
 
 static void Log(const char* message) {
@@ -315,21 +313,6 @@ static ImportHookResult HookSpotifyImports(HMODULE module) {
     return ImportHookResult::Active;
 }
 
-struct NotificationString { USHORT length, maximum; PWSTR buffer; };
-struct NotificationData {
-    ULONG flags;
-    const NotificationString* full_name;
-    const NotificationString* base_name;
-    PVOID base;
-    ULONG size;
-};
-static VOID CALLBACK DllNotification(ULONG reason, const NotificationData* data, PVOID) {
-    if (reason != 1 || !data || !data->base_name || !data->base_name->buffer) return;
-    const auto& name = *data->base_name;
-    if (name.length == 11 * sizeof(wchar_t) && hooks::IsSpotifyModuleName(name.buffer, 11))
-        pending_spotify.Publish(reinterpret_cast<std::uintptr_t>(data->base));
-}
-
 static void StartConnectivityHook(HMODULE module,bool enabled) {
     // Restart-only: disabled startup performs no import discovery, IAT/vtable
     // writes or retry work. Never try to detach live COM hooks during playback.
@@ -365,14 +348,6 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
     spotify_main = name && !_wcsicmp(name + 1, L"Spotify.exe") && !wcsstr(GetCommandLineW(), L"--type=");
     if (!spotify_main) return 0;
 
-    using Register = LONG (NTAPI*)(ULONG, decltype(&DllNotification), PVOID, PVOID*);
-    FARPROC address = GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "LdrRegisterDllNotification");
-    Register register_notification = nullptr;
-    static_assert(sizeof(register_notification) == sizeof(address), "Function pointer sizes must match");
-    memcpy(&register_notification, &address, sizeof(address));
-    static PVOID notification_cookie = nullptr;
-    if (register_notification) register_notification(0, DllNotification, nullptr, &notification_cookie);
-
     history::InitSettings(proxy_module);
     const auto startup_settings=history::GetSettings();
     const bool network_patch_enabled=startup_settings.network_patch;
@@ -383,8 +358,6 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
     // registration. Stay alive at low frequency so late loads and temporary
     // allocation or hook failures remain recoverable.
     for (unsigned i = 0;; ++i) {
-        const bool spotify_notification = pending_spotify.Consume() != 0;
-        (void)spotify_notification;
         HMODULE cef;
         if(GetModuleHandleExW(0,L"libcef.dll",&cef)) {
             // Queue all initial observers before one suspension/resume. Enabling

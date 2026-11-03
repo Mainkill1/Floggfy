@@ -2,6 +2,7 @@
 #include "../native/recording_file.h"
 #include "../native/flac_history_core.h"
 #include "../native/vorbis_headers.h"
+#include "../native/mp3_stream.h"
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -93,6 +94,26 @@ int main(int argc,char** argv) {
     check(!MatchesRecording(file,catalog),"different URI wins over matching textual metadata");
     catalog.spotify_uri="spotify:track:one";
     check(MatchesRecording(file,catalog),"matching stable URI recognized");
+    std::vector<uint8_t> mp3(417*2,0);for(size_t at:{size_t(0),size_t(417)}) {
+        mp3[at]=0xff;mp3[at+1]=0xfb;mp3[at+2]=0x90;mp3[at+3]=0;
+    }
+    Tags episode_tags;episode_tags.fields={{"TITLE","Episode"},{"ARTIST","Publisher"},{"ALBUM","Show"},
+        {"SPOTIFY_URI","spotify:episode:0000000000000000000001"},{"HISTORY_MEDIA_DURATION","0.052245"},
+        {"HISTORY_COMPLETE_LISTEN","1"},{"HISTORY_CAPTURE","native compressed MP3 input"},
+        {"HISTORY_SAMPLES","2304"}};
+    check(MakeOwnedMp3(mp3.data(),mp3.size(),episode_tags,tagged,error),"owned MP3 fixture");
+    Catalog episode;episode.kind=MediaKind::Podcast;episode.title=L"Episode";episode.artist=L"Publisher";
+    episode.album=episode.show=L"Show";episode.spotify_uri="spotify:episode:0000000000000000000001";episode.duration=.052245;
+    check(InspectRecording(tagged.data(),tagged.size(),file)&&file.complete&&file.owned&&
+          file.quality.codec==Codec::Mp3&&MatchesRecording(file,episode),"owned podcast MP3 recognized");
+    Mp3Info complete_info;Tags complete_tags;
+    check(InspectOwnedMp3(tagged.data(),tagged.size(),complete_info,complete_tags,error),"owned MP3 bounds available");
+    auto frame_boundary=tagged;frame_boundary.resize(complete_info.audio_offset+417);
+    check(InspectRecording(frame_boundary.data(),frame_boundary.size(),file)&&!file.complete&&file.owned&&
+          MatchesRecording(file,episode),"frame-aligned owned MP3 truncation remains repairable");
+    auto inside_frame=tagged;inside_frame.resize(inside_frame.size()-1);
+    check(InspectRecording(inside_frame.data(),inside_frame.size(),file)&&!file.complete&&file.owned&&
+          MatchesRecording(file,episode),"inside-frame owned MP3 truncation remains repairable");
     other=catalog; other.spotify_uri="spotify:track:two";
     check(RecordingSuffix(catalog)!=RecordingSuffix(other),"stable suffix distinguishes recording identity");
     if(argc>1) {

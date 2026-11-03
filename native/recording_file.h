@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <array>
 namespace history {
+class CompressedBuffer;
 // Inspection never decodes or changes compressed audio. It checks container
 // boundaries, checksums, sample/page coverage and supported Vorbis headers.
 // Header/container validation is not a full Vorbis audio-packet decode.
@@ -18,6 +19,12 @@ struct RecordingArtwork {
 // Structural image validation and stable fingerprints of actual encoded image
 // bytes, independent of PICTURE headers or base64 representation.
 bool ReadRecordingArtwork(const std::vector<uint8_t>& bytes,RecordingArtwork& out);
+// Locate a checksum-valid FLAC frame at or after begin. Both variable-block
+// sample numbering and fixed-block frame numbering are validated by the same
+// parser used for final file inspection.
+bool FindValidatedFlacFrame(const CompressedBuffer& bytes,const Quality& quality,
+                            unsigned max_block,uint64_t expected_sample,
+                            uint64_t frame_number,size_t begin,size_t& offset);
 struct RecordingFile {
     Quality quality;
     Tags tags;
@@ -25,6 +32,7 @@ struct RecordingFile {
     bool owned=false;
     bool has_artwork=false;
     bool artwork_edit_safe=true;
+    bool inspection_resource_failure=false;
     RecordingArtwork artwork;
     std::vector<RecordingArtwork> artworks;
     // Exact original picture comment values, including opaque/uninspectable

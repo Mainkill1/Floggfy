@@ -82,7 +82,7 @@ inline std::wstring Trim(std::wstring text) {
 }
 struct IniValue {
     bool present=false,duplicate=false;
-    std::wstring_view value;
+    std::wstring_view value,raw_value;
 };
 inline std::wstring_view TrimView(std::wstring_view text) noexcept {
     const auto first=text.find_first_not_of(L" \t\r");
@@ -100,14 +100,19 @@ inline IniValue Find(std::wstring_view text,const wchar_t* key) noexcept {
     for(size_t position=0;position<text.size();) {
         const auto end=text.find(L'\n',position);
         const auto finish=end==std::wstring_view::npos?text.size():end;
-        const auto line=TrimView(text.substr(position,finish-position));
+        auto physical=text.substr(position,finish-position);
+        if(!physical.empty()&&physical.back()==L'\r')physical.remove_suffix(1);
+        const auto line=TrimView(physical);
         if(!line.empty()&&line.front()==L'['&&line.back()==L']') {
             inside=EqualKey(line,L"[To Disk]");
         }else if(inside&&!line.empty()&&line.front()!=L';') {
-            const auto equal=line.find(L'=');
-            if(equal!=std::wstring_view::npos&&EqualKey(TrimView(line.substr(0,equal)),key)) {
+            const auto equal=physical.find(L'=');
+            if(equal!=std::wstring_view::npos&&EqualKey(TrimView(physical.substr(0,equal)),key)) {
                 if(result.present)result.duplicate=true;
-                else {result.present=true;result.value=TrimView(line.substr(equal+1));}
+                else {
+                    result.present=true;result.raw_value=physical.substr(equal+1);
+                    result.value=TrimView(result.raw_value);
+                }
             }
         }
         position=end==std::wstring_view::npos?text.size():end+1;
@@ -128,6 +133,10 @@ inline void Set(std::wstring& text,const wchar_t* key,const std::wstring& value)
             insertion=next;
             const auto equal=line.find(L'=');
             if(equal!=std::wstring::npos&&_wcsicmp(Trim(line.substr(0,equal)).c_str(),key)==0) {
+                if(found_key) {
+                    text.erase(p,next-p);
+                    continue;
+                }
                 const auto separator=text.find(L'=',p);
                 auto finish=end==std::wstring::npos?text.size():end;
                 if(finish>separator&&text[finish-1]==L'\r')--finish;
@@ -147,5 +156,22 @@ inline void Set(std::wstring& text,const wchar_t* key,const std::wstring& value)
     }
     if(insertion&&text[insertion-1]!=L'\n') {text.insert(insertion,L"\r\n");insertion+=2;}
     text.insert(insertion,std::wstring(key)+L"="+value+L"\r\n");
+}
+inline void Erase(std::wstring& text,const wchar_t* key) {
+    bool inside=false;
+    for(size_t p=0;p<text.size();) {
+        const auto end=text.find(L'\n',p);const auto next=end==std::wstring::npos?text.size():end+1;
+        const auto physical=text.substr(p,(end==std::wstring::npos?text.size():end)-p);
+        const auto line=Trim(physical);
+        if(!line.empty()&&line.front()==L'['&&line.back()==L']')
+            inside=_wcsicmp(line.c_str(),L"[To Disk]")==0;
+        else if(inside&&!line.empty()&&line.front()!=L';') {
+            const auto equal=line.find(L'=');
+            if(equal!=std::wstring::npos&&_wcsicmp(Trim(line.substr(0,equal)).c_str(),key)==0) {
+                text.erase(p,next-p);continue;
+            }
+        }
+        p=next;
+    }
 }
 }}

@@ -158,7 +158,8 @@ RecordingRead InspectRecordingFile(const std::wstring& path,RecordingFile& out) 
         LARGE_INTEGER after={};
         if(!GetFileSizeEx(file.value,&after)||after.QuadPart!=size.QuadPart)return RecordingRead::ReadError;
         RecordingFile inspected;
-        if(!InspectRecording(bytes.data(),bytes.size(),inspected))return RecordingRead::InvalidContainer;
+        if(!InspectRecording(bytes.data(),bytes.size(),inspected))
+            return inspected.inspection_resource_failure?RecordingRead::ReadError:RecordingRead::InvalidContainer;
         out=std::move(inspected);
         return out.complete?RecordingRead::ValidComplete:RecordingRead::Incomplete;
     }catch(...) {
@@ -169,11 +170,6 @@ RecordingRead InspectRecordingFile(const std::wstring& path,RecordingFile& out) 
 bool ReadRecording(const std::wstring& path,RecordingFile& out) {
     const auto result=InspectRecordingFile(path,out);
     return result==RecordingRead::ValidComplete || result==RecordingRead::Incomplete;
-}
-bool ReadQuality(const std::wstring& path,Quality& out) {
-    RecordingFile file;
-    if(!ReadRecording(path,file) || !file.complete) return false;
-    out=file.quality; return true;
 }
 bool ExistingRecording(const std::wstring& path,const Catalog& catalog,Quality& out) {
     RecordingFile file;
@@ -326,13 +322,6 @@ RecordingDestination ResolveRecordingDestination(const std::wstring& base,const 
     }
     if(vacant.empty()) return {};
     return {RecordingDestinationState::Vacant,std::move(vacant),{}};
-}
-std::wstring ResolveRecordingPath(const std::wstring& base,const Catalog& catalog,bool track_numbers) {
-    return ResolveRecordingDestination(base,catalog,track_numbers).path;
-}
-SaveDecision DecideSave(const std::wstring& path,const Quality&) {
-    // Callers without a recording identity may create, but cannot replace.
-    return Missing(path)?SaveDecision::NewFile:SaveDecision::Skip;
 }
 SaveDecision DecideSave(const std::wstring& path,const Quality& incoming,const Catalog& catalog,RecordingFile* inspected) {
     if(inspected)*inspected={};

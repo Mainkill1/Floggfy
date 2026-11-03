@@ -77,6 +77,18 @@ int main(){
     const auto lyric=std::find_if(lyric_tags.fields.begin(),lyric_tags.fields.end(),[](const auto& p){return p.first=="LYRICS";});
     assert(lyric!=lyric_tags.fields.end()&&lyric->second=="one\ntwo é 音");
     assert(lyric_record.artwork_url=="https://i.scdn.co/image/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    // Feed the collector's episode enrichment contract through native parsing,
+    // the live cache and final tag enrichment.
+    history::RichMetadata episode_record;
+    const std::string episode_payload="v=1&title=Episode&artist=Show&album=Show&uri=spotify%3Aepisode%3A0000000000000000000005&duration=4030&SPOTIFY_URI=spotify%3Aepisode%3A0000000000000000000005&PUBLISHER=Show";
+    assert(history::ParseRichMetadata(episode_payload,episode_record,parse_error));
+    history::cache.Put(episode_record);
+    history::Media enriched_episode;
+    enriched_episode.title=L"Episode";enriched_episode.artist=L"Show";enriched_episode.album=L"Show";
+    enriched_episode.duration=4030;enriched_episode.spotify_uri="spotify:episode:0000000000000000000005";
+    history::Tags episode_tags;history::EnrichTags(enriched_episode,episode_tags);
+    const auto publisher=std::find_if(episode_tags.fields.begin(),episode_tags.fields.end(),[](const auto& p){return p.first=="PUBLISHER";});
+    assert(publisher!=episode_tags.fields.end()&&publisher->second=="Show");
     const auto options=history::CollectorOptions();
     assert(options==L"window.__floggfyConfig={metadata:true,lyrics:true,debug:false,connect:false,networking:false};");
     FILETIME utc;GetSystemTimeAsFileTime(&utc);
@@ -87,11 +99,21 @@ int main(){
     history::Media client_media;double observed=0;uint64_t client_sequence=0;history::MediaDiagnostic diagnostic;
     assert(history::TryReadClientMedia(client_media,observed,client_sequence,diagnostic)==history::ClientMediaRead::Ready);
     assert(client_media.source==history::MediaSource::Spotify&&client_media.spotify_uri=="spotify:track:0000000000000000000001"&&client_media.title==L"App");
+    auto controlled_payload=timeline_payload+L"&controlled=1";
+    timeline={controlled_payload.data(),controlled_payload.size(),nullptr};assert(history::CurrentTimeline(&timeline));
+    assert(history::TryReadClientMedia(client_media,observed,client_sequence,diagnostic)==history::ClientMediaRead::Ready&&
+           client_media.explicit_control);
     auto blocked_payload=timeline_payload;
     blocked_payload.replace(blocked_payload.find(L"buffering=0"),11,L"buffering=1");
     blocked_payload.replace(blocked_payload.find(L"local=1"),7,L"local=unknown");
     timeline={blocked_payload.data(),blocked_payload.size(),nullptr};assert(history::CurrentTimeline(&timeline));
     assert(history::TryReadClientMedia(client_media,observed,client_sequence,diagnostic)==history::ClientMediaRead::Blocked);
+    const auto sampled_ms=std::to_wstring(sampled/10000);
+    auto pending_payload=L"FLOGGFY_TIMELINE_V1:v=1&blocked=buffering&uri=spotify%3Atrack%3A0000000000000000000002&instance=&sampled_ms="+
+        sampled_ms+L"&transition_ms="+sampled_ms+L"&position_ms=0&monitoring=1&pending=1";
+    timeline={pending_payload.data(),pending_payload.size(),nullptr};assert(history::CurrentTimeline(&timeline));
+    assert(history::TryReadClientMedia(client_media,observed,client_sequence,diagnostic)==history::ClientMediaRead::Transition&&
+           client_media.transition_pending&&!client_media.natural_transition&&client_media.playback_instance.empty());
     wchar_t invalid_timeline[]=L"FLOGGFY_TIMELINE_V1:v=1&unavailable=timeline-fields";
     timeline={invalid_timeline,wcslen(invalid_timeline),nullptr};assert(history::CurrentTimeline(&timeline));
     assert(history::TryReadClientMedia(client_media,observed,client_sequence,diagnostic)==history::ClientMediaRead::Unavailable);
