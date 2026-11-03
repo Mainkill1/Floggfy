@@ -160,6 +160,16 @@ static bool ReadWindowsPlaybackFallback(Settings& target,const std::wstring& pat
     target.windows_playback_fallback=value.present&&!value.duplicate&&value.raw_value==L"1";
     return !value.present||value.duplicate||(value.raw_value!=L"0"&&value.raw_value!=L"1");
 }
+static bool ReadAutoSkipDownloaded(Settings& target,const std::wstring& path) {
+    std::wstring text;bool unicode=false;
+    if(!settings_file::Read(path,text,unicode)) {
+        target.auto_skip_downloaded=false;
+        return false;
+    }
+    const auto value=settings_file::Find(text,L"AutoSkipDownloaded");
+    target.auto_skip_downloaded=value.present&&!value.duplicate&&value.raw_value==L"1";
+    return !value.present||value.duplicate||(value.raw_value!=L"0"&&value.raw_value!=L"1");
+}
 // INI-only preferences are read once. Persistence inserts missing defaults,
 // but never writes a stale startup snapshot over values edited before restart.
 struct RestartFlag {
@@ -282,14 +292,14 @@ void InitSettings(HMODULE proxy) {
     const bool capture_speed_disallowed=settings.capture_speed>1&&settings.capture_speed>settings.capture_speed_limit;
     if(capture_speed_disallowed)settings.capture_speed=1;
     const bool windows_playback_fallback_pending=ReadWindowsPlaybackFallback(settings,ini);
+    const bool auto_skip_pending=ReadAutoSkipDownloaded(settings,ini);
     const bool restart_options_pending=ReadRestartOptions(settings,ini);
-    const bool startup_options_pending=filename_options_pending||capture_speed_pending||capture_speed_limit_pending||capture_speed_disallowed||windows_playback_fallback_pending||restart_options_pending;
+    const bool startup_options_pending=filename_options_pending||capture_speed_pending||capture_speed_limit_pending||capture_speed_disallowed||windows_playback_fallback_pending||auto_skip_pending||restart_options_pending;
     settings.aac=GetPrivateProfileIntW(L"To Disk",L"AAC",0,ini.c_str())!=0;
     settings.podcasts=GetPrivateProfileIntW(L"To Disk",L"Podcasts",0,ini.c_str())!=0;
     settings.metadata=GetPrivateProfileIntW(L"To Disk",L"Metadata",1,ini.c_str())!=0;
     settings.lyrics=GetPrivateProfileIntW(L"To Disk",L"Lyrics",1,ini.c_str())!=0;
     settings.update_existing_metadata=GetPrivateProfileIntW(L"To Disk",L"UpdateExistingMetadata",1,ini.c_str())!=0;
-    settings.auto_skip_downloaded=GetPrivateProfileIntW(L"To Disk",L"AutoSkipDownloaded",0,ini.c_str())==1;
     settings.log=GetPrivateProfileIntW(L"To Disk",L"Log",1,ini.c_str())!=0;
     settings.debug_log=GetPrivateProfileIntW(L"To Disk",L"DebugLog",0,ini.c_str())!=0;
     settings.max_buffered_mib=std::max(8u,std::min(512u,GetPrivateProfileIntW(L"History",L"MaxBufferedMiB",500,ini.c_str())));

@@ -102,7 +102,7 @@ void Conversion(const std::wstring& root) {
     Write(old,Audio(c,16,true));
     {ExclusiveSrw guard(history::lock);history::settings.root=root;history::settings.convert_numbered_filenames=true;
      history::settings.track_number_in_filename=false;history::settings.generation=7;}
-    FilenameCheck check{c,{},GetSettings(),filename_check_serial.load()};
+    FilenameCheck check;check.catalog=c;check.settings=GetSettings();check.serial=filename_check_serial.load();
     ResetCounts();ProcessFilenameCheck(check);
     assert(listings==1&&attribute_checks==0); // One list shared by FLAC/Ogg/M4A checks.
     assert(GetFileAttributesW(WindowsPath(old).c_str())==INVALID_FILE_ATTRIBUTES);
@@ -202,7 +202,7 @@ void StableArtistFolder(const std::wstring& root) {
     Write(old,Audio(original));
     {ExclusiveSrw guard(history::lock);history::settings.root=root;history::settings.convert_numbered_filenames=true;
      history::settings.track_number_in_filename=false;history::settings.metadata=false;history::settings.generation=7;}
-    FilenameCheck check{catalog,{},GetSettings(),filename_check_serial.load()};
+    FilenameCheck check;check.catalog=catalog;check.settings=GetSettings();check.serial=filename_check_serial.load();
     ResetCounts();ProcessFilenameCheck(check);assert(listings==2); // Each of the two exact artist folders is listed once.
     assert(GetFileAttributesW(WindowsPath(old).c_str())==INVALID_FILE_ATTRIBUTES);
     RecordingFile saved;assert(ReadRecording(title,saved)&&saved.complete&&MatchesRecording(saved,catalog));

@@ -126,11 +126,12 @@
  function options(){return own(window,'__floggfyConfig')||{};}
  let lastAutoSkipToken=0;
  function dispatchAutoSkip(state,uri){
-  const config=options(),token=own(config,'skipToken'),expected=own(config,'skipUri');
+  const config=options(),token=own(config,'skipToken'),expected=own(config,'skipUri'),instance=own(config,'skipInstance');
   if(!Number.isSafeInteger(token)||token<=0||token===lastAutoSkipToken)return;
   // Consume first: failed or stale evidence must never become valid later.
   lastAutoSkipToken=token;
-  if(own(config,'autoSkip')!==true||expected!==uri||own(state,'isPaused')!==false||own(state,'isBuffering')!==false)return;
+  if(own(config,'autoSkip')!==true||expected!==uri||instance!==own(state,'playbackId')||
+     own(state,'isPaused')!==false||own(state,'isBuffering')!==false)return;
   let local;
   try{local=own(own(method(connectDevices,'getConnectState')?.call(connectDevices),'activeDevice'),'isLocal');}catch{}
   if(local!==true)return;

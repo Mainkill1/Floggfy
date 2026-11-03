@@ -3,6 +3,14 @@
 #include "auto_skip.h"
 
 namespace history {
+inline void AppendCollectorString(std::wstring& output,const std::string& value) {
+    constexpr wchar_t hex[]=L"0123456789abcdef";
+    for(const unsigned char c:value) {
+        if(c==L'\\'||c==L'\''){output+=L'\\';output+=wchar_t(c);}
+        else if(c>=0x20&&c<=0x7e)output+=wchar_t(c);
+        else {output+=L"\\x";output+=hex[c>>4];output+=hex[c&15];}
+    }
+}
 inline std::wstring BuildCollectorOptions(const Settings& settings,const AutoSkipRequest& request={}) {
     const bool debug=DiagnosticsEnabled(settings.log,settings.debug_log);
     const bool connect=debug&&settings.debug_connect;
@@ -12,7 +20,8 @@ inline std::wstring BuildCollectorOptions(const Settings& settings,const AutoSki
     std::wstring command;
     if(auto_skip) {
         command=L",skipToken:"+std::to_wstring(request.token)+L",skipUri:'";
-        command.append(request.uri.begin(),request.uri.end());command+=L"'";
+        AppendCollectorString(command,request.uri);command+=L"',skipInstance:'";
+        AppendCollectorString(command,request.playback_instance);command+=L"'";
     }
     return std::wstring(L"window.__floggfyConfig={metadata:")+(settings.metadata?L"true":L"false")+
         L",lyrics:"+(settings.lyrics?L"true":L"false")+

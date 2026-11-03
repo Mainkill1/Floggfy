@@ -24,16 +24,16 @@ int main() {
     current.rate=44100;current.bits=16;
     assert(!ShouldAutoSkipDownloaded(current,7,saved_ogg));
 
-    assert(!QueueAutoSkipRequest("not-a-track",3));
+    assert(!QueueAutoSkipRequest("not-a-track","playback-1",3));
     assert(ReadAutoSkipRequest().token==0);
-    const auto first=QueueAutoSkipRequest("spotify:track:0000000000000000000001",3);
+    const auto first=QueueAutoSkipRequest("spotify:track:0000000000000000000001","playback-1",3);
     assert(first);
     auto request=ReadAutoSkipRequest();
     assert(request.token==first&&request.settings_generation==3&&
-           request.uri=="spotify:track:0000000000000000000001");
-    const auto second=QueueAutoSkipRequest("spotify:track:0000000000000000000002",4);
+           request.uri=="spotify:track:0000000000000000000001"&&request.playback_instance=="playback-1");
+    const auto second=QueueAutoSkipRequest("spotify:track:0000000000000000000002","playback-2",4);
     request=ReadAutoSkipRequest();
     assert(second>first&&request.token==second&&request.settings_generation==4&&
-           request.uri=="spotify:track:0000000000000000000002");
+           request.uri=="spotify:track:0000000000000000000002"&&request.playback_instance=="playback-2");
     std::puts("PASS: auto-skip quality and bounded request evidence fail closed");
 }

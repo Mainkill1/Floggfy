@@ -38,11 +38,12 @@ static void EffectiveDebug() {
     Settings opted_out;opted_out.log=true;opted_out.debug_log=true;opted_out.debug_networking=true;opted_out.debug_connect=false;
     assert(BuildCollectorOptions(opted_out).find(L",connect:false,")!=std::wstring::npos);
     Settings auto_skip;auto_skip.auto_skip_downloaded=true;auto_skip.generation=9;
-    AutoSkipRequest request{7,9,"spotify:track:0000000000000000000001"};
+    AutoSkipRequest request{7,9,"spotify:track:0000000000000000000001","playback-1"};
     const auto requested=BuildCollectorOptions(auto_skip,request);
     assert(requested.find(L"autoSkip:true")!=std::wstring::npos);
     assert(requested.find(L"skipToken:7")!=std::wstring::npos);
     assert(requested.find(L"skipUri:'spotify:track:0000000000000000000001'")!=std::wstring::npos);
+    assert(requested.find(L"skipInstance:'playback-1'")!=std::wstring::npos);
     request.settings_generation=8;
     assert(BuildCollectorOptions(auto_skip,request).find(L"skipToken:")==std::wstring::npos);
     auto_skip.auto_skip_downloaded=false;request.settings_generation=9;

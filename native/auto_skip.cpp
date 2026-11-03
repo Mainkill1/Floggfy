@@ -16,6 +16,11 @@ bool MusicUri(const std::string& uri) noexcept {
         if(!std::isalnum(static_cast<unsigned char>(uri[i])))return false;
     return true;
 }
+bool PlaybackInstance(const std::string& instance) noexcept {
+    if(instance.empty()||instance.size()>128)return false;
+    for(const unsigned char c:instance)if(c<0x20||c>0x7e)return false;
+    return true;
+}
 }
 
 bool ShouldAutoSkipDownloaded(const PlaybackQualitySnapshot& current,
@@ -31,11 +36,13 @@ bool ShouldAutoSkipDownloaded(const PlaybackQualitySnapshot& current,
     return !HigherQuality(playing,existing);
 }
 
-std::uint32_t QueueAutoSkipRequest(const std::string& spotify_uri,unsigned settings_generation) {
-    if(!MusicUri(spotify_uri))return 0;
+std::uint32_t QueueAutoSkipRequest(const std::string& spotify_uri,
+                                   const std::string& playback_instance,
+                                   unsigned settings_generation) {
+    if(!MusicUri(spotify_uri)||!PlaybackInstance(playback_instance))return 0;
     ExclusiveSrw guard(request_lock);
     auto token=request.token+1;if(!token)++token;
-    request={token,settings_generation,spotify_uri};
+    request={token,settings_generation,spotify_uri,playback_instance};
     return token;
 }
 

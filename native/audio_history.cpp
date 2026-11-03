@@ -1255,7 +1255,8 @@ static void ProcessFilenameCheck(const FilenameCheck& check) {
         if(!metadata_failed&&resolved.recording.owned&&check.settings.auto_skip_downloaded&&
            check.catalog.kind!=MediaKind::Podcast&&playback_key!=last_auto_skip_playback&&
            ShouldAutoSkipDownloaded(check.quality,check.media_identity,resolved.recording.quality)) {
-            const auto token=QueueAutoSkipRequest(check.catalog.spotify_uri,check.settings.generation);
+            const auto token=QueueAutoSkipRequest(check.catalog.spotify_uri,check.playback_instance,
+                check.settings.generation);
             if(token) {
                 last_auto_skip_playback=playback_key;
                 LogEvent(LogKind::Activity,"auto-skip","requested after existing-file metadata check | "+

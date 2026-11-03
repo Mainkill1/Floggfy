@@ -32,6 +32,8 @@ int main(int argc,char** argv) {
     if(scenario=="aac-one") assert(WritePrivateProfileStringW(L"To Disk",L"AAC",L"1",path.c_str()));
     if(scenario=="podcasts-one") assert(WritePrivateProfileStringW(L"To Disk",L"Podcasts",L"1",path.c_str()));
     if(scenario=="auto-skip-one") assert(WritePrivateProfileStringW(L"To Disk",L"AutoSkipDownloaded",L"1",path.c_str()));
+    if(scenario=="auto-skip-invalid") assert(WritePrivateProfileStringW(L"To Disk",L"AutoSkipDownloaded",L"2",path.c_str()));
+    if(scenario=="auto-skip-padded") assert(WritePrivateProfileStringW(L"To Disk",L"AutoSkipDownloaded",L"01",path.c_str()));
     if(scenario=="updates-zero") assert(WritePrivateProfileStringW(L"To Disk",L"UpdateExistingMetadata",L"0",path.c_str()));
     if(scenario=="lyrics-zero") assert(WritePrivateProfileStringW(L"To Disk",L"Lyrics",L"0",path.c_str()));
     if(scenario=="zero") assert(WritePrivateProfileStringW(L"To Disk",L"Downloads",L"0",path.c_str()));
