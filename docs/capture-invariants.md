@@ -62,6 +62,30 @@ and are never written to disk.
 - Episode enrichment uses an episode URI plus title/show identity and preserves
   publisher fields through the metadata cache and final MP3 tags.
 
+## Logging
+
+`LogLevel` is the single general logging control:
+
+| Level | Records |
+| --- | --- |
+| `0` | No log records |
+| `1` | Newly finished tracks, warnings, and failures |
+| `2` | Level 1 plus starts, upgrades, metadata updates, skips, renames, and settings activity |
+| `4` | Level 2 plus diagnostic records |
+
+Missing or invalid values normalize to level 1. Existing `Log=0` migrates to
+level 0; an enabled legacy `Log` plus `DebugLog=1` migrates to level 4. The old
+keys are removed after migration.
+
+Every record uses local ISO 8601 time with a numeric UTC offset. The general log
+is `Floggfy.log`; ordinary diagnostics use `Floggfy-diagnostics.log`; sanitized
+network observations use `Floggfy-networking.log`; and callback/stall evidence
+uses `Floggfy-hook-diagnostics.log`. `DebugNetworking` and
+`DebugHookDiagnostics` are independent opt-ins that require level 4.
+`DebugConnect` further controls sanitized Connect/control records in the main
+diagnostic file. Log queues remain bounded and no lane records raw payloads,
+credentials, URLs, media, device names, or device identifiers.
+
 ## Tests
 
 `test-native.sh` covers portable parsers and correlation policy.

@@ -958,11 +958,16 @@ static FilenameConversion ConvertResolvedFilename(RecordingDestination& resolved
     return result;
 }
 enum class Publication { Saved,Skipped,Failed };
+static LogKind PublicationLogKind(Publication status,bool newly_saved) {
+    if(status==Publication::Failed)return LogKind::Failure;
+    if(status==Publication::Saved&&newly_saved)return LogKind::Finished;
+    return LogKind::Activity;
+}
 static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch) {
     const std::string identity=Utf8(heard.media.artist)+" - "+Utf8(heard.media.title);
-    auto finish=[&](Publication status,const char* event,const std::string& detail) {
+    auto finish=[&](Publication status,const char* event,const std::string& detail,bool newly_saved=false) {
         // Put outcome facts first so a long title cannot truncate quality/size.
-        LogEvent(status==Publication::Failed?LogKind::Failure:LogKind::Activity,event,detail+" | "+identity);return status;
+        LogEvent(PublicationLogKind(status,newly_saved),event,detail+" | "+identity);return status;
     };
     SYSTEMTIME t; GetSystemTime(&t); wchar_t stamp[64];
     swprintf(stamp,64,L"%04u-%02u-%02uT%02u:%02u:%02uZ",t.wYear,t.wMonth,t.wDay,t.wHour,t.wMinute,t.wSecond);
@@ -1121,7 +1126,8 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     if(!ReadImageInfo(tags.cover,artwork) && !(publication==FilePublication::Upgraded && had_artwork))
         LogEvent(LogKind::Diagnostic,"metadata","artwork unavailable for completed publication");
     RecordRecentDownload(heard.media.artist+L" - "+heard.media.title,destination,published_bytes);
-    return finish(Publication::Saved,publication==FilePublication::Upgraded ? "upgraded" : "finished",SavedAudioDetails(quality,published_bytes));
+    return finish(Publication::Saved,publication==FilePublication::Upgraded ? "upgraded" : "finished",
+        SavedAudioDetails(quality,published_bytes),publication==FilePublication::Saved);
 }
 struct SaveJob {std::unique_ptr<Capture> capture;Heard heard;unsigned epoch=0;size_t reserved=0;};
 static BoundedQueue<SaveJob,2> saves;

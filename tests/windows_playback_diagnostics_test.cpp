@@ -1611,6 +1611,12 @@ void PodcastCatalog() {
     assert(catalog.kind==MediaKind::Podcast&&catalog.show==L"Show"&&catalog.title==L"Episode");
     assert(RelativePath(catalog,L".mp3")==L"Podcasts\\Show\\Episode.mp3");
 }
+void PublicationLogging() {
+    assert(PublicationLogKind(Publication::Saved,true)==LogKind::Finished);
+    assert(PublicationLogKind(Publication::Saved,false)==LogKind::Activity);
+    assert(PublicationLogKind(Publication::Skipped,false)==LogKind::Activity);
+    assert(PublicationLogKind(Publication::Failed,false)==LogKind::Failure);
+}
 }
 namespace history {
 std::uint64_t MetadataRevision(){return 0;}
@@ -1646,7 +1652,7 @@ int wmain(int argc,wchar_t** argv) {
         return 0;
     }
     assert(argc==1);
-    Connectivity();PodcastCatalog();PodcastCaptureEvents();ReadyUpgradesPreboundPlaybackGeneration();EmptyPlaybackIdNaturalTransitionIsRetried();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();BoundNaturalTransitionUsesFinalCaptureEvidence();DjVoiceDoesNotBlockMusicStart();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailLifecycle();ReadyDurationCorroboratesDecoder();WindowsReadyNaturalAppTransitionPublishes();TransitionPublicationMatrixStress();BoundWindowsIdentitySurvivesMetadataRefinement();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();SameContextFlacRestartBeginsFreshCapture();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
+    Connectivity();PodcastCatalog();PublicationLogging();PodcastCaptureEvents();ReadyUpgradesPreboundPlaybackGeneration();EmptyPlaybackIdNaturalTransitionIsRetried();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();BoundNaturalTransitionUsesFinalCaptureEvidence();DjVoiceDoesNotBlockMusicStart();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailLifecycle();ReadyDurationCorroboratesDecoder();WindowsReadyNaturalAppTransitionPublishes();TransitionPublicationMatrixStress();BoundWindowsIdentitySurvivesMetadataRefinement();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();SameContextFlacRestartBeginsFreshCapture();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
     puts("PASS: observed transitions, one FLAC failure context/outcome, original callback semantics, profiling-only intervals, basic-mode zero profiling and changed-only NLM observations");
     return 0;
 }
