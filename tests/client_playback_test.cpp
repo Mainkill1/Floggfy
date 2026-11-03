@@ -1,8 +1,20 @@
 #include "../native/client_playback.h"
 #include <cassert>
 #include <iostream>
-int main(){
+int main(int argc,char** argv){
     using namespace history;
+    if(argc==2&&std::string(argv[1])=="--stdin") {
+        const std::string payload(std::istreambuf_iterator<char>(std::cin),{});
+        ClientPlaybackRecord record;std::string failure;
+        if(!ParseClientPlayback(payload,record,failure)) {
+            std::cerr<<"collector payload rejected: "<<failure<<'\n';return 1;
+        }
+        assert(record.metadata.uri=="spotify:track:0000000000000000000001");
+        assert(record.instance=="playback-1"&&record.position==12.5&&!record.explicit_control&&!record.prior_control);
+        std::cout<<"PASS: real collector Ready payload satisfies native playback protocol\n";
+        return 0;
+    }
+    assert(argc==1);
     const std::string base="v=1&title=Song&artist=Artist&album=Album&uri=spotify:track:0000000000000000000001&duration=180";
     const std::string timeline="&position=12.5&sampled_ms=1793300000000&paused=0&buffering=0&local=1&speed=4";
     ClientPlaybackRecord value;std::string error;

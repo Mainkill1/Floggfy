@@ -75,4 +75,5 @@ build/aac-container-test
 
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/client_playback_test.cpp native/rich_metadata.cpp -o build/client-playback-test
 build/client-playback-test
+node tests/collector_native_boundary_test.js | build/client-playback-test --stdin
 node tests/collector_playback_test.js

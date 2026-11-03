@@ -17,7 +17,7 @@
   }
  }
  function timeline(data){
-  const payload=Object.entries(data).map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&'),now=performance.now();
+  const payload=Object.entries(data).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&'),now=performance.now();
   if(payload.length<=16384&&(payload!==lastTimeline||now-timelineTime>=500)){
    console.info('FLOGGFY_TIMELINE_V1:'+payload);lastTimeline=payload;timelineTime=now;
   }
