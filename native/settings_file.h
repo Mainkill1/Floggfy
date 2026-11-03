@@ -157,4 +157,21 @@ inline void Set(std::wstring& text,const wchar_t* key,const std::wstring& value)
     if(insertion&&text[insertion-1]!=L'\n') {text.insert(insertion,L"\r\n");insertion+=2;}
     text.insert(insertion,std::wstring(key)+L"="+value+L"\r\n");
 }
+inline void Erase(std::wstring& text,const wchar_t* key) {
+    bool inside=false;
+    for(size_t p=0;p<text.size();) {
+        const auto end=text.find(L'\n',p);const auto next=end==std::wstring::npos?text.size():end+1;
+        const auto physical=text.substr(p,(end==std::wstring::npos?text.size():end)-p);
+        const auto line=Trim(physical);
+        if(!line.empty()&&line.front()==L'['&&line.back()==L']')
+            inside=_wcsicmp(line.c_str(),L"[To Disk]")==0;
+        else if(inside&&!line.empty()&&line.front()!=L';') {
+            const auto equal=line.find(L'=');
+            if(equal!=std::wstring::npos&&_wcsicmp(Trim(line.substr(0,equal)).c_str(),key)==0) {
+                text.erase(p,next-p);continue;
+            }
+        }
+        p=next;
+    }
+}
 }}

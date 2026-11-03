@@ -12,7 +12,7 @@ inline void AppendCollectorString(std::wstring& output,const std::string& value)
     }
 }
 inline std::wstring BuildCollectorOptions(const Settings& settings,const AutoSkipRequest& request={}) {
-    const bool debug=DiagnosticsEnabled(settings.log,settings.debug_log);
+    const bool debug=settings.log_level>=4;
     const bool connect=debug&&settings.debug_connect;
     const bool networking=debug&&settings.debug_networking;
     const bool auto_skip=settings.auto_skip_downloaded&&request.token&&

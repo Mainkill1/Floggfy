@@ -38,9 +38,9 @@ void FlushAndCheck() {
 }
 void Mode(bool log,bool debug,bool network) {
     using namespace history;
-    InterlockedExchange(&log_enabled,log);InterlockedExchange(&debug_enabled,debug);
+    const auto level=!log?0:debug?4:1;InterlockedExchange(&log_level_value,level);
     InterlockedExchange(&networking_enabled,network);InterlockedExchange(&connect_logging_enabled,1);
-    settings.log=log;settings.debug_log=debug;settings.debug_networking=network;
+    settings.log_level=unsigned(level);settings.debug_networking=network;
 }
 void RejectedEverywhere() {
     using namespace history;
@@ -93,7 +93,7 @@ void ValidRouting() {
     assert(QueueRendererDiagnostic(L"FLOGGFY_STATUS:control request=pause source=local-client"));EmptyQueues();
     Mode(true,false,true);QueueDiagnostic("FLOGGFY_STATUS:connect failed EXAMPLE_PRIVATE_SENTINEL");EmptyQueues();
     LogEvent(LogKind::Failure,"failed","native capture failed; original file retained");
-    assert(activity_queue.count==1&&diagnostic_queue.count==0);FlushAndCheck(); // Core failures still log without DebugLog.
+    assert(activity_queue.count==1&&diagnostic_queue.count==0);FlushAndCheck(); // Core failures still log below level 4.
     const auto activity=ReadText(test_root+L"\\Floggfy.log");
     const auto networking=ReadText(test_root+L"\\Floggfy-diagnostics.log");
     assert(activity.find("source=client-control")==std::string::npos);

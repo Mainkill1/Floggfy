@@ -34,7 +34,7 @@ static void Activities() {
 static void GatingAndSettings() {
     using namespace history;
     assert(!Settings{}.debug_hook_diagnostics);
-    InterlockedExchange(&log_enabled,1);InterlockedExchange(&debug_enabled,1);
+    InterlockedExchange(&log_level_value,4);
     InterlockedExchange(&networking_enabled,1);
     SetLastError(0x12345678);
     {HookDiagnosticScope scope(diagnostics::Phase::MenuFormat);}
@@ -43,10 +43,10 @@ static void GatingAndSettings() {
     SetLastError(0x12345678);
     {HookDiagnosticScope scope(diagnostics::Phase::MenuFormat);SetLastError(0x87654321);}
     assert(GetLastError()==0x87654321&&HookDiagnosticsEnabled());
-    InterlockedExchange(&networking_enabled,0);assert(!HookDiagnosticsEnabled());
-    InterlockedExchange(&networking_enabled,1);InterlockedExchange(&debug_enabled,0);assert(!HookDiagnosticsEnabled());
-    InterlockedExchange(&debug_enabled,1);InterlockedExchange(&log_enabled,0);assert(!HookDiagnosticsEnabled());
-    InterlockedExchange(&log_enabled,1);InterlockedExchange(&hook_diagnostics_enabled,0);
+    InterlockedExchange(&networking_enabled,0);assert(HookDiagnosticsEnabled());
+    InterlockedExchange(&networking_enabled,1);InterlockedExchange(&log_level_value,2);assert(!HookDiagnosticsEnabled());
+    InterlockedExchange(&log_level_value,0);assert(!HookDiagnosticsEnabled());
+    InterlockedExchange(&log_level_value,4);InterlockedExchange(&hook_diagnostics_enabled,0);
     wchar_t exe[32768];assert(GetModuleFileNameW(nullptr,exe,32768));
     const std::wstring full=exe,path=full.substr(0,full.find_last_of(L'\\'))+L"\\SpotifyHistory.ini";
     assert(CreateDefaultIni(path));Settings parsed;

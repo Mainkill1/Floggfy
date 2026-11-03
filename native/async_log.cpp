@@ -92,7 +92,7 @@ static std::string FormatLogRecord(const Record& record,bool diagnostics) {
 static void WriteBatch(const Record* records,size_t count,bool diagnostics) noexcept {
  try {
   const auto settings=GetSettings();
-  if(!settings.log||settings.root.empty()||(diagnostics&&!DebugLoggingEnabled()))return;
+  if(!settings.log_level||settings.root.empty()||(diagnostics&&!DebugLoggingEnabled()))return;
   std::string batch;batch.reserve(count*1100);
   for(size_t i=0;i<count;++i) {
    if(records[i].networking&&!NetworkingLoggingEnabled())continue;

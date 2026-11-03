@@ -20,7 +20,7 @@ static bool IsMusic(std::wstring root) {
     return !music_path.empty() && (_wcsicmp(root.c_str(),music_path.c_str())==0 ||
         _wcsicmp(root.c_str(),(music_path+L"\\Spotify").c_str())==0);
 }
-static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,aac_enabled=0,podcasts_enabled=0,capture_epoch=0,capture_speed_value=1,capture_speed_limit_value=0,capture_acceleration_available=0,log_enabled=1,debug_enabled=0,networking_enabled=0,connect_logging_enabled=1,hook_diagnostics_enabled=0;
+static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,aac_enabled=0,podcasts_enabled=0,capture_epoch=0,capture_speed_value=1,capture_speed_limit_value=0,capture_acceleration_available=0,log_level_value=1,networking_enabled=0,connect_logging_enabled=1,hook_diagnostics_enabled=0;
 static HANDLE settings_signal=nullptr,persist_done=nullptr;
 // A failed attempt is observable without acknowledging bytes never committed.
 static volatile LONG persisted_generation=-1,failed_generation=-1,persist_failed=0;
@@ -69,26 +69,23 @@ static constexpr char default_ini[]=
     "; Skip verified downloaded music after its metadata check; default off.\r\n"
     "AutoSkipDownloaded=0\r\n"
     "\r\n"
-    "; Normal activity, warnings and failures: Floggfy.log in Save Location (5 MiB).\r\n"
-    "; Log=0 also disables ALL debug output, hooks and timing instrumentation below.\r\n"
-    "Log=1\r\n"
+    "; 0=off; 1=finished tracks/failures; 2=visible lifecycle; 4=diagnostics.\r\n"
+    "LogLevel=1\r\n"
     "\r\n"
-    "; Debug options require Log=1. Fully restart Spotify after INI edits.\r\n"
-    "; Optional details go only to Floggfy-diagnostics.log (5 MiB), never Floggfy.log.\r\n"
-    "DebugLog=0\r\n"
-    "; Requires DebugLog=1: cached playback target and local actions.\r\n"
+    "; Debug options require LogLevel=4. Fully restart Spotify after INI edits.\r\n"
+    "; Cached playback target and local actions go to Floggfy-diagnostics.log.\r\n"
     "; Set 0 to opt out, including when DebugNetworking=1.\r\n"
     "; Use exactly 1 to enable. Device names/IDs are omitted; senders may be unknown.\r\n"
     "DebugConnect=1\r\n"
     "; Deep read-only networking diagnostics; default off. Fully restart after edits.\r\n"
-    "; Requires Log=1 and DebugLog=1. Use exactly 1 to enable; 0/invalid values disable.\r\n"
+    "; Requires LogLevel=4. Use exactly 1 to enable; 0/invalid values disable.\r\n"
     "; Disabled means no decoded-message hook or enrichment network observations.\r\n"
     "; 1 adds networking observations to Floggfy-diagnostics.log.\r\n"
     "; Summarizes known Connect/control and enrichment I/O with timing for correlation.\r\n"
     "; No raw messages, media, credentials, URLs, device names or device IDs are logged.\r\n"
     "; Unobserved traffic and command execution remain unknown; no commands are changed.\r\n"
     "DebugNetworking=0\r\n"
-    "; Extra callback/stall diagnostics. Requires DebugNetworking=1, Log=1, DebugLog=1.\r\n"
+    "; Extra callback/stall diagnostics. Requires LogLevel=4.\r\n"
     "; Default off; exactly 1 enables callback profiling and slow/pending activities.\r\n"
     "; Basic DebugLog does no per-callback profiling; no dumps or raw payloads.\r\n"
     "DebugHookDiagnostics=0\r\n"
@@ -170,6 +167,26 @@ static bool ReadAutoSkipDownloaded(Settings& target,const std::wstring& path) {
     target.auto_skip_downloaded=value.present&&!value.duplicate&&value.raw_value==L"1";
     return !value.present||value.duplicate||(value.raw_value!=L"0"&&value.raw_value!=L"1");
 }
+static bool ReadLogLevel(Settings& target,const std::wstring& path) {
+    std::wstring text;bool unicode=false;
+    if(!settings_file::Read(path,text,unicode)) {target.log_level=1;return false;}
+    const auto value=settings_file::Find(text,L"LogLevel");
+    if(value.present&&!value.duplicate) {
+        if(value.raw_value==L"0")target.log_level=0;
+        else if(value.raw_value==L"1")target.log_level=1;
+        else if(value.raw_value==L"2")target.log_level=2;
+        else if(value.raw_value==L"4")target.log_level=4;
+        else {target.log_level=1;return true;}
+        return settings_file::Find(text,L"Log").present||settings_file::Find(text,L"DebugLog").present;
+    }
+    const auto legacy_log=settings_file::Find(text,L"Log");
+    const auto legacy_debug=settings_file::Find(text,L"DebugLog");
+    if(legacy_log.present&&!legacy_log.duplicate&&legacy_log.raw_value==L"0")target.log_level=0;
+    else if(legacy_log.present&&!legacy_log.duplicate&&legacy_log.raw_value==L"1"&&
+            legacy_debug.present&&!legacy_debug.duplicate&&legacy_debug.raw_value==L"1")target.log_level=4;
+    else target.log_level=1;
+    return true;
+}
 // INI-only preferences are read once. Persistence inserts missing defaults,
 // but never writes a stale startup snapshot over values edited before restart.
 struct RestartFlag {
@@ -230,6 +247,8 @@ static DWORD WINAPI PersistSettings(LPVOID) {
                 settings_file::Set(text,L"CaptureSpeed",std::to_wstring(snapshot.capture_speed));
                 flag(L"UpdateExistingMetadata",snapshot.update_existing_metadata);
                 flag(L"AutoSkipDownloaded",snapshot.auto_skip_downloaded);
+                settings_file::Set(text,L"LogLevel",std::to_wstring(snapshot.log_level));
+                settings_file::Erase(text,L"Log");settings_file::Erase(text,L"DebugLog");
                 InsertMissingRestartDefaults(text);
                 flag(L"TrackNumberInFilename",snapshot.track_number_in_filename);
                 flag(L"ConvertNumberedFilenames",snapshot.convert_numbered_filenames && !snapshot.track_number_in_filename);
@@ -293,15 +312,14 @@ void InitSettings(HMODULE proxy) {
     if(capture_speed_disallowed)settings.capture_speed=1;
     const bool windows_playback_fallback_pending=ReadWindowsPlaybackFallback(settings,ini);
     const bool auto_skip_pending=ReadAutoSkipDownloaded(settings,ini);
+    const bool log_level_pending=ReadLogLevel(settings,ini);
     const bool restart_options_pending=ReadRestartOptions(settings,ini);
-    const bool startup_options_pending=filename_options_pending||capture_speed_pending||capture_speed_limit_pending||capture_speed_disallowed||windows_playback_fallback_pending||auto_skip_pending||restart_options_pending;
+    const bool startup_options_pending=filename_options_pending||capture_speed_pending||capture_speed_limit_pending||capture_speed_disallowed||windows_playback_fallback_pending||auto_skip_pending||log_level_pending||restart_options_pending;
     settings.aac=GetPrivateProfileIntW(L"To Disk",L"AAC",0,ini.c_str())!=0;
     settings.podcasts=GetPrivateProfileIntW(L"To Disk",L"Podcasts",0,ini.c_str())!=0;
     settings.metadata=GetPrivateProfileIntW(L"To Disk",L"Metadata",1,ini.c_str())!=0;
     settings.lyrics=GetPrivateProfileIntW(L"To Disk",L"Lyrics",1,ini.c_str())!=0;
     settings.update_existing_metadata=GetPrivateProfileIntW(L"To Disk",L"UpdateExistingMetadata",1,ini.c_str())!=0;
-    settings.log=GetPrivateProfileIntW(L"To Disk",L"Log",1,ini.c_str())!=0;
-    settings.debug_log=GetPrivateProfileIntW(L"To Disk",L"DebugLog",0,ini.c_str())!=0;
     settings.max_buffered_mib=std::max(8u,std::min(512u,GetPrivateProfileIntW(L"History",L"MaxBufferedMiB",500,ini.c_str())));
     wchar_t raw[2048],expanded[4096];
     GetPrivateProfileStringW(L"To Disk",L"Save Location",L"",raw,2048,ini.c_str());
@@ -316,7 +334,7 @@ void InitSettings(HMODULE proxy) {
     downloads_enabled=settings.downloads; ogg_enabled=settings.ogg; flac_enabled=settings.flac; aac_enabled=settings.aac; podcasts_enabled=settings.podcasts;
     capture_speed_value=LONG(settings.capture_speed);
     capture_speed_limit_value=LONG(settings.capture_speed_limit);
-    log_enabled=settings.log;debug_enabled=settings.debug_log;networking_enabled=settings.debug_networking;connect_logging_enabled=settings.debug_connect;hook_diagnostics_enabled=settings.debug_hook_diagnostics;
+    log_level_value=LONG(settings.log_level);networking_enabled=settings.debug_networking;connect_logging_enabled=settings.debug_connect;hook_diagnostics_enabled=settings.debug_hook_diagnostics;
     StartLogger();
     settings_signal=CreateEventW(nullptr,FALSE,FALSE,nullptr);
     persist_done=CreateEventW(nullptr,FALSE,FALSE,nullptr);
@@ -337,11 +355,12 @@ void InitSettings(HMODULE proxy) {
 Settings GetSettings() {
     SharedSrw guard(lock);return settings;
 }
-bool LoggingEnabled() { return log_enabled!=0; }
-bool DebugLoggingEnabled() { return DiagnosticsEnabled(log_enabled!=0,debug_enabled!=0); }
+bool LoggingEnabled() { return LogLevel()!=0; }
+unsigned LogLevel() {return unsigned(InterlockedCompareExchange(&log_level_value,0,0));}
+bool DebugLoggingEnabled() { return LogLevel()>=4; }
 bool ConnectLoggingEnabled() { return connect_logging_enabled!=0 && DebugLoggingEnabled(); }
 bool NetworkingLoggingEnabled() { return networking_enabled!=0 && DebugLoggingEnabled(); }
-bool HookDiagnosticsEnabled() { return hook_diagnostics_enabled!=0 && NetworkingLoggingEnabled(); }
+bool HookDiagnosticsEnabled() { return hook_diagnostics_enabled!=0 && DebugLoggingEnabled(); }
 bool OggEnabled() { return downloads_enabled && ogg_enabled; }
 bool FlacEnabled() { return downloads_enabled && flac_enabled; }
 bool AACEnabled() { return downloads_enabled && aac_enabled; }

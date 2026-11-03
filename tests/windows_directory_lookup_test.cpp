@@ -235,7 +235,7 @@ void EnrichTags(const Media&,Tags&) {}
 int wmain(int argc,wchar_t** argv) {
     wchar_t executable[32768];assert(GetModuleFileNameW(nullptr,executable,32768));
     const std::wstring exe=executable,root=exe.substr(0,exe.find_last_of(L'\\'))+L"\\Music-\u97f3\u697d";
-    history::log_enabled=history::debug_enabled=0;
+    history::log_level_value=0;
     if(argc==2&&std::wstring(argv[1])==L"--song-cache") {
         MenuLookup(root);StableArtistFolder(root);
         puts("PASS: verified Song cache avoids directory listings; misses back off; refresh bypasses cooldown; enriched artist tags retain stable folder lookup, prefix conversion and equal-quality reuse");

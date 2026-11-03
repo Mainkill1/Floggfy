@@ -61,18 +61,18 @@ static void QueueAndSettings() {
     const std::wstring exe=executable,root=exe.substr(0,exe.find_last_of(L'\\'));
     const auto diagnostic_path=root+L"\\Floggfy-diagnostics.log",normal_path=root+L"\\Floggfy.log";
     DeleteFileW(normal_path.c_str());DeleteFileW(diagnostic_path.c_str());
-    settings.root=root;settings.log=true;settings.debug_log=true;
+    settings.root=root;settings.log_level=4;
     signal=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(signal);writes=0;
-    InterlockedExchange(&log_enabled,1);InterlockedExchange(&debug_enabled,1);
+    InterlockedExchange(&log_level_value,4);
     QueueNetworkingDiagnostic("test disabled");assert(diagnostic_queue.count==0);
     InterlockedExchange(&networking_enabled,1);
-    InterlockedExchange(&debug_enabled,0);QueueNetworkingDiagnostic("test no debug");assert(diagnostic_queue.count==0);
-    InterlockedExchange(&debug_enabled,1);InterlockedExchange(&log_enabled,0);
+    InterlockedExchange(&log_level_value,1);QueueNetworkingDiagnostic("test no debug");assert(diagnostic_queue.count==0);
+    InterlockedExchange(&log_level_value,0);
     QueueNetworkingDiagnostic("test no log");assert(diagnostic_queue.count==0);
     // Every reserved renderer message remains claimed even when disabled.
     assert(QueueRendererDiagnostic(L"FLOGGFY_STATUS:PRIVATE_FIELD=SECRET"));
     assert(activity_queue.count==0&&diagnostic_queue.count==0);
-    InterlockedExchange(&log_enabled,1);
+    InterlockedExchange(&log_level_value,4);
     QueueDiagnostic("FLOGGFY_STATUS:control request=pause source=local-client");
     assert(diagnostic_queue.count==1&&activity_queue.count==0);
     QueueDiagnostic("FLOGGFY_NETWORK_V1:request op=1 kind=lyrics phase=send code=? elapsed_ms=0");
@@ -106,7 +106,7 @@ static void QueueAndSettings() {
     const auto same=normal.find("finished saved same title.ogg");assert(same!=std::string::npos&&normal.find("finished saved same title.ogg",same+1)!=std::string::npos);
     assert(normal.find(" failed ")==std::string::npos);assert(DeleteFileW(normal_path.c_str()));
     for(int debug=0;debug<2;++debug) {
-        InterlockedExchange(&debug_enabled,debug);settings.debug_log=debug!=0;
+        InterlockedExchange(&log_level_value,debug?4:1);settings.log_level=debug?4:1;
         LogEvent(LogKind::Failure,"ignored","destination inaccessible");
         assert(activity_queue.count==1&&diagnostic_queue.count==0);assert(Take(activity_queue,record));
         WriteBatch(&record,1,false);normal=ReadLog(normal_path);
@@ -117,7 +117,7 @@ static void QueueAndSettings() {
     LogEvent(LogKind::Warning,"ignored","retaining prior file");assert(Take(activity_queue,record));
     assert(FormatLogRecord(record,false).find(" warning retaining prior file")!=std::string::npos);
     // Both ordinary and networking diagnostics use only the diagnostic queue/file.
-    InterlockedExchange(&debug_enabled,1);settings.debug_log=true;QueueDiagnostic("basic observation");
+    InterlockedExchange(&log_level_value,4);settings.log_level=4;QueueDiagnostic("basic observation");
     LogEvent(LogKind::Diagnostic,"playback","state observation");assert(activity_queue.count==0&&diagnostic_queue.count==2);
     auto diagnostics=TakeBatch(diagnostic_queue,records,16);WriteBatch(records,diagnostics,true);
     assert(ReadLog(normal_path).empty());assert(ReadLog(diagnostic_path).find("basic observation")!=std::string::npos);

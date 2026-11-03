@@ -386,7 +386,7 @@ static void WaitLog(const std::string& prefix,const std::string& suffix) {
   std::fprintf(stderr,"Missing activity log: %s ... %s\n",prefix.c_str(),suffix.c_str());assert(false);
 }
 static void TestPublicationLogging() {
-  assert(GetSettings().log && !GetSettings().debug_log);
+  assert(GetSettings().log_level==1);
   assert(SavedAudioDetails({Codec::Vorbis,44100,2,0,320000},1048576)=="Ogg Vorbis 320 kbps nominal, 44,100 Hz | 1.00 MiB (1048576 bytes)");
   assert(SavedAudioDetails({Codec::Vorbis,44100,2,0,0},1048576)=="Ogg Vorbis, 44,100 Hz | 1.00 MiB (1048576 bytes)");
   wchar_t temp[2048];GetTempPathW(2048,temp);

@@ -128,9 +128,9 @@ void ObservePlayback() {
     media.playing=true;media.playback_status=4;state.Observe(media,26,20);
     media.position=0;state.Observe(media,26.5,21);assert(Contains("timeline-jump"));
     media.title=L"Next";state.Observe(media,27,22);assert(Contains("track_changed=1"));
-    InterlockedExchange(&history::debug_enabled,0);const auto off=diagnostic_lines.size();
+    InterlockedExchange(&history::log_level_value,1);const auto off=diagnostic_lines.size();
     state.Observe(media,27.5,23);assert(diagnostic_lines.size()==off);
-    InterlockedExchange(&history::debug_enabled,1);
+    InterlockedExchange(&history::log_level_value,4);
 }
 void CoverageAndFailures() {
     FlacInfo info{44100,2,16,16,16,32};const char* reason=nullptr;FlacCoverage coverage;
@@ -163,10 +163,10 @@ void CoverageAndFailures() {
     slot.kind=AudioEventKind::FlacFrame;memcpy(slot.bytes,frame,32);diagnostic_lines.clear();ProcessFlacCapture(slot,buffers);
     assert(Contains("reason=metadata-not-ready"));
     slot.kind=AudioEventKind::FlacBegin;ProcessFlacCapture(slot,buffers);
-    InterlockedExchange(&history::debug_enabled,0);diagnostic_lines.clear();
+    InterlockedExchange(&history::log_level_value,1);diagnostic_lines.clear();
     slot.kind=AudioEventKind::FlacFrame;ProcessFlacCapture(slot,buffers);
     assert(diagnostic_lines.size()==2&&Contains("stream discarded")&&Contains("incomplete cache | unknown track"));
-    InterlockedExchange(&history::debug_enabled,1);
+    InterlockedExchange(&history::log_level_value,4);
 }
 void SameContextFlacRestartBeginsFreshCapture() {
     auto complete=recording_fixture::fixture();
@@ -464,10 +464,10 @@ void HookBoundaries() {
     assert(invalid_tracker.Binding(invalid_capture).state==ownership::OwnershipState::Invalidated);
     decoded_accelerator.Reset();decoded_fallback_requested=false;decoded_fallback_reason=0;
     invalid_decoded_span=false;
-    InterlockedExchange(&history::capture_speed_value,1);InterlockedExchange(&history::debug_enabled,0);
+    InterlockedExchange(&history::capture_speed_value,1);InterlockedExchange(&history::log_level_value,1);
     decoded={samples,100};encoded={compressed,200};DecodedSinkHook(context,result,&decoded,&encoded,true);
     assert(PopDecodedActivity(activity)&&activity.produced_floats==80&&activity.kept_floats==80);
-    InterlockedExchange(&history::debug_enabled,1);
+    InterlockedExchange(&history::log_level_value,4);
     invalid_decoded_span=false;InterlockedExchange(&history::capture_speed_value,1);
     diagnostic_lines.clear();LogTiming();
     assert(diagnostic_lines.empty()&&native_read_timing.count.load()==0&&native_frame_timing.count.load()==0&&producer_wait_timing.count.load()==0);
@@ -560,13 +560,13 @@ void TimingVerbosity() {
     diagnostic_lines.clear();LogTiming();assert(diagnostic_lines.empty());
     empty_flac_reads.store(1);LogTiming();
     assert(diagnostic_lines.size()==1&&Contains("reason=empty-read")&&Contains("empty_reads=1"));
-    diagnostic_lines.clear();InterlockedExchange(&history::debug_enabled,0);
+    diagnostic_lines.clear();InterlockedExchange(&history::log_level_value,1);
     LogTiming();assert(diagnostic_lines.empty());
-    InterlockedExchange(&history::debug_enabled,1);
+    InterlockedExchange(&history::log_level_value,4);
     InterlockedExchange(&history::networking_enabled,0);InterlockedExchange(&history::hook_diagnostics_enabled,0);
 }
 void BasicModeProfiling() {
-    InterlockedExchange(&history::log_enabled,1);InterlockedExchange(&history::debug_enabled,1);
+    InterlockedExchange(&history::log_level_value,4);
     InterlockedExchange(&history::networking_enabled,0);InterlockedExchange(&history::hook_diagnostics_enabled,0);
     for(auto* sample:{&native_read_timing,&native_frame_timing,&native_error_timing,&native_init_timing,
                      &native_ogg_timing,&producer_wait_timing,&producer_hold_timing,&consumer_hold_timing}) {
@@ -580,7 +580,7 @@ void BasicModeProfiling() {
     diagnostic_lines.clear();LogTiming();assert(diagnostic_lines.empty());
 }
 void LoggingDisabled() {
-    InterlockedExchange(&history::log_enabled,0);InterlockedExchange(&history::debug_enabled,1);
+    InterlockedExchange(&history::log_level_value,0);
     diagnostic_lines.clear();
     {
         NativeTimer timer(native_read_timing);assert(timer.began==0);timer.Finish();
@@ -590,7 +590,7 @@ void LoggingDisabled() {
     PlaybackDiagnostics playback;Media media;media.title=L"Song";media.playing=true;media.playback_status=4;
     playback.Observe(media,10,1);LogTiming();
     assert(diagnostic_lines.empty()&&!playback.known);
-    InterlockedExchange(&history::log_enabled,1);
+    InterlockedExchange(&history::log_level_value,4);
 }
 void AppIdentityAndSourceChanges() {
     CaptureBuffers buffers;std::vector<Heard> heard;Listen listen;Media current,media;
@@ -1624,7 +1624,7 @@ void EnrichTags(const Media&,Tags&){}
 }
 int wmain(int argc,wchar_t** argv) {
     // Use in-memory preferences only. Never read or write the user's INI/music.
-    InterlockedExchange(&history::debug_enabled,1);
+    InterlockedExchange(&history::log_level_value,4);
     if(argc==2&&!wcscmp(argv[1],L"--pending-prior-control-stdin")) {
         const std::string payload(std::istreambuf_iterator<char>(std::cin),{});
         ClientPlaybackRecord record;std::string error;

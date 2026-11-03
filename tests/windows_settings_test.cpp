@@ -8,7 +8,7 @@ void QueueDiagnostic(const char*) {}
 }
 int main(int argc,char** argv) {
   assert(argc==2);
-  assert(history::Settings{}.downloads&&history::Settings{}.update_existing_metadata&&!history::Settings{}.auto_skip_downloaded&&!history::Settings{}.aac&&!history::Settings{}.podcasts&&!history::Settings{}.windows_playback_fallback&&history::Settings{}.capture_speed==1&&history::Settings{}.capture_speed_limit==0);
+  assert(history::Settings{}.downloads&&history::Settings{}.update_existing_metadata&&!history::Settings{}.auto_skip_downloaded&&!history::Settings{}.aac&&!history::Settings{}.podcasts&&!history::Settings{}.windows_playback_fallback&&history::Settings{}.capture_speed==1&&history::Settings{}.capture_speed_limit==0&&history::Settings{}.log_level==1);
   assert(!history::AACEnabled());
   assert(!history::PodcastsEnabled());
   const std::string scenario=argv[1];
@@ -34,6 +34,17 @@ int main(int argc,char** argv) {
     if(scenario=="auto-skip-one") assert(WritePrivateProfileStringW(L"To Disk",L"AutoSkipDownloaded",L"1",path.c_str()));
     if(scenario=="auto-skip-invalid") assert(WritePrivateProfileStringW(L"To Disk",L"AutoSkipDownloaded",L"2",path.c_str()));
     if(scenario=="auto-skip-padded") assert(WritePrivateProfileStringW(L"To Disk",L"AutoSkipDownloaded",L"01",path.c_str()));
+    if(scenario=="log-0") assert(WritePrivateProfileStringW(L"To Disk",L"LogLevel",L"0",path.c_str()));
+    if(scenario=="log-1") assert(WritePrivateProfileStringW(L"To Disk",L"LogLevel",L"1",path.c_str()));
+    if(scenario=="log-2") assert(WritePrivateProfileStringW(L"To Disk",L"LogLevel",L"2",path.c_str()));
+    if(scenario=="log-4") assert(WritePrivateProfileStringW(L"To Disk",L"LogLevel",L"4",path.c_str()));
+    if(scenario=="log-invalid") assert(WritePrivateProfileStringW(L"To Disk",L"LogLevel",L"3",path.c_str()));
+    if(scenario=="log-padded") assert(WritePrivateProfileStringW(L"To Disk",L"LogLevel",L"01",path.c_str()));
+    if(scenario=="legacy-log-zero") assert(WritePrivateProfileStringW(L"To Disk",L"Log",L"0",path.c_str()));
+    if(scenario=="legacy-debug-one") {
+      assert(WritePrivateProfileStringW(L"To Disk",L"Log",L"1",path.c_str()));
+      assert(WritePrivateProfileStringW(L"To Disk",L"DebugLog",L"1",path.c_str()));
+    }
     if(scenario=="updates-zero") assert(WritePrivateProfileStringW(L"To Disk",L"UpdateExistingMetadata",L"0",path.c_str()));
     if(scenario=="lyrics-zero") assert(WritePrivateProfileStringW(L"To Disk",L"Lyrics",L"0",path.c_str()));
     if(scenario=="zero") assert(WritePrivateProfileStringW(L"To Disk",L"Downloads",L"0",path.c_str()));
@@ -75,6 +86,9 @@ int main(int argc,char** argv) {
   assert(!history::CaptureSpeedAvailable(3));
   history::SetCaptureAccelerationAvailable(false);
   assert(s.windows_playback_fallback==(scenario=="fallback-one"));
+  const auto expected_log=scenario=="log-0"||scenario=="legacy-log-zero"?0u:
+    scenario=="log-2"?2u:scenario=="log-4"||scenario=="legacy-debug-one"?4u:1u;
+  assert(s.log_level==expected_log&&history::LogLevel()==expected_log);
   assert(history::CaptureSpeed()==s.capture_speed);
   if(scenario=="new") {
     assert(GetPrivateProfileIntW(L"To Disk",L"Downloads",9,path.c_str())==1);
@@ -114,6 +128,7 @@ int main(int argc,char** argv) {
   assert(history::CaptureEpoch()==epoch); // Enrichment preferences never discard audio.
   assert(!history::GetSettings().lyrics);
   assert(history::FlushSettings(5000));
+  assert(GetPrivateProfileIntW(L"To Disk",L"LogLevel",99,path.c_str())==expected_log);
   assert(GetPrivateProfileIntW(L"To Disk",L"CaptureSpeed",0,path.c_str())==s.capture_speed);
   assert(GetPrivateProfileIntW(L"To Disk",L"Lyrics",9,path.c_str())==0);
   assert(history::SetLyrics(true) && history::FlushSettings(5000));
@@ -135,6 +150,8 @@ int main(int argc,char** argv) {
   assert(GetPrivateProfileIntW(L"To Disk",L"Podcasts",9,path.c_str())==(s.podcasts?1:0));
   assert(GetPrivateProfileIntW(L"To Disk",L"Windows Playback Fallback",9,path.c_str())==(s.windows_playback_fallback?1:0));
   std::wstring persisted;bool unicode=false;assert(history::settings_file::Read(path,persisted,unicode));
+  assert(!history::settings_file::Find(persisted,L"Log").present);
+  assert(!history::settings_file::Find(persisted,L"DebugLog").present);
   const std::wstring fallback_key=L"Windows Playback Fallback=";
   const auto fallback_at=persisted.find(fallback_key);assert(fallback_at!=std::wstring::npos);
   assert(persisted.find(fallback_key,fallback_at+fallback_key.size())==std::wstring::npos);

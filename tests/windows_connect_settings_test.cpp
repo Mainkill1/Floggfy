@@ -7,7 +7,7 @@ void QueueDiagnostic(const char*){}
 void LogEvent(LogKind,const char*,const std::string&){}
 }
 int wmain() {
-    assert(history::Settings{}.debug_connect&&!history::Settings{}.debug_log);
+    assert(history::Settings{}.debug_connect&&history::Settings{}.log_level==1);
     wchar_t executable[32768];assert(GetModuleFileNameW(nullptr,executable,32768));
     const std::wstring exe=executable,ini=exe.substr(0,exe.find_last_of(L'\\'))+L"\\SpotifyHistory.ini";
     assert(history::CreateDefaultIni(ini));

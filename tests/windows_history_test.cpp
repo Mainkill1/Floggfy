@@ -20,7 +20,7 @@ int main() {
     check(GetFileAttributesW(ini.c_str())!=INVALID_FILE_ATTRIBUTES,"missing INI created beside DLL");
     auto defaults=GetSettings();
     check(defaults.downloads && defaults.lyrics && defaults.menu && defaults.ogg && defaults.flac &&
-          defaults.metadata && defaults.log && !defaults.debug_log,
+          defaults.metadata && defaults.log_level==1,
           "generated INI loads complete default switches");
     check(defaults.save_location.empty() && defaults.max_buffered_mib==500,
           "generated INI uses default Music location and 500 MiB buffer");

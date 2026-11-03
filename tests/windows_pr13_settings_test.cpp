@@ -22,20 +22,25 @@ static void StrictOptIn() {
 }
 static void EffectiveDebug() {
     using namespace history;
-    for(unsigned bits=0;bits<4;++bits) {
-        const bool log=(bits&1)!=0,debug=(bits&2)!=0,effective=log&&debug;
-        InterlockedExchange(&log_enabled,log);InterlockedExchange(&debug_enabled,debug);
+    for(const unsigned level:{0u,1u,2u,4u}) {
+        const bool effective=level>=4;
+        InterlockedExchange(&log_level_value,LONG(level));
         InterlockedExchange(&networking_enabled,1);InterlockedExchange(&hook_diagnostics_enabled,1);
         assert(DebugLoggingEnabled()==effective&&NetworkingLoggingEnabled()==effective&&HookDiagnosticsEnabled()==effective);
-        Settings config;config.log=log;config.debug_log=debug;config.debug_networking=true;
+        Settings config;config.log_level=level;config.debug_networking=true;config.debug_hook_diagnostics=true;
         const auto options=BuildCollectorOptions(config);
         assert(options.find(effective?L"debug:true":L"debug:false")!=std::wstring::npos);
         assert(options.find(effective?L"connect:true":L"connect:false")!=std::wstring::npos);
         assert(options.find(effective?L"networking:true":L"networking:false")!=std::wstring::npos);
     }
-    InterlockedExchange(&log_enabled,0);InterlockedExchange(&debug_enabled,1);
+    InterlockedExchange(&log_level_value,4);InterlockedExchange(&networking_enabled,0);
+    InterlockedExchange(&hook_diagnostics_enabled,1);
+    assert(!NetworkingLoggingEnabled()&&HookDiagnosticsEnabled());
+    InterlockedExchange(&networking_enabled,1);InterlockedExchange(&hook_diagnostics_enabled,0);
+    assert(NetworkingLoggingEnabled()&&!HookDiagnosticsEnabled());
+    InterlockedExchange(&log_level_value,0);
     signal=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(signal);
-    Settings opted_out;opted_out.log=true;opted_out.debug_log=true;opted_out.debug_networking=true;opted_out.debug_connect=false;
+    Settings opted_out;opted_out.log_level=4;opted_out.debug_networking=true;opted_out.debug_connect=false;
     assert(BuildCollectorOptions(opted_out).find(L",connect:false,")!=std::wstring::npos);
     Settings auto_skip;auto_skip.auto_skip_downloaded=true;auto_skip.generation=9;
     AutoSkipRequest request{7,9,"spotify:track:0000000000000000000001","playback-1"};
@@ -57,12 +62,13 @@ static void PreserveExternalEdits() {
     wchar_t executable[32768];assert(GetModuleFileNameW(nullptr,executable,32768));
     const std::wstring exe=executable,path=exe.substr(0,exe.find_last_of(L'\\'))+L"\\SpotifyHistory.ini";
     assert(CreateDefaultIni(path));
+    assert(WritePrivateProfileStringW(L"To Disk",L"LogLevel",nullptr,path.c_str()));
     assert(WritePrivateProfileStringW(L"To Disk",L"Log",L"0",path.c_str()));
     assert(WritePrivateProfileStringW(L"To Disk",L"DebugLog",L"1",path.c_str()));
     for(const auto& flag:restart_flags)assert(WritePrivateProfileStringW(L"To Disk",flag.key,nullptr,path.c_str()));
     assert(WritePrivateProfileStringW(L"Unknown",L"Keep",L"\u97f3\u697d",path.c_str()));
     InitSettings(nullptr);assert(FlushSettings(5000));
-    assert(!GetSettings().network_patch&&GetSettings().debug_connect&&!DebugLoggingEnabled());
+    assert(!GetSettings().network_patch&&GetSettings().debug_connect&&!DebugLoggingEnabled()&&LogLevel()==0);
     for(const auto& flag:restart_flags)
         assert(GetPrivateProfileIntW(L"To Disk",flag.key,9,path.c_str())==unsigned(flag.default_value));
     assert(WritePrivateProfileStringW(L"To Disk",L"NetworkPatch",L"1",path.c_str()));
