@@ -32,6 +32,7 @@
 #include "decoded_output_speed.h"
 #include "decoder_ownership.h"
 #include "recording_formats.h"
+#include "recording_file.h"
 #include "vendor/minhook/include/MinHook.h"
 #include <algorithm>
 #include <cmath>
@@ -663,6 +664,7 @@ struct Capture {
     Mp3Info mp3_info;
     FlacInfo flac;
     FlacCoverage coverage;
+    size_t flac_audio_offset=0;
     double born=0,finished=0;
     uint64_t bytes=0,listen_generation=0;
     double last_input=0;
@@ -1208,6 +1210,7 @@ struct CaptureBuffers {
     uint64_t pending_natural_generation=0;
     uint64_t confirmed_transition_playback=0;
     double pending_natural_time=0;
+    std::string pending_natural_playback_instance;
     Listen pending_natural_listen{};
     std::map<uintptr_t,std::unique_ptr<Capture>> active;
     struct OggKey {
@@ -1256,6 +1259,10 @@ struct CaptureBuffers {
         return false;
     }
 };
+static void ClearPendingNaturalTransition(CaptureBuffers& buffers) noexcept {
+    buffers.pending_natural_generation=0;buffers.pending_natural_time=0;
+    buffers.pending_natural_playback_instance.clear();buffers.pending_natural_listen={};
+}
 static bool ExcludeUnboundMp3Interludes(CaptureBuffers& buffers,const Media& media) {
     if(media.spotify_uri.rfind("spotify:track:",0)!=0||!buffers.ownership_tracker)return false;
     bool excluded=false;
@@ -1325,10 +1332,14 @@ static uint64_t BindReadyCapture(CaptureBuffers& buffers,const Media& media,
         if((!declared&&!active_ogg_without_duration)||
            (declared&&std::fabs(declared-media.duration)>1.0))return;
         const auto binding=buffers.ownership_tracker->Binding(capture.capture_token);
-        if(binding.state==ownership::OwnershipState::Bound&&
-           binding.listen_generation==generation) {
-            if(!already_bound)already_bound=binding.playback_token;
-            else if(already_bound!=binding.playback_token)already_bound=~uint64_t(0);
+        if(binding.state==ownership::OwnershipState::Bound) {
+            if(binding.listen_generation==generation) {
+                if(!already_bound)already_bound=binding.playback_token;
+                else if(already_bound!=binding.playback_token)already_bound=~uint64_t(0);
+            } else if(!binding.listen_generation&&ready_playback&&
+                      binding.playback_token==ready_playback) {
+                candidate=&capture;++candidates;
+            }
             return;
         }
         if(binding.state==ownership::OwnershipState::AwaitingPlaybackInstance) {
@@ -1477,6 +1488,30 @@ static void LogCaptureContext(const Slot& s,const Capture* capture,const char* o
         static_cast<unsigned long long>(capture?capture->flac.total_samples:0),static_cast<unsigned long long>(capture?capture->bytes:0),dropped,extra);
     Log(LogKind::Diagnostic,line);
 }
+static bool RestartFlacCaptureAtSampleZero(Capture& capture,const Slot& slot,
+                                           CaptureBuffers& buffers) {
+    if(!capture.metadata||!capture.flac_audio_offset||
+       capture.flac_audio_offset>=capture.data.size())return false;
+    size_t offset=0;
+    const Quality quality{Codec::Flac,capture.flac.rate,capture.flac.channels,
+                          capture.flac.bits,0};
+    if(!FindValidatedFlacFrame(capture.data,quality,capture.flac.max_block,
+                               0,0,capture.flac_audio_offset+1,offset)||
+       !capture.data.RetainPrefixAndSuffix(capture.flac_audio_offset,offset))return false;
+    if(buffers.ownership_tracker&&capture.capture_token)
+        buffers.ownership_tracker->AbortCapture(
+            capture.capture_token,ownership::CaptureAbortReason::Reinitialized);
+    capture.bytes=capture.data.size();
+    capture.coverage={};capture.born=slot.time;capture.finished=0;
+    capture.ambiguous=false;capture.final_validation=-1;capture.validation_runs=0;
+    capture.publication_deferred=false;capture.bound_identity.clear();
+    capture.capture_token=0;capture.decoder_owner=0;
+    BeginCaptureOwnership(capture,buffers,ownership::DecoderCodec::Flac,
+                          slot.context,0,slot.time,slot.epoch,slot.sequence);
+    if(DebugLoggingEnabled())Log(LogKind::Diagnostic,
+        "FLAC sample-zero restart began a fresh compressed capture");
+    return true;
+}
 static void ProcessFlacCapture(const Slot& s,CaptureBuffers& buffers) {
     auto& active=buffers.active;auto& ready=buffers.ready;
     auto found=active.find(s.context);
@@ -1506,7 +1541,7 @@ static void ProcessFlacCapture(const Slot& s,CaptureBuffers& buffers) {
             size_t audio=0; auto parsed=ParseFlacMetadata(c.data,c.flac,audio);
             if(parsed==FlacParse::Invalid) { buffers.RecordLostActive(found->second.get());active.erase(found); Log(LogKind::Failure,"FLAC metadata invalid; stream discarded"); return; }
             if(parsed==FlacParse::Valid) {
-                c.metadata=true; char line[180]; snprintf(line,sizeof(line),"FLAC STREAMINFO rate=%u channels=%u bits=%u total=%llu metadata_bytes=%zu",c.flac.rate,c.flac.channels,c.flac.bits,static_cast<unsigned long long>(c.flac.total_samples),audio); Log(LogKind::Diagnostic,line);
+                c.metadata=true;c.flac_audio_offset=audio; char line[180]; snprintf(line,sizeof(line),"FLAC STREAMINFO rate=%u channels=%u bits=%u total=%llu metadata_bytes=%zu",c.flac.rate,c.flac.channels,c.flac.bits,static_cast<unsigned long long>(c.flac.total_samples),audio); Log(LogKind::Diagnostic,line);
             }
         }
         return;
@@ -1515,7 +1550,13 @@ static void ProcessFlacCapture(const Slot& s,CaptureBuffers& buffers) {
         uint32_t frame[6]; uint64_t number; memcpy(frame,s.bytes,24); memcpy(&number,s.bytes+24,8);
         if(frame[5]==0) number=uint32_t(number);
         const char* reason="metadata-not-ready";
-        if(!c.metadata || !c.coverage.Frame(c.flac,frame[0],frame[1],frame[2],frame[4],frame[5],number,&reason)) {
+        bool accepted=c.metadata&&c.coverage.Frame(
+            c.flac,frame[0],frame[1],frame[2],frame[4],frame[5],number,&reason);
+        if(!accepted&&c.metadata&&reason&&!std::strcmp(reason,"sample-position")&&
+           number==0&&c.coverage.samples&&RestartFlacCaptureAtSampleZero(c,s,buffers))
+            accepted=c.coverage.Frame(
+                c.flac,frame[0],frame[1],frame[2],frame[4],frame[5],number,&reason);
+        if(!accepted) {
             if(DebugLoggingEnabled()) {
                 char line[400];snprintf(line,sizeof(line),
                     " reason=%s native_frame_result=0 expected_rate=%u got_rate=%u expected_channels=%u got_channels=%u expected_bits=%u got_bits=%u block=%u min_block=%u max_block=%u number_type=%u number=%llu expected_sample=%llu",
@@ -1833,14 +1874,13 @@ static Capture* UniqueCompleteUnownedAacForListen(CaptureBuffers& buffers,const 
 }
 static bool FinishAppTransition(const Media& next,Listen& listen,const Media& current,std::vector<Heard>& heard,CaptureBuffers& buffers,double time,RecentPlaybackHistory* recent=nullptr) {
     if(listen.identity.empty()) {
-        buffers.ownership_hold_generation=0;buffers.pending_natural_generation=0;
+        buffers.ownership_hold_generation=0;ClearPendingNaturalTransition(buffers);
         buffers.confirmed_transition_playback=0;
-        buffers.pending_natural_time=0;buffers.pending_natural_listen={};return false;
+        return false;
     }
     if(next.explicit_skip||next.explicit_control) {
-        buffers.ownership_hold_generation=0;buffers.pending_natural_generation=0;
+        buffers.ownership_hold_generation=0;ClearPendingNaturalTransition(buffers);
         buffers.confirmed_transition_playback=0;
-        buffers.pending_natural_time=0;buffers.pending_natural_listen={};
         AbortBoundMp3Capture(buffers,listen.generation,ownership::CaptureAbortReason::InvalidData);
         listen.identity.clear();listen.eligible=false;listen.playing=false;return false;
     }
@@ -1852,10 +1892,12 @@ static bool FinishAppTransition(const Media& next,Listen& listen,const Media& cu
     // Spotify clears the playback ID during some natural buffering
     // transitions. Keep the old listen intact until the first Ready snapshot
     // supplies the successor ID; all ordinary completion checks still run then.
-    if(next.transition_pending&&next.playback_instance.empty()&&
-       next.control_monitoring&&listen.eligible&&listen.playing) {
+    if(next.transition_pending&&next.control_monitoring&&listen.eligible&&listen.playing) {
         buffers.pending_natural_generation=listen.generation;
         buffers.pending_natural_time=time;
+        buffers.pending_natural_playback_instance=
+            current.playback_instance.empty()||
+            next.playback_instance!=current.playback_instance?next.playback_instance:"";
         buffers.pending_natural_listen=listen;
         return true;
     }
@@ -1952,8 +1994,7 @@ static bool FinishAppTransition(const Media& next,Listen& listen,const Media& cu
             Log(LogKind::Diagnostic,"incomplete app transition quarantined for final capture validation");
         } else LogEvent(LogKind::Activity,"skipped",Utf8(current.artist)+" - "+Utf8(current.title)+" (incomplete app transition)");
     }
-    buffers.ownership_hold_generation=0;buffers.pending_natural_generation=0;
-    buffers.pending_natural_time=0;buffers.pending_natural_listen={};
+    buffers.ownership_hold_generation=0;ClearPendingNaturalTransition(buffers);
     listen.identity.clear();listen.eligible=false;listen.playing=false;
     return false;
 }
@@ -1962,15 +2003,21 @@ static bool FinishPendingNaturalTransition(const Media& next,Listen& listen,cons
                                            RecentPlaybackHistory* recent=nullptr) {
     if(!buffers.pending_natural_generation)return false;
     if(next.explicit_skip||next.explicit_control) {
-        buffers.pending_natural_generation=0;buffers.pending_natural_time=0;
-        buffers.pending_natural_listen={};buffers.confirmed_transition_playback=0;
+        ClearPendingNaturalTransition(buffers);buffers.confirmed_transition_playback=0;
         listen.eligible=false;listen.playing=false;return false;
     }
     if(!listen.eligible||buffers.pending_natural_generation!=listen.generation) {
-        buffers.pending_natural_generation=0;buffers.pending_natural_time=0;
-        buffers.pending_natural_listen={};return false;
+        ClearPendingNaturalTransition(buffers);return false;
     }
     if(next.playback_instance.empty())return false;
+    if(!buffers.pending_natural_playback_instance.empty()&&
+       next.playback_instance!=buffers.pending_natural_playback_instance) {
+        ClearPendingNaturalTransition(buffers);buffers.confirmed_transition_playback=0;
+        listen.eligible=false;listen.playing=false;return false;
+    }
+    if(buffers.pending_natural_playback_instance.empty()&&
+       !current.playback_instance.empty()&&
+       next.playback_instance==current.playback_instance)return false;
     if(next.ListenKey()==listen.identity)return false;
     auto transition=next;transition.natural_transition=true;transition.control_monitoring=true;
     transition.explicit_skip=false;transition.explicit_control=false;

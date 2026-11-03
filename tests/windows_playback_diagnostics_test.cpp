@@ -8,6 +8,7 @@ namespace history {void CaptureLogEvent(LogKind,const char*,const std::string&);
 #include "recording_fixture.h"
 #include "spac_fixture.h"
 #include <cassert>
+#include <random>
 
 namespace {
 std::vector<std::string> diagnostic_lines;
@@ -163,6 +164,70 @@ void CoverageAndFailures() {
     slot.kind=AudioEventKind::FlacFrame;ProcessFlacCapture(slot,buffers);
     assert(diagnostic_lines.size()==2&&Contains("stream discarded")&&Contains("incomplete cache | unknown track"));
     InterlockedExchange(&history::debug_enabled,1);
+}
+void SameContextFlacRestartBeginsFreshCapture() {
+    auto complete=recording_fixture::fixture();
+    uint64_t packed=0;for(unsigned i=18;i<26;++i)packed=(packed<<8)|complete[i];
+    packed=(packed&~0xfffffffffULL)|32;
+    for(unsigned i=0;i<8;++i)complete[18+i]=uint8_t(packed>>(56-8*i));
+    std::vector<uint8_t> first(complete.begin()+42,complete.end()),second=first;
+    second[4]=1;
+    std::vector<uint8_t> second_header(second.begin(),second.begin()+6);
+    second[6]=uint8_t(recording_fixture::crc(second_header,8,7));
+    second.resize(second.size()-2);
+    const auto checksum=recording_fixture::crc(second,16,0x8005);
+    second.push_back(uint8_t(checksum>>8));second.push_back(uint8_t(checksum));
+    complete.insert(complete.end(),second.begin(),second.end());
+
+    CaptureBuffers buffers;Slot slot{};slot.context=0x4567;slot.epoch=7;slot.time=100;
+    slot.kind=AudioEventKind::FlacBegin;ProcessFlacCapture(slot,buffers);
+    slot.kind=AudioEventKind::FlacBytes;slot.length=unsigned(42+first.size());
+    memcpy(slot.bytes,complete.data(),slot.length);ProcessFlacCapture(slot,buffers);
+    uint32_t frame[6]={16,44100,2,0,16,0};uint64_t number=0;
+    slot.kind=AudioEventKind::FlacFrame;slot.length=32;
+    memcpy(slot.bytes,frame,24);memcpy(slot.bytes+24,&number,8);
+    ProcessFlacCapture(slot,buffers);
+    assert(buffers.active.at(slot.context)->coverage.samples==16);
+
+    slot.time=101;slot.kind=AudioEventKind::FlacBytes;slot.length=unsigned(first.size());
+    memcpy(slot.bytes,first.data(),first.size());ProcessFlacCapture(slot,buffers);
+    slot.kind=AudioEventKind::FlacFrame;slot.length=32;
+    memcpy(slot.bytes,frame,24);memcpy(slot.bytes+24,&number,8);
+    ProcessFlacCapture(slot,buffers);
+    assert(buffers.active.count(slot.context)&&buffers.ready.empty()&&
+           buffers.active.at(slot.context)->coverage.samples==16&&
+           buffers.active.at(slot.context)->bytes==42+first.size()&&
+           "a decoder seek to sample zero starts a fresh compressed lifetime");
+
+    slot.kind=AudioEventKind::FlacBytes;slot.length=unsigned(second.size());
+    memcpy(slot.bytes,second.data(),second.size());ProcessFlacCapture(slot,buffers);
+    frame[5]=0;number=1;slot.kind=AudioEventKind::FlacFrame;slot.length=32;
+    memcpy(slot.bytes,frame,24);memcpy(slot.bytes+24,&number,8);
+    ProcessFlacCapture(slot,buffers);
+    assert(buffers.active.empty()&&buffers.ready.size()==1&&
+           ValidateFinalCapture(*buffers.ready[0])==FinalCaptureValidation::Valid);
+    auto rebuilt=buffers.ready[0]->data.Flatten();RecordingFile inspected;
+    assert(rebuilt==complete&&InspectRecording(rebuilt.data(),rebuilt.size(),inspected)&&
+           inspected.complete&&"the restarted lifetime passes whole-file FLAC frame/CRC inspection");
+
+    const auto reject_restart=[&](bool corrupt,uint64_t reset_number) {
+        CaptureBuffers rejected;Slot event{};event.context=0x5000+reset_number;
+        event.epoch=7;event.time=200;event.kind=AudioEventKind::FlacBegin;
+        ProcessFlacCapture(event,rejected);
+        event.kind=AudioEventKind::FlacBytes;event.length=unsigned(42+first.size());
+        memcpy(event.bytes,complete.data(),event.length);ProcessFlacCapture(event,rejected);
+        frame[5]=0;number=0;event.kind=AudioEventKind::FlacFrame;event.length=32;
+        memcpy(event.bytes,frame,24);memcpy(event.bytes+24,&number,8);
+        ProcessFlacCapture(event,rejected);
+        auto restart=first;if(corrupt)restart.back()^=1;
+        event.kind=AudioEventKind::FlacBytes;event.length=unsigned(restart.size());
+        memcpy(event.bytes,restart.data(),restart.size());ProcessFlacCapture(event,rejected);
+        number=reset_number;event.kind=AudioEventKind::FlacFrame;event.length=32;
+        memcpy(event.bytes,frame,24);memcpy(event.bytes+24,&number,8);
+        ProcessFlacCapture(event,rejected);
+        assert(rejected.active.empty()&&rejected.ready.empty());
+    };
+    reject_restart(true,0);reject_restart(false,8);
 }
 void CaptureOwnershipLifecycle() {
     decoder_ownership_layout={};decoder_ownership_layout.ogg_capture_to_decoder=-0x88;
@@ -703,6 +768,28 @@ void EmptyPlaybackIdNaturalTransitionIsRetried() {
     assert(!FinishPendingNaturalTransition(next,seek_listen,seek_current,heard,seek_buffers)&&
            !seek_buffers.pending_natural_generation&&
            "a same-ID seek invalidates the pending natural transition");
+
+    CaptureBuffers prior_blank_buffers;std::vector<Heard> prior_blank_heard;
+    Listen prior_blank_listen;Media prior_blank_current,prior_blank=media;
+    prior_blank.playback_instance.clear();
+    for(unsigned i=0;i<=4;++i) {
+        prior_blank.position=i;
+        AssociateListen(prior_blank,prior_blank_listen,prior_blank_current,
+                        prior_blank_heard,prior_blank_buffers,200+i);
+    }
+    Media known_buffering=buffering;
+    known_buffering.playback_instance="successor-stage";
+    assert(FinishAppTransition(known_buffering,prior_blank_listen,prior_blank_current,
+                               prior_blank_heard,prior_blank_buffers,205)&&
+           prior_blank_buffers.pending_natural_generation==prior_blank_listen.generation&&
+           "a missing Ready ID remains pending when buffering supplies its stage ID");
+    Media skipped_stage=next;skipped_stage.playback_instance="later-stage";
+    assert(!FinishPendingNaturalTransition(skipped_stage,prior_blank_listen,
+                                           prior_blank_current,prior_blank_heard,
+                                           prior_blank_buffers)&&
+           !prior_blank_buffers.pending_natural_generation&&
+           !prior_blank_listen.eligible&&prior_blank_heard.empty()&&
+           "a later Ready ID cannot consume evidence for a skipped buffering stage");
 }
 void BoundNaturalTransitionUsesFinalCaptureEvidence() {
     ownership::DecoderOwnershipTracker tracker;tracker.Reset(24);
@@ -1299,6 +1386,32 @@ void ReadyDurationCorroboratesDecoder() {
     assert(playback&&binding.state==ownership::OwnershipState::Bound&&
            binding.listen_generation==2&&binding.playback_token==playback);
 }
+void ReadyUpgradesPreboundPlaybackGeneration() {
+    ownership::DecoderOwnershipTracker tracker;tracker.Reset(42);
+    CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+    auto capture=std::make_unique<Capture>();capture->lossless=true;capture->metadata=true;
+    capture->decoder_owner=0x7600;capture->flac.rate=44100;
+    capture->flac.total_samples=8930250;capture->coverage.frames=1;
+    capture->capture_token=tracker.BeginCapture(
+        ownership::DecoderCodec::Flac,capture->decoder_owner,0,100,42,10);
+    tracker.ObserveTransition("outgoing-id","spotify:track:oxygen",100.1,false,false);
+    ownership::DecodedActivity decoded{};decoded.owner=capture->decoder_owner;
+    decoded.calls=1;decoded.produced_floats=8192;decoded.first=100.2;
+    decoded.last=100.3;decoded.epoch=42;decoded.sequence=11;
+    tracker.ObserveDecoded(decoded);
+    tracker.ObserveTransition("outgoing-id","spotify:track:oxygen",100.35,false,false);
+    decoded.first=100.4;decoded.last=100.45;decoded.sequence=12;
+    tracker.ObserveDecoded(decoded);
+    assert(tracker.Binding(capture->capture_token).state==ownership::OwnershipState::Bound&&
+           !tracker.Binding(capture->capture_token).listen_generation);
+    const auto token=tracker.Binding(capture->capture_token).capture_token;
+    buffers.active[1]=std::move(capture);
+    Media ready;ready.source=MediaSource::Spotify;ready.spotify_uri="spotify:track:oxygen";
+    ready.playback_instance="outgoing-id";ready.duration=202.5;ready.playing=true;
+    const auto playback=BindReadyCapture(buffers,ready,77,100.5);
+    assert(playback&&tracker.Binding(token).listen_generation==77&&
+           "Ready must attach the listen generation to its prebound playback stage");
+}
 void WindowsReadyNaturalAppTransitionPublishes() {
     ownership::DecoderOwnershipTracker tracker;tracker.Reset(13);
     CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
@@ -1332,6 +1445,71 @@ void WindowsReadyNaturalAppTransitionPublishes() {
     SchedulePublications(heard,buffers,13,116);SaveJob job;
     assert(saves.Pop(job)&&job.heard.generation==1);
     publishing_reserved.fetch_sub(job.reserved);
+}
+void TransitionPublicationMatrixStress() {
+    constexpr unsigned iterations=5000;
+    std::mt19937_64 random(4043931417ULL);
+    const unsigned speeds[]={1,2,4,8,10};
+    for(unsigned run=0;run<iterations;++run) {
+        SaveJob leftover;assert(!saves.Pop(leftover));
+        const auto speed=speeds[random()%5],style=unsigned(random()%3),failure=unsigned(random()%5);
+        const double base=1000+run*100.0,end=base+16.0/speed;
+        const auto generation=std::uint64_t(run+1);
+        CaptureBuffers buffers;std::vector<Heard> heard;
+        Media current;current.source=MediaSource::Spotify;
+        current.spotify_uri="spotify:track:0000000000000000000001";
+        current.playback_instance="play-a-"+std::to_string(run);
+        current.title=L"A";current.artist=L"Artist";current.album=L"Album";
+        current.duration=16;current.playing=true;
+        Listen listen;listen.identity=current.ListenKey();listen.eligible=true;listen.playing=true;
+        listen.start_time=base;listen.last_time=end;listen.duration=16;
+        listen.last_position=(random()%2)?15.8:std::min(15.8,16.0/speed);
+        listen.generation=generation;listen.capture_speed=speed;
+        current.position=listen.last_position;
+        buffers.ready.push_back(CompleteFlacCapture(base,end));
+
+        Media transition;transition.source=MediaSource::Spotify;
+        transition.spotify_uri="spotify:track:0000000000000000000002";
+        transition.playback_instance="play-b-"+std::to_string(run);
+        transition.control_monitoring=true;
+        if(failure==1)transition.explicit_skip=transition.explicit_control=true;
+        else if(failure==2)transition.explicit_control=true;
+        else if(failure==3) {
+            transition=current;transition.position=13;transition.control_monitoring=true;
+        } else if(failure==4)buffers.ready.push_back(CompleteFlacCapture(base,end));
+
+        const bool valid_transition=failure==0||failure==4;
+        if(valid_transition) {
+            if(style==0)transition.natural_transition=true;
+            else {
+                transition.transition_pending=true;
+                transition.playback_instance=style==1?"":current.playback_instance;
+            }
+        }
+        const bool held=FinishAppTransition(transition,listen,current,heard,buffers,end);
+        if(valid_transition&&style) {
+            assert(held&&buffers.pending_natural_generation==generation);
+            if(style==2) {
+                auto stale=current;stale.position=std::min(15.9,current.position+.05);
+                assert(!FinishPendingNaturalTransition(stale,listen,current,heard,buffers)&&
+                       buffers.pending_natural_generation==generation);
+            }
+            Media ready=transition;ready.transition_pending=false;ready.playback_instance="play-b-"+std::to_string(run);
+            ready.title=L"B";ready.artist=L"Artist";ready.album=L"Album";
+            ready.position=0;ready.duration=16;ready.playing=true;
+            assert(FinishPendingNaturalTransition(ready,listen,current,heard,buffers));
+        }
+        SchedulePublications(heard,buffers,0,end);SaveJob job;
+        const bool saved=saves.Pop(job);
+        assert(saved==(!failure));
+        if(saved) {
+            assert(job.heard.media.spotify_uri==current.spotify_uri&&
+                   job.heard.generation==generation&&
+                   ValidateFinalCapture(*job.capture)==FinalCaptureValidation::Valid);
+            publishing_reserved.fetch_sub(job.reserved);
+        }
+        assert(!saves.Pop(job));
+    }
 }
 void BoundWindowsIdentitySurvivesMetadataRefinement() {
     Media first;first.source=MediaSource::Windows;first.title=L"Stale outgoing title";
@@ -1430,7 +1608,7 @@ void EnrichTags(const Media&,Tags&){}
 int wmain() {
     // Use in-memory preferences only. Never read or write the user's INI/music.
     InterlockedExchange(&history::debug_enabled,1);
-    Connectivity();PodcastCatalog();PodcastCaptureEvents();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();EmptyPlaybackIdNaturalTransitionIsRetried();BoundNaturalTransitionUsesFinalCaptureEvidence();DjVoiceDoesNotBlockMusicStart();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailLifecycle();ReadyDurationCorroboratesDecoder();WindowsReadyNaturalAppTransitionPublishes();BoundWindowsIdentitySurvivesMetadataRefinement();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
+    Connectivity();PodcastCatalog();PodcastCaptureEvents();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();EmptyPlaybackIdNaturalTransitionIsRetried();BoundNaturalTransitionUsesFinalCaptureEvidence();DjVoiceDoesNotBlockMusicStart();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailLifecycle();ReadyDurationCorroboratesDecoder();ReadyUpgradesPreboundPlaybackGeneration();WindowsReadyNaturalAppTransitionPublishes();TransitionPublicationMatrixStress();BoundWindowsIdentitySurvivesMetadataRefinement();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();SameContextFlacRestartBeginsFreshCapture();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
     puts("PASS: observed transitions, one FLAC failure context/outcome, original callback semantics, profiling-only intervals, basic-mode zero profiling and changed-only NLM observations");
     return 0;
 }

@@ -33,8 +33,12 @@ int main() {
             assert(buffer.Append(bytes.data(),16,existing?0:65536));
             assert(buffer.Flatten()==std::vector<uint8_t>(16,42));
         }else {
+            allowance=0;
+            assert(buffer.RetainPrefixAndSuffix(8,bytes.size()-8));
+            allowance=-1;
+            assert(buffer.size()==16&&buffer[0]==42&&buffer[15]==42);
             allowance=0;try{buffer.Flatten();assert(false);}catch(const std::bad_alloc&){}
-            allowance=-1;assert(buffer.size()==bytes.size());assert(buffer.Flatten()==bytes);
+            allowance=-1;assert(buffer.size()==16&&buffer.Flatten()==std::vector<uint8_t>(16,42));
         }
         }
         assert(live_allocations==baseline);

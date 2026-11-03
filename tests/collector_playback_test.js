@@ -37,10 +37,10 @@ assert(!output.some(x=>x.startsWith('FLOGGFY_METADATA_V1:')));assert.equal(reque
 console.log('PASS: client timeline, URI, pause/buffering/local flags, bounded clocks and Metadata=0 without getters or requests');
 // Producer evidence must remain unknown if action registration is absent or
 // failed; only an observed instance transition during local playing qualifies.
-for(const mode of ['observed','blank','missing','throws','manual','seek','paused','same','unavailable','replacement']) {
+for(const mode of ['observed','blank','readyblank','reused','missing','throws','manual','seek','paused','same','unavailable','replacement']) {
  let clock=1793300000000;
  let current={timestamp:clock,positionAsOfTimestamp:4000,duration:16000,isPaused:mode==='paused',isBuffering:false,
-  playbackId:'one',item:{uri:'spotify:track:0000000000000000000001',metadata:{title:'Song',artist_name:'Artist',album_title:'Album'}}};
+  playbackId:mode==='readyblank'?'':'one',item:{uri:'spotify:track:0000000000000000000001',metadata:{title:'Song',artist_name:'Artist',album_title:'Album'}}};
  const handlers=new Map(),messages=[];
  const api={getState:()=>current};
  if(mode!=='missing')api.getEvents=()=>({addListener(type,fn){if(type==='action'&&mode==='throws')throw Error('registration failed');handlers.set(type,fn);},removeListener:type=>handlers.delete(type)});
@@ -55,13 +55,13 @@ for(const mode of ['observed','blank','missing','throws','manual','seek','paused
  }
  if(mode==='replacement')sandbox.window.Spicetify.Platform.PlayerAPI={...api};
  clock+=mode==='seek'?15000:mode==='manual'?20000:mode==='observed'?30000:500;
- current={...current,timestamp:clock,isBuffering:true,playbackId:mode==='same'?'one':mode==='blank'?'':'two',
-  item:{...current.item,uri:'spotify:track:0000000000000000000002'}};
+ current={...current,timestamp:clock,isBuffering:true,playbackId:mode==='same'||mode==='reused'?'one':mode==='blank'?'':'two',
+  item:{...current.item,uri:mode==='same'?current.item.uri:'spotify:track:0000000000000000000002'}};
  sandbox.window.__floggfyPoll();
  const message=messages.filter(line=>line.startsWith('FLOGGFY_TIMELINE_V1:')).at(-1);
  const fields=new URLSearchParams(message.slice('FLOGGFY_TIMELINE_V1:'.length));
  assert.equal(fields.get('natural'),mode==='observed'?'1':null,mode);
- assert.equal(fields.get('pending'),mode==='blank'?'1':null,mode);
+ assert.equal(fields.get('pending'),mode==='blank'||mode==='readyblank'||mode==='reused'?'1':null,mode);
  assert.equal(fields.get('controlled'),mode==='manual'||mode==='seek'?'1':null,mode);
  assert.equal(fields.get('monitoring'),mode==='missing'||mode==='throws'?'0':'1',mode);
 }

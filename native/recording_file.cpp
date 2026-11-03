@@ -4,6 +4,7 @@
 #include "image_info.h"
 #include "vorbis_headers.h"
 #include "aac_stream.h"
+#include "compressed_buffer.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -120,18 +121,26 @@ bool Comments(const uint8_t* b,size_t size,RecordingFile& record,bool vorbis) {
     }
     return vorbis ? p+1==size && b[p]==1 : p==size;
 }
-uint8_t Crc8(const uint8_t* b,size_t n) {
+struct PointerBytes {
+    const uint8_t* bytes;
+    uint8_t operator[](size_t at) const noexcept {return bytes[at];}
+};
+struct BufferedBytes {
+    const CompressedBuffer& bytes;size_t base;
+    uint8_t operator[](size_t at) const noexcept {return bytes[base+at];}
+};
+template<class Source> uint8_t Crc8(const Source& b,size_t n) {
     uint8_t crc=0;
-    while(n--) { crc^=*b++; for(unsigned j=0;j<8;j++) crc=uint8_t((crc<<1)^((crc&128)?7:0)); }
+    for(size_t i=0;i<n;++i) { crc^=b[i]; for(unsigned j=0;j<8;j++) crc=uint8_t((crc<<1)^((crc&128)?7:0)); }
     return crc;
 }
-uint16_t Crc16(const uint8_t* b,size_t n) {
+template<class Source> uint16_t Crc16(const Source& b,size_t n) {
     uint16_t crc=0;
-    while(n--) { crc^=uint16_t(*b++)<<8; for(unsigned j=0;j<8;j++) crc=uint16_t((crc<<1)^((crc&32768)?0x8005:0)); }
+    for(size_t i=0;i<n;++i) { crc^=uint16_t(b[i])<<8; for(unsigned j=0;j<8;j++) crc=uint16_t((crc<<1)^((crc&32768)?0x8005:0)); }
     return crc;
 }
-struct Bits {
-    const uint8_t* bytes; size_t size,position=0; bool ok=true;
+template<class Source> struct Bits {
+    const Source& bytes; size_t size,position=0; bool ok=true;
     uint64_t Read(unsigned count) {
         if(count>64 || count>size*8-position) { ok=false; return 0; }
         uint64_t result=0;
@@ -148,7 +157,7 @@ struct Bits {
         return ok;
     }
 };
-bool Residual(Bits& bits,unsigned block,unsigned order) {
+template<class Source> bool Residual(Bits<Source>& bits,unsigned block,unsigned order) {
     unsigned method=unsigned(bits.Read(2)), partitions=unsigned(bits.Read(4));
     if(method>1 || !bits.ok || (block&((1u<<partitions)-1))) return false;
     unsigned samples=block>>partitions;
@@ -165,7 +174,7 @@ bool Residual(Bits& bits,unsigned block,unsigned order) {
     }
     return bits.ok;
 }
-bool Subframe(Bits& bits,unsigned block,unsigned depth) {
+template<class Source> bool Subframe(Bits<Source>& bits,unsigned block,unsigned depth) {
     if(bits.Read(1)) return false;
     unsigned type=unsigned(bits.Read(6)); bool wasted=bits.Read(1)!=0;
     if(wasted) {
@@ -189,9 +198,9 @@ bool Subframe(Bits& bits,unsigned block,unsigned depth) {
     return Residual(bits,block,order);
 }
 // RFC 9639 sections 9.1-9.3: walk each subframe, not a sync-byte scan.
-bool FlacFrame(const uint8_t* b,size_t size,const Quality& quality,unsigned max_block,
+template<class Source> bool FlacFrame(const Source& b,size_t size,const Quality& quality,unsigned max_block,
                uint64_t expected_sample,uint64_t frame_number,size_t& consumed,unsigned& block) {
-    Bits bits{b,size};
+    Bits<Source> bits{b,size};
     if(bits.Read(14)!=0x3ffe || bits.Read(1)) return false;
     bool variable=bits.Read(1)!=0;
     unsigned block_code=unsigned(bits.Read(4)),rate_code=unsigned(bits.Read(4));
@@ -260,7 +269,8 @@ bool Flac(const uint8_t* b,size_t size,RecordingFile& out) {
     uint64_t samples=0,frames=0;
     while(p<size) {
         size_t consumed=0; unsigned block=0;
-        if(!FlacFrame(b+p,size-p,out.quality,maximum,samples,frames,consumed,block)) return true;
+        const PointerBytes frame{b+p};
+        if(!FlacFrame(frame,size-p,out.quality,maximum,samples,frames,consumed,block)) return true;
         samples+=block; ++frames; p+=consumed;
         if(samples>total || (samples<total && block!=maximum && !(b[p-consumed+1]&1))) return true;
     }
@@ -325,6 +335,21 @@ std::string Utf8(const std::wstring& value) {
     }
     return result;
 }
+}
+bool FindValidatedFlacFrame(const CompressedBuffer& bytes,const Quality& quality,
+                            unsigned max_block,uint64_t expected_sample,
+                            uint64_t frame_number,size_t begin,size_t& offset) {
+    if(begin>=bytes.size())return false;
+    bool found=false;
+    for(size_t at=begin;at+2<=bytes.size();++at) {
+        if(bytes[at]!=0xff||(bytes[at+1]&0xfe)!=0xf8)continue;
+        size_t length=0;unsigned samples=0;
+        const BufferedBytes frame{bytes,at};
+        if(!FlacFrame(frame,bytes.size()-at,quality,max_block,expected_sample,
+                      frame_number,length,samples))continue;
+        offset=at;found=true;
+    }
+    return found;
 }
 bool ReadRecordingArtwork(const std::vector<uint8_t>& bytes,RecordingArtwork& out) {
     out={};ImageInfo info;if(!ReadImageInfo(bytes,info))return false;

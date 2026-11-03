@@ -52,8 +52,9 @@ int main() {
     check(!SetCaptureSpeed(3) && CaptureSpeed()==1 && CaptureEpoch()==epoch,"unsupported speed is rejected without changing state");
     check(!SetCaptureSpeed(4) && CaptureSpeed()==1,"accelerated speed is rejected until the native capability is active");
     SetCaptureAccelerationAvailable(true);
-    check(SetCaptureSpeed(4) && CaptureSpeed()==4 && CaptureEpoch()==epoch+1,"supported speed advances capture epoch");
-    check(SetCaptureSpeed(4) && CaptureEpoch()==epoch+1,"same speed does not advance capture epoch");
+    check(SetCaptureSpeed(4) && CaptureSpeed()==4 && CaptureEpoch()==epoch,
+          "capture speed changes decoded pacing without invalidating compressed audio");
+    check(SetCaptureSpeed(4) && CaptureEpoch()==epoch,"same speed does not advance capture epoch");
     check(FlushSettings(5000),"background settings persisted");
     check(GetPrivateProfileIntW(L"To Disk",L"Downloads",9,ini.c_str())==0,"INI persists disabled setting");
     check(GetPrivateProfileIntW(L"To Disk",L"CaptureSpeed",0,ini.c_str())==4,"INI persists strict capture speed");

@@ -16,6 +16,24 @@ bool CompressedBuffer::Append(const uint8_t* bytes,size_t count,size_t available
     }
     return true;
 }
+bool CompressedBuffer::RetainPrefixAndSuffix(size_t prefix,size_t suffix) noexcept {
+    if(prefix>suffix||suffix>length)return false;
+    const auto tail=length-suffix;
+    if(prefix>std::numeric_limits<size_t>::max()-tail)return false;
+    size_t copied=0;
+    while(copied<tail) {
+        const auto source=suffix+copied,destination=prefix+copied;
+        const auto amount=std::min({tail-copied,block_size-source%block_size,
+                                    block_size-destination%block_size});
+        std::memmove(blocks[destination/block_size].get()+destination%block_size,
+                     blocks[source/block_size].get()+source%block_size,amount);
+        copied+=amount;
+    }
+    length=prefix+tail;
+    const auto required=(length+block_size-1)/block_size;
+    while(blocks.size()>required)blocks.pop_back();
+    return true;
+}
 std::vector<uint8_t> CompressedBuffer::Flatten() {
     std::vector<uint8_t> output(length); size_t p=0;
     for(const auto& block:blocks) { size_t n=std::min(block_size,length-p); memcpy(output.data()+p,block.get(),n); p+=n; }

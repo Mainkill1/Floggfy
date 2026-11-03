@@ -3,6 +3,32 @@
 #include <iostream>
 int main(int argc,char** argv){
     using namespace history;
+    if(argc==2&&std::string(argv[1])=="--fuzz-stream-stdin") {
+        std::string payload,error;std::size_t ready=0,transitions=0;
+        while(std::getline(std::cin,payload)) {
+            if(payload.find("blocked=buffering")!=std::string::npos) {
+                ClientTransition transition;
+                if(!ParseClientTransition(payload,transition)) {
+                    std::cerr<<"collector transition rejected: "<<payload<<'\n';return 1;
+                }
+                assert(!(transition.natural&&transition.pending));
+                if(transition.natural||transition.pending)
+                    assert(transition.control_monitoring&&!transition.explicit_skip&&!transition.explicit_control);
+                if(transition.natural)assert(!transition.instance.empty());
+                ++transitions;
+            } else {
+                ClientPlaybackRecord record;
+                if(!ParseClientPlayback(payload,record,error)) {
+                    std::cerr<<"collector Ready rejected: "<<error<<'\n';return 1;
+                }
+                assert(record.local==1&&record.speed>=1&&!record.metadata.uri.empty());++ready;
+            }
+        }
+        assert(ready&&transitions);
+        std::cout<<"PASS: native parser accepted "<<ready<<" Ready and "<<transitions
+                 <<" transition records from stateful collector fuzzing\n";
+        return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--stdin") {
         const std::string payload(std::istreambuf_iterator<char>(std::cin),{});
         ClientPlaybackRecord record;std::string failure;
@@ -12,6 +38,26 @@ int main(int argc,char** argv){
         assert(record.metadata.uri=="spotify:track:0000000000000000000001");
         assert(record.instance=="playback-1"&&record.position==12.5&&!record.explicit_control&&!record.prior_control);
         std::cout<<"PASS: real collector Ready payload satisfies native playback protocol\n";
+        return 0;
+    }
+    if(argc==2&&std::string(argv[1])=="--transition-stdin") {
+        const std::string payload(std::istreambuf_iterator<char>(std::cin),{});
+        ClientTransition transition;
+        assert(ParseClientTransition(payload,transition));
+        assert(transition.pending&&!transition.natural&&transition.control_monitoring&&
+               transition.instance=="successor-stage"&&
+               transition.uri=="spotify:track:0000000000000000000002");
+        std::cout<<"PASS: real collector blank-Ready transition satisfies native pending protocol\n";
+        return 0;
+    }
+    if(argc==2&&std::string(argv[1])=="--reused-transition-stdin") {
+        const std::string payload(std::istreambuf_iterator<char>(std::cin),{});
+        ClientTransition transition;
+        assert(ParseClientTransition(payload,transition));
+        assert(transition.pending&&!transition.natural&&transition.control_monitoring&&
+               transition.instance=="playback-1"&&
+               transition.uri=="spotify:track:0000000000000000000002");
+        std::cout<<"PASS: real collector reused-ID transition satisfies native pending protocol\n";
         return 0;
     }
     assert(argc==1);

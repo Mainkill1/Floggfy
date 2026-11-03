@@ -17,3 +17,10 @@ for test in history_core capture_speed decoded_output_speed compressed_buffer co
     g++ -std=c++17 "${flags[@]}" -pthread "tests/${test}_test.cpp" "${extra[@]}" -o "build/capture-fuzz/$test"
     "build/capture-fuzz/$test"
 done
+g++ -std=c++17 "${flags[@]}" tests/decoder_ownership_fuzz_test.cpp native/decoder_ownership.cpp \
+    -o build/capture-fuzz/decoder_ownership_fuzz
+build/capture-fuzz/decoder_ownership_fuzz "${1:-20000}" "${2:-4043931417}"
+lifecycle_iterations="${1:-20000}"
+if (( lifecycle_iterations > 2000 )); then lifecycle_iterations=2000; fi
+node tests/collector_lifecycle_fuzz_test.js "$lifecycle_iterations" "${2:-4043931417}" |
+    build/capture-fuzz/client_playback --fuzz-stream-stdin

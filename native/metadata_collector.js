@@ -45,9 +45,10 @@
     // Missing/failed action monitoring is unknown, never evidence of natural end.
     if(controlBinding?.active&&controlBinding.observing&&controlBinding.player===player&&
        timelineLocal===1&&!blocked.manual&&!blocked.controlled&&prior?.playing&&prior.player===player&&
-       prior.instance&&stamp>=prior.stateStamp) {
-     if(blocked.instance&&prior.instance!==blocked.instance)blocked.natural=1;
-     else if(!blocked.instance)blocked.pending=1;
+       stamp>=prior.stateStamp) {
+     if(blocked.instance&&prior.instance&&prior.instance!==blocked.instance)blocked.natural=1;
+     else if(!blocked.instance||!prior.instance||
+             (blocked.instance===prior.instance&&blocked.uri!==prior.uri))blocked.pending=1;
     }
    }
    timeline(blocked);lastReadyTimeline=undefined;
@@ -81,7 +82,7 @@
   else if(pendingControl&&pendingControl.action!=='pause'){
    readyControlled=true;pendingControl=undefined;
   }
-  lastReadyTimeline={player,sampled,stateStamp:stamp,instance,playing:!paused&&timelineLocal===1};
+  lastReadyTimeline={player,sampled,stateStamp:stamp,instance,uri:data.uri,playing:!paused&&timelineLocal===1};
   timeline({v:1,title:data.title,artist:data.artist||'',album:data.album||'',uri:data.uri,
    duration:duration/1000,position:seconds,sampled_ms:sampled,instance,paused:Number(paused),buffering:Number(buffering),local:timelineLocal,speed:rate,
    controlled:readyControlled?1:undefined,prior_control:readyPriorControlled?1:undefined});

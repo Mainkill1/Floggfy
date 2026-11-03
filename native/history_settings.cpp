@@ -338,8 +338,10 @@ bool SetCaptureSpeed(unsigned speed) {
     ExclusiveSrw guard(lock);ok=settings_signal!=nullptr;
     if(ok) {
         if(settings.capture_speed!=speed) {
-            settings.capture_speed=speed;++settings.capture_epoch;
-            InterlockedExchange(&capture_epoch,LONG(settings.capture_epoch));
+            // Decoded-output pacing does not alter the compressed Ogg/FLAC/AAC
+            // bytes already being retained. Keep their capture lifecycle alive;
+            // Listen::Observe independently invalidates mixed-speed coverage.
+            settings.capture_speed=speed;
             InterlockedExchange(&capture_speed_value,LONG(speed));
         }
         ++settings.generation;
