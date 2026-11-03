@@ -12,7 +12,9 @@ and are never written to disk.
 - Correlation advances through observed stages: capture created, decoded output
   seen, playback identity bound, compressed stream complete, then publishable.
   A Ready snapshot's listen generation is a valid local stage identity when the
-  client omits its playback ID. Wall clocks never establish or revoke ownership.
+  client omits its playback ID, but only after media kind and codec-declared
+  duration select exactly one decoder capture. Wall clocks never establish or
+  revoke ownership.
   Bounded record capacity may retire old evidence only after final reconciliation.
 - A conflict retires the current-owner role but retains the conflicted record as
   ambiguity evidence. A later nonoverlapping capture can establish fresh ownership.
@@ -32,9 +34,10 @@ and are never written to disk.
 ## Capability policy
 
 - Decoder layout discovery and an active decoded-output hook are separate states.
-- Ownership is enforced when decoded observation is active. An app playback ID
-  is preferred; Windows/no-ID Ready snapshots bind through the unique listen
-  generation produced by the same worker stage.
+- Ownership is enforced when decoded observation is active. An app transition can
+  supply URI/media kind while a Windows Ready snapshot supplies playback state and
+  duration. Binding requires one decoded capture whose declared duration agrees
+  with that Ready stage; a transition alone never assigns a decoder.
 - If the optional decoded hook cannot be installed safely, capture continues at 1x
   without ownership gating. Accelerated menu choices are disabled.
 

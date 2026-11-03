@@ -1280,7 +1280,7 @@ static bool BoundCaptureProvesInterludeSuccessor(const CaptureBuffers& buffers,c
        media.position<=1.5||media.spotify_uri.rfind("spotify:track:",0)!=0)return false;
     const auto playback=buffers.ownership_tracker->PlaybackToken(media.playback_instance);
     if(!playback||buffers.confirmed_transition_playback!=playback)return false;
-    size_t candidates=0,bound=0;
+    size_t candidates=0;
     const auto inspect=[&](const Capture& capture) {
         const auto declared=DeclaredCaptureDuration(capture);
         const bool began_at_source_start=capture.lossless?(capture.metadata&&capture.coverage.frames):
@@ -1290,16 +1290,59 @@ static bool BoundCaptureProvesInterludeSuccessor(const CaptureBuffers& buffers,c
            (declared&&std::fabs(declared-media.duration)>1.0))return;
         const auto binding=buffers.ownership_tracker->Binding(capture.capture_token);
         if(binding.state==ownership::OwnershipState::Bound&&binding.playback_token!=playback)return;
+        if(!declared&&(capture.lossless||capture.aac||!capture.stream.pages))return;
         if(binding.state!=ownership::OwnershipState::Bound&&
-           binding.state!=ownership::OwnershipState::AwaitingOutput&&
            binding.state!=ownership::OwnershipState::AwaitingPlaybackInstance)return;
         ++candidates;
-        if(binding.state==ownership::OwnershipState::Bound&&binding.playback_token==playback)++bound;
     };
     for(const auto& capture:buffers.active)inspect(*capture.second);
     for(const auto& capture:buffers.ogg_active)inspect(*capture.second);
     for(const auto& capture:buffers.ready)inspect(*capture);
-    return candidates==1&&bound==1;
+    return candidates==1;
+}
+static uint64_t BindReadyCapture(CaptureBuffers& buffers,const Media& media,
+                                 uint64_t generation,double observed,
+                                 uint64_t confirmed_transition_playback=0,
+                                 const std::string& transition_uri={}) {
+    if(!buffers.ownership_tracker||!generation||!media.playing||media.duration<=0)return 0;
+    const auto& resolved_uri=media.spotify_uri.empty()?transition_uri:media.spotify_uri;
+    const bool episode=resolved_uri.rfind("spotify:episode:",0)==0;
+    const bool track=resolved_uri.rfind("spotify:track:",0)==0;
+    const bool kind_unknown=resolved_uri.empty();
+    if(!episode&&!track&&!kind_unknown)return 0;
+    const auto ready_playback=media.playback_instance.empty()?0:
+        buffers.ownership_tracker->PlaybackToken(media.playback_instance);
+    const bool confirmed_transition=ready_playback&&
+        ready_playback==confirmed_transition_playback;
+    Capture* candidate=nullptr;size_t candidates=0;
+    uint64_t already_bound=0;
+    const auto inspect=[&](Capture& capture) {
+        if(capture.ambiguous||!capture.decoder_owner||!capture.capture_token||
+           (kind_unknown?capture.mp3:capture.mp3!=episode))return;
+        const auto declared=DeclaredCaptureDuration(capture);
+        const bool active_ogg_without_duration=!declared&&!capture.lossless&&!capture.aac&&
+            !capture.mp3&&capture.stream.pages&&confirmed_transition;
+        if((!declared&&!active_ogg_without_duration)||
+           (declared&&std::fabs(declared-media.duration)>1.0))return;
+        const auto binding=buffers.ownership_tracker->Binding(capture.capture_token);
+        if(binding.state==ownership::OwnershipState::Bound&&
+           binding.listen_generation==generation) {
+            if(!already_bound)already_bound=binding.playback_token;
+            else if(already_bound!=binding.playback_token)already_bound=~uint64_t(0);
+            return;
+        }
+        if(binding.state==ownership::OwnershipState::AwaitingPlaybackInstance) {
+            candidate=&capture;++candidates;
+        }
+    };
+    for(auto& capture:buffers.active)inspect(*capture.second);
+    for(auto& capture:buffers.ogg_active)inspect(*capture.second);
+    for(auto& capture:buffers.ready)inspect(*capture);
+    if(already_bound&&already_bound!=~uint64_t(0))return already_bound;
+    if(candidates!=1||!candidate)return 0;
+    if(!buffers.ownership_tracker->BindCapture(candidate->capture_token,
+        media.playback_instance,resolved_uri,generation,observed))return 0;
+    return buffers.ownership_tracker->Binding(candidate->capture_token).playback_token;
 }
 static void RememberBoundCaptureIdentity(CaptureBuffers& buffers,const Media& media,
                                          uint64_t generation,uint64_t playback_token) {
@@ -1773,7 +1816,7 @@ static Capture* UniqueCompleteUnownedAacForListen(CaptureBuffers& buffers,const 
     return match;
 }
 static bool FinishAppTransition(const Media& next,Listen& listen,const Media& current,std::vector<Heard>& heard,CaptureBuffers& buffers,double time,RecentPlaybackHistory* recent=nullptr) {
-    if(listen.identity.empty()||current.source!=MediaSource::Spotify) {
+    if(listen.identity.empty()) {
         buffers.ownership_hold_generation=0;buffers.pending_natural_generation=0;
         buffers.confirmed_transition_playback=0;
         buffers.pending_natural_time=0;buffers.pending_natural_listen={};return false;
@@ -1811,6 +1854,9 @@ static bool FinishAppTransition(const Media& next,Listen& listen,const Media& cu
         next_playback==owned_binding.playback_token;
     const bool new_owned_instance=owned_complete&&next_playback&&
         next_playback!=owned_binding.playback_token;
+    const bool windows_natural_bridge=current.source==MediaSource::Windows&&owned_complete&&
+        next.natural_transition&&next.control_monitoring&&listen.playing&&next_playback&&
+        owned_binding.playback_token&&next_playback!=owned_binding.playback_token;
     const bool complete_flac_decode=owned_complete&&owned_complete->lossless&&
         owned_complete->metadata&&owned_complete->coverage.Complete(owned_complete->flac);
     const bool complete_ogg_decode=owned_complete&&listen.capture_speed>1&&
@@ -1843,7 +1889,7 @@ static bool FinishAppTransition(const Media& next,Listen& listen,const Media& cu
             listen=std::move(ending);return true; // Confirm a same-URI repeat on fresh unbuffered progress.
         }
     }
-    if(!done.empty()) {
+    if(!done.empty()&&(current.source==MediaSource::Spotify||windows_natural_bridge)) {
         RecordCompletedListen(current,ending,heard,buffers,recent);
     } else if(listen.eligible) {
         const bool changed_playback_instance=!current.playback_instance.empty()&&
@@ -1880,6 +1926,8 @@ static bool FinishAppTransition(const Media& next,Listen& listen,const Media& cu
             current.playback_instance!=next.playback_instance&&listen.playing;
         if((new_owned_instance&&ownership_hold_proven&&next.control_monitoring&&
             (complete_flac_decode||complete_ogg_decode||complete_aac_decode||complete_mp3_decode)&&listen.playing)||
+           (windows_natural_bridge&&
+            (complete_flac_decode||complete_ogg_decode||complete_aac_decode||complete_mp3_decode))||
            (unowned_aac_transition&&candidates==1&&complete_ready==1)||
            (natural&&candidates==1&&
             (complete_ready==1||bound_active==1||unowned_candidates==1))) {
@@ -2080,7 +2128,7 @@ static DWORD WINAPI Worker(LPVOID) {
     MediaDiagnostic media_diagnostic;MediaDiagnosticReporter media_reporter;
     double last_media=Now(),minimum_media_time=last_media,next_timing=0;
     bool observer_started=false,media_unavailable=false;MediaWarningState media_warning;
-    std::string ownership_playback_uri;
+    std::string ownership_playback_uri,ownership_transition_uri;
     uint64_t ownership_playback_token=0,ownership_listen_generation=0;
     unsigned generation=~0u,epoch=~0u; bool enabled=false;
     try {
@@ -2125,6 +2173,7 @@ static DWORD WINAPI Worker(LPVOID) {
                     ResetMp3Probes();
                     ownership_output_logged={};ownership_output_logged_count=ownership_output_logged_next=0;
                     ownership_playback_uri.clear();
+                    ownership_transition_uri.clear();
                     ownership_playback_token=ownership_listen_generation=0;
                     LogEvent(LogKind::Activity,"capture",enabled ? "enabled" : "disabled");
                 }
@@ -2175,16 +2224,19 @@ static DWORD WINAPI Worker(LPVOID) {
                 PublishCurrentDestination(media,preferences);
                 quality.Media(media.Key(),media.title,media.position,media.duration,observed_at,media.playing);
                 client_quality=ReadClientPlaybackQuality(media);
-                const auto playback_id=media.playback_instance;
                 const auto playback_uri=media.spotify_uri;
-                ownership_tracker.ObservePlayback(playback_id,playback_uri,0,observed_at);
+                const auto confirmed_transition=buffers.confirmed_transition_playback;
                 if(enabled) {
                     FinishPendingNaturalTransition(media,listen,current,heard,buffers,&recent);
                     AssociateListen(std::move(media),listen,current,heard,buffers,observed_at,&recent);
                 }
-                ownership_tracker.ObservePlayback(playback_id,playback_uri,listen.generation,observed_at);
-                const auto playback_token=ownership_tracker.PlaybackToken(playback_id);
+                const auto playback_token=BindReadyCapture(
+                    buffers,current,listen.generation,observed_at,confirmed_transition,
+                    ownership_transition_uri);
+                if(playback_token&&current.spotify_uri.empty()&&!ownership_transition_uri.empty())
+                    current.spotify_uri=ownership_transition_uri;
                 RememberBoundCaptureIdentity(buffers,current,listen.generation,playback_token);
+                if(playback_token)ownership_transition_uri.clear();
                 if(DebugLoggingEnabled()&&playback_token&&
                    (playback_token!=ownership_playback_token||playback_uri!=ownership_playback_uri||
                     listen.generation!=ownership_listen_generation)) {
@@ -2201,6 +2253,7 @@ static DWORD WINAPI Worker(LPVOID) {
                 ownership_tracker.ObserveTransition(media.playback_instance,media.spotify_uri,
                     observed_at,media.explicit_skip||media.explicit_control,media.natural_transition);
                 const auto next_token=ownership_tracker.PlaybackToken(media.playback_instance);
+                if(next_token)ownership_transition_uri=media.spotify_uri;
                 if(DebugLoggingEnabled()) {
                     char line[240];snprintf(line,sizeof(line),
                         "ownership event=transition from=%llu to=%llu explicit_skip=%d controlled=%d monitoring=%d natural=%d mono=%.3f",

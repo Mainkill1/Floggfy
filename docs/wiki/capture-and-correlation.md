@@ -49,20 +49,21 @@ from whichever stream finishes first.
    decoder owner.
 2. **Decoded output observed.** Output from that owner proves that the decoder was
    active for the capture lifetime.
-3. **Playback stage observed.** A Spotify playback instance and URI, or the
-   validated fallback listen stage, associates the decoder with a listen
-   generation.
+3. **Playback stage corroborated.** A Ready listen generation, media kind, and
+   codec-declared duration select exactly one decoded capture. The URI may come
+   from the app transition while playback state and duration come from Windows.
 4. **Capture completed.** Codec-specific structural evidence proves that the
    compressed stream is whole.
 5. **Candidate selected.** A completed listen must have one compatible, complete
    recording. Competing active or completed candidates keep the result ambiguous.
 
 Spotify may preload one successor decoder before the outgoing decoder completes.
-The tracker therefore keeps a current capture and one pending successor. A genuine
-playback transition selects the successor; a repeated old playback identity stays
-with the outgoing lifecycle. Multiple unresolved successors, regressed producer
-order, queue loss, or incompatible media kind are contradictions and prevent a
-guess. See [`decoder_ownership.cpp`](../../native/decoder_ownership.cpp).
+The tracker therefore keeps a current capture and one pending successor. A
+transition registers the possible successor but does not bind it. The following
+Ready stage must corroborate media kind and duration before `audio_history.cpp`
+explicitly selects the capture. Multiple candidates, queue loss, or incompatible
+media kind prevent a guess. See
+[`decoder_ownership.cpp`](../../native/decoder_ownership.cpp).
 
 ## Listen coverage
 
@@ -81,7 +82,7 @@ Association occurs only after both sides agree:
 
 - the listen is complete and eligible;
 - the recording format is enabled for the media kind;
-- duration and codec completeness agree;
+- media kind and codec-declared duration agree;
 - ownership is bound where decoded observation is available;
 - no competing capture can claim the same listen; and
 - final whole-buffer validation succeeds.

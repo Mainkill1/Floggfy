@@ -87,6 +87,9 @@ public:
                          std::uint64_t producer_sequence=0);
     void AbortCapture(std::uint64_t capture_token,CaptureAbortReason reason);
     void ObserveDecoded(const DecodedActivity& activity);
+    bool BindCapture(std::uint64_t capture_token,const std::string& playback_id,
+                     const std::string& uri,std::uint64_t listen_generation,
+                     double observed);
     void ObservePlayback(const std::string& playback_id,const std::string& uri,
                          std::uint64_t listen_generation,double observed);
     void ObserveTransition(const std::string& playback_id,const std::string& uri,

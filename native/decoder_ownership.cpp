@@ -128,7 +128,8 @@ DecoderOwnershipTracker::PlaybackRecord&
 DecoderOwnershipTracker::EnsurePlayback(const std::string& id,const std::string& uri,
                                         std::uint64_t generation,double observed) {
     if(auto* existing=FindPlayback(id)) {
-        existing->uri=uri;existing->listen_generation=generation;
+        if(!uri.empty())existing->uri=uri;
+        if(generation)existing->listen_generation=generation;
         if(observed>existing->observed)existing->observed=observed;
         return *existing;
     }
@@ -301,17 +302,10 @@ void DecoderOwnershipTracker::TryBind(CaptureRecord& capture,PlaybackRecord& pla
                                       double observed) noexcept {
     if(capture.state!=OwnershipState::AwaitingPlaybackInstance||!capture.first_output)return;
     if(playback.bound_capture&&playback.bound_capture!=capture.token)return;
-    if(!ValidTime(observed)) {
-        Conflict(capture,OwnershipReason::PlaybackOrderRegression);return;
-    }
-    // A transition snapshot can predate the first decoded callback for its new
-    // owner and be drained afterward. It is not binding evidence yet; the next
-    // fresh Ready observation must establish the ordering. Exact equality is
-    // still ambiguous across queues and remains a conflict.
-    if(observed<capture.first_output)return;
-    if(observed==capture.first_output) {
-        Conflict(capture,OwnershipReason::CausalOrderAmbiguous);return;
-    }
+    if(!ValidTime(observed))return;
+    // Ready playback and decoder callbacks come from independent producers.
+    // Their timestamps are useful diagnostics, not a shared causal clock. The
+    // worker's consumed Ready stage is the ordering evidence.
     if(pending_capture_==capture.token&&playback.token==current_playback_)return;
     capture.playback_token=playback.token;capture.listen_generation=playback.listen_generation;
     playback.bound_capture=capture.token;
@@ -321,29 +315,47 @@ void DecoderOwnershipTracker::TryBind(CaptureRecord& capture,PlaybackRecord& pla
     if(pending_capture_==capture.token)pending_capture_=0;
 }
 
+bool DecoderOwnershipTracker::BindCapture(std::uint64_t capture_token,
+    const std::string& playback_id,const std::string& uri,
+    std::uint64_t listen_generation,double observed) {
+    if(!listen_generation||!ValidTime(observed))return false;
+    auto* capture=FindCapture(capture_token);if(!capture)return false;
+
+    PlaybackRecord* playback=nullptr;
+    if(playback_id.empty()) {
+        auto* latest=FindPlayback(latest_playback_);
+        if(latest&&!latest->listen_generation&&
+           (uri.empty()||latest->uri.empty()||latest->uri==uri))playback=latest;
+        else playback=&EnsurePlayback("\x1flisten:"+std::to_string(listen_generation),
+                                      uri,listen_generation,observed);
+    } else playback=&EnsurePlayback(playback_id,uri,listen_generation,observed);
+    if(!playback)return false;
+    if(!uri.empty())playback->uri=uri;
+    playback->listen_generation=listen_generation;
+    if(observed>playback->observed)playback->observed=observed;
+    latest_playback_=playback->token;
+
+    if(capture->state==OwnershipState::Bound) {
+        if(capture->playback_token!=playback->token)return false;
+        capture->listen_generation=listen_generation;return true;
+    }
+    if(capture->state!=OwnershipState::AwaitingPlaybackInstance||!capture->first_output||
+       (playback->bound_capture&&playback->bound_capture!=capture->token))return false;
+    if(pending_capture_==capture->token&&playback->token==current_playback_)return false;
+    capture->playback_token=playback->token;
+    capture->listen_generation=listen_generation;
+    playback->bound_capture=capture->token;
+    capture->state=OwnershipState::Bound;
+    capture->reason=OwnershipReason::PlaybackStageBound;
+    current_capture_=capture->token;current_playback_=playback->token;
+    if(pending_capture_==capture->token)pending_capture_=0;
+    return true;
+}
+
 void DecoderOwnershipTracker::ObservePlaybackImpl(const std::string& playback_id,
     const std::string& uri,std::uint64_t listen_generation,double observed,
     bool successor_transition) {
     if(playback_id.empty()||!ValidTime(observed))return;
-    auto* prior=FindPlayback(playback_id);
-    auto* latest=FindPlayback(latest_playback_);
-    if(latest&&latest!=prior&&observed<=latest->observed) {
-        if(auto* target=FindCapture(pending_capture_?pending_capture_:current_capture_))
-            Conflict(*target,OwnershipReason::PlaybackOrderRegression);
-        return;
-    }
-    if(prior&&observed<=prior->observed) {
-        if(observed==prior->observed&&listen_generation) {
-            for(auto& capture:captures_)
-                if(capture.token&&capture.state==OwnershipState::Bound&&
-                   capture.playback_token==prior->token)
-                    capture.listen_generation=listen_generation;
-        }
-        // The media collector can repeat one buffering transition with small
-        // timestamp jitter. Same-ID stale observations provide no new evidence;
-        // ignore them and require a later fresh observation to bind.
-        return;
-    }
     auto& playback=EnsurePlayback(playback_id,uri,listen_generation,observed);
     playback.successor_transition=playback.successor_transition||successor_transition;
     latest_playback_=playback.token;
@@ -382,6 +394,16 @@ void DecoderOwnershipTracker::ObservePlayback(const std::string& playback_id,
         // Keep the synthetic identity private to this tracker; callers still
         // treat the public playback ID as unavailable.
         if(!listen_generation)return;
+        // The client can identify a buffering successor while the following
+        // Ready observation comes from Windows and therefore has no Spotify
+        // playback ID. Resolve that already-observed lifecycle instead of
+        // inventing an unrelated playback record.
+        if(auto* latest=FindPlayback(latest_playback_);
+           latest&&latest->successor_transition&&!latest->listen_generation&&
+           (uri.empty()||latest->uri.empty()||latest->uri==uri)) {
+            ObservePlaybackImpl(latest->id,uri,listen_generation,observed,false);
+            return;
+        }
         ObservePlaybackImpl("\x1flisten:"+std::to_string(listen_generation),uri,
                             listen_generation,observed,false);
         return;
@@ -391,7 +413,13 @@ void DecoderOwnershipTracker::ObservePlayback(const std::string& playback_id,
 
 void DecoderOwnershipTracker::ObserveTransition(const std::string& playback_id,
     const std::string& uri,double transition_time,bool explicit_skip,bool natural_transition) {
-    ObservePlaybackImpl(playback_id,uri,0,transition_time,explicit_skip||natural_transition);
+    if(playback_id.empty()||!ValidTime(transition_time))return;
+    // A transition closes or quarantines the outgoing listen. It can name the
+    // successor lifecycle for a later Ready stage, but it cannot assign media
+    // metadata to a decoder by itself.
+    auto& playback=EnsurePlayback(playback_id,uri,0,transition_time);
+    playback.successor_transition=playback.successor_transition||explicit_skip||natural_transition;
+    latest_playback_=playback.token;
 }
 
 void DecoderOwnershipTracker::ObservationLost(ObservationLoss,double time) {

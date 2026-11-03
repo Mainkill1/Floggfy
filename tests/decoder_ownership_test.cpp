@@ -213,6 +213,8 @@ void TestSuccessorsAndSkips() {
     State(tracker,outgoing,OwnershipState::Bound);
     State(tracker,successor,OwnershipState::AwaitingPlaybackInstance);
     tracker.ObserveTransition("new","uri:new",2.3,true,false);
+    State(tracker,successor,OwnershipState::AwaitingPlaybackInstance);
+    tracker.ObservePlayback("new","uri:new",2,2.4);
     const auto skipped=State(tracker,successor,OwnershipState::Bound);
     assert(skipped.playback_token);
 
@@ -341,7 +343,7 @@ void TestAbortLossEpochAndTime() {
     tracker.ObserveDecoded(Activity(0x5000,5.1,5.1,2));
     State(tracker,equal,OwnershipState::AwaitingPlaybackInstance);
     tracker.ObservePlayback("equal-output","uri:equal",3,5.1);
-    State(tracker,equal,OwnershipState::Conflict);
+    State(tracker,equal,OwnershipState::Bound);
 
     const auto regressed=tracker.BeginCapture(DecoderCodec::Flac,0x6000,0,6.0,2);
     tracker.ObserveDecoded(Activity(0x6000,6.2,6.1,2));
@@ -350,7 +352,7 @@ void TestAbortLossEpochAndTime() {
     const auto playback_equal=tracker.BeginCapture(DecoderCodec::Flac,0x7000,0,7.0,2);
     tracker.ObserveDecoded(Activity(0x7000,7.1,7.2,2));
     tracker.ObservePlayback("equal","uri:e",3,7.1);
-    State(tracker,playback_equal,OwnershipState::Conflict);
+    State(tracker,playback_equal,OwnershipState::Bound);
 
     tracker.Reset(3);
     const auto ordered=tracker.BeginCapture(DecoderCodec::Flac,0x8000,0,8.0,3);
@@ -360,7 +362,9 @@ void TestAbortLossEpochAndTime() {
     const auto regressed_transition=tracker.BeginCapture(DecoderCodec::Flac,0x9000,0,8.35,3);
     tracker.ObserveDecoded(Activity(0x9000,8.4,8.5,3));
     tracker.ObserveTransition("regressed","uri:r",8.3,false,true);
-    State(tracker,regressed_transition,OwnershipState::Conflict);
+    State(tracker,regressed_transition,OwnershipState::AwaitingPlaybackInstance);
+    tracker.ObservePlayback("regressed","uri:r",5,8.6);
+    State(tracker,regressed_transition,OwnershipState::Bound);
 
     tracker.Reset(4);
     const auto decoded_first=tracker.BeginCapture(DecoderCodec::Flac,0xa000,0,9.0,4);
@@ -403,8 +407,31 @@ void TestBlankIdOutgoingAndSuccessorUseLifecycleStages() {
     State(tracker,outgoing,OwnershipState::Bound);
     State(tracker,successor,OwnershipState::AwaitingPlaybackInstance);
     tracker.ObserveTransition("successor","uri:new",237.5,false,true);
+    State(tracker,successor,OwnershipState::AwaitingPlaybackInstance);
+
+    // A buffering transition proves that the outgoing listen ended. It does
+    // not identify the incoming listen and must never bind a decoder with
+    // generation zero. The following Ready stage is the first point where the
+    // media identity and listen generation are both established. Windows
+    // fallback legitimately has no Spotify playback ID here.
+    tracker.ObservePlayback("","uri:new",2,237.6);
     const auto bound=State(tracker,successor,OwnershipState::Bound);
-    assert(bound.playback_token==tracker.PlaybackToken("successor"));
+    assert(bound.listen_generation==2);
+}
+
+void TestReadyClockSkewCannotRejectLifecycle() {
+    DecoderOwnershipTracker tracker;tracker.Reset(1);
+    const auto capture=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,10.0,1,10);
+    tracker.ObserveDecoded(Activity(0x1000,10.1,10.2,1,11));
+
+    // Provider clocks are not a common causal clock. A Ready snapshot drained
+    // after decoded output may carry an earlier sample time. The consumed
+    // lifecycle stage is binding evidence and must not poison the capture.
+    tracker.ObservePlayback("instance","uri:one",1,10.0);
+    State(tracker,capture,OwnershipState::Bound);
+    tracker.ObservePlayback("instance","uri:one",1,10.3);
+    const auto bound=State(tracker,capture,OwnershipState::Bound);
+    assert(bound.listen_generation==1);
 }
 
 void TestBoundedCaptureAndOwnerStorage() {
@@ -455,6 +482,7 @@ int main() {
     TestAbortLossEpochAndTime();
     TestElapsedTimeNeverRejectsOwnershipEvidence();
     TestBlankIdOutgoingAndSuccessorUseLifecycleStages();
+    TestReadyClockSkewCannotRejectLifecycle();
     TestBoundedCaptureAndOwnerStorage();
     TestBoundedPlaybackStorage();
 }

@@ -1271,6 +1271,68 @@ void AppTailLifecycle() {
     SchedulePublications(heard,buffers,0,121);SaveJob job;assert(saves.Pop(job));
     publishing_reserved.fetch_sub(job.reserved);
 }
+void ReadyDurationCorroboratesDecoder() {
+    ownership::DecoderOwnershipTracker tracker;tracker.Reset(12);
+    CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+    auto capture=std::make_unique<Capture>();capture->lossless=true;capture->metadata=true;
+    capture->decoder_owner=0x7200;capture->flac.rate=44100;
+    capture->flac.total_samples=10253165;capture->coverage.frames=1;
+    capture->capture_token=tracker.BeginCapture(
+        ownership::DecoderCodec::Flac,capture->decoder_owner,0,100,12,10);
+    ownership::DecodedActivity decoded{};decoded.owner=capture->decoder_owner;
+    decoded.calls=1;decoded.produced_floats=8192;decoded.first=100.1;
+    decoded.last=100.2;decoded.epoch=12;decoded.sequence=11;
+    tracker.ObserveDecoded(decoded);buffers.active[1]=std::move(capture);
+    tracker.ObserveTransition("new-playback","spotify:track:new",100.3,false,true);
+
+    Media stale;stale.source=MediaSource::Windows;stale.spotify_uri="spotify:track:old";
+    stale.duration=133.565;stale.playing=true;
+    assert(!BindReadyCapture(buffers,stale,1,100.4));
+    assert(tracker.Binding(buffers.active[1]->capture_token).state==
+           ownership::OwnershipState::AwaitingPlaybackInstance);
+
+    Media ready;ready.source=MediaSource::Windows;
+    ready.duration=232.498;ready.playing=true;
+    const auto playback=BindReadyCapture(
+        buffers,ready,2,100.5,0,"spotify:track:new");
+    const auto binding=tracker.Binding(buffers.active[1]->capture_token);
+    assert(playback&&binding.state==ownership::OwnershipState::Bound&&
+           binding.listen_generation==2&&binding.playback_token==playback);
+}
+void WindowsReadyNaturalAppTransitionPublishes() {
+    ownership::DecoderOwnershipTracker tracker;tracker.Reset(13);
+    CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+    auto capture=CompleteFlacCapture(100,116);capture->decoder_owner=0x7300;
+    capture->capture_token=tracker.BeginCapture(
+        ownership::DecoderCodec::Flac,capture->decoder_owner,0,100,13,10);
+    ownership::DecodedActivity decoded{};decoded.owner=capture->decoder_owner;
+    decoded.calls=1;decoded.produced_floats=8192;decoded.first=100.1;
+    decoded.last=115.9;decoded.epoch=13;decoded.sequence=11;
+    tracker.ObserveDecoded(decoded);tracker.CompleteCapture(capture->capture_token,116,12);
+    buffers.ready.push_back(std::move(capture));
+    tracker.ObserveTransition("old-instance","spotify:track:old",100.2,false,false);
+
+    Media current;current.source=MediaSource::Windows;current.spotify_uri="spotify:track:old";
+    current.title=L"Windows title";current.artist=L"Artist";current.album=L"Album";
+    current.duration=16;current.position=15.5;current.playing=true;
+    const auto playback=BindReadyCapture(buffers,current,1,100.3,0,"spotify:track:old");
+    assert(playback);
+    Listen listen;listen.identity=current.ListenKey();listen.generation=1;listen.eligible=true;
+    listen.playing=true;listen.start_time=100;listen.last_time=115.5;
+    listen.last_position=15.5;listen.duration=16;listen.capture_speed=1;
+
+    Media next;next.source=MediaSource::Spotify;next.spotify_uri="spotify:track:new";
+    next.playback_instance="new-instance";next.natural_transition=true;
+    next.control_monitoring=true;
+    tracker.ObserveTransition(next.playback_instance,next.spotify_uri,116,false,true);
+    std::vector<Heard> heard;
+    FinishAppTransition(next,listen,current,heard,buffers,116);
+    assert(heard.size()==1&&heard[0].generation==1&&
+           "a complete bound Windows listen accepts the app's monitored natural end");
+    SchedulePublications(heard,buffers,13,116);SaveJob job;
+    assert(saves.Pop(job)&&job.heard.generation==1);
+    publishing_reserved.fetch_sub(job.reserved);
+}
 void MissingPlaybackWarning() {
     CaptureBuffers buffers;auto complete=std::make_unique<Capture>();complete->finished=10;
     buffers.ready.push_back(std::move(complete));MediaDiagnostic diagnostic;
@@ -1339,7 +1401,7 @@ void EnrichTags(const Media&,Tags&){}
 int wmain() {
     // Use in-memory preferences only. Never read or write the user's INI/music.
     InterlockedExchange(&history::debug_enabled,1);
-    Connectivity();PodcastCatalog();PodcastCaptureEvents();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();EmptyPlaybackIdNaturalTransitionIsRetried();BoundNaturalTransitionUsesFinalCaptureEvidence();DjVoiceDoesNotBlockMusicStart();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailLifecycle();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
+    Connectivity();PodcastCatalog();PodcastCaptureEvents();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();EmptyPlaybackIdNaturalTransitionIsRetried();BoundNaturalTransitionUsesFinalCaptureEvidence();DjVoiceDoesNotBlockMusicStart();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailLifecycle();ReadyDurationCorroboratesDecoder();WindowsReadyNaturalAppTransitionPublishes();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
     puts("PASS: observed transitions, one FLAC failure context/outcome, original callback semantics, profiling-only intervals, basic-mode zero profiling and changed-only NLM observations");
     return 0;
 }
