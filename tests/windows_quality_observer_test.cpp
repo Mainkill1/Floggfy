@@ -10,12 +10,14 @@
 static unsigned metadata_update_calls=0;
 static bool enrichment_ready=true;
 static bool advance_revision_during_enrich=false;
+static bool force_metadata_failure=false;
 static std::uint64_t enrichment_revision=1;
 namespace history {
 std::uint64_t MetadataRevision() {return enrichment_revision;}
 FileMetadataUpdate UpdateRecordingMetadata(const std::wstring&,const Tags&,const Catalog&,unsigned);
 FileMetadataUpdate CountedMetadataUpdate(const std::wstring& path,const Tags& incoming,const Catalog& catalog,unsigned generation) {
- ++metadata_update_calls;return UpdateRecordingMetadata(path,incoming,catalog,generation);
+ ++metadata_update_calls;if(force_metadata_failure)return FileMetadataUpdate::Failed;
+ return UpdateRecordingMetadata(path,incoming,catalog,generation);
 }
 std::string ReadClientPlaybackQuality(const Media&) {return {};}
 void EnrichCatalog(const Media&,Catalog&) {}
@@ -313,6 +315,59 @@ static void TestExistingMetadataAtPlaybackStart() {
   DeleteFileW(path.c_str());
   std::puts("PASS: existing owned recording receives delayed lyrics during partial playback");
 }
+static void TestAutoSkipDownloaded() {
+  wchar_t temp[2048];GetTempPathW(2048,temp);
+  assert(SetSaveLocation(std::wstring(temp)+L"Floggfy-auto-skip-"+std::to_wstring(GetCurrentProcessId())));
+  assert(SetDownloads(true)&&SetFlac(true)&&SetOgg(true)&&SetAutoSkipDownloaded(true)&&SetUpdateExistingMetadata(false));
+  Media media;media.source=MediaSource::Spotify;media.title=L"Downloaded Track";media.artist=L"Downloaded Artist";
+  media.album=L"Downloaded Album";media.track=1;media.duration=1;media.playing=true;
+  media.spotify_uri="spotify:track:0000000000000000000001";media.playback_instance="playback-1";
+  const auto settings=GetSettings();const auto catalog=CatalogFor(media);
+  const auto path=OutputPath(settings.root,catalog,L".ogg",settings.music_folder);
+  assert(EnsureDirectory(path.substr(0,path.find_last_of(L'\\'))));
+  Tags tags;tags.fields={{"TITLE","Downloaded Track"},{"ARTIST","Downloaded Artist"},{"ALBUM","Downloaded Album"},
+    {"TRACKNUMBER","1"},{"SPOTIFY_URI",media.spotify_uri},{"HISTORY_MEDIA_DURATION","1"},
+    {"HISTORY_COMPLETE_LISTEN","1"},{"HISTORY_CAPTURE","native compressed Ogg pages"}};
+  std::vector<uint8_t> owned;std::string error;assert(TagOgg(recording_fixture::ogg(),tags,owned,error));
+  DeleteFileW(path.c_str());HANDLE file=CreateFileW(path.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,0,nullptr);
+  DWORD written=0;assert(file!=INVALID_HANDLE_VALUE&&WriteFile(file,owned.data(),DWORD(owned.size()),&written,nullptr)&&written==owned.size());CloseHandle(file);
+  auto publish_quality=[&](PlaybackFormat format,unsigned rate,unsigned channels,unsigned bits=0) {
+    PlaybackQualitySnapshot quality;quality.identity=PlaybackIdentity(media.Key());quality.format=format;
+    quality.rate=rate;quality.channels=channels;quality.bits=bits;PublishPlaybackQuality(quality);
+  };
+  const auto initial_token=ReadAutoSkipRequest().token;
+  publish_quality(PlaybackFormat::Ogg,44100,2);
+  PublishCurrentDestination(media,GetSettings());auto check=TakeFilenameCheck();assert(check);ProcessFilenameCheck(*check);
+  const auto first=ReadAutoSkipRequest();
+  assert(first.token>initial_token&&first.uri==media.spotify_uri&&first.settings_generation==GetSettings().generation);
+  PublishCurrentDestination(media,GetSettings());assert(!TakeFilenameCheck());
+  ProcessFilenameCheck(*check);assert(ReadAutoSkipRequest().token==first.token);
+
+  media.playback_instance="playback-2";
+  publish_quality(PlaybackFormat::Unknown,0,0);
+  PublishCurrentDestination(media,GetSettings());check=TakeFilenameCheck();assert(check);ProcessFilenameCheck(*check);
+  assert(ReadAutoSkipRequest().token==first.token);
+  publish_quality(PlaybackFormat::Ogg,44100,2);
+  PublishCurrentDestination(media,GetSettings());check=TakeFilenameCheck();assert(check);ProcessFilenameCheck(*check);
+  const auto second=ReadAutoSkipRequest();assert(second.token>first.token);
+
+  media.playback_instance="playback-3";
+  publish_quality(PlaybackFormat::Flac,44100,2,16);
+  PublishCurrentDestination(media,GetSettings());check=TakeFilenameCheck();assert(check);ProcessFilenameCheck(*check);
+  assert(ReadAutoSkipRequest().token==second.token);
+
+  assert(SetUpdateExistingMetadata(true));media.playback_instance="playback-4";
+  publish_quality(PlaybackFormat::Ogg,44100,2);force_metadata_failure=true;
+  PublishCurrentDestination(media,GetSettings());check=TakeFilenameCheck();assert(check);ProcessFilenameCheck(*check);
+  force_metadata_failure=false;assert(ReadAutoSkipRequest().token==second.token);
+
+  assert(SetUpdateExistingMetadata(false));
+  Media episode=media;episode.spotify_uri="spotify:episode:0000000000000000000001";episode.playback_instance="episode-1";
+  PublishCurrentDestination(episode,GetSettings());assert(!TakeFilenameCheck());
+  assert(ReadAutoSkipRequest().token==second.token);
+  assert(DeleteFileW(path.c_str()));assert(SetAutoSkipDownloaded(false));
+  std::puts("PASS: auto-skip waits for exact quality and successful metadata, preserves upgrades, deduplicates instances and ignores podcasts");
+}
 static std::string ReadActivityLog() {
   const auto path=WindowsPath(GetSettings().root+L"\\Floggfy.log");
   HANDLE f=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,0,nullptr);
@@ -413,6 +468,7 @@ int main(int argc,char** argv) {
   StartSongDestinationWorker(true);
   std::vector<RecentDownload> recent;assert(ReadRecentDownloads(recent)&&recent.empty());
   TestExistingMetadataAtPlaybackStart();
+  TestAutoSkipDownloaded();
   TestLyricsPublication();
   assert(ReadRecentDownloads(recent)&&recent.empty()); // Lyrics-only updates and skips are not downloads.
   TestPublicationLogging();

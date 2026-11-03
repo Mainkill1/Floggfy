@@ -8,6 +8,7 @@
 #include "hook_rollback.h"
 #include "metadata_bridge.h"
 #include "playback_quality.h"
+#include "auto_skip.h"
 #include "async_log.h"
 #include "hook_diagnostics.h"
 #include <array>
@@ -1132,11 +1133,18 @@ static hooks::InitController audio_init;
 // queue slot. They perform optional filename conversion and metadata filling.
 // Rapid track changes retain only one superseding request; serial cancellation
 // rejects an older request after a new track/settings observation.
-struct FilenameCheck {Catalog catalog;Tags tags;Settings settings;uint64_t serial=0;};
+struct FilenameCheck {
+    Catalog catalog;Tags tags;Settings settings;
+    PlaybackQualitySnapshot quality;
+    uint64_t media_identity=0;
+    std::string playback_instance;
+    uint64_t serial=0;
+};
 static SRWLOCK filename_check_lock=SRWLOCK_INIT;
 static std::optional<FilenameCheck> pending_filename_check;
 // Producer-only state: the capture worker owns these two fields.
 static std::string last_filename_check_key;
+static std::string last_auto_skip_playback;
 static uint64_t last_filename_check_serial=0,queued_filename_check_serial=0;
 static void CancelFilenameChecks() {
     filename_check_serial.fetch_add(1,std::memory_order_acq_rel);
@@ -1147,11 +1155,15 @@ static void QueueFilenameCheck(const Media& media,const Settings& settings) {
         const bool convert=settings.convert_numbered_filenames&&!settings.track_number_in_filename;
         const bool update=settings.metadata&&settings.update_existing_metadata&&
             media.spotify_uri.rfind("spotify:episode:",0)!=0;
-        if(!settings.downloads || (!convert&&!update) || media.title.empty() || !media.playing) {
+        const bool auto_skip=settings.auto_skip_downloaded&&media.source==MediaSource::Spotify&&
+            media.spotify_uri.rfind("spotify:track:",0)==0&&!media.playback_instance.empty();
+        if(!settings.downloads || (!convert&&!update&&!auto_skip) || media.title.empty() || !media.playing) {
             if(!last_filename_check_key.empty())CancelFilenameChecks();
             return;
         }
         const auto metadata_revision=update?MetadataRevision():0;
+        const auto media_identity=PlaybackIdentity(media.Key());
+        const auto quality=auto_skip?ReadPlaybackQuality():PlaybackQualitySnapshot{};
         auto catalog=CatalogFor(media);
         Tags tags;
         tags.fields={{"TITLE",Utf8(media.title)},{"ARTIST",Utf8(media.artist)},
@@ -1167,6 +1179,12 @@ static void QueueFilenameCheck(const Media& media,const Settings& settings) {
         const std::wstring* fields[]={&settings.root,&catalog.title,&catalog.artist,&catalog.folder_artist,&catalog.legacy_artist,&catalog.album,&catalog.author,&catalog.series,&catalog.book,&catalog.show};
         for(const auto* field:fields)wide(*field);
         text(catalog.spotify_uri);
+        if(auto_skip) {
+            text(media.playback_instance);
+            key+=std::to_string(quality.identity)+":"+std::to_string(unsigned(quality.format))+":"+
+                std::to_string(quality.rate)+":"+std::to_string(quality.channels)+":"+
+                std::to_string(quality.bits)+":";
+        }
         key+=std::to_string(unsigned(catalog.kind))+":"+std::to_string(catalog.track)+":"+
             std::to_string(catalog.disc)+":"+std::to_string(catalog.episode_year)+":"+
             std::to_string(catalog.duration)+":"+std::to_string(settings.generation)+":"+std::to_string(settings.music_folder)+":"+
@@ -1178,7 +1196,8 @@ static void QueueFilenameCheck(const Media& media,const Settings& settings) {
             last_filename_check_key.swap(key);
         }
         if(queued_filename_check_serial==last_filename_check_serial)return;
-        FilenameCheck check{std::move(catalog),std::move(tags),settings,last_filename_check_serial};
+        FilenameCheck check{std::move(catalog),std::move(tags),settings,quality,media_identity,
+            media.playback_instance,last_filename_check_serial};
         if(!TryAcquireSRWLockExclusive(&filename_check_lock))return;
         struct Unlock {~Unlock(){ReleaseSRWLockExclusive(&filename_check_lock);}} unlock;
         if(check.serial!=filename_check_serial.load(std::memory_order_acquire))return;
@@ -1196,9 +1215,11 @@ static void ProcessFilenameCheck(const FilenameCheck& check) {
         const auto settings=GetSettings();
         const bool convert=settings.convert_numbered_filenames&&!settings.track_number_in_filename;
         const bool update=settings.metadata&&settings.update_existing_metadata&&check.catalog.kind!=MediaKind::Podcast;
+        const bool auto_skip=settings.auto_skip_downloaded&&check.catalog.kind!=MediaKind::Podcast&&
+            !check.playback_instance.empty();
         return check.serial==filename_check_serial.load(std::memory_order_acquire) &&
             settings.generation==check.settings.generation && settings.downloads &&
-            (convert||update);
+            (convert||update||auto_skip);
     };
     if(!current())return;
     RecordingDirectory directory;
@@ -1216,6 +1237,7 @@ static void ProcessFilenameCheck(const FilenameCheck& check) {
         if(!current())return;
         const bool format_enabled=format.codec==Codec::Flac?check.settings.flac:
             format.codec==Codec::Vorbis?check.settings.ogg:format.codec==Codec::Aac?check.settings.aac:false;
+        bool metadata_failed=false;
         if(format_enabled&&check.settings.metadata&&check.settings.update_existing_metadata&&
            resolved.recording.owned&&NeedsRecordingMetadata(resolved.recording,check.tags)) {
             const auto result=UpdateRecordingMetadata(resolved.path,check.tags,check.catalog,check.settings.generation);
@@ -1223,8 +1245,22 @@ static void ProcessFilenameCheck(const FilenameCheck& check) {
             if(result==FileMetadataUpdate::Updated) {
                 RefreshSongDestination();
                 LogEvent(LogKind::Activity,"updated","metadata and artwork updated; existing audio retained | "+identity);
-            } else if(result==FileMetadataUpdate::Failed)
+            } else if(result==FileMetadataUpdate::Failed) {
+                metadata_failed=true;
                 LogEvent(LogKind::Failure,"failed","metadata update failed; existing file retained | "+identity);
+            }
+        }
+        if(!current())return;
+        const auto playback_key=check.catalog.spotify_uri+"\x1f"+check.playback_instance;
+        if(!metadata_failed&&resolved.recording.owned&&check.settings.auto_skip_downloaded&&
+           check.catalog.kind!=MediaKind::Podcast&&playback_key!=last_auto_skip_playback&&
+           ShouldAutoSkipDownloaded(check.quality,check.media_identity,resolved.recording.quality)) {
+            const auto token=QueueAutoSkipRequest(check.catalog.spotify_uri,check.settings.generation);
+            if(token) {
+                last_auto_skip_playback=playback_key;
+                LogEvent(LogKind::Activity,"auto-skip","requested after existing-file metadata check | "+
+                    Utf8(check.catalog.artist)+" - "+Utf8(check.catalog.title));
+            }
         }
         return; // Best verified format/recording found; no new audio is created.
     }
