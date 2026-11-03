@@ -73,7 +73,7 @@ static int PollDrop(Base* b){auto t=reinterpret_cast<PollTask*>(b);if(--t->refs)
 static int PollOne(Base* b){return reinterpret_cast<PollTask*>(b)->refs==1;}
 static int PollAny(Base* b){return reinterpret_cast<PollTask*>(b)->refs>0;}
 static std::wstring CollectorOptions() {
- return BuildCollectorOptions(GetSettings());
+ return BuildCollectorOptions(GetSettings(),ReadAutoSkipRequest());
 }
 static void PollExecute(Task*) {
  Frame* frame=nullptr;

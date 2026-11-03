@@ -124,6 +124,19 @@
  function remember(o){if(!records.includes(o)){if(records.length>=96)records.shift();records.push(o);}}
  function method(o,k){for(let i=0;object(o)&&i<4;i++,o=Object.getPrototypeOf(o)){const v=own(o,k);if(typeof v==='function')return v;}return undefined;}
  function options(){return own(window,'__floggfyConfig')||{};}
+ let lastAutoSkipToken=0;
+ function dispatchAutoSkip(state,uri){
+  const config=options(),token=own(config,'skipToken'),expected=own(config,'skipUri');
+  if(!Number.isSafeInteger(token)||token<=0||token===lastAutoSkipToken)return;
+  // Consume first: failed or stale evidence must never become valid later.
+  lastAutoSkipToken=token;
+  if(own(config,'autoSkip')!==true||expected!==uri||own(state,'isPaused')!==false||own(state,'isBuffering')!==false)return;
+  let local;
+  try{local=own(own(method(connectDevices,'getConnectState')?.call(connectDevices),'activeDevice'),'isLocal');}catch{}
+  if(local!==true)return;
+  const wrapper=own(own(window,'Spicetify'),'Player'),next=method(wrapper,'next');if(!next)return;
+  try{const result=next.call(wrapper);const reject=method(result,'catch');if(reject)reject.call(result,()=>{});}catch{}
+ }
  // Debug observations are raw local flags, never a diagnosis of their cause.
  let debugPrevious;
  function debugObservation(state,item){
@@ -417,6 +430,7 @@
    if(['low','normal','high','very_high','lossless','lossless_24','hifi'].includes(level))data.playback_quality=level;
    playback({v:1,title:data.title,artist:data.artist,album:data.album,uri,duration:data.duration,playback_quality:data.playback_quality});
    if(track)automatic(uri); // Episodes use only the current client snapshot; no music service requests.
+   if(track)dispatchAutoSkip(state,uri);
    if(options().metadata===false)return;
    if(track) {
     const fetched=serviceCache.get(uri);
