@@ -89,8 +89,23 @@ int main(){
     history::Tags episode_tags;history::EnrichTags(enriched_episode,episode_tags);
     const auto publisher=std::find_if(episode_tags.fields.begin(),episode_tags.fields.end(),[](const auto& p){return p.first=="PUBLISHER";});
     assert(publisher!=episode_tags.fields.end()&&publisher->second=="Show");
+    wchar_t active_without_uri[]=L"FLOGGFY_TIMELINE_V1:v=1&unavailable=track-unavailable&active=1";
+    history::String unidentified{active_without_uri,wcslen(active_without_uri),nullptr};
+    assert(history::CurrentTimeline(&unidentified));
+    history::Media unidentified_media;double unidentified_observed=0;uint64_t unidentified_sequence=0;
+    history::MediaDiagnostic unidentified_diagnostic;
+    assert(history::TryReadClientMedia(unidentified_media,unidentified_observed,
+        unidentified_sequence,unidentified_diagnostic)==history::ClientMediaRead::Blocked&&
+        std::string(unidentified_diagnostic.reason)=="client-active-without-uri"&&
+        "active URI-less playback must be a marked uncertain stage, never a Ready track");
+    wchar_t malformed_unidentified[]=L"FLOGGFY_TIMELINE_V1:v=1&unavailable=track-unavailable&active=2";
+    unidentified={malformed_unidentified,wcslen(malformed_unidentified),nullptr};
+    assert(history::CurrentTimeline(&unidentified));
+    assert(history::TryReadClientMedia(unidentified_media,unidentified_observed,
+        unidentified_sequence,unidentified_diagnostic)==history::ClientMediaRead::Unavailable&&
+        "malformed unidentified markers must fail closed");
     const auto options=history::CollectorOptions();
-    assert(options==L"window.__floggfyConfig={metadata:true,lyrics:true,debug:false,connect:false,networking:false};");
+    assert(options==L"window.__floggfyConfig={metadata:true,lyrics:true,autoSkip:false,debug:false,connect:false,networking:false};");
     FILETIME utc;GetSystemTimeAsFileTime(&utc);
     const auto sampled=((uint64_t(utc.dwHighDateTime)<<32)|utc.dwLowDateTime)-116444736000000000ULL;
     auto timeline_payload=L"FLOGGFY_TIMELINE_V1:v=1&title=App&artist=Artist&album=Album&uri=spotify:track:0000000000000000000001&duration=180&position=0&paused=0&buffering=0&local=1&sampled_ms="+std::to_wstring(sampled/10000);

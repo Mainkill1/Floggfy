@@ -386,7 +386,7 @@ static void WaitLog(const std::string& prefix,const std::string& suffix) {
   std::fprintf(stderr,"Missing activity log: %s ... %s\n",prefix.c_str(),suffix.c_str());assert(false);
 }
 static void TestPublicationLogging() {
-  assert(GetSettings().log_level==1);
+  assert(GetSettings().log_level==2);
   assert(SavedAudioDetails({Codec::Vorbis,44100,2,0,320000},1048576)=="Ogg Vorbis 320 kbps nominal, 44,100 Hz | 1.00 MiB (1048576 bytes)");
   assert(SavedAudioDetails({Codec::Vorbis,44100,2,0,0},1048576)=="Ogg Vorbis, 44,100 Hz | 1.00 MiB (1048576 bytes)");
   wchar_t temp[2048];GetTempPathW(2048,temp);
@@ -462,8 +462,7 @@ int main(int argc,char** argv) {
   if(argc==2&&std::string(argv[1])=="--association"){TestLateAssociation();return 0;}
   TestLateAssociation();
   wchar_t ini_path[2048];GetModuleFileNameW(nullptr,ini_path,2048);std::wstring ini=ini_path;ini.resize(ini.find_last_of(L'\\')+1);ini+=L"SpotifyHistory.ini";
-  assert(WritePrivateProfileStringW(L"To Disk",L"Log",L"1",ini.c_str()));
-  assert(WritePrivateProfileStringW(L"To Disk",L"DebugLog",L"0",ini.c_str()));
+  assert(WritePrivateProfileStringW(L"To Disk",L"LogLevel",L"2",ini.c_str()));
   InitSettings(nullptr);
   StartSongDestinationWorker(true);
   std::vector<RecentDownload> recent;assert(ReadRecentDownloads(recent)&&recent.empty());

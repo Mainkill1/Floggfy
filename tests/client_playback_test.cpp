@@ -40,6 +40,14 @@ int main(int argc,char** argv){
         std::cout<<"PASS: real collector Ready payload satisfies native playback protocol\n";
         return 0;
     }
+    if(argc==2&&std::string(argv[1])=="--active-without-uri-stdin") {
+        const std::string payload(std::istreambuf_iterator<char>(std::cin),{});
+        if(!ParseClientActiveWithoutUri(payload)) {
+            std::cerr<<"collector URI-less active marker rejected: "<<payload<<'\n';return 1;
+        }
+        std::cout<<"PASS: real collector URI-less active marker satisfies native protocol\n";
+        return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--transition-stdin") {
         const std::string payload(std::istreambuf_iterator<char>(std::cin),{});
         ClientTransition transition;
@@ -64,6 +72,9 @@ int main(int argc,char** argv){
     const std::string base="v=1&title=Song&artist=Artist&album=Album&uri=spotify:track:0000000000000000000001&duration=180";
     const std::string timeline="&position=12.5&sampled_ms=1793300000000&paused=0&buffering=0&local=1&speed=4";
     ClientPlaybackRecord value;std::string error;
+    assert(ParseClientActiveWithoutUri("v=1&unavailable=track-unavailable&active=1"));
+    assert(!ParseClientActiveWithoutUri("v=1&unavailable=track-unavailable"));
+    assert(!ParseClientActiveWithoutUri("v=1&unavailable=track-unavailable&active=2"));
     assert(ParseClientPlayback(base+timeline,value,error));
     assert(value.metadata.uri=="spotify:track:0000000000000000000001"&&value.position==12.5&&value.sampled_ms==1793300000000&&value.playing&&!value.buffering&&value.local==1&&value.speed==4);
     assert(!ParseClientPlayback(base,value,error));

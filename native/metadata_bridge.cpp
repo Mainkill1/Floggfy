@@ -236,6 +236,9 @@ static bool CurrentTimeline(const String* text) {
    return true;
   }
   if(payload=="v=1&blocked=remote-playback"||payload.rfind("v=1&blocked=remote-playback&",0)==0){PublishClientMediaUnavailable("remote-playback",true);return true;}
+  if(ParseClientActiveWithoutUri(payload)) {
+   PublishClientMediaUnavailable("client-active-without-uri",true);return true;
+  }
   ClientPlaybackRecord record;std::string error;
   if(!ParseClientPlayback(payload,record,error)){PublishClientMediaUnavailable("client-timeline-unavailable");return true;}
   if(record.local==0){PublishClientMediaUnavailable("remote-playback",true);return true;}

@@ -22,7 +22,13 @@
    console.info('FLOGGFY_TIMELINE_V1:'+payload);lastTimeline=payload;timelineTime=now;
   }
  }
- function unavailableTimeline(reason){lastReadyTimeline=undefined;if(timelineSeen&&!timelineBlocked)timeline({v:1,unavailable:reason});}
+ function unavailableTimeline(reason,state){
+  lastReadyTimeline=undefined;
+  const active=reason==='track-unavailable'&&timelineLocal===1&&own(state,'isPaused')===false&&own(state,'isBuffering')===false;
+  if(active){timelineSeen=true;timeline({v:1,unavailable:reason,active:1});return;}
+  if(!timelineSeen||timelineBlocked)return;
+  timeline({v:1,unavailable:reason});
+ }
  function guardTimeline(state){
   timelineLocal='unknown';
   try{const get=method(connectDevices,'getConnectState');const active=own(get&&get.call(connectDevices),'activeDevice');
@@ -91,7 +97,7 @@
   timelineBlocked='';
   const item=own(state,'item'),m=own(item,'metadata')||{},uri=text(own(item,'uri'));
   guardTimeline(state);
-  if(!/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')){unavailableTimeline('track-unavailable');return;}
+  if(!/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')){unavailableTimeline('track-unavailable',state);return;}
   const show=own(item,'show')||{};
   const data={title:text(own(m,'title')||own(item,'name')),
    artist:text(own(m,'artist_name'))||artists(own(item,'artists'))[0]||text(own(m,'show.publisher')||own(m,'show_name')||own(show,'publisher')),
@@ -414,7 +420,7 @@
    automatic();scan();bindTimeline();if(!player){debugObservation();connectDiagnostics();playback({v:1});unavailableTimeline('player-unavailable');return;}
    const state=method(player,'getState').call(player),item=own(state,'item'),m=own(item,'metadata')||{},uri=text(own(item,'uri'));
    debugObservation(state,item);connectDiagnostics(state);emitTimelineState(state);
-   if(!/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')){playback({v:1});unavailableTimeline('track-unavailable');return;}
+   if(!/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')){playback({v:1});unavailableTimeline('track-unavailable',state);return;}
    const track=uri.startsWith('spotify:track:'),show=own(item,'show')||{};
    const data={v:1,title:text(own(m,'title')||own(item,'name')),
     artist:text(own(m,'artist_name'))||artists(own(item,'artists'))[0]||text(own(m,'show.publisher')||own(m,'show_name')||own(show,'publisher')),

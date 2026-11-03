@@ -217,7 +217,7 @@ int main() {
     assert(Rva(targets, spotify::TargetKind::OggPageSeek) == 0x2b000);
     spotify::DecodedOutputTarget decoded{};
     assert(spotify::DiscoverDecodedOutputTarget(image.data(),image.size(),decoded)==spotify::DiscoveryResult::Found);
-    assert(decoded.rva==0x4400);
+    assert(decoded.rva==0x4400&&decoded.caller_rva==0x40000&&decoded.decoder_offset==0x70);
     spotify::DecoderOwnershipLayout ownership{};
     assert(spotify::DiscoverDecoderOwnershipLayout(image.data(),image.size(),ownership)==spotify::DiscoveryResult::Found);
     assert(ownership.decoded_output==0x4400&&ownership.ogg_capture_to_decoder==-0x88&&
@@ -303,6 +303,13 @@ int main() {
     assert(spotify::DiscoverDecodedOutputTarget(image.data(),image.size(),decoded)==spotify::DiscoveryResult::MissingTarget);
 
     image=MappedImage();Put<std::uint32_t>(image,0x1000+4*12,0x43f0);
+    assert(spotify::DiscoverDecodedOutputTarget(image.data(),image.size(),decoded)==spotify::DiscoveryResult::InconsistentLayout);
+
+    image=MappedImage();image[0x40000+0x48c]^=0xff;
+    assert(spotify::DiscoverDecodedOutputTarget(image.data(),image.size(),decoded)!=spotify::DiscoveryResult::Found);
+    image=MappedImage();image[0x40000+0x2c5]^=0xff;
+    assert(spotify::DiscoverDecodedOutputTarget(image.data(),image.size(),decoded)==spotify::DiscoveryResult::InconsistentLayout);
+    image=MappedImage();image[0x40000+0x2c9]=0x90;
     assert(spotify::DiscoverDecodedOutputTarget(image.data(),image.size(),decoded)==spotify::DiscoveryResult::InconsistentLayout);
 
     image = MappedImage(0, false, true);

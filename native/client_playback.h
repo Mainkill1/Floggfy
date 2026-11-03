@@ -14,6 +14,9 @@ struct ClientPlaybackRecord {
     int local=-1;
     std::string instance;
 };
+inline bool ParseClientActiveWithoutUri(const std::string& input) noexcept {
+    return input=="v=1&unavailable=track-unavailable&active=1";
+}
 inline bool ParseClientPlayback(const std::string& input,ClientPlaybackRecord& out,std::string& error) {
     const auto fail=[&](const char* reason){error=reason;return false;};
     if(input.size()>16384)return fail("client-payload-too-large");
