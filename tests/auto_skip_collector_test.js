@@ -26,4 +26,21 @@ assert.deepStrictEqual(run({currentInstance:'playback-2'}),[]);
 assert.deepStrictEqual(run({local:false}),[]);
 assert.deepStrictEqual(run({paused:true}),[]);
 assert.deepStrictEqual(run({command:false}),[]);
+
+// Stock Spotify has no Spicetify wrapper. The collector already discovers the
+// live PlayerAPI from the client registry, so auto-skip must use that same API.
+{
+ const now=1793300000000,calls=[];
+ const state={timestamp:now,positionAsOfTimestamp:1000,duration:180000,isPaused:false,isBuffering:false,
+  playbackId:'playback-1',item:{uri,metadata:{title:'Song',artist_name:'Artist',album_title:'Album',duration:'180000'}}};
+ const player={getState:()=>state,getEvents:()=>({}),skipToNext:()=>calls.push(uri)};
+ const connect={getConnectState:()=>({activeDevice:{isLocal:true}})};
+ const registry={_map:new Map([[Symbol('PlayerAPI'),{instance:player}],[Symbol('ConnectDevicesAPI'),{instance:connect}]])};
+ const main={__reactContainer$test:{memoizedProps:{registry}}};
+ const sandbox={window:{__floggfyConfig:{metadata:false,lyrics:false,autoSkip:true,skipToken:1,
+  skipUri:uri,skipInstance:'playback-1'}},document:{querySelector:selector=>selector==='#main'?main:null},
+  console:{info:()=>{}},performance:{now:()=>now},Date:{now:()=>now},encodeURIComponent};
+ vm.runInNewContext(script,sandbox);sandbox.window.__floggfyPoll();
+ assert.deepStrictEqual(calls,[uri]);
+}
 console.log('PASS: collector dispatches each current local Spotify auto-skip token once and fails closed');
