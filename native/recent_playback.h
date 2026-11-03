@@ -5,7 +5,7 @@
 namespace history {
 struct PlaybackListen {
     Media media;double start=0,finish=0;uint64_t generation=0;bool ambiguous=false;
-    bool provisional=false;double deadline=0;
+    bool provisional=false;
     bool unresolved_alternative=false;
 };
 class RecentPlaybackHistory {

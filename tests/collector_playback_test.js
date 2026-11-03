@@ -54,7 +54,8 @@ for(const mode of ['observed','blank','missing','throws','manual','seek','paused
   current={...current,item:{uri:'spotify:track:0000000000000000000001',metadata:{title:'Song',artist_name:'Artist',album_title:'Album'}}};
  }
  if(mode==='replacement')sandbox.window.Spicetify.Platform.PlayerAPI={...api};
- clock+=mode==='seek'?4000:500;current={...current,timestamp:clock,isBuffering:true,playbackId:mode==='same'?'one':mode==='blank'?'':'two',
+ clock+=mode==='seek'?15000:mode==='manual'?20000:mode==='observed'?30000:500;
+ current={...current,timestamp:clock,isBuffering:true,playbackId:mode==='same'?'one':mode==='blank'?'':'two',
   item:{...current.item,uri:'spotify:track:0000000000000000000002'}};
  sandbox.window.__floggfyPoll();
  const message=messages.filter(line=>line.startsWith('FLOGGFY_TIMELINE_V1:')).at(-1);

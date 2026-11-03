@@ -64,7 +64,7 @@ reasons are based on concrete evidence:
 
 - invalid or incomplete container structure;
 - decoder error, reinitialization, or bounded-memory failure;
-- queue/epoch/media observation loss;
+- capture/decoded queue loss or capture-epoch replacement;
 - contradictory decoder or playback ownership;
 - manual seek/skip or incomplete listen coverage;
 - more than one viable capture-to-listen association;
@@ -73,9 +73,10 @@ reasons are based on concrete evidence:
 - staging, flush, validation, or promotion failure.
 
 Before cached bytes are released, the final-cache check reruns structural and
-association validation and records the capture identity when known. Ambiguous or
-unmatched evidence remains a failure; removing another candidate later is not
-allowed to manufacture certainty.
+association validation and records the capture identity when known. Missing or
+stale media snapshots retain prior evidence and wait for a reconciling Ready or
+lifecycle stage. Unmatched evidence stays bounded in RAM; true ambiguity remains a
+failure, and removing another candidate later cannot manufacture certainty.
 
 ## Bounded recovery
 

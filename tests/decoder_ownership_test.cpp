@@ -1,6 +1,7 @@
 #include "../native/decoder_ownership.h"
 
 #include <cassert>
+#include <cstdio>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -13,6 +14,7 @@ using ownership::DecoderCodec;
 using ownership::DecoderOwnershipTracker;
 using ownership::ObservationLoss;
 using ownership::OwnershipBinding;
+using ownership::OwnershipReason;
 using ownership::OwnershipState;
 
 DecodedActivity Activity(std::uintptr_t owner,double first,double last,unsigned epoch=1,
@@ -27,6 +29,9 @@ DecodedActivity Activity(std::uintptr_t owner,double first,double last,unsigned 
 OwnershipBinding State(const DecoderOwnershipTracker& tracker,std::uint64_t token,
                        OwnershipState expected) {
     const auto binding=tracker.Binding(token);
+    if(binding.state!=expected)std::fprintf(stderr,"token=%llu expected=%u actual=%u caller=%p\n",
+        static_cast<unsigned long long>(token),unsigned(expected),unsigned(binding.state),
+        __builtin_return_address(0));
     assert(binding.capture_token==token);assert(binding.state==expected);
     return binding;
 }
@@ -46,9 +51,11 @@ void TestNormalization() {
 void TestSingleOwnerBinds() {
     DecoderOwnershipTracker tracker;tracker.Reset(1);
     const auto capture=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,1.0,1);
-    assert(capture);State(tracker,capture,OwnershipState::AwaitingOutput);
+    assert(capture);assert(State(tracker,capture,OwnershipState::AwaitingOutput).reason==
+                           OwnershipReason::CaptureBegan);
     tracker.ObserveDecoded(Activity(0x1000,1.0,1.0));
-    State(tracker,capture,OwnershipState::AwaitingPlaybackInstance);
+    assert(State(tracker,capture,OwnershipState::AwaitingPlaybackInstance).reason==
+           OwnershipReason::DecodedOutputObserved);
     tracker.Reset(1);
     const auto restarted=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,1.0,1);
     auto empty=Activity(0x1000,1.05,1.05);empty.produced_floats=0;
@@ -60,6 +67,7 @@ void TestSingleOwnerBinds() {
     State(tracker,restarted,OwnershipState::AwaitingPlaybackInstance);
     tracker.ObservePlayback("play-1","uri:one",7,1.3);
     const auto binding=State(tracker,restarted,OwnershipState::Bound);
+    assert(binding.reason==OwnershipReason::PlaybackStageBound);
     assert(binding.owner_token&&binding.playback_token&&binding.listen_generation==7);
     assert(tracker.OwnerToken(0x1000)==binding.owner_token&&
            tracker.PlaybackToken("play-1")==binding.playback_token);
@@ -183,7 +191,8 @@ void TestUnavailableInstanceAndPauseResume() {
     const auto capture=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,1.0,1);
     tracker.ObserveDecoded(Activity(0x1000,1.1,1.2));
     tracker.ObservePlayback("","uri:one",1,1.3);
-    State(tracker,capture,OwnershipState::AwaitingPlaybackInstance);
+    const auto fallback=State(tracker,capture,OwnershipState::Bound);
+    assert(fallback.listen_generation==1&&fallback.playback_token);
     tracker.ObservePlayback("instance-a","uri:one",1,1.4);
     const auto bound=State(tracker,capture,OwnershipState::Bound);
     tracker.ObservePlayback("instance-a","uri:one",1,5.0);
@@ -312,13 +321,15 @@ void TestAbortLossEpochAndTime() {
     const auto aborted=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,1.0,1);
     tracker.AbortCapture(aborted,CaptureAbortReason::DecoderError);
     tracker.ObserveDecoded(Activity(0x1000,1.1,1.2));
-    State(tracker,aborted,OwnershipState::Invalidated);
+    assert(State(tracker,aborted,OwnershipState::Invalidated).reason==
+           OwnershipReason::CaptureAborted);
 
     const auto lost=tracker.BeginCapture(DecoderCodec::Flac,0x2000,0,2.0,1);
     tracker.ObserveDecoded(Activity(0x2000,2.1,2.2));
     tracker.ObservationLost(ObservationLoss::Media,2.3);
     tracker.ObservePlayback("after-loss","uri:x",1,2.4);
-    State(tracker,lost,OwnershipState::Invalidated);
+    assert(State(tracker,lost,OwnershipState::Invalidated).reason==
+           OwnershipReason::ObservationLost);
 
     const auto old_epoch=tracker.BeginCapture(DecoderCodec::Flac,0x3000,0,3.0,1);
     tracker.Reset(2);
@@ -360,12 +371,40 @@ void TestAbortLossEpochAndTime() {
     State(tracker,decoded_regression,OwnershipState::Conflict);
 }
 
-void TestRetentionNeverChooses() {
+void TestElapsedTimeNeverRejectsOwnershipEvidence() {
     DecoderOwnershipTracker tracker;tracker.Reset(1);
     const auto capture=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,1.0,1);
     tracker.ObserveDecoded(Activity(0x1000,1.1,1.2));
-    tracker.ObservePlayback("too-late","uri:late",1,11.2001);
-    State(tracker,capture,OwnershipState::Invalidated);
+    tracker.ObservePlayback("", "uri:windows-only",0,50.0);
+    State(tracker,capture,OwnershipState::AwaitingPlaybackInstance);
+    tracker.CompleteCapture(capture,237.0);
+    State(tracker,capture,OwnershipState::AwaitingPlaybackInstance);
+}
+
+void TestBlankIdOutgoingAndSuccessorUseLifecycleStages() {
+    DecoderOwnershipTracker tracker;tracker.Reset(1);
+    tracker.ObserveTransition("outgoing","uri:old",1.0,false,false);
+    const auto outgoing=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,1.1,1,10);
+    tracker.ObserveDecoded(Activity(0x1000,1.2,1.3,1,11));
+    tracker.ObservePlayback("","uri:old",1,1.4);
+    State(tracker,outgoing,OwnershipState::Bound);
+
+    // This is the live ordering: the next decoder starts while the outgoing
+    // decoder is completing, and the Windows playback snapshot has no app ID.
+    const auto successor=tracker.BeginCapture(DecoderCodec::Flac,0x2000,0,237.0,1,20);
+    tracker.ObserveDecoded(Activity(0x2000,237.1,237.2,1,21));
+    State(tracker,outgoing,OwnershipState::Bound);
+    State(tracker,successor,OwnershipState::AwaitingPlaybackInstance);
+    tracker.CompleteCapture(outgoing,237.3,22);
+
+    // A repeated identity that predates the successor belongs to the outgoing
+    // lifecycle. A genuinely new identity selects the successor lifecycle.
+    tracker.ObservePlayback("outgoing","uri:old",1,237.4);
+    State(tracker,outgoing,OwnershipState::Bound);
+    State(tracker,successor,OwnershipState::AwaitingPlaybackInstance);
+    tracker.ObserveTransition("successor","uri:new",237.5,false,true);
+    const auto bound=State(tracker,successor,OwnershipState::Bound);
+    assert(bound.playback_token==tracker.PlaybackToken("successor"));
 }
 
 void TestBoundedCaptureAndOwnerStorage() {
@@ -414,7 +453,8 @@ int main() {
     TestProducerSequenceOwnsCompletionBoundaryAndAddressReuse();
     TestCompletedConflictDoesNotPoisonLaterCapture();
     TestAbortLossEpochAndTime();
-    TestRetentionNeverChooses();
+    TestElapsedTimeNeverRejectsOwnershipEvidence();
+    TestBlankIdOutgoingAndSuccessorUseLifecycleStages();
     TestBoundedCaptureAndOwnerStorage();
     TestBoundedPlaybackStorage();
 }

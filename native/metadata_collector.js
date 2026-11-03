@@ -8,7 +8,7 @@
  let builder,activeRequests=0,connectDevices;
  let player,root,queue=[],seen=new Set(),walked=0,lastPlayback='',playbackTime=-Infinity;
  let timelineBinding,lastReadyTimeline;
- let timelineSeen=false,lastTimeline='',timelineTime=-Infinity,timelineBlocked='',timelineLocal='unknown',lastSkipAt=-Infinity,pendingControl;
+ let timelineSeen=false,lastTimeline='',timelineTime=-Infinity,timelineBlocked='',timelineLocal='unknown',pendingControl;
  function playback(data){
   const payload=Object.entries(data).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&');
   const now=performance.now();
@@ -35,19 +35,17 @@
     blocked.uri=uri;blocked.instance=typeof instance==='string'&&instance.length<=128?instance:'';
     blocked.sampled_ms=Date.now();blocked.transition_ms=stamp;
     const position=own(state,'positionAsOfTimestamp');if(typeof position==='number'&&Number.isFinite(position)&&position>=0)blocked.position_ms=position;
-    const skipAge=blocked.sampled_ms-lastSkipAt;
-    if(skipAge>=0&&skipAge<=3000){blocked.manual=1;lastSkipAt=-Infinity;}
     if(pendingControl){
-     const controlAge=blocked.sampled_ms-pendingControl.sampled;
-     if(controlAge>=0&&controlAge<=10000)blocked.controlled=1;
+     if(pendingControl.action==='skipToNext'||pendingControl.action==='skipToPrevious')blocked.manual=1;
+     blocked.controlled=1;
      pendingControl=undefined;
     }
     blocked.monitoring=Number(!!(controlBinding?.active&&controlBinding.observing&&controlBinding.player===player));
-    const prior=lastReadyTimeline,age=prior?blocked.sampled_ms-prior.sampled:Infinity;
+    const prior=lastReadyTimeline;
     // Missing/failed action monitoring is unknown, never evidence of natural end.
     if(controlBinding?.active&&controlBinding.observing&&controlBinding.player===player&&
-       timelineLocal===1&&!blocked.manual&&!blocked.controlled&&prior?.playing&&prior.player===player&&age>=0&&age<=3000&&
-       prior.instance&&stamp>=prior.sampled-250) {
+       timelineLocal===1&&!blocked.manual&&!blocked.controlled&&prior?.playing&&prior.player===player&&
+       prior.instance&&stamp>=prior.stateStamp) {
      if(blocked.instance&&prior.instance!==blocked.instance)blocked.natural=1;
      else if(!blocked.instance)blocked.pending=1;
     }
@@ -73,13 +71,17 @@
   timelineSeen=true;
   const instance=typeof own(state,'playbackId')==='string'?own(state,'playbackId'):'';
   let readyControlled=false,readyPriorControlled=false;
-  if(pendingControl&&instance&&pendingControl.instance!==instance){
-   if(pendingControl.instance){readyPriorControlled=true;pendingControl=undefined;lastSkipAt=-Infinity;}
-   else {readyControlled=true;pendingControl=undefined;lastSkipAt=-Infinity;}
+  if(pendingControl&&instance!==pendingControl.instance){
+   if(pendingControl.instance)readyPriorControlled=true;
+   else readyControlled=true;
+   pendingControl=undefined;
   }
   if(pendingControl?.action==='pause'&&paused&&
      (!pendingControl.instance||pendingControl.instance===instance))pendingControl=undefined;
-  lastReadyTimeline={player,sampled,instance,playing:!paused&&timelineLocal===1};
+  else if(pendingControl&&pendingControl.action!=='pause'){
+   readyControlled=true;pendingControl=undefined;
+  }
+  lastReadyTimeline={player,sampled,stateStamp:stamp,instance,playing:!paused&&timelineLocal===1};
   timeline({v:1,title:data.title,artist:data.artist||'',album:data.album||'',uri:data.uri,
    duration:duration/1000,position:seconds,sampled_ms:sampled,instance,paused:Number(paused),buffering:Number(buffering),local:timelineLocal,speed:rate,
    controlled:readyControlled?1:undefined,prior_control:readyPriorControlled?1:undefined});
@@ -178,9 +180,9 @@
      // Any observed control action (including changed/unknown seek names)
      // breaks the evidence chain used for natural-transition recovery.
      const ready=lastReadyTimeline;lastReadyTimeline=undefined;
-     if(action!=='play'&&action!=='resume')pendingControl={action,instance:ready?.player===player?ready.instance:'',sampled:Date.now()};
+     if(action==='play'||action==='resume')pendingControl=undefined;
+     else pendingControl={action,instance:ready?.player===player?ready.instance:''};
      if(!['play','pause','resume','skipToNext','skipToPrevious'].includes(action))return;
-     if(action==='skipToNext'||action==='skipToPrevious')lastSkipAt=Date.now();
      if(!connectEnabled())return;
      if(controlQueue.length<16)controlQueue.push(action);else controlOmitted=Math.min(1000000,controlOmitted+1);
     }catch{/* A diagnostic observer must never affect command dispatch. */}

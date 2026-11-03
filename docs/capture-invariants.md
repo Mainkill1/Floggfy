@@ -11,23 +11,30 @@ and are never written to disk.
   decoded batches cannot coalesce across a lifecycle event.
 - Correlation advances through observed stages: capture created, decoded output
   seen, playback identity bound, compressed stream complete, then publishable.
-  Wall clocks expire unresolved evidence; they do not establish ownership.
+  A Ready snapshot's listen generation is a valid local stage identity when the
+  client omits its playback ID. Wall clocks never establish or revoke ownership.
+  Bounded record capacity may retire old evidence only after final reconciliation.
 - A conflict retires the current-owner role but retains the conflicted record as
   ambiguity evidence. A later nonoverlapping capture can establish fresh ownership.
 - Compressed completion may be processed before decoded observations. Producer
   sequence assigns delayed output to the exact completed lifetime, even when a
   decoder address is later reused.
-- Pause is acknowledged by a paused observation for the same playback instance.
-  It cannot remain pending through resumed playback and poison a natural ending.
-- Seek/skip controls still reject listen coverage. Natural completion requires an
-  observed, playing instance transition and no unacknowledged recent control.
+- Controls are consumed by the first Ready or buffering stage they can explain.
+  Pause is acknowledged by paused Ready; play/resume cancels an unacknowledged
+  pause. Seek/skip controls reject their transition without a clock window.
+- A missing or stale media snapshot pauses new decisions but preserves already
+  proven capture, ownership, and listen stages. Resumed position or an explicit
+  lifecycle event performs reconciliation.
+- Natural completion requires an ordered, playing instance transition, active
+  control monitoring, no pending control, and one viable capture path. Elapsed
+  wall time is not transition evidence.
 
 ## Capability policy
 
 - Decoder layout discovery and an active decoded-output hook are separate states.
-- Ownership is enforced only when decoded observation is active and the playback
-  provider supplies an instance ID. Windows media fallback still uses the existing
-  timing, duration, ambiguity, and final-integrity checks.
+- Ownership is enforced when decoded observation is active. An app playback ID
+  is preferred; Windows/no-ID Ready snapshots bind through the unique listen
+  generation produced by the same worker stage.
 - If the optional decoded hook cannot be installed safely, capture continues at 1x
   without ownership gating. Accelerated menu choices are disabled.
 

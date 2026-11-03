@@ -79,14 +79,14 @@ static void TestLateCapture(bool flac,bool repeat,LateCapture outcome,bool switc
   sample(.1,110.1);
   if(repeat)sample(1.2,111.2);
   assert(heard.size()==1&&heard[0].media.title==L"Late ending");
-  assert(old_capture()&&old_capture()->retained_until==120);
+  assert(old_capture());
   // The next decoder is unrelated to retention and must survive its cleanup.
   auto next=std::make_unique<Capture>();next->born=110;buffers.active[2]=std::move(next);
   if(switch_provider) {
     media.source=provider==MediaSource::Spotify?MediaSource::Windows:MediaSource::Spotify;
     sample(4,114);
     assert(heard.size()==1&&heard[0].media.title==L"Late ending");
-    assert(old_capture()&&old_capture()->retained_until==120);
+    assert(old_capture());
     assert(!listen.eligible); // Current B coverage restarts; completed A evidence survives.
   }
   const double tail_time=switch_provider?115:111.3;
@@ -110,11 +110,16 @@ static void TestLateCapture(bool flac,bool repeat,LateCapture outcome,bool switc
     assert(saves.Pop(job)&&job.heard.generation==1&&job.capture->Duration()==10);
     if(switch_provider)assert(job.heard.media.source==provider);
     publishing_reserved.fetch_sub(job.reserved);
+  } else if(outcome==LateCapture::PastDeadline) {
+    assert(saves.Pop(job)&&heard.empty()&&!old_capture());
+    publishing_reserved.fetch_sub(job.reserved);
+  } else if(outcome==LateCapture::Invalid) {
+    assert(!saves.Pop(job)&&heard.empty()&&!old_capture());
   } else {
-    assert(!saves.Pop(job)&&(outcome==LateCapture::Invalid?heard.empty():heard.size()==1));
-    SchedulePublications(heard,buffers,7,711); // Recent completed records expire after ten minutes.
+    assert(!saves.Pop(job)&&heard.size()==1&&old_capture()&&
+           "missing codec completion retains evidence until an explicit lifecycle boundary");
   }
-  assert(heard.empty()&&!old_capture()&&buffers.active.count(2));
+  assert(buffers.active.count(2));
 }
 static void TestAssociationRejection() {
   CaptureBuffers buffers;Heard heard;heard.media.title=L"Expected";heard.media.duration=10;
@@ -128,7 +133,7 @@ static void TestAssociationRejection() {
   assert(AssociationFailure(heard,buffers,0).find("timing_ready=1 duration_ready=0")!=std::string::npos);
   std::vector<Heard> pending{heard};SchedulePublications(pending,buffers,7,121);
   SaveJob job;assert(pending.size()==1&&!saves.Pop(job));
-  SchedulePublications(pending,buffers,7,711);assert(pending.empty()&&!saves.Pop(job));
+  SchedulePublications(pending,buffers,7,711);assert(pending.size()==1&&!saves.Pop(job));
   buffers.ready.clear();buffers.ready.push_back(complete(10));buffers.ready.push_back(complete(10));
   assert(AssociationFailure(heard,buffers,2).find("ambiguous completed captures")!=std::string::npos);
   pending={heard};SchedulePublications(pending,buffers,7,111);
@@ -146,11 +151,11 @@ static void TestAssociationRejection() {
   AssociateListen(media,listen,current,pending,buffers,100);
   auto partial=complete(9);buffers.active[1]=std::move(partial);
   media.title=L"Next";AssociateListen(media,listen,current,pending,buffers,105);
-  assert(pending.empty()&&buffers.active.empty());
+  assert(pending.empty()&&buffers.active.size()==1);
 }
 struct TerminalTailCase {
   const char* name;double tail_time,schedule_time;
-  bool expire_before_tail,late_start,publish;double earlier_deadline;
+    bool reconcile_before_tail,late_start,publish;
 };
 static void TestTerminalPauseTail(bool flac,MediaSource provider,const TerminalTailCase& scenario) {
   CaptureBuffers buffers;Listen listen;Media current;std::vector<Heard> heard;
@@ -172,7 +177,7 @@ static void TestTerminalPauseTail(bool flac,MediaSource provider,const TerminalT
       c->flac={44100,2,16,44100,44100,441000};c->coverage.samples=396900;c->coverage.frames=9;
       buffers.active[1]=std::move(c);
     } else {slot.time=100;page(0,2,0);slot.time=109;page(1,0,396900);}
-    assert(old_capture());old_capture()->retained_until=scenario.earlier_deadline;
+    assert(old_capture());
   };
   sample(0,100);if(!scenario.late_start)begin();
   for(unsigned i=1;i<=19;++i)sample(i*.5,100+i*.5);
@@ -182,9 +187,9 @@ static void TestTerminalPauseTail(bool flac,MediaSource provider,const TerminalT
   sample(10,111);assert(heard.size()==1); // Repeated paused polls cannot renew completion.
   if(scenario.late_start)begin();
   SaveJob job;
-  if(scenario.expire_before_tail) {
+  if(scenario.reconcile_before_tail) {
     SchedulePublications(heard,buffers,7,121);
-    assert(!saves.Pop(job)&&heard.size()==1&&!old_capture());
+    assert(!saves.Pop(job)&&heard.size()==1&&old_capture());
   }
   slot.time=scenario.tail_time;
   if(flac) {
@@ -198,24 +203,22 @@ static void TestTerminalPauseTail(bool flac,MediaSource provider,const TerminalT
   if(queued) {
     assert(heard.empty()&&job.heard.finish==110&&job.capture->Duration()==10);
     publishing_reserved.fetch_sub(job.reserved);
-  } else if(scenario.expire_before_tail)assert(heard.empty());
-  else assert(heard.size()==1);
+  } else assert(heard.size()==1);
 }
 static void TestTerminalPauseScheduling() {
   const TerminalTailCase cases[]={
-    {"inside",119.9,119.9,false,false,true,0},
-    {"exact cutoff",120,120,false,false,true,0},
-    {"late without cleanup",122,122,false,false,false,0},
-    {"late after cleanup",122,122,true,false,false,0},
-    {"completed buffer reconciles later",119,500,false,false,true,0},
-    {"capture discovered after completion",119,119,false,true,true,0},
-    {"late capture discovered after completion",122,122,false,true,false,0},
-    {"late-discovered capture expires",122,122,true,true,false,0},
-    {"earlier cutoff never extended",119.5,119.5,false,false,false,119},
+    {"inside",119.9,119.9,false,false,true},
+    {"exact former cutoff",120,120,false,false,true},
+    {"late without reconciliation",122,122,false,false,true},
+    {"late after reconciliation",122,122,true,false,true},
+    {"completed buffer reconciles later",119,500,false,false,true},
+    {"capture discovered after completion",119,119,false,true,true},
+    {"late capture discovered after completion",122,122,false,true,true},
+    {"late-discovered capture reconciles",122,122,true,true,true},
   };
   for(bool flac:{false,true})for(auto provider:{MediaSource::Windows,MediaSource::Spotify})
     for(const auto& scenario:cases)TestTerminalPauseTail(flac,provider,scenario);
-  puts("PASS: terminal pause bounds incomplete Ogg/FLAC tails at ten seconds while completed buffers retain long reconciliation");
+  puts("PASS: terminal pause retains Ogg/FLAC tails until codec lifecycle evidence resolves them");
 }
 static void TestLateAssociation() {
   TestRepeatScheduling();
@@ -231,9 +234,9 @@ static void TestLateAssociation() {
   TestTerminalPauseScheduling();
   for(bool flac:{false,true})for(auto provider:{MediaSource::Windows,MediaSource::Spotify})
     TestLateCapture(flac,false,LateCapture::Complete,true,provider);
-  puts("PASS: both provider-switch directions preserve a prior completed Ogg/FLAC listen and its original tail deadline");
+  puts("PASS: both provider-switch directions preserve a prior completed Ogg/FLAC listen and unresolved codec tail");
   CloseHandle(save_event);save_event=nullptr;
-  puts("PASS: late Ogg/FLAC completion survives natural transitions and repeats; original deadlines, invalid/mismatched/ambiguous capture rejection and skip cleanup remain intact");
+  puts("PASS: late Ogg/FLAC completion survives natural transitions and repeats; invalid, mismatched and ambiguous captures still reject");
 }
 static void TestLyricsPublication() {
   wchar_t temp[2048];GetTempPathW(2048,temp);

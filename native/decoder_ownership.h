@@ -19,6 +19,27 @@ enum class OwnershipState : std::uint8_t {
     Conflict,
     Invalidated,
 };
+enum class OwnershipReason : std::uint8_t {
+    CaptureBegan,
+    DecodedOutputObserved,
+    PlaybackStageBound,
+    CaptureAborted,
+    InvalidCaptureBegin,
+    InvalidCompletion,
+    OwnerReplaced,
+    PlaybackReplaced,
+    OwnerUnavailable,
+    InvalidDecodedRange,
+    DecodedOrderRegression,
+    DecodedBeforeCapture,
+    AmbiguousDecoderLifetime,
+    AmbiguousSuccessor,
+    PlaybackOrderRegression,
+    CausalOrderAmbiguous,
+    ObservationLost,
+    MissingCapture,
+};
+const char* OwnershipReasonName(OwnershipReason reason) noexcept;
 enum class CaptureAbortReason : std::uint8_t {
     DecoderError,
     InvalidData,
@@ -54,6 +75,7 @@ struct OwnershipBinding {
     std::uint64_t playback_token=0;
     std::uint64_t listen_generation=0;
     OwnershipState state=OwnershipState::AwaitingOutput;
+    OwnershipReason reason=OwnershipReason::CaptureBegan;
 };
 
 class DecoderOwnershipTracker {
@@ -89,6 +111,7 @@ private:
         std::uint32_t stream=0;
         DecoderCodec codec=DecoderCodec::Ogg;
         OwnershipState state=OwnershipState::AwaitingOutput;
+        OwnershipReason reason=OwnershipReason::CaptureBegan;
         double begun=0;
         double first_output=0;
         double last_output=0;
@@ -115,8 +138,10 @@ private:
         std::uint64_t token=0;
         std::uint64_t sequence=0;
         std::uint64_t listen_generation=0;
+        std::uint64_t bound_capture=0;
         double first_observed=0;
         double observed=0;
+        bool successor_transition=false;
     };
 
     CaptureRecord* FindCapture(std::uint64_t token) noexcept;
@@ -127,13 +152,13 @@ private:
     OwnerRecord& EnsureOwner(std::uintptr_t owner,unsigned epoch);
     PlaybackRecord& EnsurePlayback(const std::string& id,const std::string& uri,
                                    std::uint64_t generation,double observed);
-    void Expire(double now) noexcept;
-    void InvalidateOwner(std::uintptr_t owner) noexcept;
-    void InvalidatePlayback(std::uint64_t playback) noexcept;
-    void Conflict(CaptureRecord& capture) noexcept;
+    void InvalidateOwner(std::uintptr_t owner,OwnershipReason reason) noexcept;
+    void InvalidatePlayback(std::uint64_t playback,OwnershipReason reason) noexcept;
+    void Conflict(CaptureRecord& capture,OwnershipReason reason) noexcept;
     void TryBind(CaptureRecord& capture,PlaybackRecord& playback,double observed) noexcept;
     void ObservePlaybackImpl(const std::string& playback_id,const std::string& uri,
-                             std::uint64_t listen_generation,double observed);
+                             std::uint64_t listen_generation,double observed,
+                             bool successor_transition);
 
     std::array<CaptureRecord,kCaptureCapacity> captures_{};
     std::array<OwnerRecord,kOwnerCapacity> owners_{};

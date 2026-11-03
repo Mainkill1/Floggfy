@@ -80,14 +80,9 @@ void PodcastCaptureEvents() {
     assert(FinalizeBoundMp3Capture(buffers,listen,episode,100.4));
     assert(buffers.active.empty()&&buffers.ready.size()==1&&buffers.ready[0]->mp3);
     assert(buffers.ready[0]->mp3_info.frames==3&&ValidateFinalCapture(*buffers.ready[0])==FinalCaptureValidation::Valid);
-    buffers.ownership_hold_generation=70;
-    assert(HoldCompletedMp3DuringMediaGap(buffers,listen,episode,100.5));
-    tracker.ObservationLost(ownership::ObservationLoss::Media,100.5);
     ownership::OwnershipBinding durable{};
     assert(BoundCompleteCaptureForListen(buffers,listen,episode,durable)==buffers.ready[0].get()&&
-           "a fully validated exact MP3 binding survives only the final metadata gap");
-    assert(HoldCompletedMp3DuringMediaGap(buffers,listen,episode,100.6));
-    assert(!HoldCompletedMp3DuringMediaGap(buffers,listen,episode,111));
+           "a fully validated exact MP3 binding survives a missing media snapshot without a timer");
     Heard heard{episode,100,100.4,70};std::vector<Heard> completed{heard};
     SchedulePublications(completed,buffers,19,100.4);SaveJob job;
     assert(saves.Pop(job)&&job.capture->mp3&&job.heard.generation==70);
@@ -615,15 +610,15 @@ void CrossfadeQuarantineRecovery() {
         if(explicit_skip) {
             assert(heard.empty()&&!listen.eligible);return;
         }
-        assert(heard.size()==1&&heard[0].provisional&&heard[0].deadline==120);
-        assert(buffers.active.size()==1&&buffers.active[1]->retained_until==120);
+        assert(heard.size()==1&&heard[0].provisional);
+        assert(buffers.active.size()==1);
         auto completed=std::move(buffers.active[1]);buffers.active.erase(1);
         completed->coverage.samples=16;completed->finished=expire?121:110;
         buffers.ready.push_back(std::move(completed));
         if(ambiguous)buffers.ready.push_back(CompleteFlacCapture(100,110));
         SchedulePublications(heard,buffers,0,expire?121:110);SaveJob job;
-        assert(saves.Pop(job)==(!ambiguous&&!expire));
-        if(!ambiguous&&!expire)assert(job.heard.provisional&&ValidateFinalCapture(*job.capture)==FinalCaptureValidation::Valid);
+        assert(saves.Pop(job)==!ambiguous);
+        if(!ambiguous)assert(job.heard.provisional&&ValidateFinalCapture(*job.capture)==FinalCaptureValidation::Valid);
     };
     run(false,false,false);run(false,false,true);run(false,true,false);run(true,false,false);
     CaptureBuffers buffers;std::vector<Heard> heard;Listen listen;Media current,media;
@@ -648,7 +643,12 @@ void CrossfadeQuarantineRecovery() {
         if(scenario==4)blocked.explicit_skip=true;
         FinishAppTransition(blocked,trial,previous,pending,rejected,scenario==5?110:105);
         SchedulePublications(pending,rejected,0,110);SaveJob rejected_job;
-        assert(pending.empty()&&!saves.Pop(rejected_job)&&"seek, pause, unknown/manual or stale transition cannot recover a listen");
+        if(scenario==5) {
+            assert(saves.Pop(rejected_job)&&pending.empty()&&
+                   "an ordered natural lifecycle remains valid regardless of elapsed wall time");
+            publishing_reserved.fetch_sub(rejected_job.reserved);
+        } else assert(pending.empty()&&!saves.Pop(rejected_job)&&
+                      "seek, pause, unknown or manual transition cannot recover a listen");
     }
 }
 void EmptyPlaybackIdNaturalTransitionIsRetried() {
@@ -698,7 +698,7 @@ void EmptyPlaybackIdNaturalTransitionIsRetried() {
     next.playback_instance="second";next.title=L"Next";next.duration=20;next.position=.2;
     next.playing=true;next.control_monitoring=true;
     assert(FinishPendingNaturalTransition(next,listen,current,heard,buffers)&&
-           heard.size()==1&&heard[0].provisional&&buffers.active[1]->retained_until==120&&
+           heard.size()==1&&heard[0].provisional&&buffers.active.count(1)&&
            "the first real next-track snapshot retries final capture reconciliation");
     assert(!FinishPendingNaturalTransition(next,seek_listen,seek_current,heard,seek_buffers)&&
            !seek_buffers.pending_natural_generation&&
@@ -1103,7 +1103,7 @@ void FinalReleaseReconciliation() {
         Heard h;h.start=100;h.finish=110;h.media.duration=16;h.media.title=L"Late metadata";
         h.generation=1;h.media.source=MediaSource::Spotify;
         h.media.spotify_uri="spotify:track:0000000000000000000001";h.media.playback_instance="final-check";
-        h.provisional=true;h.deadline=120;return h;
+        h.provisional=true;return h;
     };
     {
         CaptureBuffers buffers;buffers.ready.push_back(CompleteFlacCapture(100,110));
@@ -1112,7 +1112,7 @@ void FinalReleaseReconciliation() {
         Listen listen;listen.generation=h.generation;listen.identity=h.media.ListenKey();recent.Observe(refreshed,listen);
         std::vector<Heard> pending{h};SaveJob job;
         SchedulePublications(pending,buffers,0,121,&recent);
-        assert(saves.Pop(job)&&"timely complete capture gets one last match before its pending record expires");
+        assert(saves.Pop(job)&&"complete capture gets a final structural match independent of elapsed time");
         assert(job.heard.media.title==L"Refreshed title");
         publishing_reserved.fetch_sub(job.reserved);
     }
@@ -1193,7 +1193,7 @@ void DurableAssociationEvidence() {
     {
         CaptureBuffers interleaved;std::vector<Heard> pending;
         auto completed=CompleteFlacCapture(100,110);
-        Heard heard;heard.start=100;heard.finish=110;heard.media.duration=16;heard.provisional=true;heard.deadline=125;
+        Heard heard;heard.start=100;heard.finish=110;heard.media.duration=16;heard.provisional=true;
         pending.push_back(heard);interleaved.ready.push_back(std::move(completed));
         auto active=std::make_unique<Capture>();active->born=100.1;
         interleaved.ogg_active[{77,42}]=std::move(active);
@@ -1247,17 +1247,18 @@ void OwnershipCapabilityFallbacks() {
         ownership::DecodedActivity activity{};activity.owner=0x3000;activity.calls=1;
         activity.produced_floats=4096;activity.first=100.1;activity.last=109.9;activity.epoch=32;
         tracker.ObserveDecoded(activity);tracker.CompleteCapture(capture->capture_token,110);
-        assert(tracker.Binding(capture->capture_token).state==ownership::OwnershipState::AwaitingPlaybackInstance);
-        buffers.ready.push_back(std::move(capture));
         Heard heard;heard.start=100;heard.finish=110;heard.generation=1;heard.media.duration=16;
         heard.media.source=MediaSource::Windows;
+        tracker.ObservePlayback("",heard.media.spotify_uri,heard.generation,110.1);
+        assert(tracker.Binding(capture->capture_token).state==ownership::OwnershipState::Bound);
+        buffers.ready.push_back(std::move(capture));
         std::vector<Heard> pending{heard};SchedulePublications(pending,buffers,0,111);SaveJob job;
         assert(saves.Pop(job)&&"Windows-only playback remains publishable without an app instance ID");
         publishing_reserved.fetch_sub(job.reserved);
     }
     decoded_sink_target=nullptr;decoder_ownership_layout={};decoder_ownership_layout_available=false;
 }
-void AppTailDeadline() {
+void AppTailLifecycle() {
     CaptureBuffers buffers;std::vector<Heard> heard;Listen listen;Media current,media;
     media.source=MediaSource::Spotify;media.spotify_uri="spotify:track:0000000000000000000001";
     media.title=L"Previous";media.duration=10;media.playing=true;
@@ -1265,9 +1266,10 @@ void AppTailDeadline() {
     auto active=std::make_unique<Capture>();active->lossless=true;active->born=100;active->flac.rate=1;active->coverage.samples=9;buffers.active[1]=std::move(active);
     Media next;next.source=MediaSource::Spotify;next.spotify_uri="spotify:track:0000000000000000000002";
     FinishAppTransition(next,listen,current,heard,buffers,110);
-    assert(heard.size()==1&&buffers.active[1]->retained_until==120);
+    assert(heard.size()==1&&buffers.active.count(1));
     auto late=std::move(buffers.active[1]);buffers.active.erase(1);late->finished=121;late->coverage.samples=10;buffers.ready.push_back(std::move(late));
-    SchedulePublications(heard,buffers,0,121);SaveJob job;assert(!saves.Pop(job));
+    SchedulePublications(heard,buffers,0,121);SaveJob job;assert(saves.Pop(job));
+    publishing_reserved.fetch_sub(job.reserved);
 }
 void MissingPlaybackWarning() {
     CaptureBuffers buffers;auto complete=std::make_unique<Capture>();complete->finished=10;
@@ -1337,7 +1339,7 @@ void EnrichTags(const Media&,Tags&){}
 int wmain() {
     // Use in-memory preferences only. Never read or write the user's INI/music.
     InterlockedExchange(&history::debug_enabled,1);
-    Connectivity();PodcastCatalog();PodcastCaptureEvents();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();EmptyPlaybackIdNaturalTransitionIsRetried();BoundNaturalTransitionUsesFinalCaptureEvidence();DjVoiceDoesNotBlockMusicStart();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailDeadline();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
+    Connectivity();PodcastCatalog();PodcastCaptureEvents();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();EmptyPlaybackIdNaturalTransitionIsRetried();BoundNaturalTransitionUsesFinalCaptureEvidence();DjVoiceDoesNotBlockMusicStart();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailLifecycle();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
     puts("PASS: observed transitions, one FLAC failure context/outcome, original callback semantics, profiling-only intervals, basic-mode zero profiling and changed-only NLM observations");
     return 0;
 }
