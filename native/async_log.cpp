@@ -79,14 +79,29 @@ static size_t TakeBatch(LogQueue& queue,Record* records,size_t capacity) noexcep
  queue.count-=count;ReleaseSRWLockExclusive(&queue.lock);return count;
 }
 [[maybe_unused]] static bool Take(LogQueue& queue,Record& record) noexcept {return TakeBatch(queue,&record,1)==1;}
+struct LocalStamp {SYSTEMTIME time{};LONGLONG offset_minutes=0;};
+static LocalStamp ToLocalStamp(const SYSTEMTIME& utc) noexcept {
+ LocalStamp result;result.time=utc;
+ if(!SystemTimeToTzSpecificLocalTime(nullptr,&utc,&result.time))return result;
+ FILETIME utc_file{},local_file{};
+ if(!SystemTimeToFileTime(&utc,&utc_file)||!SystemTimeToFileTime(&result.time,&local_file))return result;
+ ULARGE_INTEGER utc_ticks{},local_ticks{};
+ utc_ticks.LowPart=utc_file.dwLowDateTime;utc_ticks.HighPart=utc_file.dwHighDateTime;
+ local_ticks.LowPart=local_file.dwLowDateTime;local_ticks.HighPart=local_file.dwHighDateTime;
+ result.offset_minutes=(LONGLONG(local_ticks.QuadPart)-LONGLONG(utc_ticks.QuadPart))/600000000LL;
+ return result;
+}
 static std::string FormatLogRecord(const Record& record,bool diagnostics) {
- const auto& t=record.utc;char line[1100];
+ const auto stamp=ToLocalStamp(record.utc);const auto& t=stamp.time;
+ const auto offset=stamp.offset_minutes<0?-stamp.offset_minutes:stamp.offset_minutes;char line[1100];
  const int length=diagnostics?std::snprintf(line,sizeof(line),
-  "%04u-%02u-%02uT%02u:%02u:%02u.%03uZ pid=%lu mono_ms=%llu seq=%llu %s %s\r\n",
+  "%04u-%02u-%02uT%02u:%02u:%02u.%03u%c%02lld:%02lld pid=%lu mono_ms=%llu seq=%llu %s %s\r\n",
   t.wYear,t.wMonth,t.wDay,t.wHour,t.wMinute,t.wSecond,t.wMilliseconds,
+  stamp.offset_minutes<0?'-':'+',offset/60,offset%60,
   GetCurrentProcessId(),record.observed_ms,record.sequence,record.event,record.detail):std::snprintf(line,sizeof(line),
-  "%04u-%02u-%02uT%02u:%02u:%02uZ %s %s\r\n",
-  t.wYear,t.wMonth,t.wDay,t.wHour,t.wMinute,t.wSecond,record.event,record.detail);
+  "%04u-%02u-%02uT%02u:%02u:%02u%c%02lld:%02lld %s %s\r\n",
+  t.wYear,t.wMonth,t.wDay,t.wHour,t.wMinute,t.wSecond,
+  stamp.offset_minutes<0?'-':'+',offset/60,offset%60,record.event,record.detail);
  return length>0&&length<int(sizeof(line))?std::string(line,size_t(length)):std::string{};
 }
 static void WriteBatch(const Record* records,size_t count,bool diagnostics) noexcept {
@@ -161,7 +176,8 @@ void StartLogger(){if(signal)return;signal=CreateEventW(nullptr,FALSE,FALSE,null
 void LogEvent(LogKind kind,const char* event,const std::string& detail) {
  if(IsRendererDiagnostic(std::string_view(detail))) {RouteRendererDiagnostic(detail);return;}
  if(kind==LogKind::Diagnostic) {if(DebugLoggingEnabled())Push(diagnostic_queue,event,detail);return;}
- if(!LoggingEnabled())return;
+ const auto required=kind==LogKind::Activity?2u:1u;
+ if(LogLevel()<required)return;
  Push(activity_queue,kind==LogKind::Warning?"warning":kind==LogKind::Failure?"failed":event,detail);
 }
 void QueueNetworkingDiagnostic(const char* message) noexcept {

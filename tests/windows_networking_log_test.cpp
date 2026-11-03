@@ -54,6 +54,51 @@ static void ClearQueues() {
     history::Record record{};while(history::Take(history::activity_queue,record)){}while(history::Take(history::diagnostic_queue,record)){}
     history::activity_queue.omitted.store(0);history::diagnostic_queue.omitted.store(0);
 }
+static void LevelMatrix() {
+    using namespace history;
+    struct Expected {unsigned level,activity,diagnostic;};
+    for(const auto expected:{Expected{0,0,0},Expected{1,3,0},Expected{2,4,0},Expected{4,4,1}}) {
+        InterlockedExchange(&log_level_value,LONG(expected.level));settings.log_level=expected.level;
+        LogEvent(LogKind::Finished,"finished","started failed misleading title");
+        LogEvent(LogKind::Activity,"activity","finished failed misleading title");
+        LogEvent(LogKind::Warning,"ignored","finished misleading warning");
+        LogEvent(LogKind::Failure,"ignored","finished misleading failure");
+        LogEvent(LogKind::Diagnostic,"debug","finished misleading diagnostic");
+        assert(activity_queue.count==expected.activity&&diagnostic_queue.count==expected.diagnostic);
+        if(expected.level==1) {
+            Record records[4]{};assert(TakeBatch(activity_queue,records,4)==3);
+            assert(std::string(records[0].event)=="finished");
+            assert(std::string(records[1].event)=="warning");
+            assert(std::string(records[2].event)=="failed");
+        }
+        ClearQueues();
+    }
+    activity_queue.sequence=0;diagnostic_queue.sequence=0;
+}
+static void LocalTimestamp() {
+    using namespace history;
+    Record record{};record.utc.wYear=2024;record.utc.wMonth=1;record.utc.wDay=15;
+    record.utc.wHour=12;record.utc.wMinute=34;record.utc.wSecond=56;record.utc.wMilliseconds=321;
+    record.observed_ms=99;record.sequence=7;strcpy(record.event,"finished");strcpy(record.detail,"local timestamp");
+    SYSTEMTIME local{};assert(SystemTimeToTzSpecificLocalTime(nullptr,&record.utc,&local));
+    FILETIME utc_file{},local_file{};assert(SystemTimeToFileTime(&record.utc,&utc_file));
+    assert(SystemTimeToFileTime(&local,&local_file));
+    ULARGE_INTEGER utc_ticks{},local_ticks{};utc_ticks.LowPart=utc_file.dwLowDateTime;utc_ticks.HighPart=utc_file.dwHighDateTime;
+    local_ticks.LowPart=local_file.dwLowDateTime;local_ticks.HighPart=local_file.dwHighDateTime;
+    const auto delta=LONGLONG(local_ticks.QuadPart)-LONGLONG(utc_ticks.QuadPart);
+    const auto offset_minutes=delta/600000000LL;const auto magnitude=offset_minutes<0?-offset_minutes:offset_minutes;
+    char normal_prefix[80],diagnostic_prefix[80];
+    std::snprintf(normal_prefix,sizeof(normal_prefix),"%04u-%02u-%02uT%02u:%02u:%02u%c%02lld:%02lld ",
+        local.wYear,local.wMonth,local.wDay,local.wHour,local.wMinute,local.wSecond,
+        offset_minutes<0?'-':'+',magnitude/60,magnitude%60);
+    std::snprintf(diagnostic_prefix,sizeof(diagnostic_prefix),"%04u-%02u-%02uT%02u:%02u:%02u.%03u%c%02lld:%02lld ",
+        local.wYear,local.wMonth,local.wDay,local.wHour,local.wMinute,local.wSecond,local.wMilliseconds,
+        offset_minutes<0?'-':'+',magnitude/60,magnitude%60);
+    const auto normal=FormatLogRecord(record,false),diagnostic=FormatLogRecord(record,true);
+    assert(normal.rfind(normal_prefix,0)==0&&normal.find("Z ")==std::string::npos);
+    assert(normal.find(".321")==std::string::npos);
+    assert(diagnostic.rfind(diagnostic_prefix,0)==0&&diagnostic.find("Z ")==std::string::npos);
+}
 static void QueueAndSettings() {
     using namespace history;
     assert(!Settings{}.debug_networking);
@@ -63,6 +108,7 @@ static void QueueAndSettings() {
     DeleteFileW(normal_path.c_str());DeleteFileW(diagnostic_path.c_str());
     settings.root=root;settings.log_level=4;
     signal=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(signal);writes=0;
+    LevelMatrix();LocalTimestamp();
     InterlockedExchange(&log_level_value,4);
     QueueNetworkingDiagnostic("test disabled");assert(diagnostic_queue.count==0);
     InterlockedExchange(&networking_enabled,1);
