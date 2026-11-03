@@ -32,6 +32,9 @@ static constexpr char default_ini[]=
     "CaptureSpeed=1\r\n"
     "; Set Menu=0 before starting Spotify to disable native menu integration.\r\n"
     "Menu=1\r\n"
+    "; Use Windows media state only when Spotify's own playback state is unavailable.\r\n"
+    "; 0=off (default), exactly 1=on.\r\n"
+    "Windows Playback Fallback=0\r\n"
     "; Workaround when disabled/blocked Microsoft online checks (Windows NCSI)\r\n"
     "; make Windows report \"No Internet\" despite a working connection.\r\n"
     "; Reports an active adapter with a usable IP as Internet-connected to Spotify,\r\n"
@@ -125,6 +128,16 @@ static bool ReadCaptureSpeed(Settings& target,const std::wstring& path) {
     else {target.capture_speed=1;return true;}
     return false;
 }
+static bool ReadWindowsPlaybackFallback(Settings& target,const std::wstring& path) {
+    std::wstring text;bool unicode=false;
+    if(!settings_file::Read(path,text,unicode)) {
+        target.windows_playback_fallback=false;
+        return false;
+    }
+    const auto value=settings_file::Find(text,L"Windows Playback Fallback");
+    target.windows_playback_fallback=value.present&&!value.duplicate&&value.value==L"1";
+    return !value.present||value.duplicate||(value.value!=L"0"&&value.value!=L"1");
+}
 // INI-only preferences are read once. Persistence inserts missing defaults,
 // but never writes a stale startup snapshot over values edited before restart.
 struct RestartFlag {
@@ -179,6 +192,7 @@ static DWORD WINAPI PersistSettings(LPVOID) {
             if(ok) {
                 auto flag=[&](const wchar_t* key,bool value){settings_file::Set(text,key,value?L"1":L"0");};
                 flag(L"Downloads",snapshot.downloads);flag(L"Ogg",snapshot.ogg);flag(L"FLAC",snapshot.flac);flag(L"AAC",snapshot.aac);flag(L"Podcasts",snapshot.podcasts);flag(L"Lyrics",snapshot.lyrics);
+                flag(L"Windows Playback Fallback",snapshot.windows_playback_fallback);
                 settings_file::Set(text,L"CaptureSpeed",std::to_wstring(snapshot.capture_speed));
                 flag(L"UpdateExistingMetadata",snapshot.update_existing_metadata);
                 InsertMissingRestartDefaults(text);
@@ -239,8 +253,9 @@ void InitSettings(HMODULE proxy) {
     settings.flac=GetPrivateProfileIntW(L"To Disk",L"FLAC",1,ini.c_str())!=0;
     const bool filename_options_pending=ReadFilenameOptions(settings,ini);
     const bool capture_speed_pending=ReadCaptureSpeed(settings,ini);
+    const bool windows_playback_fallback_pending=ReadWindowsPlaybackFallback(settings,ini);
     const bool restart_options_pending=ReadRestartOptions(settings,ini);
-    const bool startup_options_pending=filename_options_pending||capture_speed_pending||restart_options_pending;
+    const bool startup_options_pending=filename_options_pending||capture_speed_pending||windows_playback_fallback_pending||restart_options_pending;
     settings.aac=GetPrivateProfileIntW(L"To Disk",L"AAC",0,ini.c_str())!=0;
     settings.podcasts=GetPrivateProfileIntW(L"To Disk",L"Podcasts",0,ini.c_str())!=0;
     settings.metadata=GetPrivateProfileIntW(L"To Disk",L"Metadata",1,ini.c_str())!=0;
@@ -313,6 +328,7 @@ bool SetDownloads(bool v) { return Set(L"Downloads",v,settings.downloads,&downlo
 bool SetOgg(bool v) { return Set(L"Ogg",v,settings.ogg,&ogg_enabled); }
 bool SetFlac(bool v) { return Set(L"FLAC",v,settings.flac,&flac_enabled); }
 bool SetPodcasts(bool v) { return Set(L"Podcasts",v,settings.podcasts,&podcasts_enabled); }
+bool SetWindowsPlaybackFallback(bool v) { return Set(L"Windows Playback Fallback",v,settings.windows_playback_fallback,nullptr,false); }
 bool SetLyrics(bool v) { return Set(L"Lyrics",v,settings.lyrics,nullptr,false); }
 bool SetUpdateExistingMetadata(bool v) { return Set(L"UpdateExistingMetadata",v,settings.update_existing_metadata,nullptr,false); }
 bool SetCaptureSpeed(unsigned speed) {

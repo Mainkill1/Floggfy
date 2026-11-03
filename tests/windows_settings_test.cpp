@@ -8,7 +8,7 @@ void QueueDiagnostic(const char*) {}
 }
 int main(int argc,char** argv) {
   assert(argc==2);
-  assert(history::Settings{}.downloads&&history::Settings{}.update_existing_metadata&&!history::Settings{}.aac&&!history::Settings{}.podcasts&&history::Settings{}.capture_speed==1);
+  assert(history::Settings{}.downloads&&history::Settings{}.update_existing_metadata&&!history::Settings{}.aac&&!history::Settings{}.podcasts&&!history::Settings{}.windows_playback_fallback&&history::Settings{}.capture_speed==1);
   assert(!history::AACEnabled());
   assert(!history::PodcastsEnabled());
   const std::string scenario=argv[1];
@@ -26,16 +26,22 @@ int main(int argc,char** argv) {
     if(scenario=="speed-10") assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeed",L"10",path.c_str()));
     if(scenario=="speed-invalid") assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeed",L"3",path.c_str()));
     if(scenario=="speed-padded") assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeed",L"01",path.c_str()));
+    if(scenario=="fallback-one") assert(WritePrivateProfileStringW(L"To Disk",L"Windows Playback Fallback",L"1",path.c_str()));
+    if(scenario=="fallback-zero") assert(WritePrivateProfileStringW(L"To Disk",L"Windows Playback Fallback",L"0",path.c_str()));
+    if(scenario=="fallback-invalid") assert(WritePrivateProfileStringW(L"To Disk",L"Windows Playback Fallback",L"2",path.c_str()));
+    if(scenario=="fallback-padded") assert(WritePrivateProfileStringW(L"To Disk",L"Windows Playback Fallback",L"01",path.c_str()));
   }
   history::InitSettings(nullptr);
   auto s=history::GetSettings();
   assert(s.downloads==(scenario!="zero" && scenario!="legacy-zero"));
   assert(s.capture_speed==(scenario=="speed-10"?10u:1u));
+  assert(s.windows_playback_fallback==(scenario=="fallback-one"));
   assert(history::CaptureSpeed()==s.capture_speed);
   if(scenario=="new") {
     assert(GetPrivateProfileIntW(L"To Disk",L"Downloads",9,path.c_str())==1);
     assert(GetPrivateProfileIntW(L"To Disk",L"AAC",9,path.c_str())==0);
     assert(GetPrivateProfileIntW(L"To Disk",L"Podcasts",9,path.c_str())==0);
+    assert(GetPrivateProfileIntW(L"To Disk",L"Windows Playback Fallback",9,path.c_str())==0);
     assert(GetPrivateProfileIntW(L"To Disk",L"UpdateExistingMetadata",9,path.c_str())==1);
     HANDLE file=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,0,nullptr);
     assert(file!=INVALID_HANDLE_VALUE);unsigned char bom[2]{};DWORD count=0;
@@ -58,6 +64,10 @@ int main(int argc,char** argv) {
   assert(s.lyrics==(scenario!="lyrics-zero"));
   assert(s.update_existing_metadata==(scenario!="updates-zero"));
   const auto epoch=history::CaptureEpoch();
+  const auto fallback_generation=history::GetSettings().generation;
+  assert(history::SetWindowsPlaybackFallback(!s.windows_playback_fallback));
+  assert(history::CaptureEpoch()==epoch&&history::GetSettings().generation>fallback_generation);
+  assert(history::SetWindowsPlaybackFallback(s.windows_playback_fallback));
   assert(history::SetLyrics(false));
   assert(history::CaptureEpoch()==epoch); // Enrichment preferences never discard audio.
   assert(!history::GetSettings().lyrics);
@@ -76,6 +86,7 @@ int main(int argc,char** argv) {
   assert(history::GetSettings().aac==s.aac);
   assert(GetPrivateProfileIntW(L"To Disk",L"AAC",9,path.c_str())==(s.aac?1:0));
   assert(GetPrivateProfileIntW(L"To Disk",L"Podcasts",9,path.c_str())==(s.podcasts?1:0));
+  assert(GetPrivateProfileIntW(L"To Disk",L"Windows Playback Fallback",9,path.c_str())==(s.windows_playback_fallback?1:0));
   DeleteFileW(path.c_str());
   puts("PASS: Windows installation defaults and explicit zero preservation");
 }
