@@ -223,6 +223,74 @@ FilePublication PublishBytes(const std::wstring& path,const Quality& quality,con
     if(result==FilePublication::Upgraded && published_bytes)*published_bytes=size;
     return result;
 }
+FilePublication PublishFormatUpgrade(const std::wstring& source,const std::wstring& destination,
+    const Quality& quality,const void* bytes,size_t size,const Catalog& catalog,size_t* published_bytes) {
+    if(published_bytes)*published_bytes=0;
+    try {
+        if(source.empty() || destination.empty() || !bytes || !size ||
+           CompareStringOrdinal(source.c_str(),int(source.size()),destination.c_str(),int(destination.size()),TRUE)==CSTR_EQUAL)
+            return FilePublication::Failed;
+        const auto first=static_cast<const uint8_t*>(bytes);
+        std::vector<uint8_t> incoming(first,first+size);
+        RecordingFile next;
+        if(!InspectRecording(incoming.data(),incoming.size(),next) || !next.complete || !next.owned ||
+           !MatchesRecording(next,catalog) || next.quality.codec!=quality.codec || next.quality.rate!=quality.rate ||
+           next.quality.channels!=quality.channels || next.quality.bits!=quality.bits || next.quality.bitrate!=quality.bitrate)
+            return FilePublication::Failed;
+
+        // Hold the exact old Ogg against writes and deletion for the complete
+        // metadata merge, FLAC publication and final verification sequence.
+        Handle old{CreateFileW(WindowsPath(source).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,
+            nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
+        std::vector<uint8_t> old_bytes;
+        RecordingFile prior;
+        if(old.value==INVALID_HANDLE_VALUE || !SameFile(old.value,source) || !ReadLockedRecording(old.value,old_bytes) ||
+           !InspectRecording(old_bytes.data(),old_bytes.size(),prior) || !prior.complete || !prior.owned ||
+           prior.quality.codec!=Codec::Vorbis || !MatchesRecording(prior,catalog) || !HigherQuality(next.quality,prior.quality))
+            return FilePublication::Failed;
+
+        std::vector<uint8_t> preserved;std::string error;
+        if(!PreserveUpgradeMetadata(old_bytes,incoming,catalog,preserved,error))return FilePublication::Failed;
+        size_t saved=0;
+        auto result=PublishBytes(destination,quality,preserved.data(),preserved.size(),catalog,&saved);
+        if(result==FilePublication::Failed)return result;
+
+        // A prior buggy run may already have left a good FLAC beside the Ogg.
+        // Merge the Ogg metadata into that exact FLAC before cleaning up.
+        if(result==FilePublication::Skipped) {
+            Handle current{CreateFileW(WindowsPath(destination).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,
+                nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
+            std::vector<uint8_t> current_bytes,merged;
+            RecordingFile current_recording;
+            if(current.value==INVALID_HANDLE_VALUE || !SameFile(current.value,destination) ||
+               !ReadLockedRecording(current.value,current_bytes) ||
+               !InspectRecording(current_bytes.data(),current_bytes.size(),current_recording) ||
+               !current_recording.complete || !current_recording.owned || !MatchesRecording(current_recording,catalog) ||
+               !HigherQuality(current_recording.quality,prior.quality) ||
+               !PreserveUpgradeMetadata(old_bytes,current_bytes,catalog,merged,error))return FilePublication::Failed;
+            if(merged!=current_bytes &&
+               PublishMetadataBytes(destination,merged.data(),merged.size(),catalog,current.value)!=FilePublication::Upgraded)
+                return FilePublication::Failed;
+        }
+
+        // The pathname can never authorize deletion by itself. Lock and parse
+        // the exact current FLAC, then retire only the still-held old Ogg.
+        Handle final{CreateFileW(WindowsPath(destination).c_str(),GENERIC_READ,FILE_SHARE_READ,
+            nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
+        std::vector<uint8_t> final_bytes;
+        RecordingFile final_recording;
+        if(final.value==INVALID_HANDLE_VALUE || !SameFile(final.value,destination) ||
+           !ReadLockedRecording(final.value,final_bytes) ||
+           !InspectRecording(final_bytes.data(),final_bytes.size(),final_recording) ||
+           !final_recording.complete || !final_recording.owned || !MatchesRecording(final_recording,catalog) ||
+           !HigherQuality(final_recording.quality,prior.quality))return FilePublication::Failed;
+        FILE_DISPOSITION_INFO disposition={TRUE};
+        if(!SetFileInformationByHandle(old.value,FileDispositionInfo,&disposition,sizeof(disposition)))
+            return FilePublication::Failed;
+        if(published_bytes)*published_bytes=final_bytes.size();
+        return FilePublication::Upgraded;
+    }catch(...) {return FilePublication::Failed;}
+}
 FilePublication PublishMetadataBytes(const std::wstring& path,const void* bytes,size_t size,const Catalog& catalog,void* locked_file) {
     RecordingFile incoming,current;
     if(!locked_file || locked_file==INVALID_HANDLE_VALUE || !SameFile(locked_file,path) ||

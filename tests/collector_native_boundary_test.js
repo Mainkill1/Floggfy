@@ -15,7 +15,8 @@ const state={
  }
 };
 const messages=[];
-const player={getState:()=>state,getEvents:()=>({addListener(){},removeListener(){}})};
+const listeners=new Map();
+const player={getState:()=>state,getEvents:()=>({addListener:(type,fn)=>listeners.set(type,fn),removeListener:type=>listeners.delete(type)})};
 const sandbox={
  window:{__floggfyConfig:{metadata:false},Spicetify:{Platform:{
   PlayerAPI:player,
@@ -29,6 +30,22 @@ const sandbox={
 };
 vm.runInNewContext(script,sandbox);
 const prefix='FLOGGFY_TIMELINE_V1:';
+if(process.argv[2]==='--pending-prior-control'){
+ state.isBuffering=true;state.playbackId='';
+ state.item={...state.item,uri:'spotify:track:0000000000000000000002'};
+ sandbox.window.__floggfyPoll();
+ state.isBuffering=false;state.playbackId='playback-1';
+ state.item={...state.item,uri:'spotify:track:0000000000000000000001'};
+ sandbox.window.__floggfyPoll();
+ listeners.get('action')({data:{action:'skipToNext'}});
+ state.playbackId='playback-2';
+ state.item={...state.item,uri:'spotify:track:0000000000000000000002'};
+ sandbox.window.__floggfyPoll();
+ const ready=messages.filter(value=>value.startsWith(prefix)).at(-1);
+ if(!ready)throw new Error('collector did not emit the controlled successor Ready stage');
+ process.stdout.write(ready.slice(prefix.length));
+ process.exit(0);
+}
 if(process.argv[2]==='--transition'||process.argv[2]==='--reused-transition'){
  if(process.argv[2]==='--transition'){state.playbackId='';sandbox.window.__floggfyPoll();}
  state.isBuffering=true;

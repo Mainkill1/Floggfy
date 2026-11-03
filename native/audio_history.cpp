@@ -994,6 +994,20 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     RecordingDirectory directory;
     if(!ListRecordingDirectory(capture_path,directory,&catalog))
         return finish(Publication::Failed,"failed","recording directory could not be listed; publication deferred");
+    RecordingDestination superseded_vorbis;
+    bool format_upgrade=false;
+    if(c.lossless && !c.mp3) {
+        auto ogg=ResolveRecordingDestination(
+            OutputPath(settings.root,catalog,L".ogg",settings.music_folder,settings.track_number_in_filename),
+            catalog,settings.track_number_in_filename,&directory);
+        if(ogg.state==RecordingDestinationState::Blocked)
+            return finish(Publication::Failed,"failed","existing Ogg could not be inspected; publication deferred");
+        if(ogg.state==RecordingDestinationState::Existing && ogg.recording.complete && ogg.recording.owned &&
+           ogg.recording.quality.codec==Codec::Vorbis && HigherQuality(quality,ogg.recording.quality)) {
+            superseded_vorbis=std::move(ogg);
+            format_upgrade=true;
+        }
+    }
     // Search preferred formats first. Blocked is I/O uncertainty, never proof
     // that a recording is absent. The resolver returns its verified snapshot
     // so skip/metadata planning does not read the entire file again.
@@ -1037,7 +1051,7 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
            (!inspected.complete || HigherQuality(quality,inspected.quality)))
             decision=SaveDecision::Upgrade;
     }
-    if(decision==SaveDecision::Skip) {
+    if(decision==SaveDecision::Skip && !format_upgrade) {
         // An audio duplicate may still have missing metadata. Update only a
         // verified matching recording; this never adds a Latest Downloads entry.
         const auto latest=GetSettings();
@@ -1059,7 +1073,7 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     }
     // Existing tags/art/lyrics are merged by PublishBytes while its exact old
     // object is locked. Do not take a separate stale preservation snapshot here.
-    const bool had_artwork=inspected.has_artwork;
+    const bool had_artwork=inspected.has_artwork || superseded_vorbis.recording.has_artwork;
     resolved.recording={}; // No planning metadata retained across construction.
     std::vector<uint8_t> tagged; std::string error;
     if(c.aac) {
@@ -1096,7 +1110,9 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     // Only complete tagged audio reaches the bounded save worker's staged,
     // flushed publication protocol. Recording identity authorizes replacement.
     size_t published_bytes=0;
-    auto publication=PublishBytes(destination,quality,tagged.data(),tagged.size(),catalog,&published_bytes);
+    auto publication=format_upgrade
+        ?PublishFormatUpgrade(superseded_vorbis.path,destination,quality,tagged.data(),tagged.size(),catalog,&published_bytes)
+        :PublishBytes(destination,quality,tagged.data(),tagged.size(),catalog,&published_bytes);
     if(publication==FilePublication::Skipped)return finish(Publication::Skipped,"skipped",ExistingSkipReason(destination,quality,catalog));
     if(publication==FilePublication::Failed)return finish(Publication::Failed,"failed","file publication failed; existing file retained");
     RefreshSongDestination();
@@ -1329,11 +1345,14 @@ static uint64_t BindReadyCapture(CaptureBuffers& buffers,const Media& media,
         const auto declared=DeclaredCaptureDuration(capture);
         const bool active_ogg_without_duration=!declared&&!capture.lossless&&!capture.aac&&
             !capture.mp3&&capture.stream.pages&&confirmed_transition;
-        if((!declared&&!active_ogg_without_duration)||
+        const bool active_mp3_without_duration=!declared&&episode&&capture.mp3&&
+            !capture.finished&&capture.bytes;
+        if((!declared&&!active_ogg_without_duration&&!active_mp3_without_duration)||
            (declared&&std::fabs(declared-media.duration)>1.0))return;
         const auto binding=buffers.ownership_tracker->Binding(capture.capture_token);
         if(binding.state==ownership::OwnershipState::Bound) {
             if(binding.listen_generation==generation) {
+                capture.listen_generation=generation;
                 if(!already_bound)already_bound=binding.playback_token;
                 else if(already_bound!=binding.playback_token)already_bound=~uint64_t(0);
             } else if(!binding.listen_generation&&ready_playback&&
@@ -1353,6 +1372,7 @@ static uint64_t BindReadyCapture(CaptureBuffers& buffers,const Media& media,
     if(candidates!=1||!candidate)return 0;
     if(!buffers.ownership_tracker->BindCapture(candidate->capture_token,
         media.playback_instance,resolved_uri,generation,observed))return 0;
+    candidate->listen_generation=generation;
     return buffers.ownership_tracker->Binding(candidate->capture_token).playback_token;
 }
 static void CanonicalizeBoundReadyIdentity(Media& media,Listen& listen,
@@ -2002,7 +2022,7 @@ static bool FinishPendingNaturalTransition(const Media& next,Listen& listen,cons
                                            std::vector<Heard>& heard,CaptureBuffers& buffers,
                                            RecentPlaybackHistory* recent=nullptr) {
     if(!buffers.pending_natural_generation)return false;
-    if(next.explicit_skip||next.explicit_control) {
+    if(next.explicit_skip||next.explicit_control||next.prior_control) {
         ClearPendingNaturalTransition(buffers);buffers.confirmed_transition_playback=0;
         listen.eligible=false;listen.playing=false;return false;
     }

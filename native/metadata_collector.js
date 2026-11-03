@@ -181,8 +181,9 @@
      // Any observed control action (including changed/unknown seek names)
      // breaks the evidence chain used for natural-transition recovery.
      const ready=lastReadyTimeline;lastReadyTimeline=undefined;
-     if(action==='play'||action==='resume')pendingControl=undefined;
-     else pendingControl={action,instance:ready?.player===player?ready.instance:''};
+     if(action==='play'||action==='resume'){
+      if(pendingControl?.action==='pause')pendingControl=undefined;
+     }else pendingControl={action,instance:ready?.player===player?ready.instance:''};
      if(!['play','pause','resume','skipToNext','skipToPrevious'].includes(action))return;
      if(!connectEnabled())return;
      if(controlQueue.length<16)controlQueue.push(action);else controlOmitted=Math.min(1000000,controlOmitted+1);

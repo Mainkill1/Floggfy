@@ -14,6 +14,7 @@ function fields(line){
 for(let run=0;run<iterations;++run){
  let clock=1793300000000+run*100000;
  const speed=speeds[next()%speeds.length],transition=next()%3,control=next()%4;
+ const gapControl=control>=2&&transition!==0&&next()%2===0;
  let current={timestamp:clock,positionAsOfTimestamp:0,duration:16000,isPaused:false,isBuffering:false,
   speed,playbackId:'play-'+run+'-a',item:{uri:uri(run%9+1),metadata:{title:'A',artist_name:'Artist',album_title:'Album'}}};
  const messages=[],handlers=new Map();
@@ -29,8 +30,8 @@ for(let run=0;run<iterations;++run){
   clock+=1+next()%30000;current={...current,timestamp:clock,isPaused:true};sandbox.window.__floggfyPoll();
   handlers.get('action')({data:{action:'resume'}});
   clock+=1+next()%30000;current={...current,timestamp:clock,isPaused:false};sandbox.window.__floggfyPoll();
- }else if(control===2)handlers.get('action')({data:{action:'skipToNext'}});
- else if(control===3)handlers.get('action')({data:{action:'seekTo'}});
+ }else if(control===2&&!gapControl)handlers.get('action')({data:{action:'skipToNext'}});
+ else if(control===3&&!gapControl)handlers.get('action')({data:{action:'seekTo'}});
 
  clock+=1+next()%30000;
  const outgoing=current.playbackId,nextUri=uri(run%9+10),nextId='play-'+run+'-b';
@@ -39,7 +40,7 @@ for(let run=0;run<iterations;++run){
   item:{uri:nextUri,metadata:{title:'B',artist_name:'Artist',album_title:'Album'}}};
  sandbox.window.__floggfyPoll();
  const blocked=fields(messages.filter(line=>line.startsWith('FLOGGFY_TIMELINE_V1:')&&line.includes('blocked=buffering')).at(-1));
- if(control>=2){
+ if(control>=2&&!gapControl){
   assert.equal(blocked.get('controlled'),'1');assert.equal(blocked.get('natural'),null);assert.equal(blocked.get('pending'),null);
  }else if(transition===0){
   assert.equal(blocked.get('natural'),'1');assert.equal(blocked.get('pending'),null);
@@ -47,10 +48,21 @@ for(let run=0;run<iterations;++run){
   assert.equal(blocked.get('pending'),'1');assert.equal(blocked.get('natural'),null);
  }
 
- clock+=1+next()%30000;current={...current,timestamp:clock,isBuffering:false,playbackId:nextId};
+ if(gapControl){
+  if(next()%2){
+   clock+=1+next()%30000;current={...current,timestamp:clock,isBuffering:false,playbackId:outgoing,
+    item:{uri:uri(run%9+1),metadata:{title:'A',artist_name:'Artist',album_title:'Album'}}};
+   sandbox.window.__floggfyPoll();
+  }
+  handlers.get('action')({data:{action:control===2?'skipToNext':'seekTo'}});
+  handlers.get('action')({data:{action:'resume'}});
+ }
+ clock+=1+next()%30000;current={...current,timestamp:clock,isBuffering:false,playbackId:nextId,
+  item:{uri:nextUri,metadata:{title:'B',artist_name:'Artist',album_title:'Album'}}};
  sandbox.window.__floggfyPoll();
  const readyB=fields(messages.filter(line=>line.startsWith('FLOGGFY_TIMELINE_V1:')&&!line.includes('blocked=')).at(-1));
- if(control>=2)assert(['1',null].includes(readyB.get('prior_control'))||readyB.get('controlled')==='1');
+ if(gapControl)assert(readyB.get('prior_control')==='1'||readyB.get('controlled')==='1',
+  JSON.stringify({run,speed,transition,control,gapControl,ready:Object.fromEntries(readyB)}));
 
  // B is an independent full playback. No action from A may poison B's end,
  // regardless of wall-clock spacing or capture speed.

@@ -1,5 +1,6 @@
 // Exercise real hooks/worker diagnostics without patching or controlling Spotify.
 #include "../native/async_log.h"
+#include "../native/client_playback.h"
 namespace history {void CaptureLogEvent(LogKind,const char*,const std::string&);}
 #define LogEvent CaptureLogEvent
 #include "../native/audio_history.cpp"
@@ -8,6 +9,7 @@ namespace history {void CaptureLogEvent(LogKind,const char*,const std::string&);
 #include "recording_fixture.h"
 #include "spac_fixture.h"
 #include <cassert>
+#include <iostream>
 #include <random>
 
 namespace {
@@ -72,12 +74,13 @@ void PodcastCaptureEvents() {
     ownership::DecodedActivity activity{};activity.owner=slot.context;activity.calls=1;
     activity.produced_floats=100;activity.consumed_bytes=source.size();activity.kept_floats=100;
     activity.first=100.01;activity.last=100.2;activity.epoch=19;tracker.ObserveDecoded(activity);
-    tracker.ObservePlayback("episode-one","spotify:episode:0000000000000000000001",70,100.3);
     Listen listen;listen.identity="spotify:episode:0000000000000000000001\x1f" "episode-one";
     listen.eligible=true;listen.playing=true;listen.start_time=100;listen.last_time=100.3;
     listen.last_position=duration;listen.duration=duration;listen.generation=70;
     Media episode;episode.source=MediaSource::Spotify;episode.spotify_uri="spotify:episode:0000000000000000000001";
     episode.playback_instance="episode-one";episode.duration=duration;episode.playing=true;
+    assert(BindReadyCapture(buffers,episode,70,100.3)&&
+           "the production Ready binder must bind an active MP3 before final parsing");
     assert(FinalizeBoundMp3Capture(buffers,listen,episode,100.4));
     assert(buffers.active.empty()&&buffers.ready.size()==1&&buffers.ready[0]->mp3);
     assert(buffers.ready[0]->mp3_info.frames==3&&ValidateFinalCapture(*buffers.ready[0])==FinalCaptureValidation::Valid);
@@ -746,6 +749,15 @@ void EmptyPlaybackIdNaturalTransitionIsRetried() {
            !gap_buffers.pending_natural_generation&&!gap_listen.eligible&&gap_heard.empty()&&
            "a control during the buffering gap cancels pending natural recovery");
 
+    auto prior_listen=listen;CaptureBuffers prior_buffers;
+    prior_buffers.pending_natural_generation=prior_listen.generation;
+    prior_buffers.pending_natural_time=105;prior_buffers.pending_natural_listen=prior_listen;
+    auto prior_ready=controlled_ready;prior_ready.explicit_control=false;prior_ready.prior_control=true;
+    std::vector<Heard> prior_heard;
+    assert(!FinishPendingNaturalTransition(prior_ready,prior_listen,current,prior_heard,prior_buffers)&&
+           !prior_buffers.pending_natural_generation&&!prior_listen.eligible&&prior_heard.empty()&&
+           "a control acknowledged by the successor must cancel pending natural recovery");
+
     auto same=media;same.position=4.2;same.control_monitoring=true;
     assert(!FinishPendingNaturalTransition(same,listen,current,heard,buffers)&&
            buffers.pending_natural_generation==listen.generation&&
@@ -1411,6 +1423,10 @@ void ReadyUpgradesPreboundPlaybackGeneration() {
     const auto playback=BindReadyCapture(buffers,ready,77,100.5);
     assert(playback&&tracker.Binding(token).listen_generation==77&&
            "Ready must attach the listen generation to its prebound playback stage");
+    Heard heard;heard.start=121;heard.finish=122;heard.generation=77;heard.media.duration=202.5;
+    assert(buffers.active[1]->listen_generation==77&&
+           CaptureTimingMatchesListen(*buffers.active[1],heard)&&
+           "proven ownership must bypass the capability-fallback timing window");
 }
 void WindowsReadyNaturalAppTransitionPublishes() {
     ownership::DecoderOwnershipTracker tracker;tracker.Reset(13);
@@ -1605,10 +1621,31 @@ std::string ReadClientPlaybackQuality(const Media&){return {};}
 void EnrichCatalog(const Media&,Catalog&){}
 void EnrichTags(const Media&,Tags&){}
 }
-int wmain() {
+int wmain(int argc,wchar_t** argv) {
     // Use in-memory preferences only. Never read or write the user's INI/music.
     InterlockedExchange(&history::debug_enabled,1);
-    Connectivity();PodcastCatalog();PodcastCaptureEvents();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();EmptyPlaybackIdNaturalTransitionIsRetried();BoundNaturalTransitionUsesFinalCaptureEvidence();DjVoiceDoesNotBlockMusicStart();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailLifecycle();ReadyDurationCorroboratesDecoder();ReadyUpgradesPreboundPlaybackGeneration();WindowsReadyNaturalAppTransitionPublishes();TransitionPublicationMatrixStress();BoundWindowsIdentitySurvivesMetadataRefinement();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();SameContextFlacRestartBeginsFreshCapture();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
+    if(argc==2&&!wcscmp(argv[1],L"--pending-prior-control-stdin")) {
+        const std::string payload(std::istreambuf_iterator<char>(std::cin),{});
+        ClientPlaybackRecord record;std::string error;
+        assert(ParseClientPlayback(payload,record,error)&&record.prior_control);
+        Media current;current.source=MediaSource::Spotify;
+        current.spotify_uri="spotify:track:0000000000000000000001";
+        current.playback_instance="playback-1";current.duration=180;current.playing=true;
+        Listen listen;listen.identity=current.ListenKey();listen.eligible=true;listen.playing=true;
+        listen.generation=1;listen.start_time=100;listen.last_time=101;listen.last_position=179;listen.duration=180;
+        CaptureBuffers buffers;buffers.pending_natural_generation=1;
+        buffers.pending_natural_time=101;buffers.pending_natural_listen=listen;
+        Media next;next.source=MediaSource::Spotify;next.spotify_uri=record.metadata.uri;
+        next.playback_instance=record.instance;next.duration=record.metadata.duration;
+        next.position=record.position;next.playing=record.playing;next.prior_control=record.prior_control;
+        std::vector<Heard> heard;
+        assert(!FinishPendingNaturalTransition(next,listen,current,heard,buffers)&&
+               !buffers.pending_natural_generation&&!listen.eligible&&heard.empty());
+        puts("PASS: real collector prior-control Ready cancels native pending recovery");
+        return 0;
+    }
+    assert(argc==1);
+    Connectivity();PodcastCatalog();PodcastCaptureEvents();ReadyUpgradesPreboundPlaybackGeneration();EmptyPlaybackIdNaturalTransitionIsRetried();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();BoundNaturalTransitionUsesFinalCaptureEvidence();DjVoiceDoesNotBlockMusicStart();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailLifecycle();ReadyDurationCorroboratesDecoder();WindowsReadyNaturalAppTransitionPublishes();TransitionPublicationMatrixStress();BoundWindowsIdentitySurvivesMetadataRefinement();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();SameContextFlacRestartBeginsFreshCapture();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
     puts("PASS: observed transitions, one FLAC failure context/outcome, original callback semantics, profiling-only intervals, basic-mode zero profiling and changed-only NLM observations");
     return 0;
 }

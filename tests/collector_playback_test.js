@@ -141,6 +141,27 @@ console.log('PASS: a Ready successor retires control evidence from the prior pla
 }
 console.log('PASS: a control during the buffering gap invalidates successor recovery');
 
+// Resume acknowledges only pause. It cannot erase a skip, seek, or unknown
+// control observed while a natural transition is waiting for its Ready stage.
+for(const action of ['skipToNext','seekTo']){
+ let clock=1793300000000;
+ let current={timestamp:clock,positionAsOfTimestamp:59000,duration:60000,isPaused:false,isBuffering:false,
+  playbackId:'first',item:{uri:'spotify:track:0000000000000000000001',metadata:{title:'A',artist_name:'Artist',album_title:'Album'}}};
+ const handlers=new Map(),messages=[];
+ const api={getState:()=>current,getEvents:()=>({addListener:(type,fn)=>handlers.set(type,fn),removeListener:type=>handlers.delete(type)})};
+ const sandbox={window:{__floggfyConfig:{metadata:false},Spicetify:{Platform:{PlayerAPI:api,ConnectDevicesAPI:{getConnectState:()=>({activeDevice:{isLocal:true}})}}}},
+  document:{querySelector:()=>null},console:{info:line=>messages.push(line)},performance:{now:()=>clock},Date:{now:()=>clock},setInterval:()=>{},encodeURIComponent};
+ vm.runInNewContext(script,sandbox);sandbox.window.__floggfyPoll();
+ clock+=100;current={...current,timestamp:clock,positionAsOfTimestamp:0,isBuffering:true,playbackId:'',
+  item:{uri:'spotify:track:0000000000000000000002',metadata:{title:'B',artist_name:'Artist',album_title:'Album'}}};
+ sandbox.window.__floggfyPoll();
+ handlers.get('action')({data:{action}});handlers.get('action')({data:{action:'resume'}});
+ clock+=100;current={...current,timestamp:clock,isBuffering:false,playbackId:'second'};sandbox.window.__floggfyPoll();
+ const fields=new URLSearchParams(messages.filter(line=>line.startsWith('FLOGGFY_TIMELINE_V1:')).at(-1).slice('FLOGGFY_TIMELINE_V1:'.length));
+ assert.equal(fields.get('controlled'),'1',action+' must survive an unrelated resume');
+}
+console.log('PASS: resume preserves unacknowledged skip and seek evidence');
+
 // Stock Spotify has no Spicetify global. Resolve its already-created services
 // and keep polling even if its optional event API is unavailable.
 {

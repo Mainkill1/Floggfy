@@ -56,9 +56,11 @@ x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/wind
     native/library_layout.cpp native/recording_file.cpp native/vorbis_headers.cpp native/existing_quality.cpp native/file_publication.cpp \
     native/metadata_update_core.cpp native/metadata_update_windows.cpp native/recent_downloads.cpp \
     native/song_destination.cpp native/spotify_hook_discovery.cpp native/async_log.cpp \
-    native/decoder_ownership.cpp \
+    native/decoder_ownership.cpp native/rich_metadata.cpp \
     "$floggfy_diag_build"/*.o -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_diag_root/playback/test.exe"
 "$floggfy_diag_root/playback/test.exe"
+node tests/collector_native_boundary_test.js --pending-prior-control |
+    "$floggfy_diag_root/playback/test.exe" --pending-prior-control-stdin
 for component in debug connect networking playback; do node "tests/collector_${component}_test.js"; done
 python3 tests/diagnostics_source_test.py
 python3 tests/decoder_ownership_log_test.py
