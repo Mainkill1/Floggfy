@@ -54,6 +54,12 @@ fields, prefers synchronized lyrics, reconciles date/year, and replaces artwork
 only when the candidate is valid and demonstrably not worse. It does not overwrite
 populated user fields just because enrichment arrived later.
 
+Existing-file enrichment does not wait for another complete listen. Once playback
+identifies the current track, the publication worker resolves and verifies any
+owned complete recording already on disk. A metadata-cache revision—not elapsed
+time—queues another bounded check when lyrics or other enrichment arrives later;
+unchanged playback observations do not repeatedly scan or rewrite the file.
+
 When better audio replaces older audio, publication preserves verified user
 metadata and artwork from the exact locked old object. Incomplete owned recordings
 are repair targets, but their unverified metadata is not trusted for preservation.

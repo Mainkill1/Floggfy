@@ -1613,6 +1613,7 @@ void PodcastCatalog() {
 }
 }
 namespace history {
+std::uint64_t MetadataRevision(){return 0;}
 void CaptureLogEvent(LogKind kind,const char*,const std::string& message){
     if(!LoggingEnabled()||(kind==LogKind::Diagnostic&&!DebugLoggingEnabled()))return;
     diagnostic_lines.push_back(message);if(kind==LogKind::Failure)++failure_events;

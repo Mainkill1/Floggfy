@@ -215,6 +215,7 @@ void PublicationModes(const std::wstring& root) {
 }
 }
 namespace history {
+std::uint64_t MetadataRevision(){return 0;}
 std::string ReadClientPlaybackQuality(const Media&){return {};}
 void EnrichCatalog(const Media& media,Catalog& c){c.disc=2;c.spotify_uri=media.title==L"Raw/A"||media.title==L"Raw:A"?"":"spotify:track:"+Utf8(media.title);}
 void EnrichTags(const Media&,Tags&) {}

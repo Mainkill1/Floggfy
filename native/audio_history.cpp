@@ -1128,10 +1128,11 @@ static HANDLE save_event=nullptr;
 static std::atomic<size_t> publishing_reserved{0};
 static std::atomic<bool> workers_running{false};
 static hooks::InitController audio_init;
-// Conversion checks share the existing publisher, but never consume an audio
-// queue slot. Rapid track changes retain only one superseding request. Serial
-// cancellation rejects an older request after a new track/settings observation.
-struct FilenameCheck {Catalog catalog;Settings settings;uint64_t serial=0;};
+// Existing-file checks share the publication worker, but never consume an audio
+// queue slot. They perform optional filename conversion and metadata filling.
+// Rapid track changes retain only one superseding request; serial cancellation
+// rejects an older request after a new track/settings observation.
+struct FilenameCheck {Catalog catalog;Tags tags;Settings settings;uint64_t serial=0;};
 static SRWLOCK filename_check_lock=SRWLOCK_INIT;
 static std::optional<FilenameCheck> pending_filename_check;
 // Producer-only state: the capture worker owns these two fields.
@@ -1143,11 +1144,21 @@ static void CancelFilenameChecks() {
 }
 static void QueueFilenameCheck(const Media& media,const Settings& settings) {
     try {
-        if(!settings.downloads || !settings.convert_numbered_filenames || settings.track_number_in_filename || media.title.empty() || !media.playing) {
+        const bool convert=settings.convert_numbered_filenames&&!settings.track_number_in_filename;
+        const bool update=settings.metadata&&settings.update_existing_metadata&&
+            media.spotify_uri.rfind("spotify:episode:",0)!=0;
+        if(!settings.downloads || (!convert&&!update) || media.title.empty() || !media.playing) {
             if(!last_filename_check_key.empty())CancelFilenameChecks();
             return;
         }
+        const auto metadata_revision=update?MetadataRevision():0;
         auto catalog=CatalogFor(media);
+        Tags tags;
+        tags.fields={{"TITLE",Utf8(media.title)},{"ARTIST",Utf8(media.artist)},
+            {"ALBUM",Utf8(media.album)},{"ALBUMARTIST",Utf8(media.album_artist)},
+            {"TRACKNUMBER",std::to_string(media.track)}};
+        if(!media.genre.empty())tags.fields.push_back({"GENRE",Utf8(media.genre)});
+        EnrichTags(media,tags);ApplyCatalogIdentity(tags,catalog);
         std::string key;
         auto text=[&](const std::string& value){key+=std::to_string(value.size())+":"+value;};
         auto wide=[&](const std::wstring& value){text(Utf8(value));};
@@ -1158,7 +1169,8 @@ static void QueueFilenameCheck(const Media& media,const Settings& settings) {
         text(catalog.spotify_uri);
         key+=std::to_string(unsigned(catalog.kind))+":"+std::to_string(catalog.track)+":"+
             std::to_string(catalog.disc)+":"+std::to_string(catalog.episode_year)+":"+
-            std::to_string(catalog.duration)+":"+std::to_string(settings.generation)+":"+std::to_string(settings.music_folder);
+            std::to_string(catalog.duration)+":"+std::to_string(settings.generation)+":"+std::to_string(settings.music_folder)+":"+
+            std::to_string(metadata_revision);
         // Invalidate the previous intent even if submission loses the try-lock.
         // Retrying this same intent preserves its serial instead of starving I/O.
         if(key!=last_filename_check_key || last_filename_check_serial!=filename_check_serial.load(std::memory_order_acquire)) {
@@ -1166,7 +1178,7 @@ static void QueueFilenameCheck(const Media& media,const Settings& settings) {
             last_filename_check_key.swap(key);
         }
         if(queued_filename_check_serial==last_filename_check_serial)return;
-        FilenameCheck check{std::move(catalog),settings,last_filename_check_serial};
+        FilenameCheck check{std::move(catalog),std::move(tags),settings,last_filename_check_serial};
         if(!TryAcquireSRWLockExclusive(&filename_check_lock))return;
         struct Unlock {~Unlock(){ReleaseSRWLockExclusive(&filename_check_lock);}} unlock;
         if(check.serial!=filename_check_serial.load(std::memory_order_acquire))return;
@@ -1182,9 +1194,11 @@ static std::optional<FilenameCheck> TakeFilenameCheck() {
 static void ProcessFilenameCheck(const FilenameCheck& check) {
     auto current=[&] {
         const auto settings=GetSettings();
+        const bool convert=settings.convert_numbered_filenames&&!settings.track_number_in_filename;
+        const bool update=settings.metadata&&settings.update_existing_metadata&&check.catalog.kind!=MediaKind::Podcast;
         return check.serial==filename_check_serial.load(std::memory_order_acquire) &&
             settings.generation==check.settings.generation && settings.downloads &&
-            settings.convert_numbered_filenames && !settings.track_number_in_filename;
+            (convert||update);
     };
     if(!current())return;
     RecordingDirectory directory;
@@ -1196,8 +1210,22 @@ static void ProcessFilenameCheck(const FilenameCheck& check) {
         if(!current())return;
         if(resolved.state==RecordingDestinationState::Blocked)return;
         if(resolved.state!=RecordingDestinationState::Existing || !resolved.recording.complete)continue;
-        if(ConvertResolvedFilename(resolved,check.catalog,check.settings,format.extension,check.serial)==FilenameConversion::Failed)
+        if(check.settings.convert_numbered_filenames&&!check.settings.track_number_in_filename&&
+           ConvertResolvedFilename(resolved,check.catalog,check.settings,format.extension,check.serial)==FilenameConversion::Failed)
             LogEvent(LogKind::Failure,"failed","filename conversion deferred; existing recording retained | "+Utf8(check.catalog.title));
+        if(!current())return;
+        const bool format_enabled=format.codec==Codec::Flac?check.settings.flac:
+            format.codec==Codec::Vorbis?check.settings.ogg:format.codec==Codec::Aac?check.settings.aac:false;
+        if(format_enabled&&check.settings.metadata&&check.settings.update_existing_metadata&&
+           resolved.recording.owned&&NeedsRecordingMetadata(resolved.recording,check.tags)) {
+            const auto result=UpdateRecordingMetadata(resolved.path,check.tags,check.catalog,check.settings.generation);
+            const auto identity=Utf8(check.catalog.artist)+" - "+Utf8(check.catalog.title);
+            if(result==FileMetadataUpdate::Updated) {
+                RefreshSongDestination();
+                LogEvent(LogKind::Activity,"updated","metadata and artwork updated; existing audio retained | "+identity);
+            } else if(result==FileMetadataUpdate::Failed)
+                LogEvent(LogKind::Failure,"failed","metadata update failed; existing file retained | "+identity);
+        }
         return; // Best verified format/recording found; no new audio is created.
     }
 }

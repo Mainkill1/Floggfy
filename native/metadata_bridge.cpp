@@ -94,6 +94,7 @@ static void SchedulePoll(){
  if(!post_task(0,&t->task))poll_pending=false; // The public CEF function consumes the task reference.
 }
 static MetadataCache cache;static SRWLOCK cache_lock=SRWLOCK_INIT,message_lock=SRWLOCK_INIT;
+static std::atomic<std::uint64_t> metadata_revision{1};
 static hooks::InitController metadata_init;
 static hooks::CallbackCounter metadata_callbacks;
 static std::atomic<bool> metadata_running{false},metadata_polling{false};
@@ -129,6 +130,11 @@ static void MergeAvailableFields(const RichMetadata& available,RichMetadata& liv
  // win, while unchanged messages retain already obtained enrichment.
  MergeCachedMetadata(cached,live);
 }
+static bool SameRecordingMetadata(const RichMetadata& left,const RichMetadata& right) {
+ return left.title==right.title&&left.artist==right.artist&&left.album==right.album&&
+        left.uri==right.uri&&left.artwork_url==right.artwork_url&&left.duration==right.duration&&
+        left.fields==right.fields;
+}
 
 static DWORD WINAPI EnrichmentWorker(LPVOID) {
  SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL);
@@ -142,8 +148,9 @@ static DWORD WINAPI EnrichmentWorker(LPVOID) {
    auto preferences=GetSettings();
    if(!preferences.metadata || preferences.generation!=job.generation)continue;
    try {EnrichStoredMetadata(metadata);}catch(...){QueueDiagnostic("cached metadata unavailable; ordinary tags retained");}
+   bool artwork_changed=false;
    if(!metadata.artwork_url.empty()) {
-    try {CacheAlbumArtwork(metadata.uri,metadata.artwork_url);}catch(...){QueueDiagnostic("Spotify artwork unavailable; audio publication remains enabled");}
+    try {artwork_changed=CacheAlbumArtwork(metadata.uri,metadata.artwork_url);}catch(...){QueueDiagnostic("Spotify artwork unavailable; audio publication remains enabled");}
    }
    preferences=GetSettings();
    if(!preferences.metadata || preferences.generation!=job.generation)continue;
@@ -153,7 +160,9 @@ static DWORD WINAPI EnrichmentWorker(LPVOID) {
     if(current && current->uri==metadata.uri) {
      auto merged=*current;MergeAvailableFields(metadata,merged);
      if(!preferences.lyrics)merged.fields.erase("LYRICS");
+     const bool changed=!SameRecordingMetadata(*current,merged);
      cache.Put(merged);
+     if(changed||artwork_changed)metadata_revision.fetch_add(1,std::memory_order_release);
     }}
   }catch(...) {QueueDiagnostic("metadata enrichment failed; current client metadata retained");}
  }
@@ -202,7 +211,9 @@ static DWORD WINAPI MetadataWorker(LPVOID) {
     const auto previous=cache.Find(metadata.title,metadata.artist,metadata.album,metadata.duration);
     if(previous && previous->uri==metadata.uri)MergeAvailableFields(*previous,metadata);
     if(!preferences.lyrics)metadata.fields.erase("LYRICS");
-    cache.Put(metadata);}
+    const bool changed=!previous||!SameRecordingMetadata(*previous,metadata);
+    cache.Put(metadata);
+    if(changed)metadata_revision.fetch_add(1,std::memory_order_release);}
    QueueEnrichment(metadata,preferences.generation);
   }catch(...) {QueueDiagnostic("metadata message failed; next client snapshot will retry");}
  }
@@ -330,6 +341,7 @@ static int CreateHook(const void* win,Client* client,const String* url,const voi
 static Browser* SyncHook(const void* win,Client* client,const String* url,const void* settings,void* extra,void* context){auto callback=metadata_callbacks.Enter();return original_sync(win,ObserveClient(client),url,settings,extra,context);}
 static void* ViewHook(Client* client,const String* url,const void* settings,void* extra,void* context,void* delegate){auto callback=metadata_callbacks.Enter();return original_view(ObserveClient(client),url,settings,extra,context,delegate);}
 }
+std::uint64_t MetadataRevision() {return metadata_revision.load(std::memory_order_acquire);}
 static bool ReadCachedMetadata(const Media& media,RichMetadata& metadata) {
  const auto title=Utf8(media.title),artist=Utf8(media.artist),album=Utf8(media.album);
  SharedSrw guard(cache_lock);

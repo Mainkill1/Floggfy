@@ -186,6 +186,7 @@ void RealSample(const std::wstring& input,const std::wstring& output) {
 }
 }
 namespace history {
+std::uint64_t MetadataRevision(){return 0;}
 std::string ReadClientPlaybackQuality(const Media&){return {};}
 void EnrichCatalog(const Media&,Catalog& catalog){catalog.spotify_uri="spotify:track:aac-fixture";}
 void EnrichTags(const Media&,Tags& tags) {

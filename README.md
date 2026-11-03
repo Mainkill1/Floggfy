@@ -25,7 +25,10 @@ Save the music you play in Spotify on Windows.
 - Play songs from beginning to end without skipping or seeking.
 - **Capture Speed** defaults to **1x**. Faster settings are intended for muted,
   unattended capture: the saved compressed audio is unchanged, but live playback
-  can sound choppy and Spotify's progress display may be inaccurate.
+  can sound choppy and Spotify's progress display may be inaccurate. They are a
+  hidden, default-off feature: set `CaptureSpeedLimit=2` through `10` in
+  `SpotifyHistory.ini`, then fully restart Spotify. Values above `10` are limited
+  to `10`; missing values and values of `1` or less keep faster menu choices disabled.
 - **Disable Automix** under **Edit → Preferences → Playback**. It trims songs and prevents complete saves.
 - Music saves under `Music\Spotify\Artists\Artist\Album`; enabled podcasts save under `Podcasts\Show`.
 - For FLAC, select lossless playback in Spotify.
@@ -38,7 +41,7 @@ Save the music you play in Spotify on Windows.
 
 - **To Disk** provides **Downloads**, **Save Location**, **FLAC**, **Ogg**, **Podcasts**, **Lyrics** and **Capture Speed** controls.
 - `SpotifyHistory.ini` is created automatically. Keep it when upgrading, and fully restart Spotify after editing it.
-- `UpdateExistingMetadata=1` fills missing details and improves artwork on existing songs. Set `0` to leave their metadata unchanged.
+- `UpdateExistingMetadata=1` fills missing details, lyrics, and improved artwork as soon as playback identifies an owned existing song; finishing another listen is not required. Set `0` to leave its metadata unchanged.
 - `TrackNumberInFilename=0` uses title-only filenames. Set `1` to add track numbers.
 - `ConvertNumberedFilenames=0`: set `1` to remove old track-number prefixes. Numbering disables conversion.
 - `AAC=1` enables AAC saving as M4A. It defaults to `0`.

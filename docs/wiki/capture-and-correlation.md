@@ -100,3 +100,9 @@ transcoded. If the dispatcher ABI or span movement fails validation, acceleratio
 is disabled and capture falls back to 1x. The filtering logic is in
 [`decoded_output_speed.h`](../../native/decoded_output_speed.h).
 
+Acceleration also requires an explicit startup ceiling in `SpotifyHistory.ini`.
+`CaptureSpeedLimit` is off when missing or set to `0`/`1`, accepts ceilings from
+`2` through `10`, and clamps larger values to `10`. The menu enables only supported
+speeds at or below that ceiling after the decoded-output hook is active; 1x remains
+available in every capability state.
+

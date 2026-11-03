@@ -62,6 +62,17 @@ static_assert(root_id>=cef_menu::kUserCommandFirst &&
               first_recent_id+history::kRecentDownloadLimit-1<=cef_menu::kUserCommandLast,
               "Recent commands stay within the CEF user command range (26500..28500)");
 static String Text(const std::wstring& s) { return {const_cast<wchar_t*>(s.c_str()),s.size(),nullptr}; }
+static const char* SettingName(int command) noexcept {
+    if(command==downloads_id)return "Downloads";
+    if(command==ogg_id)return "Ogg";
+    if(command==podcasts_id)return "Podcasts";
+    if(command==lyrics_id)return "Lyrics";
+    return "FLAC";
+}
+static void SettingOutcomeLine(int command,bool accepted,bool enabled,char* line,size_t size) noexcept {
+    if(accepted)snprintf(line,size,"%s %s",SettingName(command),enabled?"enabled":"disabled");
+    else snprintf(line,size,"%s change failed; remains %s",SettingName(command),enabled?"enabled":"disabled");
+}
 static bool Executable(const void* address) {
     if(!address) return false;
     MEMORY_BASIC_INFORMATION memory{};
@@ -374,16 +385,19 @@ static void Execute(Delegate* self,Menu* menu,int command,int flags) {
     if(command>=first_speed_id && command<=last_speed_id) {
         constexpr unsigned speeds[]{1,2,4,8,10};const auto speed=speeds[command-first_speed_id];
         if(!history::CaptureSpeedAvailable(speed)) {
-            history::LogEvent(history::LogKind::Warning,"capture-speed","acceleration disabled or unavailable; 1x remains active");
-            MessageBoxW(GetActiveWindow(),L"Accelerated capture is disabled or unavailable; 1x remains active.",L"To Disk",MB_OK|MB_ICONINFORMATION);
+            const auto active=history::CaptureSpeed();char line[128];
+            snprintf(line,sizeof(line),"request=%ux rejected; active=%ux; acceleration disabled or unavailable",speed,active);
+            history::LogEvent(history::LogKind::Warning,"capture-speed",line);
+            MessageBoxW(GetActiveWindow(),L"Accelerated capture is disabled or unavailable; the current speed remains active.",L"To Disk",MB_OK|MB_ICONINFORMATION);
             return;
         }
         const bool ok=history::SetCaptureSpeed(speed);
         if(ok)for(int id=first_speed_id;id<=last_speed_id;++id)
             if(MenuMethods::IndexOf(menu,id)>=0)MenuMethods::SetChecked(menu,id,int(id==command));
-        char line[160];snprintf(line,sizeof(line),"capture speed=%ux accepted=%d; replay the current track from the beginning",speed,ok);
+        const auto active=history::CaptureSpeed();char line[160];
+        snprintf(line,sizeof(line),"request=%ux accepted=%d active=%ux; replay the current track from the beginning",speed,ok,active);
         history::LogEvent(ok?history::LogKind::Activity:history::LogKind::Failure,ok?"settings":"failed",line);
-        if(!ok)MessageBoxW(GetActiveWindow(),L"The capture speed could not be saved; 1x remains active.",L"To Disk",MB_OK|MB_ICONERROR);
+        if(!ok)MessageBoxW(GetActiveWindow(),L"The capture speed could not be saved; the current speed remains active.",L"To Disk",MB_OK|MB_ICONERROR);
         return;
     }
     auto* w=Self(self); auto settings=history::GetSettings(); bool handled=true,ok=true;
@@ -403,7 +417,8 @@ static void Execute(Delegate* self,Menu* menu,int command,int flags) {
             std::wstring label=command==downloads_id ? L"Downloads" : command==ogg_id ? L"Ogg" : command==podcasts_id ? L"Podcasts" : command==lyrics_id ? L"Lyrics" : L"FLAC";
             label+=value ? L" (Enabled)" : L" (Disabled)"; auto text=Text(label);
             MenuMethods::SetLabel(menu,command,&text); MenuMethods::SetChecked(menu,command,int(value));
-            char line[160]; snprintf(line,sizeof(line),"To Disk command=%d accepted=%d enabled=%d",command,ok,value); history::LogEvent(ok?history::LogKind::Activity:history::LogKind::Failure,ok?"settings":"failed",line);
+            char line[96];SettingOutcomeLine(command,ok,value,line,sizeof(line));
+            history::LogEvent(ok?history::LogKind::Activity:history::LogKind::Failure,ok?"settings":"failed",line);
         }
         if(!ok) MessageBoxW(GetActiveWindow(),L"The setting could not be saved.",L"To Disk",MB_OK|MB_ICONERROR);
         return;

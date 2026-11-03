@@ -17,7 +17,7 @@ std::string ready_mime;
 unsigned artwork_reads=0;
 }
 namespace history {
-void CacheAlbumArtwork(const std::string&,const std::string&) {}
+bool CacheAlbumArtwork(const std::string&,const std::string&) {return false;}
 bool GetAlbumArtwork(const std::string& uri,std::vector<uint8_t>& bytes,std::string& mime) {
  ++artwork_reads;
  if(uri!=ready_uri || ready_cover.empty())return false;

@@ -8,7 +8,11 @@
 #include "artwork_fixture.h"
 #include "recording_fixture.h"
 static unsigned metadata_update_calls=0;
+static bool enrichment_ready=true;
+static bool advance_revision_during_enrich=false;
+static std::uint64_t enrichment_revision=1;
 namespace history {
+std::uint64_t MetadataRevision() {return enrichment_revision;}
 FileMetadataUpdate UpdateRecordingMetadata(const std::wstring&,const Tags&,const Catalog&,unsigned);
 FileMetadataUpdate CountedMetadataUpdate(const std::wstring& path,const Tags& incoming,const Catalog& catalog,unsigned generation) {
  ++metadata_update_calls;return UpdateRecordingMetadata(path,incoming,catalog,generation);
@@ -16,6 +20,8 @@ FileMetadataUpdate CountedMetadataUpdate(const std::wstring& path,const Tags& in
 std::string ReadClientPlaybackQuality(const Media&) {return {};}
 void EnrichCatalog(const Media&,Catalog&) {}
 void EnrichTags(const Media &, Tags & tags) {
+ if(advance_revision_during_enrich){advance_revision_during_enrich=false;++enrichment_revision;return;}
+ if(!enrichment_ready)return;
  if(GetSettings().metadata) {tags.fields.push_back({"GENRE","Rock"});tags.fields.push_back({"DATE","2021-07-23"});tags.fields.push_back({"YEAR","2021"});}
  if(GetSettings().lyrics)tags.fields.push_back({"LYRICS","automatic lyric fill"});
 }
@@ -274,6 +280,39 @@ static void TestLyricsPublication() {
   std::vector<RecentDownload> metadata_recent;assert(ReadRecentDownloads(metadata_recent)&&metadata_recent.empty());
   DeleteFileW(path.c_str());assert(SetDownloads(false));
 }
+static void TestExistingMetadataAtPlaybackStart() {
+  wchar_t temp[2048];GetTempPathW(2048,temp);
+  assert(SetSaveLocation(std::wstring(temp)+L"Floggfy-existing-metadata-"+std::to_wstring(GetCurrentProcessId())));
+  assert(SetDownloads(true)&&SetFlac(true)&&SetOgg(true)&&SetLyrics(true)&&SetUpdateExistingMetadata(true));
+  Media media;media.title=L"Existing Track";media.artist=L"Existing Artist";media.album=L"Existing Album";
+  media.track=1;media.duration=16.0/44100;media.playing=true;media.spotify_uri="spotify:track:existing";
+  const auto settings=GetSettings();const auto catalog=CatalogFor(media);
+  const auto path=OutputPath(settings.root,catalog,L".flac",settings.music_folder);
+  assert(EnsureDirectory(path.substr(0,path.find_last_of(L'\\'))));
+  Tags tags;tags.fields={{"TITLE","Existing Track"},{"ARTIST","Existing Artist"},{"ALBUM","Existing Album"},
+    {"TRACKNUMBER","1"},{"SPOTIFY_URI",media.spotify_uri},{"HISTORY_MEDIA_DURATION",std::to_string(media.duration)},
+    {"HISTORY_COMPLETE_LISTEN","1"},{"HISTORY_CAPTURE","native compressed FLAC input"}};
+  std::vector<uint8_t> existing;std::string error;
+  assert(TagFlac(recording_fixture::fixture(44100,24),tags,existing,error));
+  DeleteFileW(path.c_str());HANDLE file=CreateFileW(path.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,0,nullptr);
+  DWORD written=0;assert(file!=INVALID_HANDLE_VALUE&&WriteFile(file,existing.data(),DWORD(existing.size()),&written,nullptr)&&written==existing.size());CloseHandle(file);
+  const auto before=metadata_update_calls;
+  enrichment_ready=false;
+  PublishCurrentDestination(media,settings);auto initial=TakeFilenameCheck();assert(initial);ProcessFilenameCheck(*initial);
+  assert(metadata_update_calls==before+1);
+  advance_revision_during_enrich=true;
+  PublishCurrentDestination(media,settings);
+  if(auto raced=TakeFilenameCheck())ProcessFilenameCheck(*raced);
+  enrichment_ready=true;
+  PublishCurrentDestination(media,settings);auto enriched=TakeFilenameCheck();assert(enriched);ProcessFilenameCheck(*enriched);
+  assert(metadata_update_calls==before+2);
+  RecordingFile updated;assert(ReadRecording(path,updated));
+  bool lyrics=false;for(const auto& field:updated.tags.fields)if(field.first=="LYRICS"&&field.second=="automatic lyric fill")lyrics=true;
+  assert(lyrics);
+  PublishCurrentDestination(media,settings);assert(!TakeFilenameCheck());
+  DeleteFileW(path.c_str());
+  std::puts("PASS: existing owned recording receives delayed lyrics during partial playback");
+}
 static std::string ReadActivityLog() {
   const auto path=WindowsPath(GetSettings().root+L"\\Floggfy.log");
   HANDLE f=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,0,nullptr);
@@ -373,6 +412,7 @@ int main(int argc,char** argv) {
   InitSettings(nullptr);
   StartSongDestinationWorker(true);
   std::vector<RecentDownload> recent;assert(ReadRecentDownloads(recent)&&recent.empty());
+  TestExistingMetadataAtPlaybackStart();
   TestLyricsPublication();
   assert(ReadRecentDownloads(recent)&&recent.empty()); // Lyrics-only updates and skips are not downloads.
   TestPublicationLogging();

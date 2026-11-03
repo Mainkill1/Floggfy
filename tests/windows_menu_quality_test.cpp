@@ -217,6 +217,13 @@ int RunMenuQualityTests() {
 #else
 int main() {
 #endif
+  char setting_line[96]{};
+  SettingOutcomeLine(podcasts_id,true,true,setting_line,sizeof(setting_line));
+  assert(std::string(setting_line)=="Podcasts enabled");
+  SettingOutcomeLine(lyrics_id,true,false,setting_line,sizeof(setting_line));
+  assert(std::string(setting_line)=="Lyrics disabled");
+  SettingOutcomeLine(lyrics_id,false,true,setting_line,sizeof(setting_line));
+  assert(std::string(setting_line)=="Lyrics change failed; remains enabled");
   assert(menu_init.TryBegin(GetTickCount64()));menu_prepared=true;
   FinishMenuStartup(false,false);
   assert(menu_init.State()==hooks::InitState::RetryableFailure);
@@ -342,6 +349,7 @@ int main() {
   wrapped.original = &original;
   history::SetCaptureAccelerationAvailable(true);
   auto& speed_menu=*child.extra_children.at(speed_root_id);
+  const auto capture_epoch=history::CaptureEpoch();
   Retain(&child.api.base);WillShow(&wrapped.api,&child.api);
   assert(speed_menu.entries[0].enabled&&speed_menu.entries[1].enabled&&speed_menu.entries[2].enabled);
   assert(!speed_menu.entries[3].enabled&&!speed_menu.entries[4].enabled);
@@ -349,8 +357,12 @@ int main() {
   Retain(&speed_menu.api.base);Execute(&wrapped.api,&speed_menu.api,first_speed_id+3,0);
   assert(history::CaptureSpeed()==1&&message_calls==messages_before_limit+1);
   Retain(&speed_menu.api.base);Execute(&wrapped.api,&speed_menu.api,first_speed_id+2,0);
-  assert(history::CaptureSpeed()==4&&speed_menu.refs==1);
+  assert(history::CaptureSpeed()==4&&history::CaptureEpoch()==capture_epoch&&speed_menu.refs==1);
   for(unsigned i=0;i<5;++i)assert(speed_menu.entries[i].checked==(i==2));
+  const auto messages_while_active=message_calls;
+  Retain(&speed_menu.api.base);Execute(&wrapped.api,&speed_menu.api,first_speed_id+3,0);
+  assert(history::CaptureSpeed()==4&&message_calls==messages_while_active+1);
+  assert(last_message.find(L"current speed")!=std::wstring::npos&&last_message.find(L"1x remains")==std::wstring::npos);
   // Native fallback can change speed/capability while CEF retains this model.
   history::SetCaptureAccelerationAvailable(false);assert(history::SetCaptureSpeed(1));
   Retain(&child.api.base);WillShow(&wrapped.api,&child.api);

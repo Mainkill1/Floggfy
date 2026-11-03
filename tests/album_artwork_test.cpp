@@ -25,10 +25,12 @@ int main(){
     for(const auto& u:{"http://i.scdn.co/image/abc","https://i.scdn.co.example.invalid/image/abc","https://@i.scdn.co/image/abc","https://i.scdn.co/image/abc?variant=example","https://example.invalid/image/abc"})check(!history::IsAlbumArtworkUrl(u),"non-public or unexpected CDN URL rejected");
     int calls=0;bool fail=false;history::AlbumArtworkCache cache([&](const std::string&,std::vector<uint8_t>& out){++calls;out=fail?std::vector<uint8_t>{1,2,3}:png;return true;});
     std::vector<uint8_t> bytes;std::string mime;
-    cache.Cache("spotify:track:a",url);check(cache.Get("spotify:track:a",bytes,mime)&&bytes==png&&mime=="image/png","validated art cached by track");
-    cache.Cache("spotify:track:a",url);check(calls==1,"repeated metadata avoids repeated network");
-    fail=true;cache.Cache("spotify:track:b",url);check(!cache.Get("spotify:track:b",bytes,mime),"invalid response never cached");
-    cache.Cache("spotify:track:b",url);check(calls==2,"failed fetch rate limited");
+    check(cache.Cache("spotify:track:a",url),"new validated art reports a cache revision");
+    check(cache.Get("spotify:track:a",bytes,mime)&&bytes==png&&mime=="image/png","validated art cached by track");
+    check(!cache.Cache("spotify:track:a",url)&&calls==1,"repeated metadata avoids repeated network or revision");
+    fail=true;check(!cache.Cache("spotify:track:b",url),"invalid response reports no cache revision");
+    check(!cache.Get("spotify:track:b",bytes,mime),"invalid response never cached");
+    check(!cache.Cache("spotify:track:b",url)&&calls==2,"failed fetch rate limited");
     cache.Cache("spotify:track:a","https://i.scdn.co/image/ab67616d0000b2730123456789abcdef01234568");
     check(cache.Get("spotify:track:a",bytes,mime)&&bytes==png,"failed URL refresh preserves valid art");
     fail=false;

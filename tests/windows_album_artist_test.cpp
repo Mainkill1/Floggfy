@@ -7,7 +7,7 @@
 #include <cassert>
 namespace history {
 void EnrichStoredMetadata(RichMetadata&) {}
-void CacheAlbumArtwork(const std::string&,const std::string&) {}
+bool CacheAlbumArtwork(const std::string&,const std::string&) {return false;}
 bool GetAlbumArtwork(const std::string&,std::vector<uint8_t>&,std::string&) {return false;}
 }
 using namespace history;

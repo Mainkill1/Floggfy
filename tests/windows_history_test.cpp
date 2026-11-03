@@ -52,12 +52,12 @@ int main() {
     check(!SetCaptureSpeed(3) && CaptureSpeed()==1 && CaptureEpoch()==epoch,"unsupported speed is rejected without changing state");
     check(!SetCaptureSpeed(4) && CaptureSpeed()==1,"accelerated speed is rejected until the native capability is active");
     SetCaptureAccelerationAvailable(true);
-    check(SetCaptureSpeed(4) && CaptureSpeed()==4 && CaptureEpoch()==epoch,
-          "capture speed changes decoded pacing without invalidating compressed audio");
-    check(SetCaptureSpeed(4) && CaptureEpoch()==epoch,"same speed does not advance capture epoch");
+    check(!SetCaptureSpeed(4) && CaptureSpeed()==1 && CaptureEpoch()==epoch,
+          "default INI keeps accelerated capture disabled after capability activation");
+    check(SetCaptureSpeed(1) && CaptureEpoch()==epoch,"same speed does not advance capture epoch");
     check(FlushSettings(5000),"background settings persisted");
     check(GetPrivateProfileIntW(L"To Disk",L"Downloads",9,ini.c_str())==0,"INI persists disabled setting");
-    check(GetPrivateProfileIntW(L"To Disk",L"CaptureSpeed",0,ini.c_str())==4,"INI persists strict capture speed");
+    check(GetPrivateProfileIntW(L"To Disk",L"CaptureSpeed",0,ini.c_str())==1,"INI preserves default-off capture speed");
     auto root=dir+L"\\Pending-"+std::to_wstring(GetCurrentProcessId()); epoch=GetSettings().capture_epoch;
     check(SetSaveLocation(root) && GetSettings().root==root,"save directory persistence");
     check(GetFileAttributesW(root.c_str())==INVALID_FILE_ATTRIBUTES && GetSettings().capture_epoch==epoch,"save location does not precreate folders or invalidate capture");
