@@ -224,6 +224,10 @@ int main() {
   menu_init.Retry(0);assert(menu_init.TryBegin(GetTickCount64()));menu_prepared=true;
   FinalizeToDiskMenu(false);
   assert(menu_init.State()==hooks::InitState::Unsupported);
+  wchar_t module[2048];assert(GetModuleFileNameW(nullptr,module,2048));
+  std::wstring ini=module;ini=ini.substr(0,ini.find_last_of(L'\\'))+L"\\SpotifyHistory.ini";
+  DeleteFileW(ini.c_str());
+  assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeedLimit",L"4",ini.c_str()));
   history::InitSettings(nullptr);
   assert(history::SetLyrics(true));
   assert(history::SetCaptureSpeed(1));
@@ -338,6 +342,12 @@ int main() {
   wrapped.original = &original;
   history::SetCaptureAccelerationAvailable(true);
   auto& speed_menu=*child.extra_children.at(speed_root_id);
+  Retain(&child.api.base);WillShow(&wrapped.api,&child.api);
+  assert(speed_menu.entries[0].enabled&&speed_menu.entries[1].enabled&&speed_menu.entries[2].enabled);
+  assert(!speed_menu.entries[3].enabled&&!speed_menu.entries[4].enabled);
+  const auto messages_before_limit=message_calls;
+  Retain(&speed_menu.api.base);Execute(&wrapped.api,&speed_menu.api,first_speed_id+3,0);
+  assert(history::CaptureSpeed()==1&&message_calls==messages_before_limit+1);
   Retain(&speed_menu.api.base);Execute(&wrapped.api,&speed_menu.api,first_speed_id+2,0);
   assert(history::CaptureSpeed()==4&&speed_menu.refs==1);
   for(unsigned i=0;i<5;++i)assert(speed_menu.entries[i].checked==(i==2));

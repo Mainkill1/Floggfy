@@ -131,10 +131,9 @@ static void RefreshSpeedMenu(Menu* parent) {
     MenuReference speed_reference(speed_menu);
     constexpr unsigned speeds[]{1,2,4,8,10};
     const auto selected=history::CaptureSpeed();
-    const bool accelerated=history::CaptureAccelerationAvailable();
     for(unsigned i=0;i<5;++i)if(MenuMethods::IndexOf(speed_menu,first_speed_id+int(i))>=0) {
         MenuMethods::SetChecked(speed_menu,first_speed_id+int(i),int(selected==speeds[i]));
-        MenuMethods::SetEnabled(speed_menu,first_speed_id+int(i),int(i==0||accelerated));
+        MenuMethods::SetEnabled(speed_menu,first_speed_id+int(i),int(history::CaptureSpeedAvailable(speeds[i])));
     }
 }
 static void Populate(Menu* menu) {
@@ -374,9 +373,9 @@ static void Execute(Delegate* self,Menu* menu,int command,int flags) {
     if(command>=song_id && command<=last_quality_id) {return;}
     if(command>=first_speed_id && command<=last_speed_id) {
         constexpr unsigned speeds[]{1,2,4,8,10};const auto speed=speeds[command-first_speed_id];
-        if(speed>1&&!history::CaptureAccelerationAvailable()) {
-            history::LogEvent(history::LogKind::Warning,"capture-speed","acceleration unavailable; 1x remains active");
-            MessageBoxW(GetActiveWindow(),L"Accelerated capture is unavailable; 1x remains active.",L"To Disk",MB_OK|MB_ICONINFORMATION);
+        if(!history::CaptureSpeedAvailable(speed)) {
+            history::LogEvent(history::LogKind::Warning,"capture-speed","acceleration disabled or unavailable; 1x remains active");
+            MessageBoxW(GetActiveWindow(),L"Accelerated capture is disabled or unavailable; 1x remains active.",L"To Disk",MB_OK|MB_ICONINFORMATION);
             return;
         }
         const bool ok=history::SetCaptureSpeed(speed);
