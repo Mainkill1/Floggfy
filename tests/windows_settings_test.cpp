@@ -8,7 +8,7 @@ void QueueDiagnostic(const char*) {}
 }
 int main(int argc,char** argv) {
   assert(argc==2);
-  assert(history::Settings{}.downloads&&history::Settings{}.update_existing_metadata&&!history::Settings{}.aac&&!history::Settings{}.podcasts&&!history::Settings{}.windows_playback_fallback&&history::Settings{}.capture_speed==1);
+  assert(history::Settings{}.downloads&&history::Settings{}.update_existing_metadata&&!history::Settings{}.aac&&!history::Settings{}.podcasts&&!history::Settings{}.windows_playback_fallback&&history::Settings{}.capture_speed==1&&history::Settings{}.capture_speed_limit==0);
   assert(!history::AACEnabled());
   assert(!history::PodcastsEnabled());
   const std::string scenario=argv[1];
@@ -35,7 +35,17 @@ int main(int argc,char** argv) {
     if(scenario=="lyrics-zero") assert(WritePrivateProfileStringW(L"To Disk",L"Lyrics",L"0",path.c_str()));
     if(scenario=="zero") assert(WritePrivateProfileStringW(L"To Disk",L"Downloads",L"0",path.c_str()));
     if(scenario=="legacy-zero") assert(WritePrivateProfileStringW(L"History",L"Enabled",L"0",path.c_str()));
-    if(scenario=="speed-10") assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeed",L"10",path.c_str()));
+    if(scenario.rfind("speed-",0)==0) {
+      const wchar_t* speed=scenario=="speed-2-limit-3"?L"2":scenario=="speed-4-limit-3"?L"4":L"10";
+      assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeed",speed,path.c_str()));
+    }
+    if(scenario=="speed-10-limit-10") assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeedLimit",L"10",path.c_str()));
+    if(scenario=="speed-10-limit-over") assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeedLimit",L"99",path.c_str()));
+    if(scenario=="speed-2-limit-3"||scenario=="speed-4-limit-3") assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeedLimit",L"3",path.c_str()));
+    if(scenario=="speed-10-limit-zero") assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeedLimit",L"0",path.c_str()));
+    if(scenario=="speed-10-limit-one") assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeedLimit",L"1",path.c_str()));
+    if(scenario=="speed-10-limit-invalid") assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeedLimit",L"fast",path.c_str()));
+    if(scenario=="speed-10-limit-padded") assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeedLimit",L"010",path.c_str()));
     if(scenario=="speed-invalid") assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeed",L"3",path.c_str()));
     if(scenario=="speed-padded") assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeed",L"01",path.c_str()));
     if(scenario=="fallback-one") assert(WritePrivateProfileStringW(L"To Disk",L"Windows Playback Fallback",L"1",path.c_str()));
@@ -46,13 +56,28 @@ int main(int argc,char** argv) {
   history::InitSettings(nullptr);
   auto s=history::GetSettings();
   assert(s.downloads==(scenario!="zero" && scenario!="legacy-zero"));
-  assert(s.capture_speed==(scenario=="speed-10"?10u:1u));
+  const auto expected_speed=scenario=="speed-10-limit-10"||scenario=="speed-10-limit-over"?10u:
+    scenario=="speed-2-limit-3"?2u:1u;
+  const auto expected_limit=scenario=="speed-10-limit-10"||scenario=="speed-10-limit-over"?10u:
+    scenario=="speed-2-limit-3"||scenario=="speed-4-limit-3"?3u:0u;
+  assert(s.capture_speed==expected_speed);
+  assert(s.capture_speed_limit==expected_limit&&history::CaptureSpeedLimit()==expected_limit);
+  assert(history::CaptureSpeedAvailable(1));
+  assert(!history::CaptureSpeedAvailable(2));
+  history::SetCaptureAccelerationAvailable(true);
+  assert(history::CaptureSpeedAvailable(2)==(expected_limit>=2));
+  assert(history::CaptureSpeedAvailable(4)==(expected_limit>=4));
+  assert(history::CaptureSpeedAvailable(8)==(expected_limit>=8));
+  assert(history::CaptureSpeedAvailable(10)==(expected_limit>=10));
+  assert(!history::CaptureSpeedAvailable(3));
+  history::SetCaptureAccelerationAvailable(false);
   assert(s.windows_playback_fallback==(scenario=="fallback-one"));
   assert(history::CaptureSpeed()==s.capture_speed);
   if(scenario=="new") {
     assert(GetPrivateProfileIntW(L"To Disk",L"Downloads",9,path.c_str())==1);
     assert(GetPrivateProfileIntW(L"To Disk",L"AAC",9,path.c_str())==0);
     assert(GetPrivateProfileIntW(L"To Disk",L"Podcasts",9,path.c_str())==0);
+    assert(GetPrivateProfileIntW(L"To Disk",L"CaptureSpeedLimit",9,path.c_str())==0);
     assert(GetPrivateProfileIntW(L"To Disk",L"Windows Playback Fallback",9,path.c_str())==0);
     assert(GetPrivateProfileIntW(L"To Disk",L"UpdateExistingMetadata",9,path.c_str())==1);
     HANDLE file=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,0,nullptr);

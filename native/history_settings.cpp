@@ -20,7 +20,7 @@ static bool IsMusic(std::wstring root) {
     return !music_path.empty() && (_wcsicmp(root.c_str(),music_path.c_str())==0 ||
         _wcsicmp(root.c_str(),(music_path+L"\\Spotify").c_str())==0);
 }
-static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,aac_enabled=0,podcasts_enabled=0,capture_epoch=0,capture_speed_value=1,capture_acceleration_available=0,log_enabled=1,debug_enabled=0,networking_enabled=0,connect_logging_enabled=1,hook_diagnostics_enabled=0;
+static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,aac_enabled=0,podcasts_enabled=0,capture_epoch=0,capture_speed_value=1,capture_speed_limit_value=0,capture_acceleration_available=0,log_enabled=1,debug_enabled=0,networking_enabled=0,connect_logging_enabled=1,hook_diagnostics_enabled=0;
 static HANDLE settings_signal=nullptr,persist_done=nullptr;
 // A failed attempt is observable without acknowledging bytes never committed.
 static volatile LONG persisted_generation=-1,failed_generation=-1,persist_failed=0;
@@ -30,6 +30,9 @@ static constexpr char default_ini[]=
     "Downloads=1\r\n"
     "; Local capture rate: exactly 1, 2, 4, 8, or 10. Default is 1.\r\n"
     "CaptureSpeed=1\r\n"
+    "; Hidden accelerated-capture ceiling. Missing/0/1=off; 2-10=limit; above 10=10.\r\n"
+    "; Fully quit and restart Spotify after changing.\r\n"
+    "CaptureSpeedLimit=0\r\n"
     "; Set Menu=0 before starting Spotify to disable native menu integration.\r\n"
     "Menu=1\r\n"
     "; Use Windows media state only when Spotify's own playback state is unavailable.\r\n"
@@ -128,6 +131,23 @@ static bool ReadCaptureSpeed(Settings& target,const std::wstring& path) {
     else {target.capture_speed=1;return true;}
     return false;
 }
+static bool ReadCaptureSpeedLimit(Settings& target,const std::wstring& path) {
+    std::wstring text;bool unicode=false;
+    if(!settings_file::Read(path,text,unicode)) {target.capture_speed_limit=0;return false;}
+    const auto option=settings_file::Find(text,L"CaptureSpeedLimit");
+    if(!option.present||option.duplicate||option.value.empty()||option.value!=option.raw_value||
+       (option.value.size()>1&&option.value.front()==L'0')) {
+        target.capture_speed_limit=0;
+        return !option.present;
+    }
+    unsigned value=0;
+    for(const auto c:option.value) {
+        if(c<L'0'||c>L'9') {target.capture_speed_limit=0;return false;}
+        if(value<=10)value=value*10+unsigned(c-L'0');
+    }
+    target.capture_speed_limit=value<=1?0:std::min(value,10u);
+    return false;
+}
 static bool ReadWindowsPlaybackFallback(Settings& target,const std::wstring& path) {
     std::wstring text;bool unicode=false;
     if(!settings_file::Read(path,text,unicode)) {
@@ -173,6 +193,8 @@ static void InsertMissingRestartDefaults(std::wstring& text) {
     for(const auto& flag:restart_flags)
         if(!settings_file::Find(text,flag.key).present)
             settings_file::Set(text,flag.key,flag.default_value?L"1":L"0");
+    if(!settings_file::Find(text,L"CaptureSpeedLimit").present)
+        settings_file::Set(text,L"CaptureSpeedLimit",L"0");
 }
 static bool ReachedGeneration(volatile LONG& progress,unsigned expected) {
     return static_cast<LONG>(unsigned(InterlockedCompareExchange(&progress,0,0))-expected)>=0;
@@ -253,9 +275,12 @@ void InitSettings(HMODULE proxy) {
     settings.flac=GetPrivateProfileIntW(L"To Disk",L"FLAC",1,ini.c_str())!=0;
     const bool filename_options_pending=ReadFilenameOptions(settings,ini);
     const bool capture_speed_pending=ReadCaptureSpeed(settings,ini);
+    const bool capture_speed_limit_pending=ReadCaptureSpeedLimit(settings,ini);
+    const bool capture_speed_disallowed=settings.capture_speed>1&&settings.capture_speed>settings.capture_speed_limit;
+    if(capture_speed_disallowed)settings.capture_speed=1;
     const bool windows_playback_fallback_pending=ReadWindowsPlaybackFallback(settings,ini);
     const bool restart_options_pending=ReadRestartOptions(settings,ini);
-    const bool startup_options_pending=filename_options_pending||capture_speed_pending||windows_playback_fallback_pending||restart_options_pending;
+    const bool startup_options_pending=filename_options_pending||capture_speed_pending||capture_speed_limit_pending||capture_speed_disallowed||windows_playback_fallback_pending||restart_options_pending;
     settings.aac=GetPrivateProfileIntW(L"To Disk",L"AAC",0,ini.c_str())!=0;
     settings.podcasts=GetPrivateProfileIntW(L"To Disk",L"Podcasts",0,ini.c_str())!=0;
     settings.metadata=GetPrivateProfileIntW(L"To Disk",L"Metadata",1,ini.c_str())!=0;
@@ -276,6 +301,7 @@ void InitSettings(HMODULE proxy) {
     settings.music_folder=IsMusic(settings.root);
     downloads_enabled=settings.downloads; ogg_enabled=settings.ogg; flac_enabled=settings.flac; aac_enabled=settings.aac; podcasts_enabled=settings.podcasts;
     capture_speed_value=LONG(settings.capture_speed);
+    capture_speed_limit_value=LONG(settings.capture_speed_limit);
     log_enabled=settings.log;debug_enabled=settings.debug_log;networking_enabled=settings.debug_networking;connect_logging_enabled=settings.debug_connect;hook_diagnostics_enabled=settings.debug_hook_diagnostics;
     StartLogger();
     settings_signal=CreateEventW(nullptr,FALSE,FALSE,nullptr);
@@ -308,8 +334,13 @@ bool AACEnabled() { return downloads_enabled && aac_enabled; }
 bool PodcastsEnabled() { return downloads_enabled && podcasts_enabled; }
 unsigned CaptureEpoch() { return unsigned(InterlockedCompareExchange(&capture_epoch,0,0)); }
 unsigned CaptureSpeed() { return unsigned(InterlockedCompareExchange(&capture_speed_value,0,0)); }
+unsigned CaptureSpeedLimit() { return unsigned(InterlockedCompareExchange(&capture_speed_limit_value,0,0)); }
 bool CaptureAccelerationAvailable() {return InterlockedCompareExchange(&capture_acceleration_available,0,0)!=0;}
 void SetCaptureAccelerationAvailable(bool available) {InterlockedExchange(&capture_acceleration_available,available?1:0);}
+bool CaptureSpeedAvailable(unsigned speed) {
+    return capture_speed::Supported(speed)&&(speed==1||
+        (speed<=CaptureSpeedLimit()&&CaptureAccelerationAvailable()));
+}
 static bool Set(const wchar_t* key,bool value,bool& field,volatile LONG* fast,bool affects_capture=true) {
     bool ok=false;
     {
@@ -332,7 +363,7 @@ bool SetWindowsPlaybackFallback(bool v) { return Set(L"Windows Playback Fallback
 bool SetLyrics(bool v) { return Set(L"Lyrics",v,settings.lyrics,nullptr,false); }
 bool SetUpdateExistingMetadata(bool v) { return Set(L"UpdateExistingMetadata",v,settings.update_existing_metadata,nullptr,false); }
 bool SetCaptureSpeed(unsigned speed) {
-    if(!capture_speed::Supported(speed)||(speed>1&&!CaptureAccelerationAvailable()))return false;
+    if(!CaptureSpeedAvailable(speed))return false;
     bool ok=false;
     {
     ExclusiveSrw guard(lock);ok=settings_signal!=nullptr;
