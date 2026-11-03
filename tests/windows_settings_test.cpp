@@ -28,6 +28,8 @@ int main(int argc,char** argv) {
     else if(scenario=="fallback-tab") assert(fallback_fixture(L"\t1"));
     else if(scenario=="fallback-word") assert(fallback_fixture(L"true"));
     else if(scenario=="fallback-duplicate") assert(fallback_fixture(L"1",L"1"));
+    else if(scenario=="log-duplicate") assert(history::settings_file::Write(path,
+      L"[To Disk]\r\nMenu=0\r\nLogLevel=4\r\nLogLevel=0\r\n",true));
     else assert(WritePrivateProfileStringW(L"To Disk",L"Menu",L"0",path.c_str()));
     if(scenario=="aac-one") assert(WritePrivateProfileStringW(L"To Disk",L"AAC",L"1",path.c_str()));
     if(scenario=="podcasts-one") assert(WritePrivateProfileStringW(L"To Disk",L"Podcasts",L"1",path.c_str()));
@@ -150,6 +152,8 @@ int main(int argc,char** argv) {
   assert(GetPrivateProfileIntW(L"To Disk",L"Podcasts",9,path.c_str())==(s.podcasts?1:0));
   assert(GetPrivateProfileIntW(L"To Disk",L"Windows Playback Fallback",9,path.c_str())==(s.windows_playback_fallback?1:0));
   std::wstring persisted;bool unicode=false;assert(history::settings_file::Read(path,persisted,unicode));
+  const auto persisted_log=history::settings_file::Find(persisted,L"LogLevel");
+  assert(persisted_log.present&&!persisted_log.duplicate&&persisted_log.value==std::to_wstring(expected_log));
   assert(!history::settings_file::Find(persisted,L"Log").present);
   assert(!history::settings_file::Find(persisted,L"DebugLog").present);
   const std::wstring fallback_key=L"Windows Playback Fallback=";

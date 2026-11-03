@@ -40,8 +40,7 @@ CaptureSpeed=1
 Metadata=1
 Lyrics=1
 UpdateExistingMetadata=1
-Log=1
-DebugLog=0
+LogLevel=1
 DebugConnect=1
 DebugNetworking=0
 DebugHookDiagnostics=0
@@ -87,29 +86,31 @@ MaxBufferedMiB=500
   existing client service, even with the lyrics panel closed. Set 0 in the INI or
   use the menu toggle to stop lyric discovery, cancel pending lyric work, and
   disable lyric enrichment while retaining other metadata and artwork.
-- **Log:** default `1`; the master switch for both logs and all optional diagnostics.
-  `Floggfy.log` contains normal activity, warnings and actionable failures.
-- **DebugLog:** default `0`; requires `Log=1`. Optional playback, metadata and
-  troubleshooting detail goes only to `Floggfy-diagnostics.log`. It also adds
+- **LogLevel:** default `1`; `0` disables logging, `1` records newly finished
+  tracks plus warnings/failures, `2` also records visible lifecycle activity,
+  and `4` enables the main diagnostic lane. `Floggfy.log` contains general
+  activity and outcomes; troubleshooting detail goes to
+  `Floggfy-diagnostics.log`. Level 4 also adds
   decoder-ownership evidence using bounded numeric capture, owner, and playback
   tokens. Raw native addresses, playback IDs, and URIs are never written in
   ownership records. For a structurally verified FLAC/Ogg decoder, only an exact
   `Bound` listen generation can resolve overlapping metadata candidates. Missing,
   conflicting, or lost evidence fails closed; unverified AAC retains the legacy
   association path.
-- **DebugConnect:** default `1`; requires `Log=1` and `DebugLog=1`. Enables cached
+- **DebugConnect:** default `1`; requires `LogLevel=4`. Enables cached
   Connect target observations and passive local action requests. `0` opts out of
   those observations even with deep networking enabled. No discovery, playback
   transfer or extra network request is performed. Basic playback identification
   remains independent of this diagnostic option and of `Metadata`.
-- **DebugNetworking:** default `0`; requires `Log=1` and `DebugLog=1`. Enables the
+- **DebugNetworking:** default `0`; requires `LogLevel=4`. Enables the
   read-only decoded Connect observer and allowlisted enrichment I/O observations
-  in the same diagnostics file. No raw payloads, media, credentials, URLs or
+  in `Floggfy-networking.log`. No raw payloads, media, credentials, URLs or
   real device identifiers are written. Receipt is distinct from command execution;
   unobserved traffic and initiators remain unknown. This optional decoded-message
   hook is independent of `NetworkPatch` and the `DebugConnect` cached-state option.
-- **DebugHookDiagnostics:** default `0`; requires `DebugNetworking=1`, `Log=1`
-  and `DebugLog=1`. Enables callback and queue-lock profiling, interval timing
+- **DebugHookDiagnostics:** default `0`; requires `LogLevel=4` and is independent
+  of `DebugNetworking`. It writes `Floggfy-hook-diagnostics.log` with callback
+  and queue-lock profiling, interval timing
   drains, slow/pending menu and startup spans, and capture-worker progress checks.
   Basic debug mode performs no per-callback profiling. Completed spans at least
   10 ms, pending spans after 250 ms, and worker progress gaps after 1 s are sampled
@@ -120,14 +121,14 @@ MaxBufferedMiB=500
 All debug keys retain their defaults and require a full Spotify restart after
 INI edits. `NetworkPatch` remains a separate startup option.
 
-| Effective settings | Normal file | Diagnostics file | Optional callback profiling |
-| --- | --- | --- | --- |
-| `Log=0` (any debug keys) | Off | Off | Off |
-| `Log=1`, `DebugLog=0` | Activity, warnings, failures | Off | Off |
-| `Log=1`, `DebugLog=1` | Same normal events | Playback and metadata detail | Off |
-| Above + `DebugConnect=1` | Same normal events | Adds cached Connect/local action observations | Off |
-| Above + `DebugNetworking=1` | Same normal events | Adds decoded command receipts and enrichment I/O | Off |
-| Above + `DebugHookDiagnostics=1` | Same normal events | Adds timing, slow/pending activity and progress observations | On |
+| Effective settings | `Floggfy.log` | Main diagnostics | Networking | Hook diagnostics |
+| --- | --- | --- | --- | --- |
+| `LogLevel=0` | Off | Off | Off | Off |
+| `LogLevel=1` | Finishes, warnings, failures | Off | Off | Off |
+| `LogLevel=2` | Adds starts, upgrades, renames and other lifecycle activity | Off | Off | Off |
+| `LogLevel=4` | Same lifecycle events | Playback, metadata and ownership detail | Off | Off |
+| Above + `DebugNetworking=1` | Same | Same | Sanitized networking observations | Off |
+| Above + `DebugHookDiagnostics=1` | Same | Same | Independently controlled | Timing, slow/pending activity and progress |
 
 `DebugConnect=0` always disables its cached Connect/action observations;
 `DebugHookDiagnostics=0` always disables callback profiling. An unavailable save
@@ -280,7 +281,7 @@ Unknown/malformed/oversized, embedded-NUL and non-ASCII renderer statuses are
 dropped. Direct generic logger calls with these reserved prefixes also use the
 same sanitizer, so failure words cannot copy a rejected payload into activity
 logs. Explicit enrichment request summaries still require deep mode. Native
-capture failures continue to log normally when `DebugLog=0` and `Log=1`.
+capture failures continue to log normally at `LogLevel=1` or higher.
 
 Activity and outcomes have one producer-selected category and one destination.
 Message wording, track titles and paths never determine severity. Successful
@@ -294,7 +295,7 @@ are reduced to change flags or rejected by the renderer allowlists.
 There is no routine ten-second status heartbeat and no diagnostic format-sniff
 capture detour. The FormatSniff discovery anchor and structural validation remain.
 FLAC errors emit one normal failure and, when enabled, one useful context record.
-Basic `DebugLog` does not measure native callbacks, queue-lock times or empty FLAC
+`LogLevel=4` alone does not measure native callbacks, queue-lock times or empty FLAC
 reads. With profiling explicitly enabled, counters and maxima are drained by a
 separate periodic timing interval, including during pauses; empty intervals stay
 silent. The logger performs file work; audio callbacks never do.
@@ -439,7 +440,7 @@ and observation gaps invalidate coverage. Capture consumes sequenced RAM
 snapshots without waiting for COM, disk, enrichment or network work. Stopping an
 observer does not wait for a stalled COM operation. No Windows artwork is fetched.
 
-With `Log=1` and `DebugLog=1`, `media-session` diagnostics report `source=spotify`
+With `LogLevel=4`, `media-session` diagnostics report `source=spotify`
 or `source=windows`, the failed stage, reason, HRESULT, session/candidate counts,
 and numeric timeline values. Persistent failures are summarized at most every
 30 seconds; recovery and source changes are reported immediately. These summaries
@@ -496,13 +497,14 @@ matching recording, rather than scanning directories or maintaining another cach
    and replay the track from its beginning. If menu integration crashes or
    disappears, set **Menu=0** and restart. Configure Downloads, FLAC, Ogg and
    `CaptureSpeed` directly in the INI.
-3. Enable **Log=1** and, temporarily, **DebugLog=1**. Inspect `Floggfy.log` in the
-   configured save root. Check `media-session` lines for the selected source,
+3. Set **LogLevel=4** temporarily. Inspect `Floggfy.log` and
+   `Floggfy-diagnostics.log` in the configured save root. Check `media-session`
+   lines for the selected source,
    failure stage, reason and HRESULT. `source=spotify` works independently of
    Windows media controls. For `source=windows` with `no-spotify-session`, enable
    Spotify's **Settings > Display > Show desktop overlay when using media keys**.
    Replay a fresh track from its beginning after observation recovers. Turn
-   debug logging off afterward.
+   diagnostic logging back to level 1 afterward.
 4. Confirm Downloads is on and the actual source format is enabled. Lossless
    playback produces FLAC; its Ogg parser is unused. Enabling FLAC cannot turn a
    lossy Spotify stream into lossless audio.
@@ -661,14 +663,20 @@ finished Ogg Vorbis ... | Example Artist - Song
 failed FLAC decoder error; stream discarded
 ```
 
-After, optional `Floggfy-diagnostics.log` adds facts rather than the save outcome:
+At `LogLevel=4`, `Floggfy-diagnostics.log` adds facts rather than the save outcome:
 
 ```text
 ... source=spotify ... pos=0.018/231.000 ...
 ... FLAC observation ... epoch=2 ... queue_lag_ms=0.5 ...
 ... direction=local source=client-control request=pause source=local-client
-... direction=in service=connect ... action=pause ... execution=unobserved
 ... direction=local source=client-state paused=1 buf=0 ...
+```
+
+With `DebugNetworking=1`, `Floggfy-networking.log` separately records sanitized
+network observations such as:
+
+```text
+... direction=in service=connect ... action=pause ... execution=unobserved
 ```
 
 Local action requests, received commands and observed playback states describe
@@ -679,7 +687,7 @@ separate events. None alone identifies why playback paused.
 Ogg capture rejections now name the failed guard: `serial-change`,
 `sequence-discontinuity`, `unexpected-bos`, `invalid-granule`,
 `granule-regression`, `invalid-eos-granule`, `inactive-stream`, or an invalid
-page. With `Log=1` and `DebugLog=1`, the matching bounded `Ogg observation`
+page. With `LogLevel=4`, the matching bounded `Ogg observation`
 records context, serial/sequence/granule expectations, flags, format, page and
 byte counts, age, and queue-drop count. It never records raw audio, URI,
 playback-instance, device, or credential data.

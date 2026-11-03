@@ -17,7 +17,7 @@ common=(-std=c++17 -O2 -Wall -Wextra -Werror -municode -static-libgcc -static-li
 mkdir -p "$floggfy_diag_root/settings"
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -static-libgcc -static-libstdc++ \
     tests/windows_settings_test.cpp -lole32 -luuid -lshell32 -o "$floggfy_diag_root/settings/test.exe"
-for scenario in log-0 log-1 log-2 log-4 log-invalid log-padded legacy-log-zero legacy-debug-one; do
+for scenario in log-0 log-1 log-2 log-4 log-invalid log-padded log-duplicate legacy-log-zero legacy-debug-one; do
     "$floggfy_diag_root/settings/test.exe" "$scenario"
 done
 for component in networking_log renderer_privacy pr13_settings connect_settings; do
