@@ -2175,6 +2175,7 @@ static DWORD WINAPI Worker(LPVOID) {
             if(preferences.generation!=generation) {
                 bool initial=generation==~0u;
                 generation=preferences.generation;
+                reader.SetWindowsFallback(preferences.windows_playback_fallback);
                 output=preferences.root; memory_limit=size_t(preferences.max_buffered_mib)*1024*1024;
                 bool capture=preferences.downloads && (preferences.ogg || preferences.flac || preferences.aac || preferences.podcasts);
                 if(capture!=enabled || initial || preferences.capture_epoch!=epoch) {

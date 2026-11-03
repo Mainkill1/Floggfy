@@ -80,15 +80,16 @@ private:
     static DWORD WINAPI Run(void*);
 };
 // App snapshots are primary. Explicit remote/buffering states block capture;
-// missing/incompatible app snapshots permit the independently sequenced WinRT fallback.
+// missing/incompatible app snapshots permit WinRT only after explicit opt-in.
 class PlaybackSnapshotReader {
     MediaSnapshotReader windows_;
     uint64_t client_sequence_=0,windows_sequence_=0,sequence_=0;
-    bool running_=false,windows_started_=false;
+    bool running_=false,windows_started_=false,windows_fallback_=false;
 public:
     explicit PlaybackSnapshotReader(MediaSnapshotReader::Fetch fetch=nullptr,void* context=nullptr) noexcept:windows_(fetch,context){}
     bool Start() noexcept {running_=true;return true;}
     void Stop() noexcept {running_=false;windows_started_=false;windows_.Stop();}
+    void SetWindowsFallback(bool enabled) noexcept;
     bool IsStopped() const noexcept {return windows_.IsStopped();}
     MediaRead TryRead(Media&,double& observed_at,uint64_t& sequence,MediaDiagnostic* diagnostic=nullptr) noexcept;
 };

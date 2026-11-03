@@ -102,8 +102,17 @@ void ClientSnapshots() {
     assert(reader.TryRead(media,observed,sequence,&diagnostic)==MediaRead::Failed&&fallback.calls==0);
     assert(reader.TryRead(media,observed,sequence,&diagnostic)==MediaRead::Ready);
     PublishClientMediaUnavailable("client-unavailable",false);
+    assert(reader.TryRead(media,observed,sequence,&diagnostic)==MediaRead::Failed);
+    assert(fallback.calls==0&&std::string(diagnostic.source)=="spotify"&&std::string(diagnostic.reason)=="client-unavailable");
+    reader.SetWindowsFallback(true);
+    PublishClientMediaUnavailable("client-unavailable",false);
     Wait([&]{return reader.TryRead(media,observed,sequence,&diagnostic)==MediaRead::Ready;});
     assert(media.source==MediaSource::Windows&&fallback.calls>0);
+    reader.SetWindowsFallback(false);Wait([&]{return reader.IsStopped();});
+    const auto stopped_calls=fallback.calls.load();
+    PublishClientMediaUnavailable("client-unavailable",false);
+    assert(reader.TryRead(media,observed,sequence,&diagnostic)==MediaRead::Failed);
+    Sleep(300);assert(fallback.calls==stopped_calls);
     reader.Stop();Wait([&]{return reader.IsStopped();});
 }
 
