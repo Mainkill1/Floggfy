@@ -47,6 +47,8 @@ x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_cached_metadata_test.cpp nat
 
 x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/windows-tests/ogg-framing.o
 quality_sources=(native/playback_quality.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/windows-tests/ogg-framing.o)
+x86_64-w64-mingw32-g++ "${common[@]}" tests/auto_skip_test.cpp native/auto_skip.cpp native/library_layout.cpp -o "$floggfy_test_root/auto-skip-test.exe"
+"$floggfy_test_root/auto-skip-test.exe"
 x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/playback_quality_test.cpp "${quality_sources[@]}" -o "$floggfy_test_root/playback-quality-test.exe"
 "$floggfy_test_root/playback-quality-test.exe"
 x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_menu_quality_test.cpp native/library_layout.cpp "${quality_sources[@]}" native/history_settings.cpp native/async_log.cpp build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-menu-quality-test.exe"

@@ -175,6 +175,7 @@ PlaybackQualitySnapshot PlaybackQualityTracker::Snapshot(const std::string &clie
     return out;
   out.format = c.format;
   out.rate = c.format == PlaybackFormat::Flac ? c.flac.rate : c.ogg.rate;
+  out.channels = c.format == PlaybackFormat::Flac ? c.flac.channels : c.ogg.channels;
   if (c.format == PlaybackFormat::Flac) {
     out.bits = c.flac.bits;
     out.level = c.flac.bits == 24 ? PlaybackLevel::Lossless24 : PlaybackLevel::Lossless;

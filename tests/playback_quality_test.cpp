@@ -64,7 +64,7 @@ int main() {
   auto end = OggPage(1, 4, 8820000);
   tracker.Ogg(1, end.data(), end.size(), 101);
   q = tracker.Snapshot();
-  assert(q.level == PlaybackLevel::VeryHigh);
+  assert(q.level == PlaybackLevel::VeryHigh && q.channels==2);
   auto next_end = OggPage(1, 4, 7938000);
   tracker.Ogg(3, first.data(), first.size(), 110);
   tracker.Ogg(3, next_end.data(), next_end.size(), 111);
@@ -84,7 +84,7 @@ int main() {
   tracker.FlacBytes(2, header.data(), 5, 5);
   tracker.FlacBytes(2, header.data() + 5, 37, 99995);
   q = tracker.Snapshot();
-  assert(q.format == PlaybackFormat::Flac && q.rate == 48000);
+  assert(q.format == PlaybackFormat::Flac && q.rate == 48000 && q.channels==2);
   for (unsigned i = 0; i < 10; i++)
     Frame(tracker, i);
   q = tracker.Snapshot();

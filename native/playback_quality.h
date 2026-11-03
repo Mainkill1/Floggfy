@@ -13,6 +13,7 @@ struct PlaybackQualitySnapshot {
   uint64_t identity = 0;
   PlaybackFormat format = PlaybackFormat::Unknown;
   unsigned rate = 0;
+  unsigned channels = 0;
   unsigned bits = 0;
   PlaybackLevel level = PlaybackLevel::Unknown;
 };
