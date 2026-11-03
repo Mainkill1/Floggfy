@@ -135,8 +135,9 @@
   let local;
   try{local=own(own(method(connectDevices,'getConnectState')?.call(connectDevices),'activeDevice'),'isLocal');}catch{}
   if(local!==true)return;
-  const wrapper=own(own(window,'Spicetify'),'Player'),next=method(wrapper,'next');if(!next)return;
-  try{const result=next.call(wrapper);const reject=method(result,'catch');if(reject)reject.call(result,()=>{});}catch{}
+  const wrapper=own(own(window,'Spicetify'),'Player');
+  const stock=method(player,'skipToNext'),next=stock||method(wrapper,'next'),target=stock?player:wrapper;if(!next)return;
+  try{const result=next.call(target);const reject=method(result,'catch');if(reject)reject.call(result,()=>{});}catch{}
  }
  // Debug observations are raw local flags, never a diagnosis of their cause.
  let debugPrevious;
