@@ -224,6 +224,8 @@ int main() {
   assert(std::string(setting_line)=="Lyrics disabled");
   SettingOutcomeLine(lyrics_id,false,true,setting_line,sizeof(setting_line));
   assert(std::string(setting_line)=="Lyrics change failed; remains enabled");
+  SettingOutcomeLine(auto_skip_id,true,true,setting_line,sizeof(setting_line));
+  assert(std::string(setting_line)=="Auto Skip Downloaded enabled");
   assert(menu_init.TryBegin(GetTickCount64()));menu_prepared=true;
   FinishMenuStartup(false,false);
   assert(menu_init.State()==hooks::InitState::RetryableFailure);
@@ -274,9 +276,12 @@ int main() {
   assert(!child.child->entries[0].enabled);
   assert(filesystem_calls==0 && shell_calls==0 && recent_reads==0);
   assert(child.entries[Index(&child.api,lyrics_id)].checked);
+  assert(Index(&child.api,auto_skip_id)==Index(&child.api,lyrics_id)+1);
+  assert(!child.entries[Index(&child.api,auto_skip_id)].checked);
+  assert(child.entries[Index(&child.api,auto_skip_id)].label==L"Auto Skip Downloaded (Disabled)");
   assert(!child.entries[Index(&child.api,podcasts_id)].checked);
   assert(child.entries[Index(&child.api,podcasts_id)].label==L"Podcasts (Disabled)");
-  assert(child.entries.size() == 13); // Eight controls, separator, four quality rows.
+  assert(child.entries.size() == 14); // Nine controls, separator, four quality rows.
   const auto speed_child=child.extra_children.find(speed_root_id);
   assert(speed_child!=child.extra_children.end()&&speed_child->second->entries.size()==5);
   assert(speed_child->second->entries[0].checked);
@@ -289,7 +294,7 @@ int main() {
   type_calls=0;
   Populate(&root.api);
   assert(type_calls==0); // Existing insertion is not rescanned or repopulated.
-  assert(child.entries.size() == 13 && child.refs == 1);
+  assert(child.entries.size() == 14 && child.refs == 1);
   capability_queries=type_calls=index_calls=0;
   original_add_submenu=AddChild;
   Model unrelated;Init(unrelated);unrelated.submenu=true;
@@ -313,9 +318,9 @@ int main() {
     Populate(&translated.api);
     assert(translated.child && translated.entries.size()==4);
     assert(translated.entries.back().label==L"To Disk");
-    assert(translated.child->entries.size()==13 && translated.child->refs==1);
+    assert(translated.child->entries.size()==14 && translated.child->refs==1);
     Populate(&translated.api);
-    assert(translated.entries.size()==4 && translated.child->entries.size()==13);
+    assert(translated.entries.size()==4 && translated.child->entries.size()==14);
   }
   // The client changes first while SMTC still publishes the previous song.
   history::PlaybackQualitySnapshot actual;
@@ -607,7 +612,7 @@ int main() {
   q.format=history::PlaybackFormat::Unknown;history::PublishPlaybackQuality(q);
   build_root();assert(!child.entries[quality_index+2].visible && !child.entries[quality_index+3].visible);
   assert(child.entries[quality_index].visible && child.entries[quality_index+1].visible);
-  assert(child.entries.size()==13 && child.refs==1 && root.refs==1);
+  assert(child.entries.size()==14 && child.refs==1 && root.refs==1);
   actual.level=history::PlaybackLevel::Unknown;q.level=actual.level;
   history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
   build_root();assert(!child.entries[quality_index+1].visible); // No Quality: Unavailable placeholder.
@@ -636,6 +641,13 @@ int main() {
   assert(child.entries[Index(&child.api,lyrics_id)].label==L"Lyrics (Disabled)");
   Retain(&child.api.base);Execute(&wrapped.api,&child.api,lyrics_id,0);
   assert(history::GetSettings().lyrics && history::FlushSettings(5000));
+  const auto auto_skip_epoch=history::CaptureEpoch();
+  Retain(&child.api.base);Execute(&wrapped.api,&child.api,auto_skip_id,0);
+  assert(history::GetSettings().auto_skip_downloaded&&history::CaptureEpoch()==auto_skip_epoch);
+  assert(child.entries[Index(&child.api,auto_skip_id)].checked);
+  assert(child.entries[Index(&child.api,auto_skip_id)].label==L"Auto Skip Downloaded (Enabled)");
+  Retain(&child.api.base);Execute(&wrapped.api,&child.api,auto_skip_id,0);
+  assert(!history::GetSettings().auto_skip_downloaded&&history::FlushSettings(5000));
   Retain(&child.api.base);
   Closed(&wrapped.api,&child.api);
   assert(child.refs==1 && !wrapped.capability.validated);

@@ -66,6 +66,8 @@ static constexpr char default_ini[]=
     "Lyrics=1\r\n"
     "; Allows metadata-only upgrades to existing saved files.\r\n"
     "UpdateExistingMetadata=1\r\n"
+    "; Skip verified downloaded music after its metadata check; default off.\r\n"
+    "AutoSkipDownloaded=0\r\n"
     "\r\n"
     "; Normal activity, warnings and failures: Floggfy.log in Save Location (5 MiB).\r\n"
     "; Log=0 also disables ALL debug output, hooks and timing instrumentation below.\r\n"
@@ -217,6 +219,7 @@ static DWORD WINAPI PersistSettings(LPVOID) {
                 flag(L"Windows Playback Fallback",snapshot.windows_playback_fallback);
                 settings_file::Set(text,L"CaptureSpeed",std::to_wstring(snapshot.capture_speed));
                 flag(L"UpdateExistingMetadata",snapshot.update_existing_metadata);
+                flag(L"AutoSkipDownloaded",snapshot.auto_skip_downloaded);
                 InsertMissingRestartDefaults(text);
                 flag(L"TrackNumberInFilename",snapshot.track_number_in_filename);
                 flag(L"ConvertNumberedFilenames",snapshot.convert_numbered_filenames && !snapshot.track_number_in_filename);
@@ -286,6 +289,7 @@ void InitSettings(HMODULE proxy) {
     settings.metadata=GetPrivateProfileIntW(L"To Disk",L"Metadata",1,ini.c_str())!=0;
     settings.lyrics=GetPrivateProfileIntW(L"To Disk",L"Lyrics",1,ini.c_str())!=0;
     settings.update_existing_metadata=GetPrivateProfileIntW(L"To Disk",L"UpdateExistingMetadata",1,ini.c_str())!=0;
+    settings.auto_skip_downloaded=GetPrivateProfileIntW(L"To Disk",L"AutoSkipDownloaded",0,ini.c_str())==1;
     settings.log=GetPrivateProfileIntW(L"To Disk",L"Log",1,ini.c_str())!=0;
     settings.debug_log=GetPrivateProfileIntW(L"To Disk",L"DebugLog",0,ini.c_str())!=0;
     settings.max_buffered_mib=std::max(8u,std::min(512u,GetPrivateProfileIntW(L"History",L"MaxBufferedMiB",500,ini.c_str())));
@@ -361,6 +365,7 @@ bool SetFlac(bool v) { return Set(L"FLAC",v,settings.flac,&flac_enabled); }
 bool SetPodcasts(bool v) { return Set(L"Podcasts",v,settings.podcasts,&podcasts_enabled); }
 bool SetWindowsPlaybackFallback(bool v) { return Set(L"Windows Playback Fallback",v,settings.windows_playback_fallback,nullptr,false); }
 bool SetLyrics(bool v) { return Set(L"Lyrics",v,settings.lyrics,nullptr,false); }
+bool SetAutoSkipDownloaded(bool v) { return Set(L"AutoSkipDownloaded",v,settings.auto_skip_downloaded,nullptr,false); }
 bool SetUpdateExistingMetadata(bool v) { return Set(L"UpdateExistingMetadata",v,settings.update_existing_metadata,nullptr,false); }
 bool SetCaptureSpeed(unsigned speed) {
     if(!CaptureSpeedAvailable(speed))return false;

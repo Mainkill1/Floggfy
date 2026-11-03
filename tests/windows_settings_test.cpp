@@ -8,7 +8,7 @@ void QueueDiagnostic(const char*) {}
 }
 int main(int argc,char** argv) {
   assert(argc==2);
-  assert(history::Settings{}.downloads&&history::Settings{}.update_existing_metadata&&!history::Settings{}.aac&&!history::Settings{}.podcasts&&!history::Settings{}.windows_playback_fallback&&history::Settings{}.capture_speed==1&&history::Settings{}.capture_speed_limit==0);
+  assert(history::Settings{}.downloads&&history::Settings{}.update_existing_metadata&&!history::Settings{}.auto_skip_downloaded&&!history::Settings{}.aac&&!history::Settings{}.podcasts&&!history::Settings{}.windows_playback_fallback&&history::Settings{}.capture_speed==1&&history::Settings{}.capture_speed_limit==0);
   assert(!history::AACEnabled());
   assert(!history::PodcastsEnabled());
   const std::string scenario=argv[1];
@@ -31,6 +31,7 @@ int main(int argc,char** argv) {
     else assert(WritePrivateProfileStringW(L"To Disk",L"Menu",L"0",path.c_str()));
     if(scenario=="aac-one") assert(WritePrivateProfileStringW(L"To Disk",L"AAC",L"1",path.c_str()));
     if(scenario=="podcasts-one") assert(WritePrivateProfileStringW(L"To Disk",L"Podcasts",L"1",path.c_str()));
+    if(scenario=="auto-skip-one") assert(WritePrivateProfileStringW(L"To Disk",L"AutoSkipDownloaded",L"1",path.c_str()));
     if(scenario=="updates-zero") assert(WritePrivateProfileStringW(L"To Disk",L"UpdateExistingMetadata",L"0",path.c_str()));
     if(scenario=="lyrics-zero") assert(WritePrivateProfileStringW(L"To Disk",L"Lyrics",L"0",path.c_str()));
     if(scenario=="zero") assert(WritePrivateProfileStringW(L"To Disk",L"Downloads",L"0",path.c_str()));
@@ -80,6 +81,7 @@ int main(int argc,char** argv) {
     assert(GetPrivateProfileIntW(L"To Disk",L"CaptureSpeedLimit",9,path.c_str())==0);
     assert(GetPrivateProfileIntW(L"To Disk",L"Windows Playback Fallback",9,path.c_str())==0);
     assert(GetPrivateProfileIntW(L"To Disk",L"UpdateExistingMetadata",9,path.c_str())==1);
+    assert(GetPrivateProfileIntW(L"To Disk",L"AutoSkipDownloaded",9,path.c_str())==0);
     HANDLE file=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,0,nullptr);
     assert(file!=INVALID_HANDLE_VALUE);unsigned char bom[2]{};DWORD count=0;
     assert(ReadFile(file,bom,2,&count,nullptr)&&count==2&&bom[0]==0xff&&bom[1]==0xfe);CloseHandle(file);
@@ -100,6 +102,7 @@ int main(int argc,char** argv) {
   }
   assert(s.lyrics==(scenario!="lyrics-zero"));
   assert(s.update_existing_metadata==(scenario!="updates-zero"));
+  assert(s.auto_skip_downloaded==(scenario=="auto-skip-one"));
   const auto epoch=history::CaptureEpoch();
   const auto fallback_generation=history::GetSettings().generation;
   assert(history::SetWindowsPlaybackFallback(!s.windows_playback_fallback));
@@ -120,6 +123,11 @@ int main(int argc,char** argv) {
   assert(history::CaptureEpoch()==epoch&&history::GetSettings().generation>generation);
   assert(history::SetUpdateExistingMetadata(s.update_existing_metadata)&&history::FlushSettings(5000));
   assert(GetPrivateProfileIntW(L"To Disk",L"UpdateExistingMetadata",9,path.c_str())==(scenario=="updates-zero"?0:1));
+  const auto auto_skip_generation=history::GetSettings().generation;
+  assert(history::SetAutoSkipDownloaded(!s.auto_skip_downloaded));
+  assert(history::CaptureEpoch()==epoch&&history::GetSettings().generation>auto_skip_generation);
+  assert(history::SetAutoSkipDownloaded(s.auto_skip_downloaded)&&history::FlushSettings(5000));
+  assert(GetPrivateProfileIntW(L"To Disk",L"AutoSkipDownloaded",9,path.c_str())==(s.auto_skip_downloaded?1:0));
   assert(history::GetSettings().aac==s.aac);
   assert(GetPrivateProfileIntW(L"To Disk",L"AAC",9,path.c_str())==(s.aac?1:0));
   assert(GetPrivateProfileIntW(L"To Disk",L"Podcasts",9,path.c_str())==(s.podcasts?1:0));

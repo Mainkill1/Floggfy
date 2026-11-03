@@ -5,7 +5,7 @@ namespace history {
 struct Settings {
     bool downloads=true,ogg=true,flac=true,aac=false,podcasts=false,menu=true,music_folder=false;
     bool windows_playback_fallback=false;
-    bool metadata=true,lyrics=true,update_existing_metadata=true,log=true,debug_log=false;
+    bool metadata=true,lyrics=true,update_existing_metadata=true,auto_skip_downloaded=false,log=true,debug_log=false;
     bool track_number_in_filename=false,convert_numbered_filenames=false;
     bool debug_hook_diagnostics=false; // Extra bounded activity/stall diagnostics, restart-only.
     bool debug_networking=false; // Master deep-diagnostics hook + separate log; restart-only.
@@ -23,6 +23,7 @@ bool SetFlac(bool enabled);
 bool SetPodcasts(bool enabled);
 bool SetWindowsPlaybackFallback(bool enabled);
 bool SetLyrics(bool enabled);
+bool SetAutoSkipDownloaded(bool enabled);
 // INI-only user preference; changing optional enrichment never resets capture.
 bool SetUpdateExistingMetadata(bool enabled);
 bool SetSaveLocation(const std::wstring& root);

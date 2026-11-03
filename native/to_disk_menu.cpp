@@ -57,7 +57,7 @@ constexpr int root_id=28480,downloads_id=28481,location_id=28482,flac_id=28483,o
 constexpr int song_id=28485,last_quality_id=song_id+3,lyrics_id=28489;
 constexpr int recent_id=28490,first_recent_id=28491;
 constexpr int speed_root_id=28474,first_speed_id=28475,last_speed_id=28479;
-constexpr int podcasts_id=28473;
+constexpr int podcasts_id=28473,auto_skip_id=28472;
 static_assert(root_id>=cef_menu::kUserCommandFirst &&
               first_recent_id+history::kRecentDownloadLimit-1<=cef_menu::kUserCommandLast,
               "Recent commands stay within the CEF user command range (26500..28500)");
@@ -67,6 +67,7 @@ static const char* SettingName(int command) noexcept {
     if(command==ogg_id)return "Ogg";
     if(command==podcasts_id)return "Podcasts";
     if(command==lyrics_id)return "Lyrics";
+    if(command==auto_skip_id)return "Auto Skip Downloaded";
     return "FLAC";
 }
 static void SettingOutcomeLine(int command,bool accepted,bool enabled,char* line,size_t size) noexcept {
@@ -205,6 +206,7 @@ static void Populate(Menu* menu) {
     item(ogg_id,state.ogg ? L"Ogg (Enabled)" : L"Ogg (Disabled)",state.ogg,true);
     item(podcasts_id,state.podcasts ? L"Podcasts (Enabled)" : L"Podcasts (Disabled)",state.podcasts,true);
     item(lyrics_id,state.lyrics ? L"Lyrics (Enabled)" : L"Lyrics (Disabled)",state.lyrics,true);
+    item(auto_skip_id,state.auto_skip_downloaded ? L"Auto Skip Downloaded (Enabled)" : L"Auto Skip Downloaded (Disabled)",state.auto_skip_downloaded,true);
     RefreshSpeedMenu(child);
     UpdateQuality(child);
 }
@@ -407,14 +409,15 @@ static void Execute(Delegate* self,Menu* menu,int command,int flags) {
         case podcasts_id: ok=history::SetPodcasts(!settings.podcasts); break;
         case location_id: history::PickSaveLocation(GetActiveWindow()); break;
         case lyrics_id: ok=history::SetLyrics(!settings.lyrics); break;
+        case auto_skip_id: ok=history::SetAutoSkipDownloaded(!settings.auto_skip_downloaded); break;
         case flac_id: ok=history::SetFlac(!settings.flac); break;
         default: handled=false;
     }
     if(handled) {
-        if(command==downloads_id || command==ogg_id || command==flac_id || command==podcasts_id || command==lyrics_id) {
+        if(command==downloads_id || command==ogg_id || command==flac_id || command==podcasts_id || command==lyrics_id || command==auto_skip_id) {
             auto updated=history::GetSettings();
-            bool value=command==downloads_id ? updated.downloads : command==ogg_id ? updated.ogg : command==podcasts_id ? updated.podcasts : command==lyrics_id ? updated.lyrics : updated.flac;
-            std::wstring label=command==downloads_id ? L"Downloads" : command==ogg_id ? L"Ogg" : command==podcasts_id ? L"Podcasts" : command==lyrics_id ? L"Lyrics" : L"FLAC";
+            bool value=command==downloads_id ? updated.downloads : command==ogg_id ? updated.ogg : command==podcasts_id ? updated.podcasts : command==lyrics_id ? updated.lyrics : command==auto_skip_id ? updated.auto_skip_downloaded : updated.flac;
+            std::wstring label=command==downloads_id ? L"Downloads" : command==ogg_id ? L"Ogg" : command==podcasts_id ? L"Podcasts" : command==lyrics_id ? L"Lyrics" : command==auto_skip_id ? L"Auto Skip Downloaded" : L"FLAC";
             label+=value ? L" (Enabled)" : L" (Disabled)"; auto text=Text(label);
             MenuMethods::SetLabel(menu,command,&text); MenuMethods::SetChecked(menu,command,int(value));
             char line[96];SettingOutcomeLine(command,ok,value,line,sizeof(line));
