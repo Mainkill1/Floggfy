@@ -88,8 +88,8 @@ int main(int argc,char** argv) {
   assert(!history::CaptureSpeedAvailable(3));
   history::SetCaptureAccelerationAvailable(false);
   assert(s.windows_playback_fallback==(scenario=="fallback-one"));
-  const auto expected_log=scenario=="log-0"||scenario=="legacy-log-zero"?0u:
-    scenario=="log-2"?2u:scenario=="log-4"||scenario=="legacy-debug-one"?4u:1u;
+  const auto expected_log=scenario=="log-0"?0u:
+    scenario=="log-2"?2u:scenario=="log-4"?4u:1u;
   assert(s.log_level==expected_log&&history::LogLevel()==expected_log);
   assert(history::CaptureSpeed()==s.capture_speed);
   if(scenario=="new") {

@@ -68,7 +68,7 @@ static void PreserveExternalEdits() {
     for(const auto& flag:restart_flags)assert(WritePrivateProfileStringW(L"To Disk",flag.key,nullptr,path.c_str()));
     assert(WritePrivateProfileStringW(L"Unknown",L"Keep",L"\u97f3\u697d",path.c_str()));
     InitSettings(nullptr);assert(FlushSettings(5000));
-    assert(!GetSettings().network_patch&&GetSettings().debug_connect&&!DebugLoggingEnabled()&&LogLevel()==0);
+    assert(!GetSettings().network_patch&&GetSettings().debug_connect&&!DebugLoggingEnabled()&&LogLevel()==1);
     for(const auto& flag:restart_flags)
         assert(GetPrivateProfileIntW(L"To Disk",flag.key,9,path.c_str())==unsigned(flag.default_value));
     assert(WritePrivateProfileStringW(L"To Disk",L"NetworkPatch",L"1",path.c_str()));

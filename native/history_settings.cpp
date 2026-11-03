@@ -180,12 +180,7 @@ static bool ReadLogLevel(Settings& target,const std::wstring& path) {
         else {target.log_level=1;return true;}
         return settings_file::Find(text,L"Log").present||settings_file::Find(text,L"DebugLog").present;
     }
-    const auto legacy_log=settings_file::Find(text,L"Log");
-    const auto legacy_debug=settings_file::Find(text,L"DebugLog");
-    if(legacy_log.present&&!legacy_log.duplicate&&legacy_log.raw_value==L"0")target.log_level=0;
-    else if(legacy_log.present&&!legacy_log.duplicate&&legacy_log.raw_value==L"1"&&
-            legacy_debug.present&&!legacy_debug.duplicate&&legacy_debug.raw_value==L"1")target.log_level=4;
-    else target.log_level=1;
+    target.log_level=1;
     return true;
 }
 // INI-only preferences are read once. Persistence inserts missing defaults,

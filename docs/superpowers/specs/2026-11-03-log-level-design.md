@@ -36,14 +36,9 @@ Networking and hook diagnostics are independent opt-ins. Neither depends on the
 other, and neither can enable output below level 4.
 
 The generated INI contains `LogLevel=1` and no longer contains `Log` or
-`DebugLog`. Existing installations receive a one-time compatibility migration:
-
-- legacy `Log=0` becomes `LogLevel=0`;
-- legacy `Log=1` with `DebugLog=1` becomes `LogLevel=4`;
-- other enabled legacy logging becomes `LogLevel=1`.
-
-After migration, the obsolete keys are removed so there is one authoritative
-setting.
+`DebugLog`. If `LogLevel` is missing, duplicated, or invalid, level 1 is inserted.
+Legacy `Log` and `DebugLog` values are ignored and removed so there is one
+authoritative setting.
 
 ## Timestamp Format
 
@@ -61,7 +56,7 @@ every logging call with separate logger APIs, which would create unnecessary
 surface area.
 
 Settings parsing, persistence, and tests cover exact accepted values, invalid
-input, legacy migration, and independent diagnostic gating. Logger tests cover
+input, obsolete-key normalization, and independent diagnostic gating. Logger tests cover
 each level, routing to four separate files, and local timestamp formatting.
 Verification remains limited to the changed logging and settings paths, as
 requested.

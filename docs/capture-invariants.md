@@ -73,9 +73,9 @@ and are never written to disk.
 | `2` | Level 1 plus starts, upgrades, metadata updates, skips, renames, and settings activity |
 | `4` | Level 2 plus diagnostic records |
 
-Missing or invalid values normalize to level 1. Existing `Log=0` migrates to
-level 0; an enabled legacy `Log` plus `DebugLog=1` migrates to level 4. The old
-keys are removed after migration.
+Missing, duplicate, or invalid values normalize to level 1. Obsolete `Log` and
+`DebugLog` values are ignored and removed when the authoritative `LogLevel` key
+is added.
 
 Every record uses local ISO 8601 time with a numeric UTC offset. The general log
 is `Floggfy.log`; ordinary diagnostics use `Floggfy-diagnostics.log`; sanitized

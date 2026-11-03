@@ -21,7 +21,7 @@
 
 ## Review Focus
 
-- An existing `Log=0` INI must migrate to `LogLevel=0`, not silently begin logging; Task 1 tests this.
+- An INI without `LogLevel` must ignore obsolete `Log`/`DebugLog` values and insert `LogLevel=1`; Task 1 tests this.
 - Duplicate, padded, or unsupported `LogLevel` input must normalize to one authoritative `LogLevel=1`; Task 1 tests this.
 - Level 1 must retain failures and warnings while rejecting starts, upgrades, renames, and other level-2 activity; Task 2 tests the full matrix.
 - Local timestamps must remain unambiguous across non-UTC zones by including a signed offset; Task 2 tests the formatter against Win32 conversion.
@@ -49,7 +49,7 @@
 
 - [ ] **Step 1: Add failing settings and migration tests**
 
-Extend `windows_settings_test.cpp` with `log-0`, `log-1`, `log-2`, `log-4`, `log-invalid`, `log-padded`, `legacy-log-zero`, and `legacy-debug-one`. Assert the exact in-memory level, normalized persisted `LogLevel`, and absence of `Log`/`DebugLog` after migration. Extend `windows_pr13_settings_test.cpp` to assert level-4 collector debug gating and independent networking/hook settings.
+Extend `windows_settings_test.cpp` with `log-0`, `log-1`, `log-2`, `log-4`, `log-invalid`, `log-padded`, `legacy-log-zero`, and `legacy-debug-one`. Assert the exact in-memory level, normalized persisted `LogLevel`, obsolete-value ignorance, and absence of `Log`/`DebugLog` after normalization. Extend `windows_pr13_settings_test.cpp` to assert level-4 collector debug gating and independent networking/hook settings.
 
 - [ ] **Step 2: Add the log settings scenarios to the focused runner**
 
@@ -63,7 +63,7 @@ Expected: FAIL because `Settings::log_level`, `LogLevel()`, and legacy-key remov
 
 - [ ] **Step 4: Implement strict parsing and one-time migration**
 
-Add `ReadLogLevel(Settings&, const std::wstring& path)` in `history_settings.cpp`. Exact new values win; absent new values derive `0` from legacy `Log=0`, `4` from enabled legacy `Log` plus `DebugLog=1`, and otherwise `1`. Normalize invalid/duplicate input to `1`, persist `LogLevel`, erase both legacy keys, and make collector options use `settings.log_level>=4`.
+Add `ReadLogLevel(Settings&, const std::wstring& path)` in `history_settings.cpp`. Exact new values win. Missing, invalid, or duplicate input becomes `1` without consulting obsolete keys; persist `LogLevel`, erase both legacy keys, and make collector options use `settings.log_level>=4`.
 
 - [ ] **Step 5: Run the focused settings tests**
 
