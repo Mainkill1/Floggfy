@@ -38,6 +38,9 @@ and are never written to disk.
   supply URI/media kind while a Windows Ready snapshot supplies playback state and
   duration. Binding requires one decoded capture whose declared duration agrees
   with that Ready stage; a transition alone never assigns a decoder.
+- Once that binding is proven, the app URI is the canonical listen identity across
+  continuous Windows snapshots. A delayed title/artist correction cannot split the
+  listen generation; a successor transition prevents carrying the old URI forward.
 - If the optional decoded hook cannot be installed safely, capture continues at 1x
   without ownership gating. Accelerated menu choices are disabled.
 

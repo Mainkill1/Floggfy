@@ -1344,6 +1344,22 @@ static uint64_t BindReadyCapture(CaptureBuffers& buffers,const Media& media,
         media.playback_instance,resolved_uri,generation,observed))return 0;
     return buffers.ownership_tracker->Binding(candidate->capture_token).playback_token;
 }
+static void CanonicalizeBoundReadyIdentity(Media& media,Listen& listen,
+                                           const std::string& uri,uint64_t playback_token) {
+    if(!playback_token||uri.empty())return;
+    if(media.spotify_uri.empty())media.spotify_uri=uri;
+    if(media.source==MediaSource::Windows&&listen.generation)
+        listen.identity=media.ListenKey();
+}
+static void CarryBoundReadyIdentity(Media& media,const Media& current,
+                                    bool successor_transition_pending) {
+    if(successor_transition_pending||media.source!=MediaSource::Windows||
+       current.source!=MediaSource::Windows||!media.spotify_uri.empty()||
+       current.spotify_uri.empty()||media.duration<=0||current.duration<=0||
+       std::fabs(media.duration-current.duration)>1.0||
+       media.position<current.position-1.5)return;
+    media.spotify_uri=current.spotify_uri;
+}
 static void RememberBoundCaptureIdentity(CaptureBuffers& buffers,const Media& media,
                                          uint64_t generation,uint64_t playback_token) {
     if(!buffers.ownership_tracker||!generation||!playback_token)return;
@@ -2224,6 +2240,7 @@ static DWORD WINAPI Worker(LPVOID) {
                 PublishCurrentDestination(media,preferences);
                 quality.Media(media.Key(),media.title,media.position,media.duration,observed_at,media.playing);
                 client_quality=ReadClientPlaybackQuality(media);
+                CarryBoundReadyIdentity(media,current,!ownership_transition_uri.empty());
                 const auto playback_uri=media.spotify_uri;
                 const auto confirmed_transition=buffers.confirmed_transition_playback;
                 if(enabled) {
@@ -2233,8 +2250,9 @@ static DWORD WINAPI Worker(LPVOID) {
                 const auto playback_token=BindReadyCapture(
                     buffers,current,listen.generation,observed_at,confirmed_transition,
                     ownership_transition_uri);
-                if(playback_token&&current.spotify_uri.empty()&&!ownership_transition_uri.empty())
-                    current.spotify_uri=ownership_transition_uri;
+                CanonicalizeBoundReadyIdentity(current,listen,
+                    current.spotify_uri.empty()?ownership_transition_uri:current.spotify_uri,
+                    playback_token);
                 RememberBoundCaptureIdentity(buffers,current,listen.generation,playback_token);
                 if(playback_token)ownership_transition_uri.clear();
                 if(DebugLoggingEnabled()&&playback_token&&

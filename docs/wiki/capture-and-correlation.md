@@ -52,6 +52,8 @@ from whichever stream finishes first.
 3. **Playback stage corroborated.** A Ready listen generation, media kind, and
    codec-declared duration select exactly one decoded capture. The URI may come
    from the app transition while playback state and duration come from Windows.
+   After binding, that URI remains the listen identity while Windows refines its
+   title or artist; it is not carried across a successor transition.
 4. **Capture completed.** Codec-specific structural evidence proves that the
    compressed stream is whole.
 5. **Candidate selected.** A completed listen must have one compatible, complete

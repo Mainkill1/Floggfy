@@ -1333,6 +1333,35 @@ void WindowsReadyNaturalAppTransitionPublishes() {
     assert(saves.Pop(job)&&job.heard.generation==1);
     publishing_reserved.fetch_sub(job.reserved);
 }
+void BoundWindowsIdentitySurvivesMetadataRefinement() {
+    Media first;first.source=MediaSource::Windows;first.title=L"Stale outgoing title";
+    first.artist=L"Old artist";first.duration=160.774;first.position=.150;first.playing=true;
+    Listen listen;listen.identity=first.ListenKey();listen.generation=7;
+    listen.eligible=true;listen.playing=true;listen.duration=first.duration;
+    listen.last_position=first.position;listen.last_time=100;
+
+    CanonicalizeBoundReadyIdentity(
+        first,listen,"spotify:track:incoming",4);
+    assert(first.spotify_uri=="spotify:track:incoming"&&
+           listen.identity=="spotify:track:incoming"&&
+           "a proven decoder binding promotes the app URI to the listen identity");
+
+    Media refined;refined.source=MediaSource::Windows;refined.title=L"Turn It Up";
+    refined.artist=L"Keanu Silva";refined.duration=160.774;
+    refined.position=.751;refined.playing=true;
+    CarryBoundReadyIdentity(refined,first,false);
+    const auto generation=listen.generation;
+    std::vector<Heard> heard;CaptureBuffers buffers;Media current=first;
+    AssociateListen(refined,listen,current,heard,buffers,100.6);
+    assert(listen.generation==generation&&listen.eligible&&heard.empty()&&
+           "a title correction inside one proven playback lifecycle cannot orphan its capture binding");
+
+    Media successor;successor.source=MediaSource::Windows;successor.title=L"Next";
+    successor.duration=refined.duration;successor.position=0;successor.playing=true;
+    CarryBoundReadyIdentity(successor,current,true);
+    assert(successor.spotify_uri.empty()&&
+           "a registered successor transition prevents URI inheritance from the outgoing lifecycle");
+}
 void MissingPlaybackWarning() {
     CaptureBuffers buffers;auto complete=std::make_unique<Capture>();complete->finished=10;
     buffers.ready.push_back(std::move(complete));MediaDiagnostic diagnostic;
@@ -1401,7 +1430,7 @@ void EnrichTags(const Media&,Tags&){}
 int wmain() {
     // Use in-memory preferences only. Never read or write the user's INI/music.
     InterlockedExchange(&history::debug_enabled,1);
-    Connectivity();PodcastCatalog();PodcastCaptureEvents();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();EmptyPlaybackIdNaturalTransitionIsRetried();BoundNaturalTransitionUsesFinalCaptureEvidence();DjVoiceDoesNotBlockMusicStart();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailLifecycle();ReadyDurationCorroboratesDecoder();WindowsReadyNaturalAppTransitionPublishes();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
+    Connectivity();PodcastCatalog();PodcastCaptureEvents();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();EmptyPlaybackIdNaturalTransitionIsRetried();BoundNaturalTransitionUsesFinalCaptureEvidence();DjVoiceDoesNotBlockMusicStart();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailLifecycle();ReadyDurationCorroboratesDecoder();WindowsReadyNaturalAppTransitionPublishes();BoundWindowsIdentitySurvivesMetadataRefinement();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
     puts("PASS: observed transitions, one FLAC failure context/outcome, original callback semantics, profiling-only intervals, basic-mode zero profiling and changed-only NLM observations");
     return 0;
 }

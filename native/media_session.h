@@ -22,7 +22,12 @@ struct Media {
     bool natural_transition=false; // Positive renderer transition evidence; absent is unknown.
     bool transition_pending=false; // Natural-transition candidate awaiting a successor playback ID.
     std::string Key() const;
-    std::string ListenKey() const {return source==MediaSource::Spotify?spotify_uri+(playback_instance.empty()?std::string{}:"\x1f"+playback_instance):Key();}
+    std::string ListenKey() const {
+        if(source==MediaSource::Spotify)
+            return spotify_uri+(playback_instance.empty()?std::string{}:
+                "\x1f"+playback_instance);
+        return spotify_uri.empty()?Key():spotify_uri;
+    }
 };
 std::string Utf8(const std::wstring& s);
 enum class MediaRead { Pending,Ready,Failed,Transition };
