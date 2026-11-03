@@ -90,9 +90,12 @@ vacancy is selected. The result is one of:
 - **Blocked:** an existing candidate cannot be read; retry later instead of making
   a possible duplicate.
 
-FLAC can replace lower verified quality; Vorbis compares supported nominal quality.
-AAC and MP3 do not infer that VBR size variation means better quality. Format and
-identity rules live in [`recording_formats.h`](../../native/recording_formats.h),
+FLAC can replace lower verified quality, including a complete owned Ogg for the
+same recording. In that cross-format case, Floggfy locks the exact Ogg, carries
+its retained metadata into the FLAC, verifies the published FLAC, and only then
+retires the Ogg. A prior run that left both formats is repaired by the same path.
+Vorbis compares supported nominal quality. AAC and MP3 do not infer that VBR size
+variation means better quality. Format and identity rules live in [`recording_formats.h`](../../native/recording_formats.h),
 [`library_layout.cpp`](../../native/library_layout.cpp), and
 [`existing_quality.cpp`](../../native/existing_quality.cpp).
 
