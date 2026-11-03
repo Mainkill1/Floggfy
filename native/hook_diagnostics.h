@@ -43,7 +43,7 @@ inline void PollHookDiagnostics() noexcept {
             "direction=local source=hook-diagnostic phase=%s state=%s thread=%u started_ms=%llu elapsed_ms=%llu",
             diagnostics::PhaseName(observation.phase),observation.pending?"still-active":"completed-slow",
             observation.thread,static_cast<unsigned long long>(observation.started_ms),
-            static_cast<unsigned long long>(observation.elapsed_ms));QueueNetworkingDiagnostic(line);
+            static_cast<unsigned long long>(observation.elapsed_ms));QueueHookDiagnostic(line);
     });
     const auto last=capture_progress_ms.load(std::memory_order_acquire);
     const auto state=progress.Observe(last,now);
@@ -51,12 +51,12 @@ inline void PollHookDiagnostics() noexcept {
         char line[200];std::snprintf(line,sizeof(line),
             "direction=local source=hook-diagnostic phase=capture-worker state=%s last_progress_ms=%llu age_ms=%llu",
             state==diagnostics::ProgressState::Stalled?"progress-gap":"recovered",
-            static_cast<unsigned long long>(last),static_cast<unsigned long long>(now>=last?now-last:0));QueueNetworkingDiagnostic(line);
+            static_cast<unsigned long long>(last),static_cast<unsigned long long>(now>=last?now-last:0));QueueHookDiagnostic(line);
     }
     const auto omitted=hook_activity.TakeOmitted();
     if(omitted) {
         char line[130];std::snprintf(line,sizeof(line),"direction=local source=hook-diagnostic observations_omitted=%llu",
-            static_cast<unsigned long long>(omitted));QueueNetworkingDiagnostic(line);
+            static_cast<unsigned long long>(omitted));QueueHookDiagnostic(line);
     }
 }
 }

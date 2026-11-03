@@ -8,7 +8,8 @@ namespace {
 constexpr const char* marker="EXAMPLE_PRIVATE_SENTINEL";
 std::wstring test_root;
 void EmptyQueues() {
-    assert(history::activity_queue.count==0&&history::diagnostic_queue.count==0);
+    assert(history::activity_queue.count==0&&history::diagnostic_queue.count==0&&
+        history::networking_queue.count==0&&history::hook_queue.count==0);
 }
 std::string ReadText(const std::wstring& path) {
     HANDLE file=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr);
@@ -23,14 +24,16 @@ void FlushAndCheck() {
     while(history::Take(history::activity_queue,record)) {
         assert(std::string(record.detail).find(marker)==std::string::npos);
         assert(std::string(record.detail).find("FLOGGFY_")==std::string::npos);
-        history::WriteRecord(record,false);
+        history::WriteRecord(record,history::LogLane::Activity);
     }
     while(history::Take(history::diagnostic_queue,record)) {
         assert(std::string(record.detail).find(marker)==std::string::npos);
         assert(std::string(record.detail).find("FLOGGFY_")==std::string::npos);
-        history::WriteRecord(record,true);
+        history::WriteRecord(record,history::LogLane::Diagnostic);
     }
-    for(const auto name:{L"Floggfy.log",L"Floggfy-diagnostics.log"}) {
+    while(history::Take(history::networking_queue,record))history::WriteRecord(record,history::LogLane::Networking);
+    while(history::Take(history::hook_queue,record))history::WriteRecord(record,history::LogLane::Hook);
+    for(const auto name:{L"Floggfy.log",L"Floggfy-diagnostics.log",L"Floggfy-networking.log",L"Floggfy-hook-diagnostics.log"}) {
         const auto text=ReadText(test_root+L"\\"+name);
         assert(text.find(marker)==std::string::npos&&text.find("FLOGGFY_")==std::string::npos);
     }
@@ -79,12 +82,12 @@ void ValidRouting() {
     for(bool network:{false,true}) {
         Mode(true,true,network);
         QueueDiagnostic(status);
-        assert(activity_queue.count==0&&diagnostic_queue.count==1);
+        assert(activity_queue.count==0&&diagnostic_queue.count==1&&networking_queue.count==0);
         FlushAndCheck();
         assert(QueueRendererDiagnostic(L"FLOGGFY_STATUS:connect state=connected target=local device_changed=1 controller=unknown"));
         assert(activity_queue.count==0&&diagnostic_queue.count==1);FlushAndCheck();
         QueueDiagnostic("FLOGGFY_NETWORK_V1:request op=1 kind=lyrics phase=rejected code=503 elapsed_ms=1");
-        assert(activity_queue.count==0&&diagnostic_queue.count==size_t(network));FlushAndCheck();
+        assert(activity_queue.count==0&&diagnostic_queue.count==0&&networking_queue.count==size_t(network));FlushAndCheck();
         QueueDiagnostic("FLOGGFY_STATUS:metadata collector started");
         QueueDiagnostic("FLOGGFY_STATUS:cached player found");
         EmptyQueues(); // Retired readiness text stays reserved and is not forwarded.
@@ -95,10 +98,12 @@ void ValidRouting() {
     LogEvent(LogKind::Failure,"failed","native capture failed; original file retained");
     assert(activity_queue.count==1&&diagnostic_queue.count==0);FlushAndCheck(); // Core failures still log below level 4.
     const auto activity=ReadText(test_root+L"\\Floggfy.log");
-    const auto networking=ReadText(test_root+L"\\Floggfy-diagnostics.log");
+    const auto diagnostics=ReadText(test_root+L"\\Floggfy-diagnostics.log");
+    const auto networking=ReadText(test_root+L"\\Floggfy-networking.log");
     assert(activity.find("source=client-control")==std::string::npos);
     assert(activity.find("native capture failed")!=std::string::npos);
-    assert(networking.find("source=client-control")!=std::string::npos&&networking.find("phase=rejected code=503")!=std::string::npos);
+    assert(diagnostics.find("source=client-control")!=std::string::npos&&diagnostics.find("phase=rejected code=503")==std::string::npos);
+    assert(networking.find("source=client-control")==std::string::npos&&networking.find("phase=rejected code=503")!=std::string::npos);
 }
 }
 int wmain() {

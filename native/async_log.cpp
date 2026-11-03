@@ -12,12 +12,12 @@
 #include <atomic>
 namespace history {namespace {
 constexpr size_t cap=5*1024*1024,retained_tail=4*1024*1024,batch_size=16;
+enum class LogLane {Activity,Diagnostic,Networking,Hook};
 struct Record {
  char event[16]{};
  char detail[768]{};
  SYSTEMTIME utc{};
  ULONGLONG observed_ms=0,sequence=0;
- bool networking=false;
 };
 struct LogQueue {
  std::array<Record,128> records{};
@@ -26,7 +26,7 @@ struct LogQueue {
  std::atomic<unsigned long> omitted{0};
  SRWLOCK lock=SRWLOCK_INIT;
 };
-static LogQueue activity_queue,diagnostic_queue;
+static LogQueue activity_queue,diagnostic_queue,networking_queue,hook_queue;
 static HANDLE signal=nullptr;
 static void Omit(LogQueue& queue) noexcept {
  auto value=queue.omitted.load(std::memory_order_relaxed);
@@ -44,7 +44,7 @@ static void CopyText(char* target,size_t capacity,std::string_view source) noexc
 static void Stamp(Record& record) noexcept {
  record.observed_ms=GetTickCount64();GetSystemTime(&record.utc);
 }
-static void Push(LogQueue& queue,const char* event,std::string_view text,bool networking=false) noexcept {
+static void Push(LogQueue& queue,const char* event,std::string_view text) noexcept {
  if(!signal)return;
  if(!TryAcquireSRWLockExclusive(&queue.lock)){Omit(queue);return;}
  if(queue.count<queue.records.size()) {
@@ -52,7 +52,7 @@ static void Push(LogQueue& queue,const char* event,std::string_view text,bool ne
   CopyText(record.event,sizeof(record.event),event?std::string_view(event):std::string_view{});
   CopyText(record.detail,sizeof(record.detail),text);
   // Stamp enqueue time, not eventual disk-write time, to correlate delayed work.
-  Stamp(record);record.sequence=++queue.sequence;record.networking=networking;
+  Stamp(record);record.sequence=++queue.sequence;
   queue.tail=(queue.tail+1)%queue.records.size();++queue.count;
  }else Omit(queue);
  ReleaseSRWLockExclusive(&queue.lock);SetEvent(signal);
@@ -67,7 +67,7 @@ static void RouteRendererDiagnostic(std::string_view text) noexcept {
  const bool networking=text.substr(0,19)=="FLOGGFY_NETWORK_V1:";
  if(networking&&!NetworkingLoggingEnabled())return;
  if((text.substr(0,23)=="FLOGGFY_STATUS:connect "||text.substr(0,23)=="FLOGGFY_STATUS:control ")&&!ConnectLoggingEnabled())return;
- Push(diagnostic_queue,networking?"network":"debug",summary,networking);
+ Push(networking?networking_queue:diagnostic_queue,networking?"network":"debug",summary);
 }
 static size_t TakeBatch(LogQueue& queue,Record* records,size_t capacity) noexcept {
  AcquireSRWLockExclusive(&queue.lock);
@@ -104,21 +104,37 @@ static std::string FormatLogRecord(const Record& record,bool diagnostics) {
   stamp.offset_minutes<0?'-':'+',offset/60,offset%60,record.event,record.detail);
  return length>0&&length<int(sizeof(line))?std::string(line,size_t(length)):std::string{};
 }
-static void WriteBatch(const Record* records,size_t count,bool diagnostics) noexcept {
+static bool LaneEnabled(LogLane lane) noexcept {
+ if(lane==LogLane::Activity)return LoggingEnabled();
+ if(lane==LogLane::Networking)return NetworkingLoggingEnabled();
+ if(lane==LogLane::Hook)return HookDiagnosticsEnabled();
+ return DebugLoggingEnabled();
+}
+static const wchar_t* LaneFile(LogLane lane) noexcept {
+ if(lane==LogLane::Activity)return L"\\Floggfy.log";
+ if(lane==LogLane::Networking)return L"\\Floggfy-networking.log";
+ if(lane==LogLane::Hook)return L"\\Floggfy-hook-diagnostics.log";
+ return L"\\Floggfy-diagnostics.log";
+}
+static const char* LaneName(LogLane lane) noexcept {
+ if(lane==LogLane::Activity)return "activity";
+ if(lane==LogLane::Networking)return "networking";
+ if(lane==LogLane::Hook)return "hook";
+ return "diagnostic";
+}
+static void WriteBatch(const Record* records,size_t count,LogLane lane) noexcept {
  try {
   const auto settings=GetSettings();
-  if(!settings.log_level||settings.root.empty()||(diagnostics&&!DebugLoggingEnabled()))return;
+  if(settings.root.empty()||!LaneEnabled(lane))return;
+  const bool diagnostics=lane!=LogLane::Activity;
   std::string batch;batch.reserve(count*1100);
-  for(size_t i=0;i<count;++i) {
-   if(records[i].networking&&!NetworkingLoggingEnabled())continue;
-   batch+=FormatLogRecord(records[i],diagnostics);
-  }
+  for(size_t i=0;i<count;++i)batch+=FormatLogRecord(records[i],diagnostics);
   if(batch.empty()||!EnsureDirectory(settings.root))return;
-  WriteCappedLog(settings.root+(diagnostics?L"\\Floggfy-diagnostics.log":L"\\Floggfy.log"),batch);
+  WriteCappedLog(settings.root+LaneFile(lane),batch);
  }catch(...) {/* Logging failures must not stop capture or either log queue. */}
 }
-[[maybe_unused]] static void WriteRecord(const Record& record,bool diagnostics) noexcept {WriteBatch(&record,1,diagnostics);}
-static bool Drain(LogQueue& queue,bool diagnostics) noexcept {
+[[maybe_unused]] static void WriteRecord(const Record& record,LogLane lane) noexcept {WriteBatch(&record,1,lane);}
+static bool Drain(LogQueue& queue,LogLane lane) noexcept {
  std::array<Record,batch_size+1> records{};
  auto count=TakeBatch(queue,records.data(),batch_size);
  const auto now=GetTickCount64();
@@ -126,14 +142,15 @@ static bool Drain(LogQueue& queue,bool diagnostics) noexcept {
   const auto omitted=queue.omitted.exchange(0,std::memory_order_relaxed);
   if(omitted) {
    auto& record=records[count++];Stamp(record);
-   CopyText(record.event,sizeof(record.event),diagnostics?"debug":"warning");
-   std::snprintf(record.detail,sizeof(record.detail),"logger %s records omitted=%lu; evidence incomplete",diagnostics?"diagnostic":"activity",omitted);
+   CopyText(record.event,sizeof(record.event),lane==LogLane::Activity?"warning":
+       lane==LogLane::Networking?"network":lane==LogLane::Hook?"hook":"debug");
+   std::snprintf(record.detail,sizeof(record.detail),"logger %s records omitted=%lu; evidence incomplete",LaneName(lane),omitted);
    // Queue sequences describe producer records only; zero identifies this
    // worker-generated aggregate. Never requeue it into a saturated lane.
    queue.next_omission_report=now+5000;
   }
  }
- if(count)WriteBatch(records.data(),count,diagnostics);
+ if(count)WriteBatch(records.data(),count,lane);
  return count!=0;
 }
 static DWORD WINAPI Run(LPVOID) {
@@ -141,8 +158,11 @@ static DWORD WINAPI Run(LPVOID) {
   PollHookDiagnostics();
   // A bounded batch from each lane keeps disk work fair. Optional observations
   // never reserve normal activity slots, including basic debug messages.
-  const bool activity=Drain(activity_queue,false),diagnostics=Drain(diagnostic_queue,true);
-  if(!activity&&!diagnostics)WaitForSingleObject(signal,HookDiagnosticsEnabled()?500:1000);
+  const bool activity=Drain(activity_queue,LogLane::Activity);
+  const bool diagnostics=Drain(diagnostic_queue,LogLane::Diagnostic);
+  const bool networking=Drain(networking_queue,LogLane::Networking);
+  const bool hook=Drain(hook_queue,LogLane::Hook);
+  if(!activity&&!diagnostics&&!networking&&!hook)WaitForSingleObject(signal,HookDiagnosticsEnabled()?500:1000);
  }
 }
 }
@@ -184,7 +204,11 @@ void QueueNetworkingDiagnostic(const char* message) noexcept {
  if(!message)return;
  const std::string_view text(message,strnlen(message,768));
  if(IsRendererDiagnostic(text)){RouteRendererDiagnostic(text);return;}
- if(NetworkingLoggingEnabled())Push(diagnostic_queue,"network",text,true);
+ if(NetworkingLoggingEnabled())Push(networking_queue,"network",text);
+}
+void QueueHookDiagnostic(const char* message) noexcept {
+ if(!message||!HookDiagnosticsEnabled())return;
+ const std::string_view text(message,strnlen(message,768));Push(hook_queue,"hook",text);
 }
 bool QueueRendererDiagnostic(std::wstring_view message) noexcept {
  if(!IsRendererDiagnostic(message))return false;
