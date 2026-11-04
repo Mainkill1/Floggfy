@@ -1397,6 +1397,7 @@ struct CaptureBuffers {
     uint64_t pending_natural_generation=0;
     uint64_t confirmed_transition_playback=0;
     bool unidentified_interstitial_active=false;
+    bool unidentified_advertisement=false;
     std::string unidentified_successor_uri;
     std::string unidentified_successor_instance;
     double pending_natural_time=0;
@@ -1481,8 +1482,26 @@ static bool SpotifyCurrentItemChanged(const Media& previous,const Media& next) {
 }
 static void ClearUnidentifiedSuccessor(CaptureBuffers& buffers) {
     buffers.unidentified_interstitial_active=false;
+    buffers.unidentified_advertisement=false;
     buffers.unidentified_successor_uri.clear();
     buffers.unidentified_successor_instance.clear();
+}
+static bool ActiveInterstitialReason(const char* reason) noexcept {
+    return reason&&(std::strcmp(reason,"client-active-advertisement")==0||
+                   std::strcmp(reason,"client-active-interstitial")==0||
+                   std::strcmp(reason,"client-active-without-uri")==0);
+}
+static void MarkUnidentifiedInterstitial(CaptureBuffers& buffers,const char* reason) {
+    const bool advertisement=reason&&std::strcmp(reason,"client-active-advertisement")==0;
+    const bool changed=!buffers.unidentified_interstitial_active||
+        buffers.unidentified_advertisement!=advertisement;
+    buffers.unidentified_interstitial_active=true;
+    buffers.unidentified_advertisement=advertisement;
+    buffers.unidentified_successor_uri.clear();
+    buffers.unidentified_successor_instance.clear();
+    if(changed)LogEvent(LogKind::Activity,"ignored",advertisement?
+        "Spotify advertisement (audio excluded from downloads)":
+        "Spotify interstitial without a supported URI (audio excluded from downloads)");
 }
 static bool PrepareUnidentifiedSuccessor(CaptureBuffers& buffers,const Media& previous,
                                          const Media& next) {
@@ -2184,10 +2203,15 @@ static bool FinishAppTransition(const Media& next,Listen& listen,const Media& cu
         next.playback_instance!=current.playback_instance&&listen.playing;
     buffers.confirmed_transition_playback=confirmed_successor&&buffers.ownership_tracker?
         buffers.ownership_tracker->PlaybackToken(next.playback_instance):0;
-    // Spotify clears the playback ID during some natural buffering
-    // transitions. Keep the old listen intact until the first Ready snapshot
-    // supplies the successor ID; all ordinary completion checks still run then.
-    if(next.transition_pending&&next.control_monitoring&&listen.eligible&&listen.playing) {
+    // A monitored transition without an explicit control is not itself proof
+    // of either completion or rejection. Keep the old listen intact until a
+    // Ready snapshot identifies whether playback resumed or a successor began;
+    // all ordinary completion and integrity checks still run at that stage.
+    const bool observed_successor_stage=!next.natural_transition&&
+        !next.playback_instance.empty()&&next.playback_instance!=current.playback_instance&&
+        buffers.ownership_hold_generation==listen.generation;
+    const bool awaiting_ready=next.transition_pending||observed_successor_stage;
+    if(awaiting_ready&&next.control_monitoring&&listen.eligible&&listen.playing) {
         buffers.pending_natural_generation=listen.generation;
         buffers.pending_natural_time=time;
         buffers.pending_natural_playback_instance=
@@ -2454,7 +2478,9 @@ static void ReportMediaUnavailable(const CaptureBuffers& buffers,bool unavailabl
                                    const MediaDiagnostic& diagnostic,double now,MediaWarningState& warning) {
     // App state can settle just after the first decoder pages arrive. The delay
     // controls warning noise only; it never changes capture or listen state.
-    if(!unavailable || (buffers.active.empty()&&buffers.ogg_active.empty()) || std::strcmp(diagnostic.reason,"client-buffering-transition")==0) {
+    if(!unavailable || ActiveInterstitialReason(diagnostic.reason) ||
+       (buffers.active.empty()&&buffers.ogg_active.empty()) ||
+       std::strcmp(diagnostic.reason,"client-buffering-transition")==0) {
         warning={};return;
     }
     if(warning.since<0){warning.since=now;return;}
@@ -2465,7 +2491,7 @@ static void ReportMediaUnavailable(const CaptureBuffers& buffers,bool unavailabl
 }
 static void ReportUnverifiedCaptures(CaptureBuffers& buffers,bool unavailable,
                                      const MediaDiagnostic& diagnostic,double now) {
-    if(!unavailable)return;
+    if(!unavailable||ActiveInterstitialReason(diagnostic.reason))return;
     for(auto& capture:buffers.ready) {
         if(capture->unverified_reported || now-capture->finished<3)continue;
         capture->unverified_reported=true;
@@ -2641,10 +2667,8 @@ static DWORD WINAPI Worker(LPVOID) {
                 if(!pending_repeat)listen.eligible=false;
                 media_unavailable=true;diagnostics.known=false;
             } else if(observation==MediaRead::Failed || Now()-last_media>3) {
-                if(std::strcmp(media_diagnostic.reason,"client-active-without-uri")==0) {
-                    ClearUnidentifiedSuccessor(buffers);
-                    buffers.unidentified_interstitial_active=true;
-                }
+                if(ActiveInterstitialReason(media_diagnostic.reason))
+                    MarkUnidentifiedInterstitial(buffers,media_diagnostic.reason);
                 // Absence of a fresh observation is not evidence of a skip,
                 // seek, pause, ownership conflict, or lost audio. Preserve the
                 // last proven stages. A later Ready snapshot must reconcile

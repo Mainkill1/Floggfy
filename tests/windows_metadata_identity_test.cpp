@@ -96,8 +96,15 @@ int main(){
     history::MediaDiagnostic unidentified_diagnostic;
     assert(history::TryReadClientMedia(unidentified_media,unidentified_observed,
         unidentified_sequence,unidentified_diagnostic)==history::ClientMediaRead::Blocked&&
-        std::string(unidentified_diagnostic.reason)=="client-active-without-uri"&&
+        std::string(unidentified_diagnostic.reason)=="client-active-interstitial"&&
         "active URI-less playback must be a marked uncertain stage, never a Ready track");
+    wchar_t advertisement[]=L"FLOGGFY_TIMELINE_V1:v=1&unavailable=track-unavailable&active=1&kind=advertisement";
+    unidentified={advertisement,wcslen(advertisement),nullptr};
+    assert(history::CurrentTimeline(&unidentified));
+    assert(history::TryReadClientMedia(unidentified_media,unidentified_observed,
+        unidentified_sequence,unidentified_diagnostic)==history::ClientMediaRead::Blocked&&
+        std::string(unidentified_diagnostic.reason)=="client-active-advertisement"&&
+        "an explicit Spotify advertisement must remain non-recordable and be named accurately");
     wchar_t malformed_unidentified[]=L"FLOGGFY_TIMELINE_V1:v=1&unavailable=track-unavailable&active=2";
     unidentified={malformed_unidentified,wcslen(malformed_unidentified),nullptr};
     assert(history::CurrentTimeline(&unidentified));

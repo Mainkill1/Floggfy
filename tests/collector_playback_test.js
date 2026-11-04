@@ -35,9 +35,14 @@ state.item={uri:'',metadata:{title:'Unidentified audio'}};state.isPaused=false;s
 state.timestamp=now;state.positionAsOfTimestamp=1000;now+=500;context.window.__floggfyPoll();
 assert.equal(last().get('unavailable'),'track-unavailable');
 assert.equal(last().get('active'),'1','local unpaused URI-less audio must be marked as an active unidentified item');
+assert.equal(last().get('kind'),'interstitial','blank active media is identified conservatively as an interstitial');
 state.isPaused=true;state.timestamp=now;now+=500;context.window.__floggfyPoll();
 assert.equal(last().get('unavailable'),'track-unavailable');
 assert.equal(last().get('active'),null,'paused URI-less media is unavailable, not an active interstitial');
+state.item={uri:'spotify:ad:0000000000000000000001',metadata:{title:'Advertisement',type:'ad'}};
+state.isPaused=false;state.timestamp=now;now+=500;context.window.__floggfyPoll();
+assert.equal(last().get('active'),'1');
+assert.equal(last().get('kind'),'advertisement','an explicit Spotify ad identity is logged as an advertisement');
 state.item={uri:'spotify:track:0000000000000000000001',metadata:{title:'Song',artist_name:'Artist',album_title:'Album',duration:'180000'}};
 state.isPaused=false;state.timestamp=now;
 Object.defineProperty(state,'positionAsOfTimestamp',{get(){getters++;throw Error('getter forbidden');},configurable:true});

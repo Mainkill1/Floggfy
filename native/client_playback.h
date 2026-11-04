@@ -14,8 +14,18 @@ struct ClientPlaybackRecord {
     int local=-1;
     std::string instance;
 };
-inline bool ParseClientActiveWithoutUri(const std::string& input) noexcept {
-    return input=="v=1&unavailable=track-unavailable&active=1";
+enum class ClientInterstitialKind { None,Interstitial,Advertisement };
+inline bool ParseClientActiveWithoutUri(const std::string& input,
+                                        ClientInterstitialKind* kind=nullptr) noexcept {
+    ClientInterstitialKind parsed=ClientInterstitialKind::None;
+    if(input=="v=1&unavailable=track-unavailable&active=1"||
+       input=="v=1&unavailable=track-unavailable&active=1&kind=interstitial")
+        parsed=ClientInterstitialKind::Interstitial;
+    else if(input=="v=1&unavailable=track-unavailable&active=1&kind=advertisement")
+        parsed=ClientInterstitialKind::Advertisement;
+    else return false;
+    if(kind)*kind=parsed;
+    return true;
 }
 inline bool ParseClientPlayback(const std::string& input,ClientPlaybackRecord& out,std::string& error) {
     const auto fail=[&](const char* reason){error=reason;return false;};

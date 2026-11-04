@@ -803,6 +803,38 @@ void EmptyPlaybackIdNaturalTransitionIsRetried() {
            !prior_blank_listen.eligible&&prior_blank_heard.empty()&&
            "a later Ready ID cannot consume evidence for a skipped buffering stage");
 }
+void UnclassifiedMonitoredTransitionWaitsForReady() {
+    CaptureBuffers buffers;std::vector<Heard> heard;Listen listen;Media current;
+    current.source=MediaSource::Spotify;
+    current.spotify_uri="spotify:track:0000000000000000000001";
+    current.playback_instance="outgoing";current.title=L"Outgoing";
+    current.duration=301.92;current.playing=true;
+    for(unsigned second=0;second<=301;++second) {
+        current.position=second;
+        AssociateListen(current,listen,current,heard,buffers,100+second);
+    }
+    current.position=current.duration;
+    AssociateListen(current,listen,current,heard,buffers,401.92);
+    assert(listen.eligible&&listen.playing&&heard.empty());
+    // The immediately preceding same-instance buffering stage proved that the
+    // outgoing decoder still owned this listen before Spotify exposed a new ID.
+    buffers.ownership_hold_generation=listen.generation;
+
+    Media transition;transition.source=MediaSource::Spotify;
+    transition.spotify_uri="spotify:track:0000000000000000000002";
+    transition.playback_instance="successor";transition.control_monitoring=true;
+    transition.playing=false;
+    assert(FinishAppTransition(transition,listen,current,heard,buffers,402.1)&&
+           buffers.pending_natural_generation==listen.generation&&listen.eligible&&
+           heard.empty()&&
+           "an uncontrolled monitored transition waits for its Ready identity instead of guessing");
+
+    Media ready=transition;ready.playing=true;ready.position=.1;ready.duration=294.507;
+    ready.title=L"Successor";
+    assert(FinishPendingNaturalTransition(ready,listen,current,heard,buffers)&&
+           heard.size()==1&&!buffers.pending_natural_generation&&
+           "the successor Ready stage supplies the positive evidence that completes the transition");
+}
 void BoundNaturalTransitionUsesFinalCaptureEvidence() {
     ownership::DecoderOwnershipTracker tracker;tracker.Reset(24);
     CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
@@ -1190,7 +1222,10 @@ void DecoderOwnershipFinalReconciliation() {
     replay.playing=false;replay.natural_transition=false;
     replay.control_monitoring=true;
     tracker.ObserveTransition(replay.playback_instance,replay.spotify_uri,101.8,false,false);
-    assert(!FinishAppTransition(replay,listen,current,heard,buffers,101.8));
+    assert(FinishAppTransition(replay,listen,current,heard,buffers,101.8)&&heard.empty()&&
+           "an unclassified successor stage is not treated as a completed listen");
+    auto replay_ready=replay;replay_ready.playing=true;replay_ready.position=.1;
+    assert(FinishPendingNaturalTransition(replay_ready,listen,current,heard,buffers));
     assert(heard.size()==1&&heard[0].generation==2&&heard[0].provisional);
     SchedulePublications(heard,buffers,7,101.8);SaveJob job;
     assert(saves.Pop(job)&&job.capture->capture_token&&job.heard.generation==2&&
@@ -1273,7 +1308,10 @@ void DecoderOwnershipFinalReconciliation() {
     assert(FinishAppTransition(ogg_buffering,ogg_listen,ogg_current,ogg_heard,ogg_buffers,300.51)&&
            ogg_heard.empty()&&"same-instance buffering establishes monitored Ogg continuity");
     ogg_tracker.ObserveTransition("ogg-two",ogg_next.spotify_uri,300.52,false,false);
-    assert(!FinishAppTransition(ogg_next,ogg_listen,ogg_current,ogg_heard,ogg_buffers,300.52)&&
+    assert(FinishAppTransition(ogg_next,ogg_listen,ogg_current,ogg_heard,ogg_buffers,300.52)&&
+           ogg_heard.empty());
+    auto ogg_ready=ogg_next;ogg_ready.playing=true;ogg_ready.position=.1;
+    assert(FinishPendingNaturalTransition(ogg_ready,ogg_listen,ogg_current,ogg_heard,ogg_buffers)&&
            ogg_heard.size()==1&&ogg_heard[0].provisional&&
            "a complete bound 10x Ogg stream survives the delayed natural-end flag");
     SchedulePublications(ogg_heard,ogg_buffers,10,300.52);SaveJob ogg_job;
@@ -1305,7 +1343,9 @@ void UnverifiedAacFinalReconciliation() {
     auto successor=std::make_unique<Capture>();successor->born=101.21;
     buffers.ogg_active[{99,42}]=std::move(successor);
     Media next=current;next.playback_instance="play-two";next.playing=false;next.control_monitoring=true;
-    assert(!FinishAppTransition(next,listen,current,heard,buffers,101.22)&&heard.size()==1&&
+    assert(FinishAppTransition(next,listen,current,heard,buffers,101.22)&&heard.empty());
+    auto ready=next;ready.playing=true;ready.position=.1;
+    assert(FinishPendingNaturalTransition(ready,listen,current,heard,buffers)&&heard.size()==1&&
            heard[0].provisional&&"a distinct playback instance closes the retained AAC listen");
     SchedulePublications(heard,buffers,11,101.22);SaveJob job;
     assert(saves.Pop(job)&&job.capture->aac&&job.heard.generation==40&&
@@ -1744,6 +1784,23 @@ void MissingPlaybackWarning() {
     ReportMediaUnavailable(buffers,true,diagnostic,163,warning);assert(diagnostic_lines.size()==outage+1);
 
 }
+void AdvertisementStageIsNotDownloadFailure() {
+    CaptureBuffers buffers;MediaDiagnostic diagnostic;
+    diagnostic.reason="client-active-advertisement";
+    diagnostic_lines.clear();const auto failures=failure_events;
+    MarkUnidentifiedInterstitial(buffers,diagnostic.reason);
+    MarkUnidentifiedInterstitial(buffers,diagnostic.reason);
+    assert(buffers.unidentified_interstitial_active&&
+           diagnostic_lines.size()==1&&Contains("advertisement")&&Contains("excluded")&&
+           "an advertisement stage is named once and excluded from downloads");
+    auto complete=std::make_unique<Capture>();complete->finished=10;
+    buffers.ready.push_back(std::move(complete));
+    MediaWarningState warning;
+    ReportMediaUnavailable(buffers,true,diagnostic,20,warning);
+    ReportUnverifiedCaptures(buffers,true,diagnostic,20);
+    assert(failure_events==failures&&diagnostic_lines.size()==1&&
+           "expected advertisement audio cannot be reported as a song download failure");
+}
 void Connectivity() {
     assert(!LastConnectivity().known);
     RecordConnectivity({true,true,0,0x20,0x40,10});auto value=LastConnectivity();
@@ -1808,7 +1865,7 @@ int wmain(int argc,wchar_t** argv) {
         return 0;
     }
     assert(argc==1);
-    Connectivity();PodcastCatalog();PublicationLogging();PodcastCaptureEvents();ReadyUpgradesPreboundPlaybackGeneration();EmptyPlaybackIdNaturalTransitionIsRetried();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();BoundNaturalTransitionUsesFinalCaptureEvidence();DjVoiceDoesNotBlockMusicStart();CurrentItemChangeReconcilesDjSuccessor();CurrentItemChangeBeforeStreamOutputReconcilesDjSuccessor();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailLifecycle();ReadyDurationCorroboratesDecoder();WindowsReadyNaturalAppTransitionPublishes();TransitionPublicationMatrixStress();BoundWindowsIdentitySurvivesMetadataRefinement();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();SameContextFlacRestartBeginsFreshCapture();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
+    Connectivity();PodcastCatalog();PublicationLogging();PodcastCaptureEvents();ReadyUpgradesPreboundPlaybackGeneration();EmptyPlaybackIdNaturalTransitionIsRetried();UnclassifiedMonitoredTransitionWaitsForReady();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();BoundNaturalTransitionUsesFinalCaptureEvidence();DjVoiceDoesNotBlockMusicStart();CurrentItemChangeReconcilesDjSuccessor();CurrentItemChangeBeforeStreamOutputReconcilesDjSuccessor();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailLifecycle();ReadyDurationCorroboratesDecoder();WindowsReadyNaturalAppTransitionPublishes();TransitionPublicationMatrixStress();BoundWindowsIdentitySurvivesMetadataRefinement();MissingPlaybackWarning();AdvertisementStageIsNotDownloadFailure();ObservePlayback();CoverageAndFailures();SameContextFlacRestartBeginsFreshCapture();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
     puts("PASS: observed transitions, one FLAC failure context/outcome, original callback semantics, profiling-only intervals, basic-mode zero profiling and changed-only NLM observations");
     return 0;
 }
