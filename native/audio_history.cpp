@@ -1063,6 +1063,56 @@ static FilenameConversion ConvertResolvedFilename(RecordingDestination& resolved
     return result;
 }
 enum class Publication { Saved,Skipped,Failed };
+enum class DestinationFailure { None, Directory, Ogg, Preferred, Capture };
+struct PublicationDestinations {
+    RecordingDestination resolved;
+    RecordingDestination superseded_vorbis;
+    bool format_upgrade=false;
+    bool existing_lossless=false;
+    bool existing_vorbis=false;
+    bool explicit_uid_conflict=false;
+};
+static DestinationFailure ResolvePublicationDestinations(const Capture& capture,const Settings& settings,
+    const Catalog& catalog,const Quality& quality,bool duplicates,PublicationDestinations& out) {
+    out={};
+    auto path=[&](const wchar_t* extension) {
+        return duplicates
+            ?DuplicateOutputPath(settings.root,catalog,extension,settings.music_folder,settings.track_number_in_filename)
+            :OutputPath(settings.root,catalog,extension,settings.music_folder,settings.track_number_in_filename);
+    };
+    const auto capture_path=path(capture.Extension());
+    if(capture_path.empty())return DestinationFailure::Capture;
+    RecordingDirectory directory;
+    if(!ListRecordingDirectory(capture_path,directory,&catalog))return DestinationFailure::Directory;
+    if(capture.lossless&&!capture.mp3) {
+        auto ogg=ResolveRecordingDestination(path(L".ogg"),catalog,settings.track_number_in_filename,&directory);
+        out.explicit_uid_conflict=out.explicit_uid_conflict||ogg.explicit_uid_conflict;
+        if(ogg.state==RecordingDestinationState::Blocked)return DestinationFailure::Ogg;
+        if(ogg.state==RecordingDestinationState::Existing&&ogg.recording.complete&&ogg.recording.owned&&
+           ogg.recording.quality.codec==Codec::Vorbis&&HigherQuality(quality,ogg.recording.quality)) {
+            out.superseded_vorbis=std::move(ogg);out.format_upgrade=true;
+        }
+    }
+    for(const auto codec:{Codec::Flac,Codec::Vorbis}) {
+        if(capture.mp3)break;
+        if(capture.lossless||(codec==Codec::Vorbis&&!capture.aac))break;
+        const auto extension=codec==Codec::Flac?L".flac":L".ogg";
+        auto candidate=ResolveRecordingDestination(path(extension),catalog,settings.track_number_in_filename,&directory);
+        out.explicit_uid_conflict=out.explicit_uid_conflict||candidate.explicit_uid_conflict;
+        if(candidate.state==RecordingDestinationState::Blocked)return DestinationFailure::Preferred;
+        if(candidate.state==RecordingDestinationState::Existing&&candidate.recording.complete&&
+           candidate.recording.quality.codec==codec) {
+            out.existing_lossless=codec==Codec::Flac;out.existing_vorbis=codec==Codec::Vorbis;
+            out.resolved=std::move(candidate);break;
+        }
+    }
+    if(!out.existing_lossless&&!out.existing_vorbis) {
+        out.resolved=ResolveRecordingDestination(capture_path,catalog,settings.track_number_in_filename,&directory);
+        out.explicit_uid_conflict=out.explicit_uid_conflict||out.resolved.explicit_uid_conflict;
+    }
+    if(out.resolved.state==RecordingDestinationState::Blocked)return DestinationFailure::Capture;
+    return DestinationFailure::None;
+}
 static LogKind PublicationLogKind(Publication status,bool newly_saved) {
     if(status==Publication::Failed)return LogKind::Failure;
     if(status==Publication::Saved&&newly_saved)return LogKind::Finished;
@@ -1101,50 +1151,35 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     // arrive while a completed listen waits for publication; make final tags
     // and path planning agree before inspecting any existing recording.
     catalog=CatalogFor(heard.media);ApplyCatalogIdentity(tags,catalog);
-    const auto capture_path=OutputPath(settings.root,catalog,c.Extension(),settings.music_folder,settings.track_number_in_filename);
-    RecordingDirectory directory;
-    if(!ListRecordingDirectory(capture_path,directory,&catalog))
+    PublicationDestinations destinations;
+    auto failure=ResolvePublicationDestinations(c,settings,catalog,quality,false,destinations);
+    if(failure==DestinationFailure::Directory)
         return finish(Publication::Failed,"failed","recording directory could not be listed; publication deferred");
-    RecordingDestination superseded_vorbis;
-    bool format_upgrade=false;
-    if(c.lossless && !c.mp3) {
-        auto ogg=ResolveRecordingDestination(
-            OutputPath(settings.root,catalog,L".ogg",settings.music_folder,settings.track_number_in_filename),
-            catalog,settings.track_number_in_filename,&directory);
-        if(ogg.state==RecordingDestinationState::Blocked)
-            return finish(Publication::Failed,"failed","existing Ogg could not be inspected; publication deferred");
-        if(ogg.state==RecordingDestinationState::Existing && ogg.recording.complete && ogg.recording.owned &&
-           ogg.recording.quality.codec==Codec::Vorbis && HigherQuality(quality,ogg.recording.quality)) {
-            superseded_vorbis=std::move(ogg);
-            format_upgrade=true;
-        }
-    }
-    // Search preferred formats first. Blocked is I/O uncertainty, never proof
-    // that a recording is absent. The resolver returns its verified snapshot
-    // so skip/metadata planning does not read the entire file again.
-    RecordingDestination resolved;
-    bool existing_lossless=false,existing_vorbis=false;
-    for(const auto codec:{Codec::Flac,Codec::Vorbis}) {
-        if(c.mp3)break;
-        if(c.lossless || (codec==Codec::Vorbis && !c.aac)) break;
-        const auto extension=codec==Codec::Flac?L".flac":L".ogg";
-        auto preferred=ResolveRecordingDestination(
-            OutputPath(settings.root,catalog,extension,settings.music_folder,settings.track_number_in_filename),catalog,settings.track_number_in_filename,&directory);
-        if(preferred.state==RecordingDestinationState::Blocked)
-            return finish(Publication::Failed,"failed","preferred recording could not be inspected; publication deferred");
-        if(preferred.state==RecordingDestinationState::Existing && preferred.recording.complete &&
-           preferred.recording.quality.codec==codec) {
-            existing_lossless=codec==Codec::Flac;
-            existing_vorbis=codec==Codec::Vorbis;
-            resolved=std::move(preferred);
-            break;
-        }
-    }
-    const bool preferred=existing_lossless||existing_vorbis;
-    if(!preferred) resolved=ResolveRecordingDestination(
-        capture_path,catalog,settings.track_number_in_filename,&directory);
-    if(resolved.state==RecordingDestinationState::Blocked)
+    if(failure==DestinationFailure::Ogg)
+        return finish(Publication::Failed,"failed","existing Ogg could not be inspected; publication deferred");
+    if(failure==DestinationFailure::Preferred)
+        return finish(Publication::Failed,"failed","preferred recording could not be inspected; publication deferred");
+    if(failure!=DestinationFailure::None)
         return finish(Publication::Failed,"failed","no safe recording destination; existing files retained");
+    // The established namespace always runs first. Only its final, explicit
+    // different-track UID result can enter the additive Duplicates namespace.
+    // Exact and legacy matches, upgrades, blocked reads, and URI-less files all
+    // retain their existing paths and behavior.
+    const bool canonical_match=destinations.format_upgrade||destinations.existing_lossless||
+        destinations.existing_vorbis||destinations.resolved.state==RecordingDestinationState::Existing;
+    if(!canonical_match&&destinations.explicit_uid_conflict) {
+        PublicationDestinations duplicate;
+        failure=ResolvePublicationDestinations(c,settings,catalog,quality,true,duplicate);
+        if(failure!=DestinationFailure::None)
+            return finish(Publication::Failed,"failed","duplicate recording destination could not be verified; publication deferred");
+        destinations=std::move(duplicate);
+    }
+    auto& resolved=destinations.resolved;
+    auto& superseded_vorbis=destinations.superseded_vorbis;
+    const bool format_upgrade=destinations.format_upgrade;
+    const bool existing_lossless=destinations.existing_lossless;
+    const bool existing_vorbis=destinations.existing_vorbis;
+    const bool preferred=existing_lossless||existing_vorbis;
     if(settings.convert_numbered_filenames && !settings.track_number_in_filename) {
         const auto extension=existing_lossless?L".flac":existing_vorbis?L".ogg":c.Extension();
         if(ConvertResolvedFilename(resolved,catalog,settings,extension)==FilenameConversion::Failed)

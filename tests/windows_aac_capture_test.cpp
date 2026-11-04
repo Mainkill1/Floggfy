@@ -59,6 +59,7 @@ void TestPipeline(const std::wstring& root) {
     auto inconsistent=Captured(source);++inconsistent->spac.info.total_samples;
     assert(ValidateFinalCapture(*inconsistent)==FinalCaptureValidation::Invalid);
     Heard heard;heard.media.title=L"Native AAC";heard.media.artist=L"Artist";heard.media.album=L"Album";
+    heard.media.spotify_uri="spotify:track:AAAAAAAAAAAAAAAAAAAAAA";
     heard.media.duration=capture->Duration();heard.start=capture->born;heard.finish=heard.start+heard.media.duration;heard.generation=1;
     const auto catalog=CatalogFor(heard.media);const auto path=OutputPath(root,catalog,L".m4a",false);
     assert(Publish(*capture,heard,CaptureEpoch())==Publication::Saved);
@@ -109,7 +110,7 @@ void TestPipeline(const std::wstring& root) {
         GetFileAttributesW(backup.c_str())==INVALID_FILE_ATTRIBUTES);
     assert(DeleteFileW(flac.c_str()));
     auto unrelated_tags=tags;
-    for(auto& field:unrelated_tags.fields)if(field.first=="SPOTIFY_URI")field.second="spotify:track:other";
+    for(auto& field:unrelated_tags.fields)if(field.first=="SPOTIFY_URI")field.second="spotify:track:BBBBBBBBBBBBBBBBBBBBBB";
     std::vector<uint8_t> other_flac;assert(TagFlac(recording_fixture::fixture(),unrelated_tags,other_flac,error));
     Write(flac,other_flac);
     const auto flac_suffix=ResolveRecordingDestination(flac,catalog);
@@ -145,16 +146,28 @@ void TestPipeline(const std::wstring& root) {
     CloseHandle(locked);
     assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped && Read(ogg)==vorbis);
     assert(DeleteFileW(ogg.c_str())&&SetUpdateExistingMetadata(true));
-    // Recording identity still disambiguates AAC filename collisions.
+    // A different explicit UID in another codec redirects publication only
+    // after the ordinary resolver finishes; the canonical files stay intact.
+    tags.fields.back()={"HISTORY_CAPTURE","native compressed FLAC input"};
+    for(auto& field:tags.fields)if(field.first=="SPOTIFY_URI")field.second="spotify:track:BBBBBBBBBBBBBBBBBBBBBB";
+    Write(flac,other_flac);
+    const auto duplicate=DuplicateOutputPath(root,catalog,L".m4a",false);
+    capture=Captured(source);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Saved);
+    assert(GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES&&Read(duplicate).size()>0&&Read(flac)==other_flac);
+    assert(DeleteFileW(flac.c_str())&&DeleteFileW(duplicate.c_str()));
+    // The same final-UID fallback applies within one codec and is stable on a
+    // repeat: no canonical collision suffix is allocated.
     AacInfo info;std::vector<std::vector<uint8_t>> packets;
     assert(ReadSpac(source,info,packets,error));
     tags.fields.back()={"HISTORY_CAPTURE","native compressed SpAC AAC packets"};
-    for(auto& field:tags.fields)if(field.first=="SPOTIFY_URI")field.second="spotify:track:unrelated";
     std::vector<uint8_t> unrelated;assert(MakeAacM4a(info,packets,tags,unrelated,error));Write(path,unrelated);
-    const auto alternate=ResolveRecordingDestination(path,catalog).path;assert(!alternate.empty()&&alternate!=path);
+    const auto canonical_alternate=ResolveRecordingDestination(path,catalog).path;
+    assert(!canonical_alternate.empty()&&canonical_alternate!=path);
     capture=Captured(source);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Saved&&Read(path)==unrelated);
-    assert(ReadRecording(alternate,inspected)&&MatchesRecording(inspected,catalog));
-    assert(DeleteFileW(path.c_str())&&DeleteFileW(alternate.c_str()));
+    assert(GetFileAttributesW(canonical_alternate.c_str())==INVALID_FILE_ATTRIBUTES);
+    assert(ReadRecording(duplicate,inspected)&&MatchesRecording(inspected,catalog));
+    capture=Captured(source);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped&&Read(path)==unrelated);
+    assert(DeleteFileW(path.c_str())&&DeleteFileW(duplicate.c_str()));
 }
 void RealSample(const std::wstring& input,const std::wstring& output) {
     const auto source=Read(input);AacInfo info;std::vector<std::vector<uint8_t>> packets;std::string error;
@@ -188,7 +201,7 @@ void RealSample(const std::wstring& input,const std::wstring& output) {
 namespace history {
 std::uint64_t MetadataRevision(){return 0;}
 std::string ReadClientPlaybackQuality(const Media&){return {};}
-void EnrichCatalog(const Media&,Catalog& catalog){catalog.spotify_uri="spotify:track:aac-fixture";}
+void EnrichCatalog(const Media&,Catalog& catalog){if(catalog.spotify_uri.empty())catalog.spotify_uri="spotify:track:AAAAAAAAAAAAAAAAAAAAAA";}
 void EnrichTags(const Media&,Tags& tags) {
     if(!extra_metadata||!GetSettings().metadata)return;
     tags.fields.emplace_back("GENRE","Rock");tags.fields.emplace_back("LYRICS","[00:01.000]Synthetic words");
