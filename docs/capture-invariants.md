@@ -59,6 +59,16 @@ and are never written to disk.
   owned-but-incomplete so a later complete recording repairs the same path.
 - Existing files are never replaced by filename alone. Identity, completeness,
   quality policy, exact-object locking, staging, and collision handling all apply.
+- The ordinary destination resolver always runs first. If it finds no matching
+  recording and a parsed candidate contains a different complete Spotify track
+  URI, the same resolver is rerun below the library-root `Duplicates` folder.
+  The duplicate filename retains the complete track ID. Same-URI recordings,
+  URI-less legacy recordings, blocked reads, upgrades, and podcasts keep their
+  established behavior and paths.
+- Playback-start metadata filling, Auto Skip Downloaded, filename conversion,
+  and the current-song folder action use that same final UID fallback. They do
+  not infer identity from a filename or authorize replacement of the canonical
+  conflict.
 - Episode enrichment uses an episode URI plus title/show identity and preserves
   publisher fields through the metadata cache and final MP3 tags.
 
