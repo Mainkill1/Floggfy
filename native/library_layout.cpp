@@ -1,6 +1,7 @@
 #include "library_layout.h"
 #include <cwctype>
 #include <cstdio>
+#include <climits>
 #include <vector>
 namespace history {
 static std::wstring Safe(std::wstring s,const wchar_t* fallback) {
@@ -47,6 +48,38 @@ std::wstring OutputPath(const std::wstring& root,const Catalog& item,const std::
     auto base=root;
     while(!base.empty() && (base.back()==L'\\' || base.back()==L'/')) base.pop_back();
     return base+L"\\"+relative;
+}
+static bool SpotifyTrackUri(const std::string& uri) {
+    constexpr char prefix[]="spotify:track:";constexpr size_t prefix_size=sizeof(prefix)-1,id_size=22;
+    if(uri.size()!=prefix_size+id_size || uri.compare(0,prefix_size,prefix))return false;
+    for(size_t i=prefix_size;i<uri.size();++i)if(!((uri[i]>='0'&&uri[i]<='9')||
+       (uri[i]>='A'&&uri[i]<='Z')||(uri[i]>='a'&&uri[i]<='z')))return false;
+    return true;
+}
+std::wstring DuplicateOutputPath(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder,bool track_numbers) {
+    if(!SpotifyTrackUri(item.spotify_uri))return {};
+    auto relative=RelativePath(item,extension,track_numbers);
+    if(music_folder && relative.rfind(L"Music\\",0)==0)relative.erase(0,6);
+    const auto slash=relative.find_last_of(L'\\');
+    if(slash==std::wstring::npos)return {};
+    std::wstring prefix;
+    if(track_numbers&&item.track){wchar_t number[20];std::swprintf(number,20,L"%02u - ",item.track);prefix=number;}
+    const auto id=item.spotify_uri.substr(sizeof("spotify:track:")-1);
+    std::wstring suffix=L" [spotify-";
+    suffix.append(id.begin(),id.end());suffix+=L']';
+    auto title=Safe(item.title,L"Untitled");
+    constexpr size_t component_limit=100;
+    if(prefix.size()+suffix.size()>=component_limit)return {};
+    const auto available=component_limit-prefix.size()-suffix.size();
+    if(title.size()>available)title.resize(available);
+#if WCHAR_MAX <= 0xffff
+    if(!title.empty()&&title.back()>=0xd800&&title.back()<=0xdbff)title.pop_back();
+#endif
+    while(!title.empty()&&(title.back()==L'.'||title.back()==L' '))title.pop_back();
+    if(title.empty())title=L"Untitled";
+    relative=relative.substr(0,slash+1)+prefix+title+suffix+extension;
+    auto base=root;while(!base.empty()&&(base.back()==L'\\'||base.back()==L'/'))base.pop_back();
+    return base+L"\\Duplicates\\"+relative;
 }
 bool HigherQuality(const Quality& incoming,const Quality& existing) {
     if(!incoming.rate || !incoming.channels) return false;
