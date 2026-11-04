@@ -352,10 +352,20 @@ void ConcurrentOggLogicalStreams() {
     assert(buffers.ogg_active.empty()&&buffers.ready.size()==2);
     assert(buffers.ready[0]->stream.serial==41&&buffers.ready[1]->stream.serial==42);
 
-    buffers={};send(bos_a);diagnostic_lines.clear();
+    buffers={};send(bos_a);diagnostic_lines.clear();const auto failures=failure_events;
     send(recording_fixture::page({0},2,4,88200,41));
     assert(buffers.ogg_active.empty()&&buffers.ready.empty());
-    assert(Contains("sequence-discontinuity"));
+    assert(Contains("sequence-discontinuity")&&Contains("mid-stream Ogg")&&
+           failure_events==failures&&
+           "an unbound page-sequence gap is ignored audio, not a failed song download");
+
+    buffers={};send(bos_a);
+    buffers.ogg_active.begin()->second->bound_identity="Artist - Bound Song";
+    diagnostic_lines.clear();const auto bound_failures=failure_events;
+    send(recording_fixture::page({0},2,4,88200,41));
+    assert(failure_events>bound_failures&&Contains("sequence-discontinuity")&&
+           Contains("Bound Song")&&
+           "a page-sequence gap in an identified song remains a real failure");
 
     buffers={};send(bos_a);send(bos_b);
     auto damaged=recording_fixture::page({0},1,0,44100,41);damaged.back()^=1;
@@ -1756,17 +1766,12 @@ void MissingPlaybackWarning() {
     CaptureBuffers buffers;auto complete=std::make_unique<Capture>();complete->finished=10;
     buffers.ready.push_back(std::move(complete));MediaDiagnostic diagnostic;
     diagnostic.stage="select-session";diagnostic.reason="no-spotify-session";
-    diagnostic_lines.clear();
-    ReportUnverifiedCaptures(buffers,false,diagnostic,20);assert(diagnostic_lines.empty());
-    ReportUnverifiedCaptures(buffers,true,diagnostic,12);assert(diagnostic_lines.empty());
-    ReportUnverifiedCaptures(buffers,true,diagnostic,13);
-    assert(Contains("complete Ogg capture")&&Contains("not saved"));
-    assert(Contains("Show desktop overlay when using media keys"));
-    const auto once=diagnostic_lines.size();
-    ReportUnverifiedCaptures(buffers,true,diagnostic,50);assert(diagnostic_lines.size()==once);
+    diagnostic_lines.clear();const auto failures=failure_events;
     MediaWarningState warning;diagnostic_lines.clear();
     ReportMediaUnavailable(buffers,true,diagnostic,100,warning);
-    assert(diagnostic_lines.empty()); // Completed-only outcome already owns its failure.
+    ReportMediaUnavailable(buffers,true,diagnostic,500,warning);
+    assert(diagnostic_lines.empty()&&failure_events==failures&&
+           "a retained complete capture cannot fail merely because Ready metadata is temporarily unavailable");
     buffers.active[1]=std::make_unique<Capture>();
     ReportMediaUnavailable(buffers,true,diagnostic,100,warning);
     ReportMediaUnavailable(buffers,true,diagnostic,100.328,warning);
@@ -1797,7 +1802,6 @@ void AdvertisementStageIsNotDownloadFailure() {
     buffers.ready.push_back(std::move(complete));
     MediaWarningState warning;
     ReportMediaUnavailable(buffers,true,diagnostic,20,warning);
-    ReportUnverifiedCaptures(buffers,true,diagnostic,20);
     assert(failure_events==failures&&diagnostic_lines.size()==1&&
            "expected advertisement audio cannot be reported as a song download failure");
 }

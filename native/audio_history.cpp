@@ -757,7 +757,7 @@ static void* AacDestroyHook(void* context,unsigned flags) {
 }
 struct Capture {
     Stream stream;
-    bool lossless=false,metadata=false,aac=false,mp3=false,unverified_reported=false,ambiguous=false;
+    bool lossless=false,metadata=false,aac=false,mp3=false,ambiguous=false;
     mutable int final_validation=-1;
     mutable unsigned validation_runs=0;
     bool publication_deferred=false;
@@ -893,6 +893,10 @@ static FinalCaptureValidation CachedFinalValidation(const Capture& capture) {
     }
     return FinalCaptureValidation(capture.final_validation);
 }
+static bool UnboundOggSequenceGap(const Capture& capture) noexcept {
+    return !capture.mp3&&!capture.aac&&!capture.lossless&&
+        capture.bound_identity.empty()&&capture.stream.rejection==OggRejection::Sequence;
+}
 // Called only when ownership reconciliation has finished and this object really
 // will be released. Flatten keeps the source alive through the final whole-file
 // inspection and avoids retaining another permanent copy.
@@ -935,8 +939,9 @@ static const char* CheckBeforeRelease(Capture& capture,const char* reason,
         std::strstr(result,"publication deferred")?"deferred cache":
         std::strstr(result,"no verified metadata/listen match")?"unmatched cache":
         std::strstr(result,"verification failed")?"unverified cache":"cache validation failed";
-    LogEvent(LogKind::Failure,"failed",std::string(outcome)+" | "+
-        (capture.bound_identity.empty()?"unknown track":capture.bound_identity));
+    if(!UnboundOggSequenceGap(capture))
+        LogEvent(LogKind::Failure,"failed",std::string(outcome)+" | "+
+            (capture.bound_identity.empty()?"unknown track":capture.bound_identity));
     return result;
 }
 static bool FormatEnabled(const Capture& capture,const Settings& settings) {
@@ -1943,8 +1948,13 @@ static void ProcessOggCapture(const Slot& s,CaptureBuffers& buffers) {
     Result result=c.stream.Push(s.bytes,s.length);
     if(result==Result::Invalid || result==Result::Ignore) {
         LogOggRejection(s,&c,diagnostic?&previous:nullptr,&page,c.stream.rejection);
+        const bool midstream=UnboundOggSequenceGap(c);
         char message[160];snprintf(message,sizeof(message),"Ogg stream discarded: %s; replay from the beginning to save",OggRejectionName(c.stream.rejection));
-        buffers.RecordLostActive(found->second.get());active.erase(found);Log(LogKind::Failure,message);return;
+        buffers.RecordLostActive(found->second.get());active.erase(found);
+        if(midstream)LogEvent(LogKind::Activity,"ignored",
+            "unidentified mid-stream Ogg audio (capture began after the stream start)");
+        else Log(LogKind::Failure,message);
+        return;
     }
     size_t reserved=publishing_reserved.load();
     for(const auto& item:buffers.active) reserved+=item.second->Capacity();
@@ -2489,17 +2499,6 @@ static void ReportMediaUnavailable(const CaptureBuffers& buffers,bool unavailabl
     const auto message=std::string("playback verification unavailable while audio is being captured; ")+MediaRecoveryHint(diagnostic);
     Log(LogKind::Warning,message.c_str());
 }
-static void ReportUnverifiedCaptures(CaptureBuffers& buffers,bool unavailable,
-                                     const MediaDiagnostic& diagnostic,double now) {
-    if(!unavailable||ActiveInterstitialReason(diagnostic.reason))return;
-    for(auto& capture:buffers.ready) {
-        if(capture->unverified_reported || now-capture->finished<3)continue;
-        capture->unverified_reported=true;
-        const char* codec=capture->mp3?"MP3":capture->aac?"AAC":capture->lossless?"FLAC":"Ogg";
-        const auto message=std::string("complete ")+codec+" capture not saved: playback verification unavailable; "+MediaRecoveryHint(diagnostic);
-        Log(LogKind::Failure,message.c_str());
-    }
-}
 static DWORD WINAPI Worker(LPVOID) {
     LONG overflow=0;
     ownership::DecoderOwnershipTracker ownership_tracker;
@@ -2692,7 +2691,6 @@ static DWORD WINAPI Worker(LPVOID) {
             // Apply that generation before considering any publication.
             if(GetSettings().generation!=generation) continue;
             SchedulePublications(heard,buffers,epoch,now,&recent);
-            ReportUnverifiedCaptures(buffers,media_unavailable,media_diagnostic,now);
             // Bound unresolved codec lifecycles by count, not age. Capacity
             // pressure is explicit resource evidence; elapsed time is not a
             // reason to declare otherwise valid audio unrelated or invalid.
