@@ -18,6 +18,7 @@ struct Catalog {
 };
 std::wstring RelativePath(const Catalog& item,const std::wstring& extension,bool track_numbers=false);
 std::wstring OutputPath(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder=false,bool track_numbers=false);
+bool ValidSpotifyTrackUri(const std::string& uri) noexcept;
 // Additive fallback for an explicit different-track UID collision. Empty when
 // the current catalog lacks a complete Spotify track identity.
 std::wstring DuplicateOutputPath(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder=false,bool track_numbers=false);

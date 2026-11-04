@@ -245,7 +245,7 @@ RecordingDestination ResolveRecordingDestination(const std::wstring& base,const 
     // opened. A prior collision remains this recording's home even if the
     // unrelated occupant of the ordinary filename was later deleted.
     std::wstring vacant,repairable,matching;
-    bool unreadable=false;
+    bool unreadable=false,explicit_uid_conflict=false;
     Quality best;
     RecordingFile best_recording,repairable_recording;
     for(const auto& path:candidates) {
@@ -259,6 +259,13 @@ RecordingDestination ResolveRecordingDestination(const std::wstring& base,const 
         if(result==RecordingRead::ReadError) {
             unreadable=unreadable || !Missing(path);
             continue;
+        }
+        if(result!=RecordingRead::InvalidContainer && ValidSpotifyTrackUri(catalog.spotify_uri)) {
+            const auto uid=std::find_if(existing.tags.fields.begin(),existing.tags.fields.end(),[](const auto& field) {
+                return field.first=="SPOTIFY_URI";
+            });
+            if(uid!=existing.tags.fields.end() && ValidSpotifyTrackUri(uid->second) && uid->second!=catalog.spotify_uri)
+                explicit_uid_conflict=true;
         }
         if(result==RecordingRead::InvalidContainer || !MatchesRecording(existing,catalog)) continue;
         if(existing.complete) {
@@ -274,7 +281,16 @@ RecordingDestination ResolveRecordingDestination(const std::wstring& base,const 
             repairable_recording=std::move(existing);
         }
     }
-    if(!matching.empty()) return {RecordingDestinationState::Existing,std::move(matching),std::move(best_recording)};
+    if(!matching.empty()) {
+        const auto selected_uid=std::find_if(best_recording.tags.fields.begin(),best_recording.tags.fields.end(),[](const auto& field) {
+            return field.first=="SPOTIFY_URI";
+        });
+        // A legacy identity-less recording remains on the established path.
+        // Only an exact selected UID keeps the separate collision observation.
+        if(selected_uid==best_recording.tags.fields.end() || selected_uid->second!=catalog.spotify_uri)
+            explicit_uid_conflict=false;
+        return {RecordingDestinationState::Existing,std::move(matching),std::move(best_recording),explicit_uid_conflict};
+    }
     // An inaccessible candidate may be the already-saved recording. Retry on
     // a later listen rather than allocating a possible duplicate beside it.
     if(unreadable) return {};
@@ -299,11 +315,11 @@ RecordingDestination ResolveRecordingDestination(const std::wstring& base,const 
         if(!RestoreBackup(backup,path,catalog))return {};
         RecordingFile restored;
         if(ReadRecording(path,restored) && restored.owned && MatchesRecording(restored,catalog)) {
-            if(restored.complete)return {RecordingDestinationState::Existing,path,std::move(restored)};
+            if(restored.complete)return {RecordingDestinationState::Existing,path,std::move(restored),explicit_uid_conflict};
             if(restored.owned && repairable.empty()) {repairable=path;repairable_recording=std::move(restored);}
         } else return {};
     }
-    if(!repairable.empty()) return {RecordingDestinationState::Existing,std::move(repairable),std::move(repairable_recording)};
+    if(!repairable.empty()) return {RecordingDestinationState::Existing,std::move(repairable),std::move(repairable_recording),explicit_uid_conflict};
 
     const auto backup=base+L".previous";
     if(restore_reserved) {
@@ -314,14 +330,14 @@ RecordingDestination ResolveRecordingDestination(const std::wstring& base,const 
             if(RestoreBackup(backup,path,catalog) || Reusable(path,catalog)) {
                 RecordingFile restored;
                 if(ReadRecording(path,restored) && MatchesRecording(restored,catalog))
-                    return {RecordingDestinationState::Existing,path,std::move(restored)};
+                    return {RecordingDestinationState::Existing,path,std::move(restored),explicit_uid_conflict};
                 return {};
             }
         }
         return {}; // Do not bypass an existing recording whose recovery failed.
     }
     if(vacant.empty()) return {};
-    return {RecordingDestinationState::Vacant,std::move(vacant),{}};
+    return {RecordingDestinationState::Vacant,std::move(vacant),{},explicit_uid_conflict};
 }
 SaveDecision DecideSave(const std::wstring& path,const Quality& incoming,const Catalog& catalog,RecordingFile* inspected) {
     if(inspected)*inspected={};

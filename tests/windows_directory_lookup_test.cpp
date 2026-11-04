@@ -53,7 +53,8 @@ void Write(const std::wstring& path,const std::vector<uint8_t>& bytes) {
 }
 Catalog Song(const wchar_t* title) {
     Catalog c;c.artist=L"Artist";c.album=L"Album";c.title=title;c.track=3;c.disc=2;c.duration=1;
-    c.spotify_uri="spotify:track:"+Utf8(title);return c;
+    std::string id(22,'0');if(title&&*title)id.back()=char('0'+(*title%10));
+    c.spotify_uri="spotify:track:"+id;return c;
 }
 std::vector<uint8_t> Audio(const Catalog& c,unsigned bits=16,bool ogg=false) {
     Tags tags;tags.fields={{"TITLE",Utf8(c.title)},{"ARTIST","Artist"},{"ALBUMARTIST","Artist"},
@@ -68,11 +69,13 @@ void Lookups(const std::wstring& root) {
     const auto base=OutputPath(root,c,L".flac"),suffix=base.substr(0,base.size()-5)+RecordingSuffix(c)+L".flac";
     Write(base,Audio(other));Write(suffix,Audio(c,24));
     ResetCounts();auto resolved=ResolveRecordingDestination(base,c);
-    assert(resolved.state==RecordingDestinationState::Existing&&resolved.path==suffix&&resolved.recording.quality.bits==24);
+    assert(resolved.state==RecordingDestinationState::Existing&&resolved.path==suffix&&resolved.recording.quality.bits==24&&
+           resolved.explicit_uid_conflict);
     assert(listings==1&&attribute_checks==0&&recording_opens==2); // No probes for absent aliases.
     assert(DeleteFileW(WindowsPath(base).c_str()));
     ResetCounts();resolved=ResolveRecordingDestination(base,c);
-    assert(resolved.path==suffix&&resolved.recording.quality.bits==24&&listings==1&&recording_opens==1&&attribute_checks==0);
+    assert(resolved.path==suffix&&resolved.recording.quality.bits==24&&!resolved.explicit_uid_conflict&&
+           listings==1&&recording_opens==1&&attribute_checks==0);
     HANDLE held=CreateFileW(WindowsPath(suffix).c_str(),GENERIC_READ,0,nullptr,OPEN_EXISTING,0,nullptr);assert(held!=INVALID_HANDLE_VALUE);
     assert(ResolveRecordingDestination(base,c).state==RecordingDestinationState::Blocked);CloseHandle(held);
     assert(DeleteFileW(WindowsPath(suffix).c_str()));

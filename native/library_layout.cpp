@@ -49,7 +49,7 @@ std::wstring OutputPath(const std::wstring& root,const Catalog& item,const std::
     while(!base.empty() && (base.back()==L'\\' || base.back()==L'/')) base.pop_back();
     return base+L"\\"+relative;
 }
-static bool SpotifyTrackUri(const std::string& uri) {
+bool ValidSpotifyTrackUri(const std::string& uri) noexcept {
     constexpr char prefix[]="spotify:track:";constexpr size_t prefix_size=sizeof(prefix)-1,id_size=22;
     if(uri.size()!=prefix_size+id_size || uri.compare(0,prefix_size,prefix))return false;
     for(size_t i=prefix_size;i<uri.size();++i)if(!((uri[i]>='0'&&uri[i]<='9')||
@@ -57,7 +57,7 @@ static bool SpotifyTrackUri(const std::string& uri) {
     return true;
 }
 std::wstring DuplicateOutputPath(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder,bool track_numbers) {
-    if(!SpotifyTrackUri(item.spotify_uri))return {};
+    if(!ValidSpotifyTrackUri(item.spotify_uri))return {};
     auto relative=RelativePath(item,extension,track_numbers);
     if(music_folder && relative.rfind(L"Music\\",0)==0)relative.erase(0,6);
     const auto slash=relative.find_last_of(L'\\');

@@ -40,6 +40,10 @@ struct RecordingDestination {
     // Verified matching snapshot from the bounded search, not a reservation.
     // Publication must still lock/revalidate the exact object before writes.
     RecordingFile recording;
+    // Observation only: a complete Spotify track UID on a listed candidate
+    // differed from the requested complete UID. This never authorizes an
+    // overwrite or changes the resolver's existing destination decision.
+    bool explicit_uid_conflict=false;
 };
 // Blocked distinguishes I/O uncertainty from a verified vacancy. Callers must
 // not interpret it as absence when searching a preferred recording format.
