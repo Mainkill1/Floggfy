@@ -224,8 +224,10 @@ void StableArtistFolder(const std::wstring& root) {
     ResetCounts();ProcessFilenameCheck(check);assert(listings==2); // Each of the two exact artist folders is listed once.
     assert(GetFileAttributesW(WindowsPath(old).c_str())==INVALID_FILE_ATTRIBUTES);
     RecordingFile saved;assert(ReadRecording(title,saved)&&saved.complete&&MatchesRecording(saved,catalog));
-    Tags identity;ApplyCatalogIdentity(identity,catalog);
+    auto tagged_catalog=catalog;tagged_catalog.spotify_album_uri="spotify:album:0000000000000000000002";
+    Tags identity;ApplyCatalogIdentity(identity,tagged_catalog);
     assert(std::find(identity.fields.begin(),identity.fields.end(),std::make_pair(std::string("ALBUMARTIST"),std::string("Artist; Guest")))!=identity.fields.end());
+    assert(std::find(identity.fields.begin(),identity.fields.end(),std::make_pair(std::string("SPOTIFY_ALBUM_URI"),tagged_catalog.spotify_album_uri))!=identity.fields.end());
     Capture incoming;incoming.lossless=true;incoming.flac.rate=44100;incoming.flac.channels=2;incoming.flac.bits=16;
     Heard heard;heard.media=media;heard.start=1;heard.finish=2;
     assert(Publish(incoming,heard,CaptureEpoch())==Publication::Skipped);

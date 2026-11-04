@@ -14,7 +14,7 @@ struct Catalog {
     // Never used for new filenames or ALBUMARTIST tags.
     std::wstring legacy_artist;
     unsigned track=0,episode_year=0,disc=0;
-    std::string spotify_uri;
+    std::string spotify_uri,spotify_album_uri;
     double duration=0;
 };
 std::wstring RelativePath(const Catalog& item,const std::wstring& extension,bool track_numbers=false);

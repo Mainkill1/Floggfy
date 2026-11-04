@@ -1026,6 +1026,7 @@ static void ApplyCatalogIdentity(Tags& tags,const Catalog& catalog) {
     SetIdentityTag(tags,"TRACKNUMBER",catalog.track ? std::to_string(catalog.track) : std::string{});
     SetIdentityTag(tags,"DISCNUMBER",catalog.disc ? std::to_string(catalog.disc) : std::string{});
     SetIdentityTag(tags,"SPOTIFY_URI",catalog.spotify_uri);
+    SetIdentityTag(tags,"SPOTIFY_ALBUM_URI",catalog.spotify_album_uri);
 }
 static std::atomic<uint64_t> filename_check_serial{0};
 struct FilenamePermit {unsigned generation=0;uint64_t serial=0;};
@@ -1351,7 +1352,7 @@ static void QueueFilenameCheck(const Media& media,const Settings& settings) {
         // basename but are still distinct recordings when Spotify URI is absent.
         const std::wstring* fields[]={&settings.root,&catalog.title,&catalog.artist,&catalog.folder_artist,&catalog.legacy_artist,&catalog.album,&catalog.author,&catalog.series,&catalog.book,&catalog.show};
         for(const auto* field:fields)wide(*field);
-        text(catalog.spotify_uri);
+        text(catalog.spotify_uri);text(catalog.spotify_album_uri);
         if(auto_skip) {
             text(media.playback_instance);
             key+=std::to_string(quality.identity)+":"+std::to_string(unsigned(quality.format))+":"+

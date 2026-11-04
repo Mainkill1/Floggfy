@@ -350,6 +350,10 @@
  function merge(data,source,currentItem=false){
   if(!object(source))return;
   const m=own(source,'metadata')||source,album=own(source,'album')||{},date=own(album,'date');
+  const albumUri=text(own(album,'uri')||own(source,'album_uri')||own(m,'album_uri'));
+  if(/^spotify:album:[A-Za-z0-9]{22}$/.test(albumUri||'')){
+   data.album_uri=albumUri;data.SPOTIFY_ALBUM_URI=albumUri;
+  }
   let release=text(own(m,'release_date'))||text(own(m,'album_release_date'))||text(own(source,'release_date'))||text(own(own(source,'releaseDate'),'isoString'))||text(own(own(album,'releaseDate'),'isoString'));
   if(release&&/^\d{4}-\d{2}-\d{2}T/.test(release))release=release.slice(0,10);
   const year=text(own(date,'year')),month=text(own(date,'month')),day=text(own(date,'day'));

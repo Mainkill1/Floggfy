@@ -5,7 +5,7 @@
 #include <deque>
 namespace history {
 struct RichMetadata {
- std::string title,artist,album,uri,artwork_url;
+ std::string title,artist,album,uri,album_uri,artwork_url;
  double duration=0;
  std::map<std::string,std::string> fields;
  std::string playback_quality;
@@ -16,6 +16,7 @@ bool ParseRichMetadata(const std::string&,RichMetadata&,std::string&);
 // Current-item footer also accepts episodes without music artist/album tags.
 bool ParsePlaybackMetadata(const std::string&,RichMetadata&,std::string&);
 bool MetadataTextValid(const std::string&);
+bool ValidSpotifyAlbumUri(const std::string&) noexcept;
 class MetadataCache {
  std::deque<RichMetadata> records_;
 public:

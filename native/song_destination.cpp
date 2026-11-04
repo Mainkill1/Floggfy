@@ -58,7 +58,7 @@ static bool SameRequest(const DestinationRequest& a,const DestinationRequest& b)
         x.kind==y.kind && x.artist==y.artist && x.folder_artist==y.folder_artist && x.legacy_artist==y.legacy_artist && x.album==y.album && x.title==y.title &&
         x.author==y.author && x.series==y.series && x.book==y.book && x.show==y.show &&
         x.track==y.track && x.episode_year==y.episode_year && x.disc==y.disc &&
-        x.spotify_uri==y.spotify_uri && x.duration==y.duration;
+        x.spotify_uri==y.spotify_uri && x.spotify_album_uri==y.spotify_album_uri && x.duration==y.duration;
 }
 static std::wstring& FormatPath(DestinationRequest& request,Codec codec) {
     if(codec==Codec::Flac)return request.flac;
@@ -105,6 +105,7 @@ static std::uint64_t IntentKey(std::uint64_t identity,const std::wstring& root,c
     for(const auto* value:{&catalog.artist,&catalog.folder_artist,&catalog.legacy_artist,&catalog.album,&catalog.title,&catalog.author,&catalog.series,&catalog.book,&catalog.show})wide(*value);
     number(catalog.track);number(catalog.episode_year);number(catalog.disc);
     number(catalog.spotify_uri.size());for(unsigned char c:catalog.spotify_uri)number(c);
+    number(catalog.spotify_album_uri.size());for(unsigned char c:catalog.spotify_album_uri)number(c);
     std::uint64_t duration=0;static_assert(sizeof(duration)==sizeof(catalog.duration),"duration bits");
     memcpy(&duration,&catalog.duration,sizeof(duration));number(duration);
     return hash ? hash : 1;

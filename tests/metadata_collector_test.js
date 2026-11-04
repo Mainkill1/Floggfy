@@ -55,13 +55,15 @@ fresh.metadata['artist_name:1']='Guest';
 fresh.metadata['album_artist_name:1']='Guest';fresh.metadata.album_artist_name='Artist';
 fresh.metadata.album_label='Example Records';fresh.metadata.publisher='Example Publishing';
 fresh.metadata.album_track_count='0';
-fresh.album={releaseDate:{isoString:'2024-05-06T00:00:00Z'}};
+fresh.album={uri:'spotify:album:0000000000000000000002',releaseDate:{isoString:'2024-05-06T00:00:00Z'}};
 context.window.__floggfyPoll();
 assert(output.at(-1).includes('ARTIST=Artist%3B%20Guest'));
 assert(output.at(-1).includes('ALBUMARTIST=Artist%3B%20Guest'));
 assert(output.at(-1).includes('DATE=2024-05-06'));
 assert(output.at(-1).includes('LABEL=Example%20Records'));
 assert(output.at(-1).includes('PUBLISHER=Example%20Publishing'));
+assert(output.at(-1).includes('album_uri=spotify%3Aalbum%3A0000000000000000000002'));
+assert(output.at(-1).includes('SPOTIFY_ALBUM_URI=spotify%3Aalbum%3A0000000000000000000002'));
 assert(!output.at(-1).includes('TRACKTOTAL=0'));
 fresh.metadata.year='2024';context.window.__floggfyPoll();
 assert(output.at(-1).includes('DATE=2024-05-06')); // Do not replace a full date with a coarse year.

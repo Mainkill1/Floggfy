@@ -21,6 +21,8 @@ int main(int argc, char **argv) {
                               OPEN_EXISTING, 0, nullptr);
   assert(writer != INVALID_HANDLE_VALUE);
   assert(history::ReadStoredMetadata(root, live));
+  assert(live.album_uri=="spotify:album:0000000000000000000002"&&
+         live.fields.at("SPOTIFY_ALBUM_URI")==live.album_uri);
   CloseHandle(writer);
   assert(live.fields.at("ARTIST") == "Lead; Guest" && live.fields.at("DATE") == "2024-05-06");
   assert(live.artist == "Lead" && !live.fields.count("PUBLISHER"));
