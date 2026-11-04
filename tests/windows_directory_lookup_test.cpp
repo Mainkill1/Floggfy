@@ -128,6 +128,19 @@ void Conversion(const std::wstring& root) {
     assert(GetFileAttributesW(WindowsPath(m4a_old).c_str())==INVALID_FILE_ATTRIBUTES);
     assert(ReadRecording(m4a,saved)&&saved.complete&&MatchesRecording(saved,c));
     assert(DeleteFileW(WindowsPath(m4a).c_str()));
+
+    // Prefix conversion in the duplicate namespace preserves the complete UID
+    // suffix and never moves the file back over the canonical conflict.
+    const auto other=Song(L"Other");Write(title,Audio(other,16,true));
+    const auto duplicate=DuplicateOutputPath(root,c,L".ogg");
+    const auto duplicate_slash=duplicate.find_last_of(L'\\');
+    const auto duplicate_old=duplicate.substr(0,duplicate_slash+1)+L"03 - "+duplicate.substr(duplicate_slash+1);
+    Write(duplicate_old,Audio(c,16,true));
+    ResetCounts();ProcessFilenameCheck(check);
+    assert(GetFileAttributesW(WindowsPath(duplicate_old).c_str())==INVALID_FILE_ATTRIBUTES);
+    assert(ReadRecording(duplicate,saved)&&saved.complete&&MatchesRecording(saved,c));
+    assert(GetFileAttributesW(WindowsPath(title).c_str())!=INVALID_FILE_ATTRIBUTES);
+    assert(DeleteFileW(WindowsPath(duplicate).c_str())&&DeleteFileW(WindowsPath(title).c_str()));
 }
 void MenuLookup(const std::wstring& root) {
     const auto c=Song(L"Menu");DestinationRequest request;request.catalog=c;request.serial=41;request.generation=7;

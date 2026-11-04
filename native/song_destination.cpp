@@ -26,6 +26,7 @@ struct DestinationRequest {
     bool track_numbers=false;
     Catalog catalog;
     std::wstring flac,ogg,aac,mp3;
+    std::wstring duplicate_flac,duplicate_ogg,duplicate_aac,duplicate_mp3;
 };
 SRWLOCK destination_lock=SRWLOCK_INIT;
 INIT_ONCE destination_once=INIT_ONCE_STATIC_INIT;
@@ -52,6 +53,7 @@ struct DestinationTryExclusive {
 static bool SameRequest(const DestinationRequest& a,const DestinationRequest& b) {
     const auto& x=a.catalog;const auto& y=b.catalog;
     return a.identity==b.identity && a.generation==b.generation && a.track_numbers==b.track_numbers && a.flac==b.flac && a.ogg==b.ogg && a.aac==b.aac && a.mp3==b.mp3 &&
+        a.duplicate_flac==b.duplicate_flac&&a.duplicate_ogg==b.duplicate_ogg&&a.duplicate_aac==b.duplicate_aac&&a.duplicate_mp3==b.duplicate_mp3&&
         x.kind==y.kind && x.artist==y.artist && x.folder_artist==y.folder_artist && x.legacy_artist==y.legacy_artist && x.album==y.album && x.title==y.title &&
         x.author==y.author && x.series==y.series && x.book==y.book && x.show==y.show &&
         x.track==y.track && x.episode_year==y.episode_year && x.disc==y.disc &&
@@ -69,10 +71,28 @@ static const std::wstring& FormatPath(const DestinationRequest& request,Codec co
     if(codec==Codec::Aac)return request.aac;
     return request.mp3;
 }
+static std::wstring& DuplicateFormatPath(DestinationRequest& request,Codec codec) {
+    if(codec==Codec::Flac)return request.duplicate_flac;
+    if(codec==Codec::Vorbis)return request.duplicate_ogg;
+    if(codec==Codec::Aac)return request.duplicate_aac;
+    return request.duplicate_mp3;
+}
+static const std::wstring& DuplicateFormatPath(const DestinationRequest& request,Codec codec) {
+    if(codec==Codec::Flac)return request.duplicate_flac;
+    if(codec==Codec::Vorbis)return request.duplicate_ogg;
+    if(codec==Codec::Aac)return request.duplicate_aac;
+    return request.duplicate_mp3;
+}
 static std::array<const std::wstring*,4> FormatPaths(const DestinationRequest& request) {
     std::array<const std::wstring*,4> paths{};size_t count=0;
     for(const auto& format:kRecordingFormats)if(SupportsMedia(format,request.catalog.kind))
         paths[count++]=&FormatPath(request,format.codec);
+    return paths;
+}
+static std::array<const std::wstring*,4> DuplicateFormatPaths(const DestinationRequest& request) {
+    std::array<const std::wstring*,4> paths{};size_t count=0;
+    for(const auto& format:kRecordingFormats)if(SupportsMedia(format,request.catalog.kind))
+        paths[count++]=&DuplicateFormatPath(request,format.codec);
     return paths;
 }
 static std::uint64_t IntentKey(std::uint64_t identity,const std::wstring& root,const Catalog& catalog,
@@ -188,6 +208,41 @@ static std::wstring ProbeSavedSong(const DestinationRequest& request,Verificatio
             }
         }
     }
+    // The ordinary namespace has now completed its unchanged search. Enter the
+    // duplicate namespace only when that resolver proves a different complete
+    // Spotify track UID occupied at least one candidate.
+    bool explicit_uid_conflict=false;
+    for(const auto* base:paths) {
+        if(!base)break;
+        if(!CurrentRequest(request))return {};
+        const auto resolved=ResolveRecordingDestination(*base,request.catalog,request.track_numbers,&directory);
+        if(resolved.state==RecordingDestinationState::Blocked)return unavailable();
+        explicit_uid_conflict=explicit_uid_conflict||resolved.explicit_uid_conflict;
+    }
+    if(!explicit_uid_conflict)return unavailable();
+    const auto duplicates=DuplicateFormatPaths(request);
+    if(!duplicates[0]||duplicates[0]->empty())return unavailable();
+    RecordingDirectory duplicate_directory;
+    if(!ListRecordingDirectory(*duplicates[0],duplicate_directory,&request.catalog))return unavailable();
+    for(const auto* base:duplicates) {
+        if(!base)break;
+        if(!CurrentRequest(request))return {};
+        FileSignature signature;
+        if(VerifySavedFile(*base,request,duplicate_directory,signature)) {
+            Remember(request,*base,signature,cache);return *base;
+        }
+    }
+    for(const auto* base:duplicates) {
+        if(!base)break;
+        if(!CurrentRequest(request))return {};
+        for(const auto& file:RecordingPathCandidates(*base,request.catalog,true,request.track_numbers)) {
+            if(file==*base)continue;
+            FileSignature signature;
+            if(VerifySavedFile(file,request,duplicate_directory,signature)) {
+                Remember(request,file,signature,cache);return file;
+            }
+        }
+    }
     return unavailable();
 }
 static DWORD WINAPI DestinationWorker(void*) {
@@ -257,8 +312,10 @@ void PublishSongDestination(std::uint64_t identity,const std::wstring& root,
         request.identity=identity;request.generation=settings_generation;request.catalog=catalog;request.track_numbers=track_numbers;
         request.serial=serial;request.intent=intent;request.revision=cache_revision.load(std::memory_order_acquire);
         if(identity && !root.empty()) {
-            for(const auto& format:kRecordingFormats)if(SupportsMedia(format,catalog.kind))
+            for(const auto& format:kRecordingFormats)if(SupportsMedia(format,catalog.kind)) {
                 FormatPath(request,format.codec)=OutputPath(root,catalog,format.extension,music_folder,track_numbers);
+                DuplicateFormatPath(request,format.codec)=DuplicateOutputPath(root,catalog,format.extension,music_folder,track_numbers);
+            }
         }
         DestinationTryExclusive guard;
         if(!guard.locked || !destination_enabled.load(std::memory_order_relaxed) ||

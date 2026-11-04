@@ -1039,14 +1039,17 @@ static bool FilenameStillCurrent(void* argument) {
 // Shared by track-start checking and the completed-listen fallback. Only the
 // publication worker invokes this helper; menu/capture code never renames files.
 static FilenameConversion ConvertResolvedFilename(RecordingDestination& resolved,const Catalog& catalog,
-    const Settings& settings,const wchar_t* extension,uint64_t serial=0) {
+    const Settings& settings,const wchar_t* extension,uint64_t serial=0,bool duplicates=false) {
     if(!settings.convert_numbered_filenames || settings.track_number_in_filename ||
        resolved.state!=RecordingDestinationState::Existing || !resolved.recording.complete || !resolved.recording.owned)
         return FilenameConversion::Unchanged;
     const auto latest=GetSettings();
     if(latest.generation!=settings.generation || !latest.downloads || !latest.convert_numbered_filenames || latest.track_number_in_filename)
         return FilenameConversion::Unchanged;
-    const auto expected=OutputPath(settings.root,catalog,extension,settings.music_folder,false);
+    const auto expected=duplicates
+        ?DuplicateOutputPath(settings.root,catalog,extension,settings.music_folder,false)
+        :OutputPath(settings.root,catalog,extension,settings.music_folder,false);
+    if(expected.empty())return FilenameConversion::Unchanged;
     // Reused recordings keep their existing folder, including the recognized
     // Spotify-artist alias. Conversion removes only the filename prefix.
     const auto title_path=resolved.path.substr(0,resolved.path.find_last_of(L"\\/")+1)+
@@ -1071,10 +1074,11 @@ struct PublicationDestinations {
     bool existing_lossless=false;
     bool existing_vorbis=false;
     bool explicit_uid_conflict=false;
+    bool duplicate_namespace=false;
 };
 static DestinationFailure ResolvePublicationDestinations(const Capture& capture,const Settings& settings,
     const Catalog& catalog,const Quality& quality,bool duplicates,PublicationDestinations& out) {
-    out={};
+    out={};out.duplicate_namespace=duplicates;
     auto path=[&](const wchar_t* extension) {
         return duplicates
             ?DuplicateOutputPath(settings.root,catalog,extension,settings.music_folder,settings.track_number_in_filename)
@@ -1182,7 +1186,7 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     const bool preferred=existing_lossless||existing_vorbis;
     if(settings.convert_numbered_filenames && !settings.track_number_in_filename) {
         const auto extension=existing_lossless?L".flac":existing_vorbis?L".ogg":c.Extension();
-        if(ConvertResolvedFilename(resolved,catalog,settings,extension)==FilenameConversion::Failed)
+        if(ConvertResolvedFilename(resolved,catalog,settings,extension,0,destinations.duplicate_namespace)==FilenameConversion::Failed)
             return finish(Publication::Failed,"failed","filename conversion failed; existing file retained");
     }
     const auto& destination=resolved.path;
@@ -1368,49 +1372,62 @@ static void ProcessFilenameCheck(const FilenameCheck& check) {
             (convert||update||auto_skip);
     };
     if(!current())return;
+    bool explicit_uid_conflict=false;
+    auto inspect=[&](RecordingDirectory& directory,bool duplicates) {
+        for(const auto& format:kRecordingFormats) {
+            if(!SupportsMedia(format,check.catalog.kind))continue;
+            if(!current())return true;
+            const auto base=duplicates
+                ?DuplicateOutputPath(check.settings.root,check.catalog,format.extension,check.settings.music_folder,false)
+                :OutputPath(check.settings.root,check.catalog,format.extension,check.settings.music_folder,false);
+            if(base.empty())continue;
+            auto resolved=ResolveRecordingDestination(base,check.catalog,false,&directory);
+            if(!duplicates)explicit_uid_conflict=explicit_uid_conflict||resolved.explicit_uid_conflict;
+            if(!current()||resolved.state==RecordingDestinationState::Blocked)return true;
+            if(resolved.state!=RecordingDestinationState::Existing||!resolved.recording.complete)continue;
+            if(check.settings.convert_numbered_filenames&&!check.settings.track_number_in_filename&&
+               ConvertResolvedFilename(resolved,check.catalog,check.settings,format.extension,check.serial,duplicates)==FilenameConversion::Failed)
+                LogEvent(LogKind::Failure,"failed","filename conversion deferred; existing recording retained | "+Utf8(check.catalog.title));
+            if(!current())return true;
+            const bool format_enabled=format.codec==Codec::Flac?check.settings.flac:
+                format.codec==Codec::Vorbis?check.settings.ogg:format.codec==Codec::Aac?check.settings.aac:false;
+            bool metadata_failed=false;
+            if(format_enabled&&check.settings.metadata&&check.settings.update_existing_metadata&&
+               resolved.recording.owned&&NeedsRecordingMetadata(resolved.recording,check.tags)) {
+                const auto result=UpdateRecordingMetadata(resolved.path,check.tags,check.catalog,check.settings.generation);
+                const auto identity=Utf8(check.catalog.artist)+" - "+Utf8(check.catalog.title);
+                if(result==FileMetadataUpdate::Updated) {
+                    RefreshSongDestination();
+                    LogEvent(LogKind::Activity,"updated","metadata and artwork updated; existing audio retained | "+identity);
+                } else if(result==FileMetadataUpdate::Failed) {
+                    metadata_failed=true;
+                    LogEvent(LogKind::Failure,"failed","metadata update failed; existing file retained | "+identity);
+                }
+            }
+            if(!current())return true;
+            const auto playback_key=check.catalog.spotify_uri+"\x1f"+check.playback_instance;
+            if(!metadata_failed&&resolved.recording.owned&&check.settings.auto_skip_downloaded&&
+               check.catalog.kind!=MediaKind::Podcast&&playback_key!=last_auto_skip_playback&&
+               ShouldAutoSkipDownloaded(check.quality,check.media_identity,resolved.recording.quality)) {
+                const auto token=QueueAutoSkipRequest(check.catalog.spotify_uri,check.playback_instance,
+                    check.settings.generation);
+                if(token) {
+                    last_auto_skip_playback=playback_key;
+                    LogEvent(LogKind::Activity,"auto-skip","requested after existing-file metadata check | "+
+                        Utf8(check.catalog.artist)+" - "+Utf8(check.catalog.title));
+                }
+            }
+            return true; // Best verified format/recording found; no new audio is created.
+        }
+        return false;
+    };
     RecordingDirectory directory;
     if(!ListRecordingDirectory(OutputPath(check.settings.root,check.catalog,L".flac",check.settings.music_folder,false),directory,&check.catalog))return;
-    for(const auto& format:kRecordingFormats) {
-        if(!SupportsMedia(format,check.catalog.kind))continue;
-        if(!current())return;
-        auto resolved=ResolveRecordingDestination(OutputPath(check.settings.root,check.catalog,format.extension,check.settings.music_folder,false),check.catalog,false,&directory);
-        if(!current())return;
-        if(resolved.state==RecordingDestinationState::Blocked)return;
-        if(resolved.state!=RecordingDestinationState::Existing || !resolved.recording.complete)continue;
-        if(check.settings.convert_numbered_filenames&&!check.settings.track_number_in_filename&&
-           ConvertResolvedFilename(resolved,check.catalog,check.settings,format.extension,check.serial)==FilenameConversion::Failed)
-            LogEvent(LogKind::Failure,"failed","filename conversion deferred; existing recording retained | "+Utf8(check.catalog.title));
-        if(!current())return;
-        const bool format_enabled=format.codec==Codec::Flac?check.settings.flac:
-            format.codec==Codec::Vorbis?check.settings.ogg:format.codec==Codec::Aac?check.settings.aac:false;
-        bool metadata_failed=false;
-        if(format_enabled&&check.settings.metadata&&check.settings.update_existing_metadata&&
-           resolved.recording.owned&&NeedsRecordingMetadata(resolved.recording,check.tags)) {
-            const auto result=UpdateRecordingMetadata(resolved.path,check.tags,check.catalog,check.settings.generation);
-            const auto identity=Utf8(check.catalog.artist)+" - "+Utf8(check.catalog.title);
-            if(result==FileMetadataUpdate::Updated) {
-                RefreshSongDestination();
-                LogEvent(LogKind::Activity,"updated","metadata and artwork updated; existing audio retained | "+identity);
-            } else if(result==FileMetadataUpdate::Failed) {
-                metadata_failed=true;
-                LogEvent(LogKind::Failure,"failed","metadata update failed; existing file retained | "+identity);
-            }
-        }
-        if(!current())return;
-        const auto playback_key=check.catalog.spotify_uri+"\x1f"+check.playback_instance;
-        if(!metadata_failed&&resolved.recording.owned&&check.settings.auto_skip_downloaded&&
-           check.catalog.kind!=MediaKind::Podcast&&playback_key!=last_auto_skip_playback&&
-           ShouldAutoSkipDownloaded(check.quality,check.media_identity,resolved.recording.quality)) {
-            const auto token=QueueAutoSkipRequest(check.catalog.spotify_uri,check.playback_instance,
-                check.settings.generation);
-            if(token) {
-                last_auto_skip_playback=playback_key;
-                LogEvent(LogKind::Activity,"auto-skip","requested after existing-file metadata check | "+
-                    Utf8(check.catalog.artist)+" - "+Utf8(check.catalog.title));
-            }
-        }
-        return; // Best verified format/recording found; no new audio is created.
-    }
+    if(inspect(directory,false)||!explicit_uid_conflict)return;
+    const auto duplicate=DuplicateOutputPath(check.settings.root,check.catalog,L".flac",check.settings.music_folder,false);
+    RecordingDirectory duplicate_directory;
+    if(duplicate.empty()||!ListRecordingDirectory(duplicate,duplicate_directory,&check.catalog))return;
+    inspect(duplicate_directory,true);
 }
 static DWORD WINAPI SaveWorker(LPVOID) {
     while(workers_running.load(std::memory_order_acquire)) {
