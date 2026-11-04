@@ -66,4 +66,3 @@ For configurations that retain the `Music` hierarchy, it becomes `Duplicates\Mus
 - Metadata update, Auto Skip, filename conversion, and current-song lookup locate the duplicate recording.
 - Long Unicode titles preserve the full track identifier and component limit.
 - Locks, read errors, and raced destinations fail closed without changing the existing file.
-
