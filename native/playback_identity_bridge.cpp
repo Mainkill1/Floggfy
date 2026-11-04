@@ -101,7 +101,7 @@ bool DiagnosticBridge::ResolveExpected() noexcept {
     if(!has_expected_)return false;
     bool matched=false;
     for(std::size_t index=0;index<observation_count_;++index) {
-        auto& observation=observations_[index];
+        auto& observation=observations_[(observation_head_+index)%observations_.size()];
         if(observation.reported_metadata_generation==metadata_generation_)continue;
         Match candidate{};
         if(!MatchObservation(observation,candidate))continue;
@@ -125,11 +125,11 @@ bool DiagnosticBridge::NeedsObservation(std::uintptr_t owner,std::uintptr_t deco
                                         unsigned epoch,SnapshotRole role) const noexcept {
     if(!owner||!decoder)return false;
     for(std::size_t index=0;index<observation_count_;++index) {
-        const auto& prior=observations_[index];
+        const auto& prior=observations_[(observation_head_+index)%observations_.size()];
         if(prior.owner==owner&&prior.decoder==decoder&&prior.epoch==epoch&&
            prior.role==role)return false;
     }
-    return observation_count_!=observations_.size();
+    return true;
 }
 
 bool DiagnosticBridge::NeedsObservation(std::uintptr_t owner,std::uintptr_t decoder,
@@ -138,12 +138,12 @@ bool DiagnosticBridge::NeedsObservation(std::uintptr_t owner,std::uintptr_t deco
     if(!owner||!decoder||!snapshot||!snapshot_size)return false;
     const auto retained_size=std::min(snapshot_size,kMaximumSnapshotBytes);
     for(std::size_t index=0;index<observation_count_;++index) {
-        const auto& prior=observations_[index];
+        const auto& prior=observations_[(observation_head_+index)%observations_.size()];
         if(prior.owner==owner&&prior.decoder==decoder&&prior.epoch==epoch&&
            prior.role==role&&prior.size==retained_size&&
            !std::memcmp(prior.bytes.data(),snapshot,retained_size))return false;
     }
-    return observation_count_!=observations_.size();
+    return true;
 }
 
 bool DiagnosticBridge::Observe(std::uintptr_t owner,std::uintptr_t decoder,unsigned epoch,
@@ -152,27 +152,33 @@ bool DiagnosticBridge::Observe(std::uintptr_t owner,std::uintptr_t decoder,unsig
     if(!owner||!decoder||!sequence||!snapshot||!snapshot_size)return false;
     const auto retained_size=std::min(snapshot_size,kMaximumSnapshotBytes);
     for(std::size_t index=0;index<observation_count_;++index) {
-        const auto& prior=observations_[index];
+        const auto& prior=observations_[(observation_head_+index)%observations_.size()];
         if(prior.owner==owner&&prior.decoder==decoder&&prior.epoch==epoch&&
            prior.role==role&&prior.size==retained_size&&
            !std::memcmp(prior.bytes.data(),snapshot,retained_size))return false;
     }
-    if(observation_count_==observations_.size()) {
-        observation_lost_=true;return false;
-    }
     std::uint64_t owner_generation=0;
     for(std::size_t index=observation_count_;index>0;--index) {
-        if(observations_[index-1].owner==owner) {
-            owner_generation=observations_[index-1].owner_generation;break;
+        const auto& prior=observations_[(observation_head_+index-1)%observations_.size()];
+        if(prior.owner==owner) {
+            owner_generation=prior.owner_generation;break;
         }
     }
+    const auto& latest=observations_[observation_count_?
+        (observation_head_+observation_count_-1)%observations_.size():observation_head_];
     if(!owner_generation||
        (observation_count_&&
-        (observations_[observation_count_-1].owner!=owner||
-         observations_[observation_count_-1].decoder!=decoder||
-         observations_[observation_count_-1].epoch!=epoch)))
+        (latest.owner!=owner||latest.decoder!=decoder||latest.epoch!=epoch)))
         owner_generation=next_owner_generation_++;
-    auto& observation=observations_[observation_count_++];
+    std::size_t slot=0;
+    if(observation_count_==observations_.size()) {
+        observation_lost_=true;slot=observation_head_;
+        observation_head_=(observation_head_+1)%observations_.size();
+    } else {
+        slot=(observation_head_+observation_count_)%observations_.size();
+        ++observation_count_;
+    }
+    auto& observation=observations_[slot];
     observation.owner=owner;observation.decoder=decoder;observation.epoch=epoch;
     observation.sequence=sequence;observation.owner_generation=owner_generation;
     observation.role=role;

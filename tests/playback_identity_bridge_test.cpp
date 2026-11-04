@@ -180,4 +180,27 @@ int main() {
     std::array<unsigned char, kMaximumSnapshotBytes> empty{};
     assert(!bounded.Observe(0x9999, 0xaaaa, 1, 99, empty.data(), empty.size()));
     assert(bounded.ObservationLost());
+
+    // A long-running Spotify process must not permanently disable direct
+    // identity after the bounded history fills. The hook calls
+    // NeedsObservation before Observe, so a new lifecycle must still enter the
+    // bridge and become matchable after more than 128 prior observations.
+    DiagnosticBridge long_session;
+    for(size_t index=0;index<kObservationCapacity;++index) {
+        std::array<unsigned char,kMaximumSnapshotBytes> prior{};
+        prior[0]=static_cast<unsigned char>(index+1);
+        assert(long_session.NeedsObservation(0x30000+index,0x40000+index,1,
+            SnapshotRole::PlayerPlaybackId,prior.data(),prior.size()));
+        assert(!long_session.Observe(0x30000+index,0x40000+index,1,index+1,
+            prior.data(),prior.size(),SnapshotRole::PlayerPlaybackId));
+    }
+    assert(long_session.NeedsObservation(0x50000,0x60000,1,
+        SnapshotRole::PlayerPlaybackId,changed.data(),changed.size()));
+    assert(!long_session.Observe(0x50000,0x60000,1,kObservationCapacity+1,
+        changed.data(),changed.size(),SnapshotRole::PlayerPlaybackId));
+    assert(long_session.ObservationLost());
+    assert(long_session.SetExpected(kSecond,15));
+    match=long_session.TakeMatch();
+    assert(match&&match->owner==0x50000&&match->decoder==0x60000&&
+           match->sequence==kObservationCapacity+1);
 }

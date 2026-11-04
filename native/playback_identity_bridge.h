@@ -88,6 +88,7 @@ private:
     bool ResolveExpected() noexcept;
 
     std::array<Observation,kObservationCapacity> observations_{};
+    std::size_t observation_head_=0;
     std::size_t observation_count_=0;
     std::uint64_t next_owner_generation_=1;
     Instance expected_{};
