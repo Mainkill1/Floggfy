@@ -299,7 +299,9 @@ int main() {
     assert(!ReadSongDestination(7,11,saved_file) && saved_file==before);
     auto other=item;other.spotify_uri="spotify:track:BBBBBBBBBBBBBBBBBBBBBB";
     WriteAudio(ogg,other); // Preserve a different recording occupying the legacy filename.
-    const auto duplicate=DuplicateOutputPath(root,item,L".ogg",true);
+    const auto duplicate_paths=DuplicateOutputPaths(root,item,L".ogg",true);
+    assert(duplicate_paths.size()==3);
+    const auto& duplicate=duplicate_paths[1];
     WriteAudio(duplicate,item);SubmitSong(7,root,item,true,11);
     assert(ReadSongDestination(7,11,saved_file) && saved_file==duplicate);
     assert(DeleteFileW(WindowsPath(duplicate).c_str()));assert(DeleteFileW(WindowsPath(ogg).c_str()));

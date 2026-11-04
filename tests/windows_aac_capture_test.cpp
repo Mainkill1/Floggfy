@@ -151,10 +151,24 @@ void TestPipeline(const std::wstring& root) {
     tags.fields.back()={"HISTORY_CAPTURE","native compressed FLAC input"};
     for(auto& field:tags.fields)if(field.first=="SPOTIFY_URI")field.second="spotify:track:BBBBBBBBBBBBBBBBBBBBBB";
     Write(flac,other_flac);
-    const auto duplicate=DuplicateOutputPath(root,catalog,L".m4a",false);
+    const auto duplicate=root+L"\\Duplicates\\Music\\Artists\\Artist\\Album\\Native AAC [t-AAAAAAAAAA].m4a";
     capture=Captured(source);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Saved);
     assert(GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES&&Read(duplicate).size()>0&&Read(flac)==other_flac);
-    assert(DeleteFileW(flac.c_str())&&DeleteFileW(duplicate.c_str()));
+    assert(DeleteFileW(duplicate.c_str()));
+    // The compact suffix is only a display aid. If it is occupied by another
+    // complete full URI, expand to 14 characters, then the full 22 characters.
+    Write(duplicate,other_flac);
+    const auto duplicate14=root+L"\\Duplicates\\Music\\Artists\\Artist\\Album\\Native AAC [t-AAAAAAAAAAAAAA].m4a";
+    capture=Captured(source);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Saved);
+    assert(Read(duplicate14).size()>0&&Read(duplicate)==other_flac&&Read(flac)==other_flac);
+    assert(DeleteFileW(duplicate14.c_str()));Write(duplicate14,other_flac);
+    const auto duplicate22=root+L"\\Duplicates\\Music\\Artists\\Artist\\Album\\Native AAC [t-AAAAAAAAAAAAAAAAAAAAAA].m4a";
+    capture=Captured(source);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Saved);
+    assert(Read(duplicate22).size()>0&&Read(duplicate)==other_flac&&Read(duplicate14)==other_flac&&Read(flac)==other_flac);
+    capture=Captured(source);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped&&Read(duplicate22).size()>0);
+    assert(DeleteFileW(duplicate.c_str())&&DeleteFileW(duplicate14.c_str()));
+    capture=Captured(source);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped&&Read(duplicate22).size()>0);
+    assert(DeleteFileW(flac.c_str())&&DeleteFileW(duplicate22.c_str()));
     // The same final-UID fallback applies within one codec and is stable on a
     // repeat: no canonical collision suffix is allocated.
     AacInfo info;std::vector<std::vector<uint8_t>> packets;

@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <vector>
 namespace history {
 enum class MediaKind { Music, Compilation, Soundtrack, VariousArtists, Audiobook, Podcast, MusicVideo, Concert };
 struct Catalog {
@@ -19,8 +20,10 @@ struct Catalog {
 std::wstring RelativePath(const Catalog& item,const std::wstring& extension,bool track_numbers=false);
 std::wstring OutputPath(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder=false,bool track_numbers=false);
 bool ValidSpotifyTrackUri(const std::string& uri) noexcept;
-// Additive fallback for an explicit different-track UID collision. Empty when
-// the current catalog lacks a complete Spotify track identity.
+// Additive fallbacks for an explicit different-track UID collision. Names use
+// the shortest display suffix first; full URI metadata remains authoritative.
+std::vector<std::wstring> DuplicateOutputPaths(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder=false,bool track_numbers=false);
+// Compatibility shorthand for the first (10-character) duplicate path.
 std::wstring DuplicateOutputPath(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder=false,bool track_numbers=false);
 enum class Codec { Vorbis, Flac, Aac, Mp3 };
 struct Quality { Codec codec=Codec::Vorbis; unsigned rate=0,channels=0,bits=0,bitrate=0; };

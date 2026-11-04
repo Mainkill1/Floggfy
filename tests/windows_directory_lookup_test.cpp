@@ -132,7 +132,9 @@ void Conversion(const std::wstring& root) {
     // Prefix conversion in the duplicate namespace preserves the complete UID
     // suffix and never moves the file back over the canonical conflict.
     const auto other=Song(L"Other");Write(title,Audio(other,16,true));
-    const auto duplicate=DuplicateOutputPath(root,c,L".ogg");
+    const auto duplicate_paths=DuplicateOutputPaths(root,c,L".ogg");
+    assert(duplicate_paths.size()==3);
+    const auto& duplicate=duplicate_paths[1];
     const auto duplicate_slash=duplicate.find_last_of(L'\\');
     const auto duplicate_old=duplicate.substr(0,duplicate_slash+1)+L"03 - "+duplicate.substr(duplicate_slash+1);
     Write(duplicate_old,Audio(c,16,true));
@@ -245,7 +247,10 @@ void StableArtistFolder(const std::wstring& root) {
 namespace history {
 std::uint64_t MetadataRevision(){return 0;}
 std::string ReadClientPlaybackQuality(const Media&){return {};}
-void EnrichCatalog(const Media& media,Catalog& c){c.disc=2;c.spotify_uri="spotify:track:"+Utf8(media.title);if(media.title==L"Collaborative track")c.artist=L"Artist; Guest";}
+void EnrichCatalog(const Media& media,Catalog& c){
+    c.disc=2;std::string id(22,'0');if(!media.title.empty())id.back()=char('0'+(media.title.front()%10));
+    c.spotify_uri="spotify:track:"+id;if(media.title==L"Collaborative track")c.artist=L"Artist; Guest";
+}
 void EnrichTags(const Media&,Tags&) {}
 }
 int wmain(int argc,wchar_t** argv) {

@@ -1046,9 +1046,19 @@ static FilenameConversion ConvertResolvedFilename(RecordingDestination& resolved
     const auto latest=GetSettings();
     if(latest.generation!=settings.generation || !latest.downloads || !latest.convert_numbered_filenames || latest.track_number_in_filename)
         return FilenameConversion::Unchanged;
-    const auto expected=duplicates
-        ?DuplicateOutputPath(settings.root,catalog,extension,settings.music_folder,false)
-        :OutputPath(settings.root,catalog,extension,settings.music_folder,false);
+    auto expected=OutputPath(settings.root,catalog,extension,settings.music_folder,false);
+    if(duplicates) {
+        const auto candidates=DuplicateOutputPaths(settings.root,catalog,extension,settings.music_folder,false);
+        expected.clear();
+        for(const auto& candidate:candidates) {
+            const auto marker_begin=candidate.rfind(L" [t-");
+            const auto marker_end=marker_begin==std::wstring::npos?std::wstring::npos:candidate.find(L']',marker_begin);
+            if(expected.empty())expected=candidate;
+            if(marker_end!=std::wstring::npos&&resolved.path.find(candidate.substr(marker_begin,marker_end-marker_begin+1))!=std::wstring::npos) {
+                expected=candidate;break;
+            }
+        }
+    }
     if(expected.empty())return FilenameConversion::Unchanged;
     // Reused recordings keep their existing folder, including the recognized
     // Spotify-artist alias. Conversion removes only the filename prefix.
@@ -1079,17 +1089,30 @@ struct PublicationDestinations {
 static DestinationFailure ResolvePublicationDestinations(const Capture& capture,const Settings& settings,
     const Catalog& catalog,const Quality& quality,bool duplicates,PublicationDestinations& out) {
     out={};out.duplicate_namespace=duplicates;
-    auto path=[&](const wchar_t* extension) {
-        return duplicates
-            ?DuplicateOutputPath(settings.root,catalog,extension,settings.music_folder,settings.track_number_in_filename)
-            :OutputPath(settings.root,catalog,extension,settings.music_folder,settings.track_number_in_filename);
+    auto paths=[&](const wchar_t* extension) {
+        if(duplicates)return DuplicateOutputPaths(settings.root,catalog,extension,settings.music_folder,settings.track_number_in_filename);
+        return std::vector<std::wstring>{OutputPath(settings.root,catalog,extension,settings.music_folder,settings.track_number_in_filename)};
     };
-    const auto capture_path=path(capture.Extension());
-    if(capture_path.empty())return DestinationFailure::Capture;
+    const auto capture_paths=paths(capture.Extension());
+    if(capture_paths.empty()||capture_paths.front().empty())return DestinationFailure::Capture;
     RecordingDirectory directory;
-    if(!ListRecordingDirectory(capture_path,directory,&catalog))return DestinationFailure::Directory;
+    if(!ListRecordingDirectory(capture_paths.front(),directory,&catalog))return DestinationFailure::Directory;
+    auto resolve=[&](const wchar_t* extension) {
+        RecordingDestination selected;bool writable=false;
+        const auto candidates=paths(extension);
+        for(const auto& base:candidates) {
+            auto current=ResolveRecordingDestination(base,catalog,settings.track_number_in_filename,&directory);
+            if(current.state==RecordingDestinationState::Blocked||current.state==RecordingDestinationState::Existing)return current;
+            if(!duplicates)return current;
+            // Keep scanning for an exact historical home even when an earlier
+            // visible suffix has become vacant. The first non-conflicting
+            // vacancy remains the write target if no exact match exists.
+            if(!writable&&!current.explicit_uid_conflict){selected=std::move(current);writable=true;}
+        }
+        return selected;
+    };
     if(capture.lossless&&!capture.mp3) {
-        auto ogg=ResolveRecordingDestination(path(L".ogg"),catalog,settings.track_number_in_filename,&directory);
+        auto ogg=resolve(L".ogg");
         out.explicit_uid_conflict=out.explicit_uid_conflict||ogg.explicit_uid_conflict;
         if(ogg.state==RecordingDestinationState::Blocked)return DestinationFailure::Ogg;
         if(ogg.state==RecordingDestinationState::Existing&&ogg.recording.complete&&ogg.recording.owned&&
@@ -1101,7 +1124,7 @@ static DestinationFailure ResolvePublicationDestinations(const Capture& capture,
         if(capture.mp3)break;
         if(capture.lossless||(codec==Codec::Vorbis&&!capture.aac))break;
         const auto extension=codec==Codec::Flac?L".flac":L".ogg";
-        auto candidate=ResolveRecordingDestination(path(extension),catalog,settings.track_number_in_filename,&directory);
+        auto candidate=resolve(extension);
         out.explicit_uid_conflict=out.explicit_uid_conflict||candidate.explicit_uid_conflict;
         if(candidate.state==RecordingDestinationState::Blocked)return DestinationFailure::Preferred;
         if(candidate.state==RecordingDestinationState::Existing&&candidate.recording.complete&&
@@ -1111,7 +1134,7 @@ static DestinationFailure ResolvePublicationDestinations(const Capture& capture,
         }
     }
     if(!out.existing_lossless&&!out.existing_vorbis) {
-        out.resolved=ResolveRecordingDestination(capture_path,catalog,settings.track_number_in_filename,&directory);
+        out.resolved=resolve(capture.Extension());
         out.explicit_uid_conflict=out.explicit_uid_conflict||out.resolved.explicit_uid_conflict;
     }
     if(out.resolved.state==RecordingDestinationState::Blocked)return DestinationFailure::Capture;
@@ -1377,14 +1400,15 @@ static void ProcessFilenameCheck(const FilenameCheck& check) {
         for(const auto& format:kRecordingFormats) {
             if(!SupportsMedia(format,check.catalog.kind))continue;
             if(!current())return true;
-            const auto base=duplicates
-                ?DuplicateOutputPath(check.settings.root,check.catalog,format.extension,check.settings.music_folder,false)
-                :OutputPath(check.settings.root,check.catalog,format.extension,check.settings.music_folder,false);
-            if(base.empty())continue;
-            auto resolved=ResolveRecordingDestination(base,check.catalog,false,&directory);
-            if(!duplicates)explicit_uid_conflict=explicit_uid_conflict||resolved.explicit_uid_conflict;
-            if(!current()||resolved.state==RecordingDestinationState::Blocked)return true;
-            if(resolved.state!=RecordingDestinationState::Existing||!resolved.recording.complete)continue;
+            const auto bases=duplicates
+                ?DuplicateOutputPaths(check.settings.root,check.catalog,format.extension,check.settings.music_folder,false)
+                :std::vector<std::wstring>{OutputPath(check.settings.root,check.catalog,format.extension,check.settings.music_folder,false)};
+            for(const auto& base:bases) {
+             if(base.empty())continue;
+             auto resolved=ResolveRecordingDestination(base,check.catalog,false,&directory);
+             if(!duplicates)explicit_uid_conflict=explicit_uid_conflict||resolved.explicit_uid_conflict;
+             if(!current()||resolved.state==RecordingDestinationState::Blocked)return true;
+             if(resolved.state!=RecordingDestinationState::Existing||!resolved.recording.complete)continue;
             if(check.settings.convert_numbered_filenames&&!check.settings.track_number_in_filename&&
                ConvertResolvedFilename(resolved,check.catalog,check.settings,format.extension,check.serial,duplicates)==FilenameConversion::Failed)
                 LogEvent(LogKind::Failure,"failed","filename conversion deferred; existing recording retained | "+Utf8(check.catalog.title));
@@ -1418,6 +1442,7 @@ static void ProcessFilenameCheck(const FilenameCheck& check) {
                 }
             }
             return true; // Best verified format/recording found; no new audio is created.
+            }
         }
         return false;
     };
