@@ -74,25 +74,26 @@ bool ReadPlaybackInstance(const void* owner,const PlayerPath& path,
     return any;
 }
 
-bool DiagnosticBridge::MatchObservation(const Observation& observation,Match& match) const noexcept {
+bool DiagnosticBridge::MatchObservation(const Observation& observation,const Instance& expected,
+                                        std::uint64_t metadata_generation,Match& match) const noexcept {
     std::size_t matches=0;
     Representation representation=Representation::None;
     std::size_t offset=0;
-    if(observation.size>=expected_.bytes.size()) {
-        for(std::size_t index=0;index<=observation.size-expected_.bytes.size();++index) {
-            if(std::memcmp(observation.bytes.data()+index,expected_.bytes.data(),expected_.bytes.size()))continue;
+    if(observation.size>=expected.bytes.size()) {
+        for(std::size_t index=0;index<=observation.size-expected.bytes.size();++index) {
+            if(std::memcmp(observation.bytes.data()+index,expected.bytes.data(),expected.bytes.size()))continue;
             ++matches;representation=Representation::RawBytes;offset=index;
         }
     }
-    if(observation.size>=expected_.hex.size()) {
-        for(std::size_t index=0;index<=observation.size-expected_.hex.size();++index) {
-            if(!EqualHex(observation.bytes.data()+index,expected_))continue;
+    if(observation.size>=expected.hex.size()) {
+        for(std::size_t index=0;index<=observation.size-expected.hex.size();++index) {
+            if(!EqualHex(observation.bytes.data()+index,expected))continue;
             ++matches;representation=Representation::AsciiHex;offset=index;
         }
     }
     if(matches!=1)return false;
     match={observation.owner,observation.decoder,observation.epoch,observation.sequence,
-           metadata_generation_,observation.owner_generation,representation,
+           metadata_generation,observation.owner_generation,representation,
            observation.role,offset};
     return true;
 }
@@ -104,7 +105,7 @@ bool DiagnosticBridge::ResolveExpected() noexcept {
         auto& observation=observations_[(observation_head_+index)%observations_.size()];
         if(observation.reported_metadata_generation==metadata_generation_)continue;
         Match candidate{};
-        if(!MatchObservation(observation,candidate))continue;
+        if(!MatchObservation(observation,expected_,metadata_generation_,candidate))continue;
         observation.reported_metadata_generation=metadata_generation_;
         if(pending_match_count_<pending_matches_.size())
             pending_matches_[pending_match_count_++]=candidate;
@@ -187,6 +188,27 @@ bool DiagnosticBridge::Observe(std::uintptr_t owner,std::uintptr_t decoder,unsig
     pending_observation_=ObservationInfo{owner,decoder,epoch,sequence,owner_generation,role};
     if(!has_expected_)return false;
     return ResolveExpected();
+}
+
+std::size_t DiagnosticBridge::QueryMatches(std::string_view playback_instance,
+                                           std::uint64_t metadata_generation,unsigned epoch,
+                                           Match* matches,std::size_t capacity) const noexcept {
+    if(!metadata_generation||!matches||!capacity)return 0;
+    Instance expected{};
+    if(!ParseInstance(playback_instance,expected))return 0;
+    std::size_t count=0;
+    for(std::size_t index=0;index<observation_count_&&count<capacity;++index) {
+        const auto& observation=observations_[(observation_head_+index)%observations_.size()];
+        if(observation.epoch!=epoch)continue;
+        Match match{};
+        if(MatchObservation(observation,expected,metadata_generation,match))
+            matches[count++]=match;
+    }
+    return count;
+}
+
+void DiagnosticBridge::Reset() noexcept {
+    *this={};
 }
 
 std::optional<Match> DiagnosticBridge::TakeMatch() noexcept {

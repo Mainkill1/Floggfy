@@ -679,26 +679,25 @@ static void LogPlaybackIdentityMatch() {
 static size_t SetExpectedPlaybackIdentity(
     const Media& media,std::uint64_t generation,
     std::array<playback_identity::Match,playback_identity::kObservationCapacity>& matches) {
-    if(!playback_pump_target||!DebugLoggingEnabled()||media.playback_instance.empty()||!generation)return 0;
+    if(!playback_pump_target||media.playback_instance.empty()||!generation)return 0;
     const bool changed=playback_identity_metadata_generation!=generation;
     AcquireSRWLockExclusive(&playback_identity_lock);
     const bool accepted=!changed||playback_identity_bridge.SetExpected(media.playback_instance,generation);
-    size_t count=0;
-    while(count<matches.size()) {
-        const auto match=playback_identity_bridge.TakeMatch();
-        if(!match)break;
-        matches[count++]=*match;
-    }
+    const auto count=accepted?playback_identity_bridge.QueryMatches(
+        media.playback_instance,generation,CaptureEpoch(),matches.data(),matches.size()):0;
+    while(playback_identity_bridge.TakeMatch()) {} // Diagnostics are derived from the retained query below.
     ReleaseSRWLockExclusive(&playback_identity_lock);
     if(!accepted)return 0;
     if(changed) {
         playback_identity_metadata_generation=generation;
-        char line[160];snprintf(line,sizeof(line),
-            "identity-bridge event=metadata metadata_generation=%llu normalized=1",
-            static_cast<unsigned long long>(generation));
-        Log(LogKind::Diagnostic,line);
+        if(DebugLoggingEnabled()) {
+            char line[160];snprintf(line,sizeof(line),
+                "identity-bridge event=metadata metadata_generation=%llu normalized=1",
+                static_cast<unsigned long long>(generation));
+            Log(LogKind::Diagnostic,line);
+        }
     }
-    for(size_t index=0;index<count;++index) {
+    for(size_t index=0;DebugLoggingEnabled()&&index<count;++index) {
         const auto& match=matches[index];
         const char* role=match.role==playback_identity::SnapshotRole::Owner?"owner":
             match.role==playback_identity::SnapshotRole::Decoder?"decoder":"player-id";
@@ -712,6 +711,12 @@ static size_t SetExpectedPlaybackIdentity(
         Log(LogKind::Diagnostic,line);
     }
     return count;
+}
+static void ResetPlaybackIdentityBridge() noexcept {
+    AcquireSRWLockExclusive(&playback_identity_lock);
+    playback_identity_bridge.Reset();
+    playback_identity_metadata_generation=0;
+    ReleaseSRWLockExclusive(&playback_identity_lock);
 }
 static void QueueAac(void* context,AudioEventKind kind,const unsigned char* bytes,size_t size,
                      double time,unsigned epoch,unsigned status=0) {
@@ -2632,6 +2637,7 @@ static DWORD WINAPI Worker(LPVOID) {
                     last_media=minimum_media_time=now;media_unavailable=false;media_warning={};diagnostics.known=false;CancelFilenameChecks();
                     enabled=capture;
                     ownership_tracker.Reset(preferences.capture_epoch);
+                    ResetPlaybackIdentityBridge();
                     ResetMp3Probes();
                     ownership_output_logged={};ownership_output_logged_count=ownership_output_logged_next=0;
                     ownership_playback_uri.clear();
@@ -2894,8 +2900,7 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
         original_aac_initialize=nullptr;original_aac_push=nullptr;original_aac_destroy=nullptr;
         original_decoded_process=nullptr;decoded_sink_target=nullptr;
         original_playback_pump=nullptr;playback_pump_target=nullptr;playback_pump_decoder_offset=0;
-        playback_identity_bridge={};playback_identity_sequence.store(0,std::memory_order_relaxed);
-        playback_identity_metadata_generation=0;
+        ResetPlaybackIdentityBridge();playback_identity_sequence.store(0,std::memory_order_relaxed);
         decoder_ownership_layout={};decoder_ownership_layout_available=false;
         ResetDecodedActivityQueue();
         ownership_output_logged={};ownership_output_logged_count=ownership_output_logged_next=0;

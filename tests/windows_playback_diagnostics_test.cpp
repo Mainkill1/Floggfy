@@ -113,6 +113,51 @@ void PodcastCaptureEvents() {
            "an old-to-new identity transition finalizes the completed generation's exact MP3 decoder");
     decoded_sink_target=nullptr;
 }
+void DirectIdentityRetriesAndIgnoresLogVerbosity() {
+    constexpr char instance[]="00112233445566778899aabbccddeeff";
+    playback_identity::Instance parsed{};assert(playback_identity::ParseInstance(instance,parsed));
+    playback_identity_bridge={};playback_identity_metadata_generation=0;
+    playback_pump_target=reinterpret_cast<void*>(0x1);
+    assert(!playback_identity_bridge.Observe(0x4100,0x5100,0,1,
+        parsed.bytes.data(),parsed.bytes.size(),playback_identity::SnapshotRole::PlayerPlaybackId));
+
+    ownership::DecoderOwnershipTracker tracker;tracker.Reset(0);
+    CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+    auto capture=std::make_unique<Capture>();capture->lossless=true;capture->decoder_owner=0x5100;
+    capture->capture_token=tracker.BeginCapture(
+        ownership::DecoderCodec::Flac,capture->decoder_owner,0,100,0,1);
+    buffers.active[0x5100]=std::move(capture);
+    Media media;media.source=MediaSource::Spotify;media.spotify_uri="spotify:track:0000000000000000000001";
+    media.playback_instance=instance;media.playing=true;
+    std::array<playback_identity::Match,playback_identity::kObservationCapacity> matches{};
+    const auto first=SetExpectedPlaybackIdentity(media,70,matches);
+    assert(first==1&&!BindDirectReadyCapture(buffers,media,70,100.1,matches,first)&&
+           "identity can precede the decoded-output ownership stage");
+    ownership::DecodedActivity decoded{};decoded.owner=0x5100;decoded.calls=1;
+    decoded.produced_floats=8192;decoded.first=100.1;decoded.last=100.2;decoded.epoch=0;
+    tracker.ObserveDecoded(decoded);
+    matches={};const auto retry=SetExpectedPlaybackIdentity(media,70,matches);
+    assert(retry==1&&BindDirectReadyCapture(buffers,media,70,100.2,matches,retry)&&
+           "the same retained identity observation binds after decoded output arrives");
+
+    playback_identity::Instance second{};
+    constexpr char second_instance[]="ffeeddccbbaa99887766554433221100";
+    assert(playback_identity::ParseInstance(second_instance,second));
+    auto next_capture=std::make_unique<Capture>();next_capture->lossless=true;next_capture->decoder_owner=0x5200;
+    next_capture->capture_token=tracker.BeginCapture(
+        ownership::DecoderCodec::Flac,next_capture->decoder_owner,0,101,0,2);
+    buffers.active[0x5200]=std::move(next_capture);
+    decoded.owner=0x5200;decoded.first=101;decoded.last=101.1;tracker.ObserveDecoded(decoded);
+    assert(!playback_identity_bridge.Observe(0x4200,0x5200,0,2,
+        second.bytes.data(),second.bytes.size(),playback_identity::SnapshotRole::PlayerPlaybackId));
+    media.playback_instance=second_instance;media.spotify_uri="spotify:track:0000000000000000000002";
+    InterlockedExchange(&history::log_level_value,1);matches={};
+    const auto quiet=SetExpectedPlaybackIdentity(media,71,matches);
+    assert(quiet==1&&BindDirectReadyCapture(buffers,media,71,101.2,matches,quiet)&&
+           "direct identity is capture evidence, not a LogLevel 4 feature");
+    InterlockedExchange(&history::log_level_value,4);
+    playback_identity_bridge={};playback_identity_metadata_generation=0;playback_pump_target=nullptr;
+}
 void ObservePlayback() {
     PlaybackDiagnostics state;Media media;media.title=L"Song";media.artist=L"Artist";
     media.position=1;media.duration=100;media.playing=true;media.playback_status=4;
@@ -1869,7 +1914,7 @@ int wmain(int argc,wchar_t** argv) {
         return 0;
     }
     assert(argc==1);
-    Connectivity();PodcastCatalog();PublicationLogging();PodcastCaptureEvents();ReadyUpgradesPreboundPlaybackGeneration();EmptyPlaybackIdNaturalTransitionIsRetried();UnclassifiedMonitoredTransitionWaitsForReady();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();BoundNaturalTransitionUsesFinalCaptureEvidence();DjVoiceDoesNotBlockMusicStart();CurrentItemChangeReconcilesDjSuccessor();CurrentItemChangeBeforeStreamOutputReconcilesDjSuccessor();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailLifecycle();ReadyDurationCorroboratesDecoder();WindowsReadyNaturalAppTransitionPublishes();TransitionPublicationMatrixStress();BoundWindowsIdentitySurvivesMetadataRefinement();MissingPlaybackWarning();AdvertisementStageIsNotDownloadFailure();ObservePlayback();CoverageAndFailures();SameContextFlacRestartBeginsFreshCapture();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
+    Connectivity();PodcastCatalog();PublicationLogging();PodcastCaptureEvents();DirectIdentityRetriesAndIgnoresLogVerbosity();ReadyUpgradesPreboundPlaybackGeneration();EmptyPlaybackIdNaturalTransitionIsRetried();UnclassifiedMonitoredTransitionWaitsForReady();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();BoundNaturalTransitionUsesFinalCaptureEvidence();DjVoiceDoesNotBlockMusicStart();CurrentItemChangeReconcilesDjSuccessor();CurrentItemChangeBeforeStreamOutputReconcilesDjSuccessor();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailLifecycle();ReadyDurationCorroboratesDecoder();WindowsReadyNaturalAppTransitionPublishes();TransitionPublicationMatrixStress();BoundWindowsIdentitySurvivesMetadataRefinement();MissingPlaybackWarning();AdvertisementStageIsNotDownloadFailure();ObservePlayback();CoverageAndFailures();SameContextFlacRestartBeginsFreshCapture();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
     puts("PASS: observed transitions, one FLAC failure context/outcome, original callback semantics, profiling-only intervals, basic-mode zero profiling and changed-only NLM observations");
     return 0;
 }

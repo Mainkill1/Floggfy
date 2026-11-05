@@ -67,6 +67,10 @@ public:
     bool Observe(std::uintptr_t owner,std::uintptr_t decoder,unsigned epoch,
                  std::uint64_t sequence,const void* snapshot,
                  std::size_t snapshot_size,SnapshotRole role=SnapshotRole::Owner) noexcept;
+    std::size_t QueryMatches(std::string_view playback_instance,
+                             std::uint64_t metadata_generation,unsigned epoch,
+                             Match* matches,std::size_t capacity) const noexcept;
+    void Reset() noexcept;
     std::optional<Match> TakeMatch() noexcept;
     std::optional<ObservationInfo> TakeObservation() noexcept;
     bool ObservationLost() const noexcept {return observation_lost_;}
@@ -84,7 +88,8 @@ private:
         std::array<unsigned char,kMaximumSnapshotBytes> bytes{};
     };
 
-    bool MatchObservation(const Observation& observation,Match& match) const noexcept;
+    bool MatchObservation(const Observation& observation,const Instance& expected,
+                          std::uint64_t metadata_generation,Match& match) const noexcept;
     bool ResolveExpected() noexcept;
 
     std::array<Observation,kObservationCapacity> observations_{};
