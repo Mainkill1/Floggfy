@@ -1536,6 +1536,38 @@ void CompactFailureIdentity() {
            "only an established publication obligation becomes a user-visible failure");
     decoded_sink_target=nullptr;
 }
+void ContextSpecificCaptureQueueLoss() {
+    ResetCaptureQueueLosses();
+    {QueueGuard guard;RecordCaptureQueueLossLocked(0xA,7);RecordCaptureQueueLossLocked(0xA,7);}
+    auto loss=TakeCaptureQueueLosses();
+    assert(!loss.global&&loss.count==1&&loss.entries[0].context==0xA&&loss.entries[0].epoch==7&&
+           "repeated overflow on one lifecycle remains one bounded loss record");
+    CaptureBuffers buffers;
+    auto affected=std::make_unique<Capture>();affected->born=100;affected->capture_context=0xA;affected->capture_epoch=7;
+    auto unrelated=std::make_unique<Capture>();unrelated->born=100;unrelated->capture_context=0xB;unrelated->capture_epoch=7;
+    buffers.active[0xA]=std::move(affected);buffers.active[0xB]=std::move(unrelated);
+    buffers.ready.push_back(CompleteFlacCapture(90,99));
+    diagnostic_lines.clear();const auto failures=failure_events;
+    assert(!ApplyCaptureQueueLosses(buffers,loss,101));
+    assert(!buffers.active.count(0xA)&&buffers.active.count(0xB)==1&&buffers.ready.size()==1&&
+           failure_events==failures&&"one decoder's queue loss cannot invalidate unrelated or complete captures");
+
+    for(unsigned i=0;i<4;++i) {
+        auto capture=std::make_unique<Capture>();capture->born=110+i;capture->capture_context=0x20+i;
+        auto* raw=capture.get();buffers.active[0x20+i]=std::move(capture);
+        buffers.RecordLostActive(raw,ownership::CaptureAbortReason::SettingsChange,
+            ReleaseExpectation::DiscardedEvidence,true);
+        buffers.active.erase(0x20+i);
+    }
+    assert(!Contains("final cache check")&&"capture drain must not run whole-buffer release audits");
+    DrainReleaseAudits();
+    assert(Contains("final cache check")&&failure_events==failures&&
+           "deferred expected cleanup remains diagnostic-only");
+
+    {QueueGuard guard;for(uintptr_t context=1;context<=33;++context)RecordCaptureQueueLossLocked(context,7);}
+    loss=TakeCaptureQueueLosses();
+    assert(loss.global&&loss.count==0&&"loss-evidence overflow retains the explicit conservative fallback");
+}
 void DurableAssociationEvidence() {
     {
         // A corrupt competing stream can be lost in the same drained batch,
@@ -1922,7 +1954,7 @@ int wmain(int argc,wchar_t** argv) {
         return 0;
     }
     assert(argc==1);
-    Connectivity();PodcastCatalog();PublicationLogging();PodcastCaptureEvents();DirectIdentityRetriesAndIgnoresLogVerbosity();ReadyUpgradesPreboundPlaybackGeneration();EmptyPlaybackIdNaturalTransitionIsRetried();UnclassifiedMonitoredTransitionWaitsForReady();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();BoundNaturalTransitionUsesFinalCaptureEvidence();DjVoiceDoesNotBlockMusicStart();CurrentItemChangeReconcilesDjSuccessor();CurrentItemChangeBeforeStreamOutputReconcilesDjSuccessor();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailLifecycle();ReadyDurationCorroboratesDecoder();WindowsReadyNaturalAppTransitionPublishes();TransitionPublicationMatrixStress();BoundWindowsIdentitySurvivesMetadataRefinement();MissingPlaybackWarning();AdvertisementStageIsNotDownloadFailure();ObservePlayback();CoverageAndFailures();SameContextFlacRestartBeginsFreshCapture();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
+    Connectivity();PodcastCatalog();PublicationLogging();PodcastCaptureEvents();DirectIdentityRetriesAndIgnoresLogVerbosity();ReadyUpgradesPreboundPlaybackGeneration();EmptyPlaybackIdNaturalTransitionIsRetried();UnclassifiedMonitoredTransitionWaitsForReady();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();BoundNaturalTransitionUsesFinalCaptureEvidence();DjVoiceDoesNotBlockMusicStart();CurrentItemChangeReconcilesDjSuccessor();CurrentItemChangeBeforeStreamOutputReconcilesDjSuccessor();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();ContextSpecificCaptureQueueLoss();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailLifecycle();ReadyDurationCorroboratesDecoder();WindowsReadyNaturalAppTransitionPublishes();TransitionPublicationMatrixStress();BoundWindowsIdentitySurvivesMetadataRefinement();MissingPlaybackWarning();AdvertisementStageIsNotDownloadFailure();ObservePlayback();CoverageAndFailures();SameContextFlacRestartBeginsFreshCapture();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
     puts("PASS: observed transitions, one FLAC failure context/outcome, original callback semantics, profiling-only intervals, basic-mode zero profiling and changed-only NLM observations");
     return 0;
 }
