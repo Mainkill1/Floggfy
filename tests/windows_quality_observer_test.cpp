@@ -287,7 +287,7 @@ static void TestExistingMetadataAtPlaybackStart() {
   assert(SetSaveLocation(std::wstring(temp)+L"Floggfy-existing-metadata-"+std::to_wstring(GetCurrentProcessId())));
   assert(SetDownloads(true)&&SetFlac(true)&&SetOgg(true)&&SetLyrics(true)&&SetUpdateExistingMetadata(true));
   Media media;media.title=L"Existing Track";media.artist=L"Existing Artist";media.album=L"Existing Album";
-  media.track=1;media.duration=16.0/44100;media.playing=true;media.spotify_uri="spotify:track:existing";
+  media.track=1;media.duration=16.0/44100;media.playing=true;media.spotify_uri="spotify:track:AAAAAAAAAAAAAAAAAAAAAA";
   const auto settings=GetSettings();const auto catalog=CatalogFor(media);
   const auto path=OutputPath(settings.root,catalog,L".flac",settings.music_folder);
   assert(EnsureDirectory(path.substr(0,path.find_last_of(L'\\'))));
@@ -313,6 +313,34 @@ static void TestExistingMetadataAtPlaybackStart() {
   assert(lyrics);
   PublishCurrentDestination(media,settings);assert(!TakeFilenameCheck());
   DeleteFileW(path.c_str());
+  // A final explicit UID conflict redirects the existing-file check to the
+  // stable duplicate path, where metadata is still filled during playback.
+  auto other_tags=tags;
+  for(auto& field:other_tags.fields)if(field.first=="SPOTIFY_URI")field.second="spotify:track:BBBBBBBBBBBBBBBBBBBBBB";
+  std::vector<uint8_t> other;assert(TagFlac(recording_fixture::fixture(44100,24),other_tags,other,error));
+  auto write_file=[](const std::wstring& target,const std::vector<uint8_t>& bytes) {
+    assert(EnsureDirectory(target.substr(0,target.find_last_of(L'\\'))));
+    HANDLE output=CreateFileW(target.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,0,nullptr);DWORD count=0;
+    assert(output!=INVALID_HANDLE_VALUE&&WriteFile(output,bytes.data(),DWORD(bytes.size()),&count,nullptr)&&count==bytes.size());CloseHandle(output);
+  };
+  write_file(path,other);
+  const auto duplicate=DuplicateOutputPath(settings.root,catalog,L".flac",settings.music_folder);
+  write_file(duplicate,existing);
+  ++enrichment_revision;const auto duplicate_before=metadata_update_calls;
+  PublishCurrentDestination(media,GetSettings());auto duplicate_check=TakeFilenameCheck();assert(duplicate_check);ProcessFilenameCheck(*duplicate_check);
+  assert(metadata_update_calls==duplicate_before+1);
+  RecordingFile duplicate_updated;assert(ReadRecording(duplicate,duplicate_updated)&&MatchesRecording(duplicate_updated,catalog));
+  lyrics=false;for(const auto& field:duplicate_updated.tags.fields)if(field.first=="LYRICS"&&field.second=="automatic lyric fill")lyrics=true;
+  assert(lyrics);
+  assert(DeleteFileW(path.c_str())&&DeleteFileW(duplicate.c_str()));
+  write_file(duplicate,existing);++enrichment_revision;
+  const auto orphaned_duplicate_before=metadata_update_calls;
+  PublishCurrentDestination(media,GetSettings());auto orphaned_check=TakeFilenameCheck();assert(orphaned_check);
+  ProcessFilenameCheck(*orphaned_check);
+  assert(metadata_update_calls==orphaned_duplicate_before+1&&
+         ReadRecording(duplicate,duplicate_updated)&&MatchesRecording(duplicate_updated,catalog)&&
+         "metadata lookup must retain an established duplicate after its canonical conflict is deleted");
+  assert(DeleteFileW(duplicate.c_str()));
   std::puts("PASS: existing owned recording receives delayed lyrics during partial playback");
 }
 static void TestAutoSkipDownloaded() {
@@ -386,7 +414,7 @@ static void WaitLog(const std::string& prefix,const std::string& suffix) {
   std::fprintf(stderr,"Missing activity log: %s ... %s\n",prefix.c_str(),suffix.c_str());assert(false);
 }
 static void TestPublicationLogging() {
-  assert(GetSettings().log_level==1);
+  assert(GetSettings().log_level==2);
   assert(SavedAudioDetails({Codec::Vorbis,44100,2,0,320000},1048576)=="Ogg Vorbis 320 kbps nominal, 44,100 Hz | 1.00 MiB (1048576 bytes)");
   assert(SavedAudioDetails({Codec::Vorbis,44100,2,0,0},1048576)=="Ogg Vorbis, 44,100 Hz | 1.00 MiB (1048576 bytes)");
   wchar_t temp[2048];GetTempPathW(2048,temp);
@@ -462,8 +490,7 @@ int main(int argc,char** argv) {
   if(argc==2&&std::string(argv[1])=="--association"){TestLateAssociation();return 0;}
   TestLateAssociation();
   wchar_t ini_path[2048];GetModuleFileNameW(nullptr,ini_path,2048);std::wstring ini=ini_path;ini.resize(ini.find_last_of(L'\\')+1);ini+=L"SpotifyHistory.ini";
-  assert(WritePrivateProfileStringW(L"To Disk",L"Log",L"1",ini.c_str()));
-  assert(WritePrivateProfileStringW(L"To Disk",L"DebugLog",L"0",ini.c_str()));
+  assert(WritePrivateProfileStringW(L"To Disk",L"LogLevel",L"2",ini.c_str()));
   InitSettings(nullptr);
   StartSongDestinationWorker(true);
   std::vector<RecentDownload> recent;assert(ReadRecentDownloads(recent)&&recent.empty());

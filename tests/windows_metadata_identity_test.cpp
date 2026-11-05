@@ -70,12 +70,14 @@ int main(){
     // Collector normalization produces this UTF-8 protocol for either raw or
     // normalized lyric lines; native enrichment preserves it without an open UI.
     history::RichMetadata lyric_record;std::string parse_error;
-    assert(history::ParseRichMetadata("v=1&title=Synthetic&artist=Artist&album=Album&duration=200&uri=spotify%3Atrack%3A0000000000000000000099&LYRICS=one%0Atwo%20%C3%A9%20%E9%9F%B3&artwork_url=https%3A%2F%2Fi.scdn.co%2Fimage%2Faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",lyric_record,parse_error));
+    assert(history::ParseRichMetadata("v=1&title=Synthetic&artist=Artist&album=Album&duration=200&uri=spotify%3Atrack%3A0000000000000000000099&album_uri=spotify%3Aalbum%3A0000000000000000000002&SPOTIFY_ALBUM_URI=spotify%3Aalbum%3A0000000000000000000002&LYRICS=one%0Atwo%20%C3%A9%20%E9%9F%B3&artwork_url=https%3A%2F%2Fi.scdn.co%2Fimage%2Faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",lyric_record,parse_error));
     history::cache.Put(lyric_record);
     history::Media lyric_media;lyric_media.title=L"Synthetic";lyric_media.artist=L"Artist";lyric_media.album=L"Album";lyric_media.duration=200;
     history::Tags lyric_tags;history::EnrichTags(lyric_media,lyric_tags);
     const auto lyric=std::find_if(lyric_tags.fields.begin(),lyric_tags.fields.end(),[](const auto& p){return p.first=="LYRICS";});
     assert(lyric!=lyric_tags.fields.end()&&lyric->second=="one\ntwo é 音");
+    history::Catalog lyric_catalog;history::EnrichCatalog(lyric_media,lyric_catalog);
+    assert(lyric_catalog.spotify_album_uri=="spotify:album:0000000000000000000002");
     assert(lyric_record.artwork_url=="https://i.scdn.co/image/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     // Feed the collector's episode enrichment contract through native parsing,
     // the live cache and final tag enrichment.
@@ -89,8 +91,30 @@ int main(){
     history::Tags episode_tags;history::EnrichTags(enriched_episode,episode_tags);
     const auto publisher=std::find_if(episode_tags.fields.begin(),episode_tags.fields.end(),[](const auto& p){return p.first=="PUBLISHER";});
     assert(publisher!=episode_tags.fields.end()&&publisher->second=="Show");
+    wchar_t active_without_uri[]=L"FLOGGFY_TIMELINE_V1:v=1&unavailable=track-unavailable&active=1";
+    history::String unidentified{active_without_uri,wcslen(active_without_uri),nullptr};
+    assert(history::CurrentTimeline(&unidentified));
+    history::Media unidentified_media;double unidentified_observed=0;uint64_t unidentified_sequence=0;
+    history::MediaDiagnostic unidentified_diagnostic;
+    assert(history::TryReadClientMedia(unidentified_media,unidentified_observed,
+        unidentified_sequence,unidentified_diagnostic)==history::ClientMediaRead::Blocked&&
+        std::string(unidentified_diagnostic.reason)=="client-active-interstitial"&&
+        "active URI-less playback must be a marked uncertain stage, never a Ready track");
+    wchar_t advertisement[]=L"FLOGGFY_TIMELINE_V1:v=1&unavailable=track-unavailable&active=1&kind=advertisement";
+    unidentified={advertisement,wcslen(advertisement),nullptr};
+    assert(history::CurrentTimeline(&unidentified));
+    assert(history::TryReadClientMedia(unidentified_media,unidentified_observed,
+        unidentified_sequence,unidentified_diagnostic)==history::ClientMediaRead::Blocked&&
+        std::string(unidentified_diagnostic.reason)=="client-active-advertisement"&&
+        "an explicit Spotify advertisement must remain non-recordable and be named accurately");
+    wchar_t malformed_unidentified[]=L"FLOGGFY_TIMELINE_V1:v=1&unavailable=track-unavailable&active=2";
+    unidentified={malformed_unidentified,wcslen(malformed_unidentified),nullptr};
+    assert(history::CurrentTimeline(&unidentified));
+    assert(history::TryReadClientMedia(unidentified_media,unidentified_observed,
+        unidentified_sequence,unidentified_diagnostic)==history::ClientMediaRead::Unavailable&&
+        "malformed unidentified markers must fail closed");
     const auto options=history::CollectorOptions();
-    assert(options==L"window.__floggfyConfig={metadata:true,lyrics:true,debug:false,connect:false,networking:false};");
+    assert(options==L"window.__floggfyConfig={metadata:true,lyrics:true,autoSkip:false,debug:false,connect:false,networking:false};");
     FILETIME utc;GetSystemTimeAsFileTime(&utc);
     const auto sampled=((uint64_t(utc.dwHighDateTime)<<32)|utc.dwLowDateTime)-116444736000000000ULL;
     auto timeline_payload=L"FLOGGFY_TIMELINE_V1:v=1&title=App&artist=Artist&album=Album&uri=spotify:track:0000000000000000000001&duration=180&position=0&paused=0&buffering=0&local=1&sampled_ms="+std::to_wstring(sampled/10000);

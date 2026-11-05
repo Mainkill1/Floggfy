@@ -124,6 +124,9 @@ std::vector<std::uint8_t> MappedImage(std::uint32_t shift = 0,
          55, sniff, sizeof(sniff)},
         {0x2b000 + shift, 0x2b1b4 + shift, 103, ogg, sizeof(ogg)},
     };
+    // GCC 15 can diagnose the first growth from an initializer-list-sized
+    // allocation as an out-of-bounds construction under -Warray-bounds.
+    functions.reserve(functions.size()+2);
     if (duplicate_ogg)
         functions.push_back({0x3b000, 0x3b1b4, 103, ogg, sizeof(ogg)});
 
@@ -217,7 +220,7 @@ int main() {
     assert(Rva(targets, spotify::TargetKind::OggPageSeek) == 0x2b000);
     spotify::DecodedOutputTarget decoded{};
     assert(spotify::DiscoverDecodedOutputTarget(image.data(),image.size(),decoded)==spotify::DiscoveryResult::Found);
-    assert(decoded.rva==0x4400);
+    assert(decoded.rva==0x4400&&decoded.caller_rva==0x40000&&decoded.decoder_offset==0x70);
     spotify::DecoderOwnershipLayout ownership{};
     assert(spotify::DiscoverDecoderOwnershipLayout(image.data(),image.size(),ownership)==spotify::DiscoveryResult::Found);
     assert(ownership.decoded_output==0x4400&&ownership.ogg_capture_to_decoder==-0x88&&
@@ -303,6 +306,13 @@ int main() {
     assert(spotify::DiscoverDecodedOutputTarget(image.data(),image.size(),decoded)==spotify::DiscoveryResult::MissingTarget);
 
     image=MappedImage();Put<std::uint32_t>(image,0x1000+4*12,0x43f0);
+    assert(spotify::DiscoverDecodedOutputTarget(image.data(),image.size(),decoded)==spotify::DiscoveryResult::InconsistentLayout);
+
+    image=MappedImage();image[0x40000+0x48c]^=0xff;
+    assert(spotify::DiscoverDecodedOutputTarget(image.data(),image.size(),decoded)!=spotify::DiscoveryResult::Found);
+    image=MappedImage();image[0x40000+0x2c5]^=0xff;
+    assert(spotify::DiscoverDecodedOutputTarget(image.data(),image.size(),decoded)==spotify::DiscoveryResult::InconsistentLayout);
+    image=MappedImage();image[0x40000+0x2c9]=0x90;
     assert(spotify::DiscoverDecodedOutputTarget(image.data(),image.size(),decoded)==spotify::DiscoveryResult::InconsistentLayout);
 
     image = MappedImage(0, false, true);

@@ -113,6 +113,51 @@ void PodcastCaptureEvents() {
            "an old-to-new identity transition finalizes the completed generation's exact MP3 decoder");
     decoded_sink_target=nullptr;
 }
+void DirectIdentityRetriesAndIgnoresLogVerbosity() {
+    constexpr char instance[]="00112233445566778899aabbccddeeff";
+    playback_identity::Instance parsed{};assert(playback_identity::ParseInstance(instance,parsed));
+    playback_identity_bridge={};playback_identity_metadata_generation=0;
+    playback_pump_target=reinterpret_cast<void*>(0x1);
+    assert(!playback_identity_bridge.Observe(0x4100,0x5100,0,1,
+        parsed.bytes.data(),parsed.bytes.size(),playback_identity::SnapshotRole::PlayerPlaybackId));
+
+    ownership::DecoderOwnershipTracker tracker;tracker.Reset(0);
+    CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+    auto capture=std::make_unique<Capture>();capture->lossless=true;capture->decoder_owner=0x5100;
+    capture->capture_token=tracker.BeginCapture(
+        ownership::DecoderCodec::Flac,capture->decoder_owner,0,100,0,1);
+    buffers.active[0x5100]=std::move(capture);
+    Media media;media.source=MediaSource::Spotify;media.spotify_uri="spotify:track:0000000000000000000001";
+    media.playback_instance=instance;media.playing=true;
+    std::array<playback_identity::Match,playback_identity::kObservationCapacity> matches{};
+    const auto first=SetExpectedPlaybackIdentity(media,70,matches);
+    assert(first==1&&!BindDirectReadyCapture(buffers,media,70,100.1,matches,first)&&
+           "identity can precede the decoded-output ownership stage");
+    ownership::DecodedActivity decoded{};decoded.owner=0x5100;decoded.calls=1;
+    decoded.produced_floats=8192;decoded.first=100.1;decoded.last=100.2;decoded.epoch=0;
+    tracker.ObserveDecoded(decoded);
+    matches={};const auto retry=SetExpectedPlaybackIdentity(media,70,matches);
+    assert(retry==1&&BindDirectReadyCapture(buffers,media,70,100.2,matches,retry)&&
+           "the same retained identity observation binds after decoded output arrives");
+
+    playback_identity::Instance second{};
+    constexpr char second_instance[]="ffeeddccbbaa99887766554433221100";
+    assert(playback_identity::ParseInstance(second_instance,second));
+    auto next_capture=std::make_unique<Capture>();next_capture->lossless=true;next_capture->decoder_owner=0x5200;
+    next_capture->capture_token=tracker.BeginCapture(
+        ownership::DecoderCodec::Flac,next_capture->decoder_owner,0,101,0,2);
+    buffers.active[0x5200]=std::move(next_capture);
+    decoded.owner=0x5200;decoded.first=101;decoded.last=101.1;tracker.ObserveDecoded(decoded);
+    assert(!playback_identity_bridge.Observe(0x4200,0x5200,0,2,
+        second.bytes.data(),second.bytes.size(),playback_identity::SnapshotRole::PlayerPlaybackId));
+    media.playback_instance=second_instance;media.spotify_uri="spotify:track:0000000000000000000002";
+    InterlockedExchange(&history::log_level_value,1);matches={};
+    const auto quiet=SetExpectedPlaybackIdentity(media,71,matches);
+    assert(quiet==1&&BindDirectReadyCapture(buffers,media,71,101.2,matches,quiet)&&
+           "direct identity is capture evidence, not a LogLevel 4 feature");
+    InterlockedExchange(&history::log_level_value,4);
+    playback_identity_bridge={};playback_identity_metadata_generation=0;playback_pump_target=nullptr;
+}
 void ObservePlayback() {
     PlaybackDiagnostics state;Media media;media.title=L"Song";media.artist=L"Artist";
     media.position=1;media.duration=100;media.playing=true;media.playback_status=4;
@@ -152,7 +197,7 @@ void CoverageAndFailures() {
     uint32_t frame[8]={16,48000,2,0,16,0,0,0};slot.kind=AudioEventKind::FlacFrame;slot.length=32;memcpy(slot.bytes,frame,32);
     diagnostic_lines.clear();const auto prior_failures=failure_events;ProcessFlacCapture(slot,buffers);
     assert(buffers.active.empty()&&buffers.ready.empty());
-    assert(diagnostic_lines.size()==4&&failure_events==prior_failures+2); // Context, cache detail/outcome, native failure outcome.
+    assert(diagnostic_lines.size()==3&&failure_events==prior_failures+1); // Context, final audit, native failure outcome.
     assert(Contains("final cache check:"));
     assert(Contains("origin=capture-coverage-guard")&&Contains("reason=format")&&Contains("native_frame_result=0"));
     assert(Contains("expected_rate=44100 got_rate=48000")&&Contains("ctx=1234")&&Contains("queue_lag_ms="));
@@ -165,7 +210,8 @@ void CoverageAndFailures() {
     slot.kind=AudioEventKind::FlacBegin;ProcessFlacCapture(slot,buffers);
     InterlockedExchange(&history::log_level_value,1);diagnostic_lines.clear();
     slot.kind=AudioEventKind::FlacFrame;ProcessFlacCapture(slot,buffers);
-    assert(diagnostic_lines.size()==2&&Contains("stream discarded")&&Contains("incomplete cache | unknown track"));
+    assert(diagnostic_lines.size()==1&&Contains("stream discarded")&&!Contains("incomplete cache | unknown track")&&
+           "the final audit must not manufacture a second user-visible failure");
     InterlockedExchange(&history::log_level_value,4);
 }
 void SameContextFlacRestartBeginsFreshCapture() {
@@ -352,10 +398,20 @@ void ConcurrentOggLogicalStreams() {
     assert(buffers.ogg_active.empty()&&buffers.ready.size()==2);
     assert(buffers.ready[0]->stream.serial==41&&buffers.ready[1]->stream.serial==42);
 
-    buffers={};send(bos_a);diagnostic_lines.clear();
+    buffers={};send(bos_a);diagnostic_lines.clear();const auto failures=failure_events;
     send(recording_fixture::page({0},2,4,88200,41));
     assert(buffers.ogg_active.empty()&&buffers.ready.empty());
-    assert(Contains("sequence-discontinuity"));
+    assert(Contains("sequence-discontinuity")&&Contains("mid-stream Ogg")&&
+           failure_events==failures&&
+           "an unbound page-sequence gap is ignored audio, not a failed song download");
+
+    buffers={};send(bos_a);
+    buffers.ogg_active.begin()->second->bound_identity="Artist - Bound Song";
+    diagnostic_lines.clear();const auto bound_failures=failure_events;
+    send(recording_fixture::page({0},2,4,88200,41));
+    assert(failure_events>bound_failures&&Contains("sequence-discontinuity")&&
+           Contains("Bound Song")&&
+           "a page-sequence gap in an identified song remains a real failure");
 
     buffers={};send(bos_a);send(bos_b);
     auto damaged=recording_fixture::page({0},1,0,44100,41);damaged.back()^=1;
@@ -803,6 +859,38 @@ void EmptyPlaybackIdNaturalTransitionIsRetried() {
            !prior_blank_listen.eligible&&prior_blank_heard.empty()&&
            "a later Ready ID cannot consume evidence for a skipped buffering stage");
 }
+void UnclassifiedMonitoredTransitionWaitsForReady() {
+    CaptureBuffers buffers;std::vector<Heard> heard;Listen listen;Media current;
+    current.source=MediaSource::Spotify;
+    current.spotify_uri="spotify:track:0000000000000000000001";
+    current.playback_instance="outgoing";current.title=L"Outgoing";
+    current.duration=301.92;current.playing=true;
+    for(unsigned second=0;second<=301;++second) {
+        current.position=second;
+        AssociateListen(current,listen,current,heard,buffers,100+second);
+    }
+    current.position=current.duration;
+    AssociateListen(current,listen,current,heard,buffers,401.92);
+    assert(listen.eligible&&listen.playing&&heard.empty());
+    // The immediately preceding same-instance buffering stage proved that the
+    // outgoing decoder still owned this listen before Spotify exposed a new ID.
+    buffers.ownership_hold_generation=listen.generation;
+
+    Media transition;transition.source=MediaSource::Spotify;
+    transition.spotify_uri="spotify:track:0000000000000000000002";
+    transition.playback_instance="successor";transition.control_monitoring=true;
+    transition.playing=false;
+    assert(FinishAppTransition(transition,listen,current,heard,buffers,402.1)&&
+           buffers.pending_natural_generation==listen.generation&&listen.eligible&&
+           heard.empty()&&
+           "an uncontrolled monitored transition waits for its Ready identity instead of guessing");
+
+    Media ready=transition;ready.playing=true;ready.position=.1;ready.duration=294.507;
+    ready.title=L"Successor";
+    assert(FinishPendingNaturalTransition(ready,listen,current,heard,buffers)&&
+           heard.size()==1&&!buffers.pending_natural_generation&&
+           "the successor Ready stage supplies the positive evidence that completes the transition");
+}
 void BoundNaturalTransitionUsesFinalCaptureEvidence() {
     ownership::DecoderOwnershipTracker tracker;tracker.Reset(24);
     CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
@@ -945,6 +1033,162 @@ void DjVoiceDoesNotBlockMusicStart() {
     assert(prior_heard.empty()&&prior_listen.eligible&&prior_listen.generation==2&&
            "a successor Ready rejects the controlled prior listen but starts its own coverage");
 }
+void CurrentItemChangeReconcilesDjSuccessor() {
+    ownership::DecoderOwnershipTracker tracker;tracker.Reset(28);
+    CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+    ownership::DecodedActivity output{};output.calls=1;output.produced_floats=8192;
+    output.epoch=28;
+
+    const auto outgoing=tracker.BeginCapture(
+        ownership::DecoderCodec::Flac,0x8500,0,100,28,1);
+    output.owner=0x8500;output.first=100;output.last=100.1;output.sequence=2;
+    tracker.ObserveDecoded(output);
+    tracker.ObservePlayback("song-a","spotify:track:0000000000000000000001",1,100.2);
+    assert(tracker.Binding(outgoing).state==ownership::OwnershipState::Bound);
+
+    auto voice=std::make_unique<Capture>();voice->mp3=true;voice->born=101;
+    voice->decoder_owner=0x8600;voice->capture_token=tracker.BeginCapture(
+        ownership::DecoderCodec::Mp3,voice->decoder_owner,0,101,28,3);
+    const auto voice_token=voice->capture_token;buffers.active[0x8600]=std::move(voice);
+    output.owner=0x8600;output.first=101;output.last=101.1;output.sequence=4;
+    tracker.ObserveDecoded(output);
+
+    auto music=CompleteFlacCapture(101.1,0);music->finished=0;music->coverage.samples=8;
+    music->flac.rate=1;music->flac.total_samples=40;music->decoder_owner=0x8700;
+    music->capture_token=tracker.BeginCapture(
+        ownership::DecoderCodec::Flac,music->decoder_owner,0,101.1,28,5);
+    const auto music_token=music->capture_token;buffers.active[0x8700]=std::move(music);
+    output.owner=0x8700;output.first=101.1;output.last=101.2;output.sequence=6;
+    tracker.ObserveDecoded(output);
+    assert(tracker.Binding(voice_token).state==ownership::OwnershipState::Conflict&&
+           tracker.Binding(music_token).state==ownership::OwnershipState::Conflict&&
+           "the production ordering must reproduce the interstitial ambiguity before recovery");
+    buffers.unidentified_interstitial_active=true;
+
+    Media current;current.source=MediaSource::Spotify;
+    current.spotify_uri="spotify:track:0000000000000000000001";
+    current.playback_instance="song-a";current.title=L"Song A";current.duration=60;
+    current.position=5;current.playing=true;
+    Listen listen;listen.identity=current.ListenKey();listen.generation=1;listen.eligible=true;
+    listen.playing=true;listen.start_time=96;listen.last_time=101;listen.last_position=5;
+    listen.duration=60;listen.capture_speed=1;
+    Media successor;successor.source=MediaSource::Spotify;
+    successor.spotify_uri="spotify:track:0000000000000000000002";
+    successor.playback_instance="song-b";successor.title=L"Song B";successor.artist=L"Artist";
+    successor.album=L"Album";successor.duration=40;successor.position=3.2;successor.playing=true;
+    std::vector<Heard> heard;
+    const bool item_changed=SpotifyCurrentItemChanged(current,successor);
+    AssociateListen(successor,listen,current,heard,buffers,102);
+    const auto playback=BindReadyCapture(buffers,current,listen.generation,102,0,{},
+        item_changed&&buffers.unidentified_interstitial_active);
+    if(playback)ClearUnidentifiedSuccessor(buffers);
+    assert(playback&&item_changed&&listen.eligible&&
+           tracker.Binding(music_token).state==ownership::OwnershipState::Bound&&
+           tracker.Binding(music_token).listen_generation==listen.generation&&
+           tracker.Binding(voice_token).state==ownership::OwnershipState::Invalidated&&
+           !buffers.unidentified_interstitial_active&&
+           "a verified current-item change must reconsider the unique music successor");
+
+    for(unsigned second=1;second<=31;++second) {
+        successor.position=3.2+second;AssociateListen(successor,listen,current,heard,buffers,102+second);
+        assert(BindReadyCapture(buffers,current,listen.generation,102+second,0,{},false)==playback&&
+               tracker.Binding(music_token).state==ownership::OwnershipState::Bound);
+    }
+
+    ownership::DecoderOwnershipTracker unchanged_tracker;unchanged_tracker.Reset(29);
+    CaptureBuffers unchanged;unchanged.ownership_tracker=&unchanged_tracker;
+    const auto old=unchanged_tracker.BeginCapture(
+        ownership::DecoderCodec::Flac,0x8800,0,200,29,1);
+    output.epoch=29;output.owner=0x8800;output.first=200;output.last=200.1;output.sequence=2;
+    unchanged_tracker.ObserveDecoded(output);
+    unchanged_tracker.ObservePlayback("same","spotify:track:0000000000000000000003",1,200.2);
+    assert(unchanged_tracker.Binding(old).state==ownership::OwnershipState::Bound);
+    auto unknown_voice=std::make_unique<Capture>();unknown_voice->mp3=true;
+    unknown_voice->decoder_owner=0x8900;unknown_voice->capture_token=unchanged_tracker.BeginCapture(
+        ownership::DecoderCodec::Mp3,0x8900,0,201,29,3);
+    const auto unknown_voice_token=unknown_voice->capture_token;
+    unchanged.active[0x8900]=std::move(unknown_voice);
+    output.owner=0x8900;output.first=201;output.last=201.1;output.sequence=4;
+    unchanged_tracker.ObserveDecoded(output);
+    auto unresolved=CompleteFlacCapture(201.1,0);unresolved->finished=0;unresolved->coverage.samples=8;
+    unresolved->flac.rate=1;unresolved->flac.total_samples=40;unresolved->decoder_owner=0x8a00;
+    unresolved->capture_token=unchanged_tracker.BeginCapture(
+        ownership::DecoderCodec::Flac,0x8a00,0,201.1,29,5);
+    const auto unresolved_token=unresolved->capture_token;unchanged.active[0x8a00]=std::move(unresolved);
+    output.owner=0x8a00;output.first=201.1;output.last=201.2;output.sequence=6;
+    unchanged_tracker.ObserveDecoded(output);
+    assert(unchanged_tracker.Binding(unresolved_token).state==ownership::OwnershipState::Conflict);
+    Media unchanged_media=successor;unchanged_media.spotify_uri="spotify:track:0000000000000000000003";
+    unchanged_media.playback_instance="same";unchanged_media.position=31;
+    assert(ExcludeUnboundMp3Interludes(unchanged,unchanged_media)&&
+           unchanged_tracker.Binding(unknown_voice_token).state==ownership::OwnershipState::Invalidated);
+    assert(!BindReadyCapture(unchanged,unchanged_media,2,232,0,{},false)&&
+           unchanged_tracker.Binding(unresolved_token).state==ownership::OwnershipState::Conflict&&
+           "thirty seconds without a current-item change cannot reopen a conflict");
+    auto paused=unchanged_media;paused.playing=false;
+    assert(!BindReadyCapture(unchanged,paused,2,232,0,{},true));
+    auto unidentified=unchanged_media;unidentified.spotify_uri.clear();
+    assert(!BindReadyCapture(unchanged,unidentified,2,232,0,{},true));
+}
+void CurrentItemChangeBeforeStreamOutputReconcilesDjSuccessor() {
+    ownership::DecoderOwnershipTracker tracker;tracker.Reset(30);
+    CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+    ownership::DecodedActivity output{};output.calls=1;output.produced_floats=8192;
+    output.epoch=30;
+    const auto outgoing=tracker.BeginCapture(
+        ownership::DecoderCodec::Flac,0x9100,0,300,30,1);
+    output.owner=0x9100;output.first=300;output.last=300.1;output.sequence=2;
+    tracker.ObserveDecoded(output);
+    tracker.ObservePlayback("before-a","spotify:track:0000000000000000000001",1,300.2);
+    assert(tracker.Binding(outgoing).state==ownership::OwnershipState::Bound);
+
+    Media current;current.source=MediaSource::Spotify;
+    current.spotify_uri="spotify:track:0000000000000000000001";
+    current.playback_instance="before-a";current.title=L"Before A";current.duration=60;
+    current.position=5;current.playing=true;
+    Listen listen;listen.identity=current.ListenKey();listen.generation=1;listen.eligible=true;
+    listen.playing=true;listen.start_time=295;listen.last_time=300;listen.last_position=5;
+    listen.duration=60;listen.capture_speed=1;
+    Media successor;successor.source=MediaSource::Spotify;
+    successor.spotify_uri="spotify:track:0000000000000000000002";
+    successor.playback_instance="before-b";successor.title=L"Before B";
+    successor.artist=L"Artist";successor.album=L"Album";successor.duration=40;
+    successor.position=3.2;successor.playing=true;
+    buffers.unidentified_interstitial_active=true;
+    assert(PrepareUnidentifiedSuccessor(buffers,current,successor)&&
+           "the item-change stage must survive until its decoder output arrives");
+    std::vector<Heard> heard;
+    AssociateListen(successor,listen,current,heard,buffers,302);
+    assert(!BindReadyCapture(buffers,current,listen.generation,302,0,{},true));
+
+    auto voice=std::make_unique<Capture>();voice->mp3=true;voice->decoder_owner=0x9200;
+    voice->capture_token=tracker.BeginCapture(
+        ownership::DecoderCodec::Mp3,voice->decoder_owner,0,302.1,30,3);
+    const auto voice_token=voice->capture_token;buffers.active[voice->decoder_owner]=std::move(voice);
+    output.owner=0x9200;output.first=302.1;output.last=302.2;output.sequence=4;
+    tracker.ObserveDecoded(output);
+    auto music=CompleteFlacCapture(302.2,0);music->finished=0;music->coverage.samples=8;
+    music->flac.rate=1;music->flac.total_samples=40;music->decoder_owner=0x9300;
+    music->capture_token=tracker.BeginCapture(
+        ownership::DecoderCodec::Flac,music->decoder_owner,0,302.2,30,5);
+    const auto music_token=music->capture_token;buffers.active[music->decoder_owner]=std::move(music);
+    output.owner=0x9300;output.first=302.2;output.last=302.3;output.sequence=6;
+    tracker.ObserveDecoded(output);
+    assert(tracker.Binding(voice_token).state==ownership::OwnershipState::Conflict&&
+           tracker.Binding(music_token).state==ownership::OwnershipState::Conflict);
+
+    successor.position=3.7;
+    const bool reconcile=PrepareUnidentifiedSuccessor(buffers,current,successor);
+    AssociateListen(successor,listen,current,heard,buffers,302.5);
+    const auto playback=BindReadyCapture(
+        buffers,current,listen.generation,302.5,0,{},reconcile);
+    if(playback)ClearUnidentifiedSuccessor(buffers);
+    assert(playback&&listen.eligible&&
+           tracker.Binding(music_token).state==ownership::OwnershipState::Bound&&
+           tracker.Binding(voice_token).state==ownership::OwnershipState::Invalidated&&
+           !buffers.unidentified_interstitial_active&&
+           "metadata-before-output and output-before-metadata must converge identically");
+}
 void AcceleratedUiClockRecovery() {
     CaptureBuffers buffers;std::vector<Heard> heard;Listen listen;Media current;
     current.source=MediaSource::Spotify;
@@ -1034,7 +1278,10 @@ void DecoderOwnershipFinalReconciliation() {
     replay.playing=false;replay.natural_transition=false;
     replay.control_monitoring=true;
     tracker.ObserveTransition(replay.playback_instance,replay.spotify_uri,101.8,false,false);
-    assert(!FinishAppTransition(replay,listen,current,heard,buffers,101.8));
+    assert(FinishAppTransition(replay,listen,current,heard,buffers,101.8)&&heard.empty()&&
+           "an unclassified successor stage is not treated as a completed listen");
+    auto replay_ready=replay;replay_ready.playing=true;replay_ready.position=.1;
+    assert(FinishPendingNaturalTransition(replay_ready,listen,current,heard,buffers));
     assert(heard.size()==1&&heard[0].generation==2&&heard[0].provisional);
     SchedulePublications(heard,buffers,7,101.8);SaveJob job;
     assert(saves.Pop(job)&&job.capture->capture_token&&job.heard.generation==2&&
@@ -1117,7 +1364,10 @@ void DecoderOwnershipFinalReconciliation() {
     assert(FinishAppTransition(ogg_buffering,ogg_listen,ogg_current,ogg_heard,ogg_buffers,300.51)&&
            ogg_heard.empty()&&"same-instance buffering establishes monitored Ogg continuity");
     ogg_tracker.ObserveTransition("ogg-two",ogg_next.spotify_uri,300.52,false,false);
-    assert(!FinishAppTransition(ogg_next,ogg_listen,ogg_current,ogg_heard,ogg_buffers,300.52)&&
+    assert(FinishAppTransition(ogg_next,ogg_listen,ogg_current,ogg_heard,ogg_buffers,300.52)&&
+           ogg_heard.empty());
+    auto ogg_ready=ogg_next;ogg_ready.playing=true;ogg_ready.position=.1;
+    assert(FinishPendingNaturalTransition(ogg_ready,ogg_listen,ogg_current,ogg_heard,ogg_buffers)&&
            ogg_heard.size()==1&&ogg_heard[0].provisional&&
            "a complete bound 10x Ogg stream survives the delayed natural-end flag");
     SchedulePublications(ogg_heard,ogg_buffers,10,300.52);SaveJob ogg_job;
@@ -1149,7 +1399,9 @@ void UnverifiedAacFinalReconciliation() {
     auto successor=std::make_unique<Capture>();successor->born=101.21;
     buffers.ogg_active[{99,42}]=std::move(successor);
     Media next=current;next.playback_instance="play-two";next.playing=false;next.control_monitoring=true;
-    assert(!FinishAppTransition(next,listen,current,heard,buffers,101.22)&&heard.size()==1&&
+    assert(FinishAppTransition(next,listen,current,heard,buffers,101.22)&&heard.empty());
+    auto ready=next;ready.playing=true;ready.position=.1;
+    assert(FinishPendingNaturalTransition(ready,listen,current,heard,buffers)&&heard.size()==1&&
            heard[0].provisional&&"a distinct playback instance closes the retained AAC listen");
     SchedulePublications(heard,buffers,11,101.22);SaveJob job;
     assert(saves.Pop(job)&&job.capture->aac&&job.heard.generation==40&&
@@ -1266,16 +1518,58 @@ void CompactFailureIdentity() {
     tracker.ObservePlayback(new_instance,"spotify:episode:0000000000000000000002",42,101);
     Media current;current.artist=L"New Artist";current.title=L"New Title";
     RememberBoundCaptureIdentity(buffers,current,42,tracker.PlaybackToken(new_instance));
-    diagnostic_lines.clear();
+    diagnostic_lines.clear();const auto failures=failure_events;
     buffers.RecordLostActive(buffers.active[context].get(),ownership::CaptureAbortReason::Timeout);
-    assert(Contains("incomplete cache | Old Artist - Old Title")&&
+    assert(failure_events==failures&&
            Contains("final cache check: incomplete or invalid cached audio")&&
            !Contains("New Artist")&&"delayed cleanup names the capture's bound song");
 
     CaptureBuffers unbound;unbound.active[context]=std::make_unique<Capture>();
     diagnostic_lines.clear();unbound.RecordLostActive(unbound.active[context].get());
-    assert(Contains("incomplete cache | unknown track")&&"unbound failures do not borrow current metadata");
+    assert(failure_events==failures&&Contains("final cache check: incomplete or invalid cached audio")&&
+           "discarded unbound evidence is diagnostic, not a download failure");
+
+    auto required=CompleteFlacCapture(100,110);required->bound_identity="Required Artist - Required Title";
+    diagnostic_lines.clear();
+    CheckBeforeRelease(*required,"required recording lost",nullptr,ReleaseExpectation::RequiredRecording);
+    assert(failure_events==failures+1&&Contains("unmatched cache | Required Artist - Required Title")&&
+           "only an established publication obligation becomes a user-visible failure");
     decoded_sink_target=nullptr;
+}
+void ContextSpecificCaptureQueueLoss() {
+    ResetCaptureQueueLosses();
+    {QueueGuard guard;RecordCaptureQueueLossLocked(0xA,7);RecordCaptureQueueLossLocked(0xA,7);}
+    auto loss=TakeCaptureQueueLosses();
+    assert(!loss.global&&loss.count==1&&loss.entries[0].context==0xA&&loss.entries[0].epoch==7&&
+           "repeated overflow on one lifecycle remains one bounded loss record");
+    CaptureBuffers buffers;
+    auto affected=std::make_unique<Capture>();affected->born=100;affected->capture_context=0xA;affected->capture_epoch=7;
+    auto unrelated=std::make_unique<Capture>();unrelated->born=100;unrelated->capture_context=0xB;unrelated->capture_epoch=7;
+    buffers.active[0xA]=std::move(affected);buffers.active[0xB]=std::move(unrelated);
+    buffers.ready.push_back(CompleteFlacCapture(90,99));
+    diagnostic_lines.clear();const auto failures=failure_events;
+    assert(!ApplyCaptureQueueLosses(buffers,loss,101));
+    assert(!buffers.active.count(0xA)&&buffers.active.count(0xB)==1&&buffers.ready.size()==1&&
+           failure_events==failures&&"one decoder's queue loss cannot invalidate unrelated or complete captures");
+
+    for(unsigned i=0;i<4;++i) {
+        auto capture=std::make_unique<Capture>();capture->born=110+i;capture->capture_context=0x20+i;
+        auto* raw=capture.get();buffers.active[0x20+i]=std::move(capture);
+        buffers.RecordLostActive(raw,ownership::CaptureAbortReason::SettingsChange,
+            ReleaseExpectation::DiscardedEvidence,true);
+        buffers.active.erase(0x20+i);
+    }
+    assert(!Contains("final cache check")&&"capture drain must not run whole-buffer release audits");
+    DrainReleaseAudits();
+    assert(Contains("final cache check")&&failure_events==failures&&
+           "deferred expected cleanup remains diagnostic-only");
+
+    {QueueGuard guard;for(uintptr_t context=1;context<=33;++context)RecordCaptureQueueLossLocked(context,7);}
+    loss=TakeCaptureQueueLosses();
+    assert(loss.global&&loss.count==0&&"loss-evidence overflow retains the explicit conservative fallback");
+    {QueueGuard guard;RecordCaptureQueueLossLocked(0xA,7);}
+    ResetCaptureQueueLosses();loss=TakeCaptureQueueLosses();
+    assert(!loss.global&&!loss.count&&"capture lifecycle reset cannot carry old loss into a new epoch");
 }
 void DurableAssociationEvidence() {
     {
@@ -1560,17 +1854,12 @@ void MissingPlaybackWarning() {
     CaptureBuffers buffers;auto complete=std::make_unique<Capture>();complete->finished=10;
     buffers.ready.push_back(std::move(complete));MediaDiagnostic diagnostic;
     diagnostic.stage="select-session";diagnostic.reason="no-spotify-session";
-    diagnostic_lines.clear();
-    ReportUnverifiedCaptures(buffers,false,diagnostic,20);assert(diagnostic_lines.empty());
-    ReportUnverifiedCaptures(buffers,true,diagnostic,12);assert(diagnostic_lines.empty());
-    ReportUnverifiedCaptures(buffers,true,diagnostic,13);
-    assert(Contains("complete Ogg capture")&&Contains("not saved"));
-    assert(Contains("Show desktop overlay when using media keys"));
-    const auto once=diagnostic_lines.size();
-    ReportUnverifiedCaptures(buffers,true,diagnostic,50);assert(diagnostic_lines.size()==once);
+    diagnostic_lines.clear();const auto failures=failure_events;
     MediaWarningState warning;diagnostic_lines.clear();
     ReportMediaUnavailable(buffers,true,diagnostic,100,warning);
-    assert(diagnostic_lines.empty()); // Completed-only outcome already owns its failure.
+    ReportMediaUnavailable(buffers,true,diagnostic,500,warning);
+    assert(diagnostic_lines.empty()&&failure_events==failures&&
+           "a retained complete capture cannot fail merely because Ready metadata is temporarily unavailable");
     buffers.active[1]=std::make_unique<Capture>();
     ReportMediaUnavailable(buffers,true,diagnostic,100,warning);
     ReportMediaUnavailable(buffers,true,diagnostic,100.328,warning);
@@ -1587,6 +1876,22 @@ void MissingPlaybackWarning() {
     ReportMediaUnavailable(buffers,true,diagnostic,160,warning);
     ReportMediaUnavailable(buffers,true,diagnostic,163,warning);assert(diagnostic_lines.size()==outage+1);
 
+}
+void AdvertisementStageIsNotDownloadFailure() {
+    CaptureBuffers buffers;MediaDiagnostic diagnostic;
+    diagnostic.reason="client-active-advertisement";
+    diagnostic_lines.clear();const auto failures=failure_events;
+    MarkUnidentifiedInterstitial(buffers,diagnostic.reason);
+    MarkUnidentifiedInterstitial(buffers,diagnostic.reason);
+    assert(buffers.unidentified_interstitial_active&&
+           diagnostic_lines.size()==1&&Contains("advertisement")&&Contains("excluded")&&
+           "an advertisement stage is named once and excluded from downloads");
+    auto complete=std::make_unique<Capture>();complete->finished=10;
+    buffers.ready.push_back(std::move(complete));
+    MediaWarningState warning;
+    ReportMediaUnavailable(buffers,true,diagnostic,20,warning);
+    assert(failure_events==failures&&diagnostic_lines.size()==1&&
+           "expected advertisement audio cannot be reported as a song download failure");
 }
 void Connectivity() {
     assert(!LastConnectivity().known);
@@ -1652,7 +1957,7 @@ int wmain(int argc,wchar_t** argv) {
         return 0;
     }
     assert(argc==1);
-    Connectivity();PodcastCatalog();PublicationLogging();PodcastCaptureEvents();ReadyUpgradesPreboundPlaybackGeneration();EmptyPlaybackIdNaturalTransitionIsRetried();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();BoundNaturalTransitionUsesFinalCaptureEvidence();DjVoiceDoesNotBlockMusicStart();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailLifecycle();ReadyDurationCorroboratesDecoder();WindowsReadyNaturalAppTransitionPublishes();TransitionPublicationMatrixStress();BoundWindowsIdentitySurvivesMetadataRefinement();MissingPlaybackWarning();ObservePlayback();CoverageAndFailures();SameContextFlacRestartBeginsFreshCapture();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
+    Connectivity();PodcastCatalog();PublicationLogging();PodcastCaptureEvents();DirectIdentityRetriesAndIgnoresLogVerbosity();ReadyUpgradesPreboundPlaybackGeneration();EmptyPlaybackIdNaturalTransitionIsRetried();UnclassifiedMonitoredTransitionWaitsForReady();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();BoundNaturalTransitionUsesFinalCaptureEvidence();DjVoiceDoesNotBlockMusicStart();CurrentItemChangeReconcilesDjSuccessor();CurrentItemChangeBeforeStreamOutputReconcilesDjSuccessor();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();ContextSpecificCaptureQueueLoss();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailLifecycle();ReadyDurationCorroboratesDecoder();WindowsReadyNaturalAppTransitionPublishes();TransitionPublicationMatrixStress();BoundWindowsIdentitySurvivesMetadataRefinement();MissingPlaybackWarning();AdvertisementStageIsNotDownloadFailure();ObservePlayback();CoverageAndFailures();SameContextFlacRestartBeginsFreshCapture();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
     puts("PASS: observed transitions, one FLAC failure context/outcome, original callback semantics, profiling-only intervals, basic-mode zero profiling and changed-only NLM observations");
     return 0;
 }

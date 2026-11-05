@@ -34,6 +34,9 @@ PCM to disk and does not independently fetch audio.
   library layout, duplicate handling, repair, and atomic publication.
 - [Operations and safety](operations-and-safety.md) — settings, optional
   capabilities, bounded work, failures, logs, and maintenance expectations.
+- [FLAC overlap and repair incident](flac-overlap-and-repair-incident.md) — a
+  concrete duplicate-decoder incident, the evidence it produced, and safe ideas
+  for classifying or repairing overlapping compressed captures.
 
 For exact policy constraints, see the maintained
 [capture and publication invariants](../capture-invariants.md). User-facing setup

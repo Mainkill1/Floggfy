@@ -22,7 +22,18 @@
    console.info('FLOGGFY_TIMELINE_V1:'+payload);lastTimeline=payload;timelineTime=now;
   }
  }
- function unavailableTimeline(reason){lastReadyTimeline=undefined;if(timelineSeen&&!timelineBlocked)timeline({v:1,unavailable:reason});}
+ function unsupportedPlaybackKind(item,metadata,uri){
+  const type=String(own(item,'type')||own(metadata,'type')||own(metadata,'media.type')||'').toLowerCase();
+  return String(uri||'').startsWith('spotify:ad:')||type==='ad'||type==='advertisement'?
+   'advertisement':'interstitial';
+ }
+ function unavailableTimeline(reason,state,kind){
+  lastReadyTimeline=undefined;
+  const active=reason==='track-unavailable'&&timelineLocal===1&&own(state,'isPaused')===false&&own(state,'isBuffering')===false;
+  if(active){timelineSeen=true;timeline({v:1,unavailable:reason,active:1,kind});return;}
+  if(!timelineSeen||timelineBlocked)return;
+  timeline({v:1,unavailable:reason});
+ }
  function guardTimeline(state){
   timelineLocal='unknown';
   try{const get=method(connectDevices,'getConnectState');const active=own(get&&get.call(connectDevices),'activeDevice');
@@ -91,7 +102,9 @@
   timelineBlocked='';
   const item=own(state,'item'),m=own(item,'metadata')||{},uri=text(own(item,'uri'));
   guardTimeline(state);
-  if(!/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')){unavailableTimeline('track-unavailable');return;}
+  if(!/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')){
+   unavailableTimeline('track-unavailable',state,unsupportedPlaybackKind(item,m,uri));return;
+  }
   const show=own(item,'show')||{};
   const data={title:text(own(m,'title')||own(item,'name')),
    artist:text(own(m,'artist_name'))||artists(own(item,'artists'))[0]||text(own(m,'show.publisher')||own(m,'show_name')||own(show,'publisher')),
@@ -337,6 +350,10 @@
  function merge(data,source,currentItem=false){
   if(!object(source))return;
   const m=own(source,'metadata')||source,album=own(source,'album')||{},date=own(album,'date');
+  const albumUri=text(own(album,'uri')||own(source,'album_uri')||own(m,'album_uri'));
+  if(/^spotify:album:[A-Za-z0-9]{22}$/.test(albumUri||'')){
+   data.album_uri=albumUri;data.SPOTIFY_ALBUM_URI=albumUri;
+  }
   let release=text(own(m,'release_date'))||text(own(m,'album_release_date'))||text(own(source,'release_date'))||text(own(own(source,'releaseDate'),'isoString'))||text(own(own(album,'releaseDate'),'isoString'));
   if(release&&/^\d{4}-\d{2}-\d{2}T/.test(release))release=release.slice(0,10);
   const year=text(own(date,'year')),month=text(own(date,'month')),day=text(own(date,'day'));
@@ -414,7 +431,9 @@
    automatic();scan();bindTimeline();if(!player){debugObservation();connectDiagnostics();playback({v:1});unavailableTimeline('player-unavailable');return;}
    const state=method(player,'getState').call(player),item=own(state,'item'),m=own(item,'metadata')||{},uri=text(own(item,'uri'));
    debugObservation(state,item);connectDiagnostics(state);emitTimelineState(state);
-   if(!/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')){playback({v:1});unavailableTimeline('track-unavailable');return;}
+   if(!/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')){
+    playback({v:1});unavailableTimeline('track-unavailable',state,unsupportedPlaybackKind(item,m,uri));return;
+   }
    const track=uri.startsWith('spotify:track:'),show=own(item,'show')||{};
    const data={v:1,title:text(own(m,'title')||own(item,'name')),
     artist:text(own(m,'artist_name'))||artists(own(item,'artists'))[0]||text(own(m,'show.publisher')||own(m,'show_name')||own(show,'publisher')),

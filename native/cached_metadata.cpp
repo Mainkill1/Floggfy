@@ -604,6 +604,11 @@ bool MergeCachedMetadata(const CachedTrackMetadata &cached, RichMetadata &live) 
       std::fabs(cached.duration - live.duration) > 1.0)
     return false;
 
+  if (live.album_uri.empty() && ValidSpotifyAlbumUri(cached.album_uri))
+    live.album_uri = cached.album_uri;
+  if (ValidSpotifyAlbumUri(live.album_uri))
+    live.fields["SPOTIFY_ALBUM_URI"] = live.album_uri;
+
   for (const auto &field : cached.fields) {
     auto old = live.fields.find(field.first);
     bool replace = old == live.fields.end() || old->second.empty();

@@ -18,12 +18,13 @@ __attribute__((noinline)) void operator delete[](void* value) noexcept {::operat
 __attribute__((noinline)) void operator delete(void* value,std::size_t) noexcept {::operator delete(value);}
 __attribute__((noinline)) void operator delete[](void* value,std::size_t) noexcept {::operator delete(value);}
 static void check(bool value,const char* message){if(!value){std::fprintf(stderr,"FAIL: %s\n",message);std::exit(1);}}
-static void syncsafe(std::vector<uint8_t>& out,size_t value) {
-    out.push_back(uint8_t(value>>21)&0x7f);out.push_back(uint8_t(value>>14)&0x7f);
-    out.push_back(uint8_t(value>>7)&0x7f);out.push_back(uint8_t(value)&0x7f);
+static void syncsafe(uint8_t* out,size_t value) {
+    out[0]=uint8_t(value>>21)&0x7f;out[1]=uint8_t(value>>14)&0x7f;
+    out[2]=uint8_t(value>>7)&0x7f;out[3]=uint8_t(value)&0x7f;
 }
 static std::vector<uint8_t> id3(unsigned version,size_t payload) {
-    std::vector<uint8_t> out={'I','D','3',uint8_t(version),0,0};syncsafe(out,payload);
+    std::vector<uint8_t> out(10);memcpy(out.data(),"ID3",3);out[3]=uint8_t(version);
+    syncsafe(out.data()+6,payload);
     out.resize(10+payload,uint8_t(version));return out;
 }
 static std::vector<uint8_t> frame(uint8_t version_layer,uint8_t rate,unsigned length,uint8_t mode=0) {

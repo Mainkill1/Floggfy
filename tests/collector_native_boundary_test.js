@@ -30,6 +30,14 @@ const sandbox={
 };
 vm.runInNewContext(script,sandbox);
 const prefix='FLOGGFY_TIMELINE_V1:';
+if(process.argv[2]==='--active-without-uri'){
+ state.item={...state.item,uri:''};
+ sandbox.window.__floggfyPoll();
+ const marker=messages.filter(value=>value.startsWith(prefix)).at(-1);
+ if(!marker)throw new Error('collector did not emit a URI-less active marker');
+ process.stdout.write(marker.slice(prefix.length));
+ process.exit(0);
+}
 if(process.argv[2]==='--pending-prior-control'){
  state.isBuffering=true;state.playbackId='';
  state.item={...state.item,uri:'spotify:track:0000000000000000000002'};

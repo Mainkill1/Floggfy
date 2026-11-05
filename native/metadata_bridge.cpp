@@ -125,13 +125,14 @@ static std::atomic<bool> enrichment_running{false};
 static void MergeAvailableFields(const RichMetadata& available,RichMetadata& live) {
  CachedTrackMetadata cached;
  cached.uri=available.uri;cached.title=available.title;cached.album=available.album;
+ cached.album_uri=available.album_uri;
  cached.duration=available.duration;cached.fields=available.fields;
  // Uses the established missing-field/richer-date rules: current live values
  // win, while unchanged messages retain already obtained enrichment.
  MergeCachedMetadata(cached,live);
 }
 static bool SameRecordingMetadata(const RichMetadata& left,const RichMetadata& right) {
- return left.title==right.title&&left.artist==right.artist&&left.album==right.album&&
+ return left.title==right.title&&left.artist==right.artist&&left.album==right.album&&left.album_uri==right.album_uri&&
         left.uri==right.uri&&left.artwork_url==right.artwork_url&&left.duration==right.duration&&
         left.fields==right.fields;
 }
@@ -236,6 +237,11 @@ static bool CurrentTimeline(const String* text) {
    return true;
   }
   if(payload=="v=1&blocked=remote-playback"||payload.rfind("v=1&blocked=remote-playback&",0)==0){PublishClientMediaUnavailable("remote-playback",true);return true;}
+  ClientInterstitialKind interstitial=ClientInterstitialKind::None;
+  if(ParseClientActiveWithoutUri(payload,&interstitial)) {
+   PublishClientMediaUnavailable(interstitial==ClientInterstitialKind::Advertisement?
+    "client-active-advertisement":"client-active-interstitial",true);return true;
+  }
   ClientPlaybackRecord record;std::string error;
   if(!ParseClientPlayback(payload,record,error)){PublishClientMediaUnavailable("client-timeline-unavailable");return true;}
   if(record.local==0){PublishClientMediaUnavailable("remote-playback",true);return true;}
@@ -368,15 +374,16 @@ void EnrichCatalog(const Media& media,Catalog& catalog) {
  if(!GetSettings().metadata)return;
  const auto title=Utf8(media.title),artist=Utf8(media.artist),album=Utf8(media.album);
  const char* keys[]={"TITLE","ALBUM","ALBUMARTIST","ARTIST","TRACKNUMBER","DISCNUMBER"};
- std::array<std::string,6> fields;std::string uri;
+ std::array<std::string,6> fields;std::string uri,album_uri;
  {SharedSrw guard(cache_lock);
   const auto record=media.spotify_uri.empty()?cache.Find(title,artist,album,media.duration):cache.FindUri(media.spotify_uri);
   if(!record)return;
   uri=record->uri;
+  album_uri=record->album_uri;
   for(size_t i=0;i<fields.size();++i){const auto value=record->fields.find(keys[i]);if(value!=record->fields.end())fields[i]=value->second;}}
  // Decode and allocate the complete replacement outside the cache lock. Keep
  // publication tags and the Song probe on the same canonical directory identity.
- auto next=catalog;next.spotify_uri=std::move(uri);
+ auto next=catalog;next.spotify_uri=std::move(uri);next.spotify_album_uri=std::move(album_uri);
  auto replace=[](std::wstring& target,const std::string& value){auto wide=MetadataWide(value);if(!wide.empty())target.swap(wide);};
  replace(next.title,fields[0]);replace(next.album,fields[1]);
  const auto album_artist=MetadataWide(fields[2]),contributors=MetadataWide(fields[3]);

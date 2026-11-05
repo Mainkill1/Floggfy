@@ -157,6 +157,7 @@ bool ReadStoredMetadata(const std::wstring &users_root, RichMetadata &live) {
       embedded.uri = track.uri;
       embedded.title = track.title;
       embedded.album = track.album;
+      embedded.album_uri = track.album_uri;
       embedded.duration = track.duration;
       embedded.fields = track.fields;
       CachedTrackMetadata complete = track;
@@ -211,6 +212,7 @@ void EnrichStoredMetadata(RichMetadata &live) {
     entry.value.uri = cached.uri;
     entry.value.title = cached.title;
     entry.value.album = cached.album;
+    entry.value.album_uri = cached.album_uri;
     entry.value.duration = cached.duration;
     entry.value.fields = std::move(cached.fields);
     MergeCachedMetadata(entry.value, live);

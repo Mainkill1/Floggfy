@@ -24,7 +24,8 @@ int main() {
           "generated INI loads complete default switches");
     check(defaults.save_location.empty() && defaults.max_buffered_mib==500,
           "generated INI uses default Music location and 500 MiB buffer");
-    check(defaults.capture_speed==1 && CaptureSpeed()==1,"capture speed defaults to 1x");
+    check(defaults.capture_speed==1 && CaptureSpeed()==1 && defaults.capture_speed_limit==1,
+          "capture speed starts at 1x with acceleration enabled when available");
     check(GetPrivateProfileIntW(L"History",L"StopAfter",UINT(-1),ini.c_str())==UINT(-1),"generated INI omits history limit");
     auto low=dir+L"\\low.ogg",high=dir+L"\\high.ogg",target=dir+L"\\published.ogg";
     RecordingFile low_record,high_record,flac_record;
@@ -52,12 +53,14 @@ int main() {
     check(!SetCaptureSpeed(3) && CaptureSpeed()==1 && CaptureEpoch()==epoch,"unsupported speed is rejected without changing state");
     check(!SetCaptureSpeed(4) && CaptureSpeed()==1,"accelerated speed is rejected until the native capability is active");
     SetCaptureAccelerationAvailable(true);
-    check(!SetCaptureSpeed(4) && CaptureSpeed()==1 && CaptureEpoch()==epoch,
-          "default INI keeps accelerated capture disabled after capability activation");
-    check(SetCaptureSpeed(1) && CaptureEpoch()==epoch,"same speed does not advance capture epoch");
+    check(SetCaptureSpeed(4) && CaptureSpeed()==4 && CaptureEpoch()==epoch,
+          "default INI permits every supported speed after capability activation");
+    check(SetCaptureSpeed(1) && CaptureEpoch()==epoch,"speed changes do not advance capture epoch");
     check(FlushSettings(5000),"background settings persisted");
     check(GetPrivateProfileIntW(L"To Disk",L"Downloads",9,ini.c_str())==0,"INI persists disabled setting");
-    check(GetPrivateProfileIntW(L"To Disk",L"CaptureSpeed",0,ini.c_str())==1,"INI preserves default-off capture speed");
+    check(GetPrivateProfileIntW(L"To Disk",L"CaptureSpeed",0,ini.c_str())==1,"INI persists the selected startup speed");
+    check(GetPrivateProfileIntW(L"To Disk",L"CaptureSpeedLimit",0,ini.c_str())==1,
+          "generated INI enables the capture speed menu by default");
     auto root=dir+L"\\Pending-"+std::to_wstring(GetCurrentProcessId()); epoch=GetSettings().capture_epoch;
     check(SetSaveLocation(root) && GetSettings().root==root,"save directory persistence");
     check(GetFileAttributesW(root.c_str())==INVALID_FILE_ATTRIBUTES && GetSettings().capture_epoch==epoch,"save location does not precreate folders or invalidate capture");

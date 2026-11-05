@@ -31,10 +31,40 @@ state.timestamp=now;state.positionAsOfTimestamp=1000;state.speed=4;now+=500;cont
 assert.equal(last().get('speed'),'4');assert.equal(last().get('position'),'3','reported playback speed advances the bounded timeline');
 state.speed=3;now+=500;context.window.__floggfyPoll();assert.equal(last().get('unavailable'),'timeline-fields');
 state.speed=1;
+state.item={uri:'',metadata:{title:'Unidentified audio'}};state.isPaused=false;state.isBuffering=false;
+state.timestamp=now;state.positionAsOfTimestamp=1000;now+=500;context.window.__floggfyPoll();
+assert.equal(last().get('unavailable'),'track-unavailable');
+assert.equal(last().get('active'),'1','local unpaused URI-less audio must be marked as an active unidentified item');
+assert.equal(last().get('kind'),'interstitial','blank active media is identified conservatively as an interstitial');
+state.isPaused=true;state.timestamp=now;now+=500;context.window.__floggfyPoll();
+assert.equal(last().get('unavailable'),'track-unavailable');
+assert.equal(last().get('active'),null,'paused URI-less media is unavailable, not an active interstitial');
+state.item={uri:'spotify:ad:0000000000000000000001',metadata:{title:'Advertisement',type:'ad'}};
+state.isPaused=false;state.timestamp=now;now+=500;context.window.__floggfyPoll();
+assert.equal(last().get('active'),'1');
+assert.equal(last().get('kind'),'advertisement','an explicit Spotify ad identity is logged as an advertisement');
+state.item={uri:'spotify:track:0000000000000000000001',metadata:{title:'Song',artist_name:'Artist',album_title:'Album',duration:'180000'}};
+state.isPaused=false;state.timestamp=now;
 Object.defineProperty(state,'positionAsOfTimestamp',{get(){getters++;throw Error('getter forbidden');},configurable:true});
 now+=500;context.window.__floggfyPoll();assert.equal(getters,0);
 assert(!output.some(x=>x.startsWith('FLOGGFY_METADATA_V1:')));assert.equal(requests,0);
 console.log('PASS: client timeline, URI, pause/buffering/local flags, bounded clocks and Metadata=0 without getters or requests');
+{
+ const coldState={timestamp:now,positionAsOfTimestamp:0,duration:30000,isPaused:false,isBuffering:false,
+  playbackId:'unknown-active',item:{uri:'',metadata:{title:'Unidentified audio'}}};
+ const coldMessages=[];
+ const coldPlayer={getState:()=>coldState,getEvents:()=>({addListener(){},removeListener(){}})};
+ const cold={window:{__floggfyConfig:{metadata:false},Spicetify:{Platform:{PlayerAPI:coldPlayer,
+  ConnectDevicesAPI:{getConnectState:()=>({activeDevice:{isLocal:true}})}}}},document:{querySelector:()=>null},
+  console:{info:value=>coldMessages.push(value)},performance:{now:()=>now},Date:{now:()=>now},
+  setInterval:()=>{},encodeURIComponent};
+ vm.runInNewContext(script,cold);
+ const marker=coldMessages.find(value=>value.startsWith('FLOGGFY_TIMELINE_V1:'));
+ assert(marker,'cold-start URI-less active playback must emit an unidentified marker');
+ const fields=new URLSearchParams(marker.slice('FLOGGFY_TIMELINE_V1:'.length));
+ assert.equal(fields.get('unavailable'),'track-unavailable');assert.equal(fields.get('active'),'1');
+}
+console.log('PASS: cold-start URI-less active playback is marked without prior track state');
 // Producer evidence must remain unknown if action registration is absent or
 // failed; only an observed instance transition during local playing qualifies.
 for(const mode of ['observed','blank','readyblank','reused','missing','throws','manual','seek','paused','same','unavailable','replacement']) {

@@ -50,8 +50,8 @@ Important controls include:
 | FLAC / Ogg / AAC | Enable publication of each music format; AAC is INI-only by default |
 | Podcasts | Enable native MP3 episode capture and the Podcasts layout |
 | Lyrics / Metadata | Control enrichment and later metadata filling |
-| Capture Speed | Select 1x or an accelerated mode allowed by the hidden startup ceiling |
-| CaptureSpeedLimit | INI-only, restart-only acceleration ceiling; missing/0/1 disables acceleration, 2-10 sets the ceiling, and higher values clamp to 10 |
+| Capture Speed | Select 1x or any supported accelerated mode when the native capability is available |
+| CaptureSpeedLimit | INI-only, restart-only visibility switch; explicit 0 hides/disables acceleration, while missing or any valid nonzero value enables it |
 | Windows Playback Fallback | INI-only, default-off compatibility source when Spotify state is unavailable |
 | TrackNumberInFilename | Add track prefixes to filenames |
 | ConvertNumberedFilenames | Safely remove recognized old prefixes when numbering is disabled |

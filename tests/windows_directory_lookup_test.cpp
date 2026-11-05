@@ -53,7 +53,8 @@ void Write(const std::wstring& path,const std::vector<uint8_t>& bytes) {
 }
 Catalog Song(const wchar_t* title) {
     Catalog c;c.artist=L"Artist";c.album=L"Album";c.title=title;c.track=3;c.disc=2;c.duration=1;
-    c.spotify_uri="spotify:track:"+Utf8(title);return c;
+    std::string id(22,'0');if(title&&*title)id.back()=char('0'+(*title%10));
+    c.spotify_uri="spotify:track:"+id;return c;
 }
 std::vector<uint8_t> Audio(const Catalog& c,unsigned bits=16,bool ogg=false) {
     Tags tags;tags.fields={{"TITLE",Utf8(c.title)},{"ARTIST","Artist"},{"ALBUMARTIST","Artist"},
@@ -68,11 +69,13 @@ void Lookups(const std::wstring& root) {
     const auto base=OutputPath(root,c,L".flac"),suffix=base.substr(0,base.size()-5)+RecordingSuffix(c)+L".flac";
     Write(base,Audio(other));Write(suffix,Audio(c,24));
     ResetCounts();auto resolved=ResolveRecordingDestination(base,c);
-    assert(resolved.state==RecordingDestinationState::Existing&&resolved.path==suffix&&resolved.recording.quality.bits==24);
+    assert(resolved.state==RecordingDestinationState::Existing&&resolved.path==suffix&&resolved.recording.quality.bits==24&&
+           resolved.explicit_uid_conflict);
     assert(listings==1&&attribute_checks==0&&recording_opens==2); // No probes for absent aliases.
     assert(DeleteFileW(WindowsPath(base).c_str()));
     ResetCounts();resolved=ResolveRecordingDestination(base,c);
-    assert(resolved.path==suffix&&resolved.recording.quality.bits==24&&listings==1&&recording_opens==1&&attribute_checks==0);
+    assert(resolved.path==suffix&&resolved.recording.quality.bits==24&&!resolved.explicit_uid_conflict&&
+           listings==1&&recording_opens==1&&attribute_checks==0);
     HANDLE held=CreateFileW(WindowsPath(suffix).c_str(),GENERIC_READ,0,nullptr,OPEN_EXISTING,0,nullptr);assert(held!=INVALID_HANDLE_VALUE);
     assert(ResolveRecordingDestination(base,c).state==RecordingDestinationState::Blocked);CloseHandle(held);
     assert(DeleteFileW(WindowsPath(suffix).c_str()));
@@ -111,8 +114,9 @@ void Conversion(const std::wstring& root) {
     ResetCounts();ProcessFilenameCheck(check);assert(listings==1&&attribute_checks==0);
     assert(GetFileAttributesW(WindowsPath(old).c_str())!=INVALID_FILE_ATTRIBUTES);
     assert(DeleteFileW(WindowsPath(old).c_str())&&DeleteFileW(WindowsPath(title).c_str()));
-    // All formats absent still requires only one directory enumeration.
-    ResetCounts();ProcessFilenameCheck(check);assert(listings==1&&attribute_checks==0&&recording_opens==0);
+    // A miss checks both the canonical and persistent duplicate namespaces,
+    // with one shared enumeration per namespace for every supported format.
+    ResetCounts();ProcessFilenameCheck(check);assert(listings==2&&attribute_checks==0&&recording_opens==0);
 
     // The third supported family uses the same listing after FLAC/Ogg misses.
     const auto m4a=OutputPath(root,c,L".m4a"),m4a_old=m4a.substr(0,slash+1)+L"03 - "+m4a.substr(slash+1);
@@ -125,10 +129,33 @@ void Conversion(const std::wstring& root) {
     assert(GetFileAttributesW(WindowsPath(m4a_old).c_str())==INVALID_FILE_ATTRIBUTES);
     assert(ReadRecording(m4a,saved)&&saved.complete&&MatchesRecording(saved,c));
     assert(DeleteFileW(WindowsPath(m4a).c_str()));
+
+    // Prefix conversion in the duplicate namespace preserves the complete UID
+    // suffix and never moves the file back over the canonical conflict.
+    const auto other=Song(L"Other");Write(title,Audio(other,16,true));
+    const auto duplicate_paths=DuplicateOutputPaths(root,c,L".ogg");
+    assert(duplicate_paths.size()==3);
+    const auto& duplicate=duplicate_paths[1];
+    const auto duplicate_slash=duplicate.find_last_of(L'\\');
+    const auto duplicate_old=duplicate.substr(0,duplicate_slash+1)+L"03 - "+duplicate.substr(duplicate_slash+1);
+    Write(duplicate_old,Audio(c,16,true));
+    ResetCounts();ProcessFilenameCheck(check);
+    assert(GetFileAttributesW(WindowsPath(duplicate_old).c_str())==INVALID_FILE_ATTRIBUTES);
+    assert(ReadRecording(duplicate,saved)&&saved.complete&&MatchesRecording(saved,c));
+    assert(GetFileAttributesW(WindowsPath(title).c_str())!=INVALID_FILE_ATTRIBUTES);
+    assert(DeleteFileW(WindowsPath(duplicate).c_str())&&DeleteFileW(WindowsPath(title).c_str()));
 }
 void MenuLookup(const std::wstring& root) {
     const auto c=Song(L"Menu");DestinationRequest request;request.catalog=c;request.serial=41;request.generation=7;
     request.flac=OutputPath(root,c,L".flac");request.ogg=OutputPath(root,c,L".ogg");request.aac=OutputPath(root,c,L".m4a");
+    auto duplicate_paths=[&](const wchar_t* extension,auto& stored) {
+        const auto paths=DuplicateOutputPaths(root,c,extension);
+        assert(paths.size()==stored.size());
+        for(size_t i=0;i<stored.size();++i)stored[i]=paths[i];
+    };
+    duplicate_paths(L".flac",request.duplicate_flac);
+    duplicate_paths(L".ogg",request.duplicate_ogg);
+    duplicate_paths(L".m4a",request.duplicate_aac);
     const auto slash=request.ogg.find_last_of(L'\\');const auto old=request.ogg.substr(0,slash+1)+L"03 - "+request.ogg.substr(slash+1);
     Write(old,Audio(c,16,true));destination_enabled=true;request_serial=41;
     VerificationCache cache;ResetCounts();assert(ProbeSavedSong(request,cache)==old);
@@ -144,7 +171,7 @@ void MenuLookup(const std::wstring& root) {
     FILETIME changed_time{changed.LowPart,changed.HighPart};assert(SetFileTime(edit,nullptr,nullptr,&changed_time));CloseHandle(edit);
     ResetCounts();assert(ProbeSavedSong(request,cache)==old&&listings==1&&recording_opens==1);
     assert(DeleteFileW(WindowsPath(old).c_str()));ResetCounts();
-    assert(ProbeSavedSong(request,cache).empty()&&listings==1&&recording_opens==0);
+    assert(ProbeSavedSong(request,cache).empty()&&listings==2&&recording_opens==0);
     ResetCounts();
     for(unsigned i=0;i<3;++i)assert(ProbeSavedSong(request,cache).empty());
     assert(listings==0&&recording_opens==0&&signature_checks==0);
@@ -165,8 +192,8 @@ void MenuLookup(const std::wstring& root) {
     Write(next.flac,Audio(next.catalog));ResetCounts();
     assert(ProbeSavedSong(next,cache)==next.flac&&listings==1&&recording_opens==1);
     assert(DeleteFileW(WindowsPath(next.flac).c_str())&&DeleteFileW(WindowsPath(old).c_str()));
-    ResetCounts();assert(ProbeSavedSong(next,cache).empty()&&listings==1);
-    next.generation++;ResetCounts();assert(ProbeSavedSong(next,cache).empty()&&listings==1); // New settings bypass cooldown.
+    ResetCounts();assert(ProbeSavedSong(next,cache).empty()&&listings==2);
+    next.generation++;ResetCounts();assert(ProbeSavedSong(next,cache).empty()&&listings==2); // New settings bypass cooldown.
     next.generation++;deny_listing=true;ResetCounts();assert(ProbeSavedSong(next,cache).empty()&&listings==1);
     deny_listing=false;ResetCounts();assert(ProbeSavedSong(next,cache).empty()&&listings==0&&signature_checks==0);
     next.serial--;ResetCounts();assert(ProbeSavedSong(next,cache).empty()&&listings==0&&signature_checks==0);
@@ -206,8 +233,10 @@ void StableArtistFolder(const std::wstring& root) {
     ResetCounts();ProcessFilenameCheck(check);assert(listings==2); // Each of the two exact artist folders is listed once.
     assert(GetFileAttributesW(WindowsPath(old).c_str())==INVALID_FILE_ATTRIBUTES);
     RecordingFile saved;assert(ReadRecording(title,saved)&&saved.complete&&MatchesRecording(saved,catalog));
-    Tags identity;ApplyCatalogIdentity(identity,catalog);
+    auto tagged_catalog=catalog;tagged_catalog.spotify_album_uri="spotify:album:0000000000000000000002";
+    Tags identity;ApplyCatalogIdentity(identity,tagged_catalog);
     assert(std::find(identity.fields.begin(),identity.fields.end(),std::make_pair(std::string("ALBUMARTIST"),std::string("Artist; Guest")))!=identity.fields.end());
+    assert(std::find(identity.fields.begin(),identity.fields.end(),std::make_pair(std::string("SPOTIFY_ALBUM_URI"),tagged_catalog.spotify_album_uri))!=identity.fields.end());
     Capture incoming;incoming.lossless=true;incoming.flac.rate=44100;incoming.flac.channels=2;incoming.flac.bits=16;
     Heard heard;heard.media=media;heard.start=1;heard.finish=2;
     assert(Publish(incoming,heard,CaptureEpoch())==Publication::Skipped);
@@ -229,7 +258,10 @@ void StableArtistFolder(const std::wstring& root) {
 namespace history {
 std::uint64_t MetadataRevision(){return 0;}
 std::string ReadClientPlaybackQuality(const Media&){return {};}
-void EnrichCatalog(const Media& media,Catalog& c){c.disc=2;c.spotify_uri="spotify:track:"+Utf8(media.title);if(media.title==L"Collaborative track")c.artist=L"Artist; Guest";}
+void EnrichCatalog(const Media& media,Catalog& c){
+    c.disc=2;std::string id(22,'0');if(!media.title.empty())id.back()=char('0'+(media.title.front()%10));
+    c.spotify_uri="spotify:track:"+id;if(media.title==L"Collaborative track")c.artist=L"Artist; Guest";
+}
 void EnrichTags(const Media&,Tags&) {}
 }
 int wmain(int argc,wchar_t** argv) {
