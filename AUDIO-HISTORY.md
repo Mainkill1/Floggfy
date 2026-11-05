@@ -73,9 +73,9 @@ MaxBufferedMiB=500
   progress display may not track real time, and changing speed invalidates the
   current track so it must be replayed from the beginning. If the decoded-output
   hook is unavailable or becomes invalid, Floggfy safely falls back to `1x`.
-  `CaptureSpeedLimit` is the hidden opt-in: missing, `0`, or `1` omits the menu
-  entirely; `2` through `10` exposes the permitted choices; larger values cap at
-  `10`.
+  `CaptureSpeedLimit` is a restart-only visibility switch: `0` hides the menu and
+  disables acceleration. Missing or any valid nonzero value enables the menu and
+  every supported choice when the decoded-output hook is available.
 - **AAC:** INI-only, default `0`. Set `AAC=1` and restart to capture supported
   low-quality SpAC/AAC streams as M4A. Downloads still controls all saving.
 - **Podcasts:** menu/INI toggle, default `0`. When enabled, fully listened

@@ -8,7 +8,7 @@ void QueueDiagnostic(const char*) {}
 }
 int main(int argc,char** argv) {
   assert(argc==2);
-  assert(history::Settings{}.downloads&&history::Settings{}.update_existing_metadata&&!history::Settings{}.auto_skip_downloaded&&!history::Settings{}.aac&&!history::Settings{}.podcasts&&!history::Settings{}.windows_playback_fallback&&history::Settings{}.capture_speed==1&&history::Settings{}.capture_speed_limit==0&&history::Settings{}.log_level==1);
+  assert(history::Settings{}.downloads&&history::Settings{}.update_existing_metadata&&!history::Settings{}.auto_skip_downloaded&&!history::Settings{}.aac&&!history::Settings{}.podcasts&&!history::Settings{}.windows_playback_fallback&&history::Settings{}.capture_speed==1&&history::Settings{}.capture_speed_limit==1&&history::Settings{}.log_level==1);
   assert(!history::AACEnabled());
   assert(!history::PodcastsEnabled());
   const std::string scenario=argv[1];
@@ -72,19 +72,21 @@ int main(int argc,char** argv) {
   history::InitSettings(nullptr);
   auto s=history::GetSettings();
   assert(s.downloads==(scenario!="zero" && scenario!="legacy-zero"));
-  const auto expected_speed=scenario=="speed-10-limit-10"||scenario=="speed-10-limit-over"?10u:
-    scenario=="speed-2-limit-3"?2u:1u;
-  const auto expected_limit=scenario=="speed-10-limit-10"||scenario=="speed-10-limit-over"?10u:
-    scenario=="speed-2-limit-3"||scenario=="speed-4-limit-3"?3u:0u;
+  const bool speed_disabled=scenario=="speed-10-limit-zero"||scenario=="speed-10-limit-invalid"||
+    scenario=="speed-10-limit-padded";
+  const auto expected_speed=speed_disabled?1u:
+    scenario=="speed-2-limit-3"?2u:scenario=="speed-4-limit-3"?4u:
+    scenario.rfind("speed-10",0)==0||scenario=="speed-10"?10u:1u;
+  const auto expected_limit=speed_disabled?0u:1u;
   assert(s.capture_speed==expected_speed);
   assert(s.capture_speed_limit==expected_limit&&history::CaptureSpeedLimit()==expected_limit);
   assert(history::CaptureSpeedAvailable(1));
   assert(!history::CaptureSpeedAvailable(2));
   history::SetCaptureAccelerationAvailable(true);
-  assert(history::CaptureSpeedAvailable(2)==(expected_limit>=2));
-  assert(history::CaptureSpeedAvailable(4)==(expected_limit>=4));
-  assert(history::CaptureSpeedAvailable(8)==(expected_limit>=8));
-  assert(history::CaptureSpeedAvailable(10)==(expected_limit>=10));
+  assert(history::CaptureSpeedAvailable(2)==(expected_limit!=0));
+  assert(history::CaptureSpeedAvailable(4)==(expected_limit!=0));
+  assert(history::CaptureSpeedAvailable(8)==(expected_limit!=0));
+  assert(history::CaptureSpeedAvailable(10)==(expected_limit!=0));
   assert(!history::CaptureSpeedAvailable(3));
   history::SetCaptureAccelerationAvailable(false);
   assert(s.windows_playback_fallback==(scenario=="fallback-one"));
@@ -96,7 +98,7 @@ int main(int argc,char** argv) {
     assert(GetPrivateProfileIntW(L"To Disk",L"Downloads",9,path.c_str())==1);
     assert(GetPrivateProfileIntW(L"To Disk",L"AAC",9,path.c_str())==0);
     assert(GetPrivateProfileIntW(L"To Disk",L"Podcasts",9,path.c_str())==0);
-    assert(GetPrivateProfileIntW(L"To Disk",L"CaptureSpeedLimit",9,path.c_str())==0);
+    assert(GetPrivateProfileIntW(L"To Disk",L"CaptureSpeedLimit",9,path.c_str())==1);
     assert(GetPrivateProfileIntW(L"To Disk",L"Windows Playback Fallback",9,path.c_str())==0);
     assert(GetPrivateProfileIntW(L"To Disk",L"UpdateExistingMetadata",9,path.c_str())==1);
     assert(GetPrivateProfileIntW(L"To Disk",L"AutoSkipDownloaded",9,path.c_str())==0);

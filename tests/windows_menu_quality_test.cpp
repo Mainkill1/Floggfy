@@ -236,12 +236,20 @@ int main() {
   wchar_t module[2048];assert(GetModuleFileNameW(nullptr,module,2048));
   std::wstring ini=module;ini=ini.substr(0,ini.find_last_of(L'\\'))+L"\\SpotifyHistory.ini";
   DeleteFileW(ini.c_str());
-  Model hidden_speed;Init(hidden_speed);
-  hidden_speed.entries={{1,5,L"First"},{2,5,L"Second"},{3,5,L"Third"}};
-  Populate(&hidden_speed.api);
-  assert(hidden_speed.child&&Index(&hidden_speed.child->api,speed_root_id)<0&&
-         hidden_speed.child->extra_children.find(speed_root_id)==hidden_speed.child->extra_children.end());
-  assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeedLimit",L"4",ini.c_str()));
+  history::Settings speed_opt_out;speed_opt_out.capture_speed_limit=0;
+  assert(!ShowCaptureSpeed(speed_opt_out));
+  history::Settings speed_default;
+  assert(ShowCaptureSpeed(speed_default));
+  Model default_speed;Init(default_speed);
+  default_speed.entries={{1,5,L"First"},{2,5,L"Second"},{3,5,L"Third"}};
+  Populate(&default_speed.api);
+  assert(default_speed.child);
+  const auto default_speed_child=default_speed.child->extra_children.find(speed_root_id);
+  assert(default_speed_child!=default_speed.child->extra_children.end()&&
+         default_speed_child->second->entries.size()==5);
+  assert(default_speed_child->second->entries[0].enabled);
+  for(unsigned i=1;i<5;++i)assert(!default_speed_child->second->entries[i].enabled);
+  assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeedLimit",L"1",ini.c_str()));
   history::InitSettings(nullptr);
   assert(history::SetLyrics(true));
   assert(history::SetCaptureSpeed(1));
@@ -361,18 +369,16 @@ int main() {
   auto& speed_menu=*child.extra_children.at(speed_root_id);
   const auto capture_epoch=history::CaptureEpoch();
   Retain(&child.api.base);WillShow(&wrapped.api,&child.api);
-  assert(speed_menu.entries[0].enabled&&speed_menu.entries[1].enabled&&speed_menu.entries[2].enabled);
-  assert(!speed_menu.entries[3].enabled&&!speed_menu.entries[4].enabled);
-  const auto messages_before_limit=message_calls;
+  for(const auto& entry:speed_menu.entries)assert(entry.enabled);
+  const auto messages_before_acceleration=message_calls;
   Retain(&speed_menu.api.base);Execute(&wrapped.api,&speed_menu.api,first_speed_id+3,0);
-  assert(history::CaptureSpeed()==1&&message_calls==messages_before_limit+1);
+  assert(history::CaptureSpeed()==8&&message_calls==messages_before_acceleration);
   Retain(&speed_menu.api.base);Execute(&wrapped.api,&speed_menu.api,first_speed_id+2,0);
   assert(history::CaptureSpeed()==4&&history::CaptureEpoch()==capture_epoch&&speed_menu.refs==1);
   for(unsigned i=0;i<5;++i)assert(speed_menu.entries[i].checked==(i==2));
   const auto messages_while_active=message_calls;
   Retain(&speed_menu.api.base);Execute(&wrapped.api,&speed_menu.api,first_speed_id+3,0);
-  assert(history::CaptureSpeed()==4&&message_calls==messages_while_active+1);
-  assert(last_message.find(L"current speed")!=std::wstring::npos&&last_message.find(L"1x remains")==std::wstring::npos);
+  assert(history::CaptureSpeed()==8&&message_calls==messages_while_active);
   // Native fallback can change speed/capability while CEF retains this model.
   history::SetCaptureAccelerationAvailable(false);assert(history::SetCaptureSpeed(1));
   Retain(&child.api.base);WillShow(&wrapped.api,&child.api);

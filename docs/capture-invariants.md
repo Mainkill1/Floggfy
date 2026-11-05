@@ -43,9 +43,9 @@ and are never written to disk.
   listen generation; a successor transition prevents carrying the old URI forward.
 - If the optional decoded hook cannot be installed safely, capture continues at 1x
   without ownership gating. Accelerated menu choices are disabled.
-- `CaptureSpeedLimit` is a hidden opt-in. Missing, `0`, or `1` removes the
-  Capture Speed submenu entirely; values `2` through `10` expose only the
-  configured range, and larger values normalize to `10`.
+- `CaptureSpeedLimit` is a restart-only visibility switch. Explicit `0` removes
+  the Capture Speed submenu and disables acceleration. Missing or any valid
+  nonzero value enables the submenu and all supported speeds.
 
 ## Formats and publication
 

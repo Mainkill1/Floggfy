@@ -148,6 +148,9 @@ static void RefreshSpeedMenu(Menu* parent) {
         MenuMethods::SetEnabled(speed_menu,first_speed_id+int(i),int(history::CaptureSpeedAvailable(speeds[i])));
     }
 }
+static bool ShowCaptureSpeed(const history::Settings& state) noexcept {
+    return state.capture_speed_limit!=0;
+}
 static void Populate(Menu* menu) {
     static thread_local MenuCapabilities capability;
     if(!capability.Check(menu) || MenuMethods::IsSubmenu(menu)) return;
@@ -190,7 +193,7 @@ static void Populate(Menu* menu) {
         MenuMethods::SetEnabled(child,recent_id,0);
         MenuMethods::SetVisible(child,recent_id,0);
     }
-    if(inserted&&state.capture_speed_limit>1) {
+    if(inserted&&ShowCaptureSpeed(state)) {
         std::wstring label=L"Capture Speed";auto text=Text(label);
         if(auto* speed_menu=MenuMethods::AddSubmenu(child,speed_root_id,&text)) {
             MenuReference speed_reference(speed_menu);
