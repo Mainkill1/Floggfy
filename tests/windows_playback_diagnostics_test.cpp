@@ -1567,6 +1567,9 @@ void ContextSpecificCaptureQueueLoss() {
     {QueueGuard guard;for(uintptr_t context=1;context<=33;++context)RecordCaptureQueueLossLocked(context,7);}
     loss=TakeCaptureQueueLosses();
     assert(loss.global&&loss.count==0&&"loss-evidence overflow retains the explicit conservative fallback");
+    {QueueGuard guard;RecordCaptureQueueLossLocked(0xA,7);}
+    ResetCaptureQueueLosses();loss=TakeCaptureQueueLosses();
+    assert(!loss.global&&!loss.count&&"capture lifecycle reset cannot carry old loss into a new epoch");
 }
 void DurableAssociationEvidence() {
     {

@@ -1645,7 +1645,7 @@ static bool ApplyCaptureQueueLosses(CaptureBuffers& buffers,const CaptureQueueLo
     }
     char message[160];snprintf(message,sizeof(message),
         "capture queue loss isolated contexts=%u active_captures=%u; unrelated captures retained",
-        loss.count,affected);Log(LogKind::Warning,message);
+        loss.count,affected);Log(affected?LogKind::Warning:LogKind::Diagnostic,message);
     return false;
 }
 static void ClearPendingNaturalTransition(CaptureBuffers& buffers) noexcept {
@@ -2755,6 +2755,7 @@ static DWORD WINAPI Worker(LPVOID) {
                     enabled=capture;
                     ownership_tracker.Reset(preferences.capture_epoch);
                     ResetPlaybackIdentityBridge();
+                    ResetCaptureQueueLosses();
                     ResetMp3Probes();
                     ownership_output_logged={};ownership_output_logged_count=ownership_output_logged_next=0;
                     ownership_playback_uri.clear();
