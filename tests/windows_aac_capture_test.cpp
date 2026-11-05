@@ -154,6 +154,12 @@ void TestPipeline(const std::wstring& root) {
     const auto duplicate=root+L"\\Duplicates\\Music\\Artists\\Artist\\Album\\Native AAC [t-AAAAAAAAAA].m4a";
     capture=Captured(source);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Saved);
     assert(GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES&&Read(duplicate).size()>0&&Read(flac)==other_flac);
+    assert(DeleteFileW(flac.c_str()));
+    capture=Captured(source);
+    assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped&&
+           GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES&&Read(duplicate).size()>0&&
+           "deleting the canonical conflict cannot strand an established exact-URI duplicate");
+    Write(flac,other_flac);
     assert(DeleteFileW(duplicate.c_str()));
     // The compact suffix is only a display aid. If it is occupied by another
     // complete full URI, expand to 14 characters, then the full 22 characters.

@@ -304,7 +304,11 @@ int main() {
     const auto& duplicate=duplicate_paths[1];
     WriteAudio(duplicate,item);SubmitSong(7,root,item,true,11);
     assert(ReadSongDestination(7,11,saved_file) && saved_file==duplicate);
-    assert(DeleteFileW(WindowsPath(duplicate).c_str()));assert(DeleteFileW(WindowsPath(ogg).c_str()));
+    assert(DeleteFileW(WindowsPath(ogg).c_str()));
+    RefreshSongDestination();AwaitProbe();
+    assert(ReadSongDestination(7,11,saved_file)&&saved_file==duplicate&&
+           "the Song shortcut must find an established duplicate after the canonical conflict is deleted");
+    assert(DeleteFileW(WindowsPath(duplicate).c_str()));
     ResetEvent(probe_entered);ResetEvent(probe_release);hold_probe=true;RefreshSongDestination();
     assert(WaitForSingleObject(probe_entered,1000)==WAIT_OBJECT_0);
     const auto disable_start=GetTickCount64();StartSongDestinationWorker(false);

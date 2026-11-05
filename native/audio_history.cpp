@@ -1194,18 +1194,20 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
         return finish(Publication::Failed,"failed","preferred recording could not be inspected; publication deferred");
     if(failure!=DestinationFailure::None)
         return finish(Publication::Failed,"failed","no safe recording destination; existing files retained");
-    // The established namespace always runs first. Only its final, explicit
-    // different-track UID result can enter the additive Duplicates namespace.
-    // Exact and legacy matches, upgrades, blocked reads, and URI-less files all
-    // retain their existing paths and behavior.
+    // The established namespace always runs first. A prior exact-URI home in
+    // Duplicates remains authoritative even if the canonical conflict was
+    // later deleted; otherwise a lower-quality second copy could be created.
+    // URI-less files retain their existing canonical behavior.
     const bool canonical_match=destinations.format_upgrade||destinations.existing_lossless||
         destinations.existing_vorbis||destinations.resolved.state==RecordingDestinationState::Existing;
-    if(!canonical_match&&destinations.explicit_uid_conflict) {
+    if(!canonical_match&&ValidSpotifyTrackUri(catalog.spotify_uri)) {
         PublicationDestinations duplicate;
         failure=ResolvePublicationDestinations(c,settings,catalog,quality,true,duplicate);
         if(failure!=DestinationFailure::None)
             return finish(Publication::Failed,"failed","duplicate recording destination could not be verified; publication deferred");
-        destinations=std::move(duplicate);
+        const bool duplicate_match=duplicate.format_upgrade||duplicate.existing_lossless||
+            duplicate.existing_vorbis||duplicate.resolved.state==RecordingDestinationState::Existing;
+        if(duplicate_match||destinations.explicit_uid_conflict)destinations=std::move(duplicate);
     }
     auto& resolved=destinations.resolved;
     auto& superseded_vorbis=destinations.superseded_vorbis;
@@ -1401,7 +1403,6 @@ static void ProcessFilenameCheck(const FilenameCheck& check) {
             (convert||update||auto_skip);
     };
     if(!current())return;
-    bool explicit_uid_conflict=false;
     auto inspect=[&](RecordingDirectory& directory,bool duplicates) {
         for(const auto& format:kRecordingFormats) {
             if(!SupportsMedia(format,check.catalog.kind))continue;
@@ -1412,7 +1413,6 @@ static void ProcessFilenameCheck(const FilenameCheck& check) {
             for(const auto& base:bases) {
              if(base.empty())continue;
              auto resolved=ResolveRecordingDestination(base,check.catalog,false,&directory);
-             if(!duplicates)explicit_uid_conflict=explicit_uid_conflict||resolved.explicit_uid_conflict;
              if(!current()||resolved.state==RecordingDestinationState::Blocked)return true;
              if(resolved.state!=RecordingDestinationState::Existing||!resolved.recording.complete)continue;
             if(check.settings.convert_numbered_filenames&&!check.settings.track_number_in_filename&&
@@ -1454,7 +1454,7 @@ static void ProcessFilenameCheck(const FilenameCheck& check) {
     };
     RecordingDirectory directory;
     if(!ListRecordingDirectory(OutputPath(check.settings.root,check.catalog,L".flac",check.settings.music_folder,false),directory,&check.catalog))return;
-    if(inspect(directory,false)||!explicit_uid_conflict)return;
+    if(inspect(directory,false)||!ValidSpotifyTrackUri(check.catalog.spotify_uri))return;
     const auto duplicate=DuplicateOutputPath(check.settings.root,check.catalog,L".flac",check.settings.music_folder,false);
     RecordingDirectory duplicate_directory;
     if(duplicate.empty()||!ListRecordingDirectory(duplicate,duplicate_directory,&check.catalog))return;

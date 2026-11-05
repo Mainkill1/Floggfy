@@ -210,18 +210,16 @@ static std::wstring ProbeSavedSong(const DestinationRequest& request,Verificatio
             }
         }
     }
-    // The ordinary namespace has now completed its unchanged search. Enter the
-    // duplicate namespace only when that resolver proves a different complete
-    // Spotify track UID occupied at least one candidate.
-    bool explicit_uid_conflict=false;
+    // The ordinary namespace has now completed its unchanged search. Preserve
+    // an established exact-URI duplicate even if its original canonical
+    // conflict was later deleted.
     for(const auto* base:paths) {
         if(!base)break;
         if(!CurrentRequest(request))return {};
         const auto resolved=ResolveRecordingDestination(*base,request.catalog,request.track_numbers,&directory);
         if(resolved.state==RecordingDestinationState::Blocked)return unavailable();
-        explicit_uid_conflict=explicit_uid_conflict||resolved.explicit_uid_conflict;
     }
-    if(!explicit_uid_conflict)return unavailable();
+    if(!ValidSpotifyTrackUri(request.catalog.spotify_uri))return unavailable();
     const auto duplicates=AllDuplicateFormatPaths(request);
     if(!duplicates[0]||duplicates[0]->empty())return unavailable();
     RecordingDirectory duplicate_directory;
