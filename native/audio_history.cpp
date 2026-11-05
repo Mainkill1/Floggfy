@@ -902,11 +902,16 @@ static bool UnboundOggSequenceGap(const Capture& capture) noexcept {
     return !capture.mp3&&!capture.aac&&!capture.lossless&&
         capture.bound_identity.empty()&&capture.stream.rejection==OggRejection::Sequence;
 }
+enum class ReleaseExpectation {
+    DiscardedEvidence,
+    RequiredRecording
+};
 // Called only when ownership reconciliation has finished and this object really
 // will be released. Flatten keeps the source alive through the final whole-file
 // inspection and avoids retaining another permanent copy.
 static const char* CheckBeforeRelease(Capture& capture,const char* reason,
-                                     const ownership::DecoderOwnershipTracker* tracker=nullptr) {
+                                     const ownership::DecoderOwnershipTracker* tracker=nullptr,
+                                     ReleaseExpectation expectation=ReleaseExpectation::DiscardedEvidence) {
     const char* result="validation unavailable";
     try {
         const bool guarded_complete=capture.mp3?capture.mp3_info.frames!=0:capture.lossless?(capture.metadata&&capture.coverage.Complete(capture.flac)):
@@ -944,7 +949,7 @@ static const char* CheckBeforeRelease(Capture& capture,const char* reason,
         std::strstr(result,"publication deferred")?"deferred cache":
         std::strstr(result,"no verified metadata/listen match")?"unmatched cache":
         std::strstr(result,"verification failed")?"unverified cache":"cache validation failed";
-    if(!UnboundOggSequenceGap(capture))
+    if(expectation==ReleaseExpectation::RequiredRecording)
         LogEvent(LogKind::Failure,"failed",std::string(outcome)+" | "+
             (capture.bound_identity.empty()?"unknown track":capture.bound_identity));
     return result;
@@ -1507,7 +1512,8 @@ struct CaptureBuffers {
     std::array<LostActiveEvidence,32> lost_active{};
     unsigned lost_active_count=0,next_lost_active=0;
     void RecordLostActive(Capture* capture,
-                          ownership::CaptureAbortReason reason=ownership::CaptureAbortReason::InvalidData) {
+                          ownership::CaptureAbortReason reason=ownership::CaptureAbortReason::InvalidData,
+                          ReleaseExpectation expectation=ReleaseExpectation::DiscardedEvidence) {
         if(!capture)return;
         if(capture->mp3)ReleaseMp3Probe(capture->capture_context,capture->capture_epoch);
         if(ownership_tracker&&capture->capture_token) {
@@ -1522,7 +1528,7 @@ struct CaptureBuffers {
                 Log(LogKind::Diagnostic,line);
             }
         }
-        CheckBeforeRelease(*capture,"active capture discarded",ownership_tracker);
+        CheckBeforeRelease(*capture,"active capture discarded",ownership_tracker,expectation);
         if(lost_active_count==lost_active.size())
             lost_capture_start_through=std::max(lost_capture_start_through,lost_active[next_lost_active].born+20);
         else ++lost_active_count;
@@ -2032,11 +2038,13 @@ static void ProcessOggCapture(const Slot& s,CaptureBuffers& buffers) {
     if(result==Result::Invalid || result==Result::Ignore) {
         LogOggRejection(s,&c,diagnostic?&previous:nullptr,&page,c.stream.rejection);
         const bool midstream=UnboundOggSequenceGap(c);
+        const bool identified=!c.bound_identity.empty();
         char message[160];snprintf(message,sizeof(message),"Ogg stream discarded: %s; replay from the beginning to save",OggRejectionName(c.stream.rejection));
-        buffers.RecordLostActive(found->second.get());active.erase(found);
+        buffers.RecordLostActive(found->second.get(),ownership::CaptureAbortReason::InvalidData,
+            identified?ReleaseExpectation::RequiredRecording:ReleaseExpectation::DiscardedEvidence);active.erase(found);
         if(midstream)LogEvent(LogKind::Activity,"ignored",
             "unidentified mid-stream Ogg audio (capture began after the stream start)");
-        else Log(LogKind::Failure,message);
+        else if(!identified)Log(LogKind::Failure,message);
         return;
     }
     size_t reserved=publishing_reserved.load();

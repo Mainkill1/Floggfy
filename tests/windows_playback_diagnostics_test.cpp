@@ -197,7 +197,7 @@ void CoverageAndFailures() {
     uint32_t frame[8]={16,48000,2,0,16,0,0,0};slot.kind=AudioEventKind::FlacFrame;slot.length=32;memcpy(slot.bytes,frame,32);
     diagnostic_lines.clear();const auto prior_failures=failure_events;ProcessFlacCapture(slot,buffers);
     assert(buffers.active.empty()&&buffers.ready.empty());
-    assert(diagnostic_lines.size()==4&&failure_events==prior_failures+2); // Context, cache detail/outcome, native failure outcome.
+    assert(diagnostic_lines.size()==3&&failure_events==prior_failures+1); // Context, final audit, native failure outcome.
     assert(Contains("final cache check:"));
     assert(Contains("origin=capture-coverage-guard")&&Contains("reason=format")&&Contains("native_frame_result=0"));
     assert(Contains("expected_rate=44100 got_rate=48000")&&Contains("ctx=1234")&&Contains("queue_lag_ms="));
@@ -210,7 +210,8 @@ void CoverageAndFailures() {
     slot.kind=AudioEventKind::FlacBegin;ProcessFlacCapture(slot,buffers);
     InterlockedExchange(&history::log_level_value,1);diagnostic_lines.clear();
     slot.kind=AudioEventKind::FlacFrame;ProcessFlacCapture(slot,buffers);
-    assert(diagnostic_lines.size()==2&&Contains("stream discarded")&&Contains("incomplete cache | unknown track"));
+    assert(diagnostic_lines.size()==1&&Contains("stream discarded")&&!Contains("incomplete cache | unknown track")&&
+           "the final audit must not manufacture a second user-visible failure");
     InterlockedExchange(&history::log_level_value,4);
 }
 void SameContextFlacRestartBeginsFreshCapture() {
@@ -1517,15 +1518,22 @@ void CompactFailureIdentity() {
     tracker.ObservePlayback(new_instance,"spotify:episode:0000000000000000000002",42,101);
     Media current;current.artist=L"New Artist";current.title=L"New Title";
     RememberBoundCaptureIdentity(buffers,current,42,tracker.PlaybackToken(new_instance));
-    diagnostic_lines.clear();
+    diagnostic_lines.clear();const auto failures=failure_events;
     buffers.RecordLostActive(buffers.active[context].get(),ownership::CaptureAbortReason::Timeout);
-    assert(Contains("incomplete cache | Old Artist - Old Title")&&
+    assert(failure_events==failures&&
            Contains("final cache check: incomplete or invalid cached audio")&&
            !Contains("New Artist")&&"delayed cleanup names the capture's bound song");
 
     CaptureBuffers unbound;unbound.active[context]=std::make_unique<Capture>();
     diagnostic_lines.clear();unbound.RecordLostActive(unbound.active[context].get());
-    assert(Contains("incomplete cache | unknown track")&&"unbound failures do not borrow current metadata");
+    assert(failure_events==failures&&Contains("final cache check: incomplete or invalid cached audio")&&
+           "discarded unbound evidence is diagnostic, not a download failure");
+
+    auto required=CompleteFlacCapture(100,110);required->bound_identity="Required Artist - Required Title";
+    diagnostic_lines.clear();
+    CheckBeforeRelease(*required,"required recording lost",nullptr,ReleaseExpectation::RequiredRecording);
+    assert(failure_events==failures+1&&Contains("unmatched cache | Required Artist - Required Title")&&
+           "only an established publication obligation becomes a user-visible failure");
     decoded_sink_target=nullptr;
 }
 void DurableAssociationEvidence() {
