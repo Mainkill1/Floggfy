@@ -39,7 +39,9 @@ Save the music you play in Spotify on Windows.
 
 ## Settings
 
-- **To Disk** provides **Downloads**, **Save Location**, **FLAC**, **Ogg**, **Podcasts**, **Lyrics** and **Capture Speed** controls.
+- **To Disk** provides **Downloads**, **Save Location**, **FLAC**, **Ogg**, **Podcasts**, **Lyrics** and optional **Capture Speed** controls.
+- **Capture Speed** appears only when `CaptureSpeedLimit` is set to `2` through
+  `10`; missing, `0`, or `1` keeps the experimental submenu hidden.
 - `SpotifyHistory.ini` is created automatically. Keep it when upgrading, and fully restart Spotify after editing it.
 - `UpdateExistingMetadata=1` fills missing details, lyrics, and improved artwork as soon as playback identifies an owned existing song; finishing another listen is not required. Set `0` to leave its metadata unchanged.
 - `TrackNumberInFilename=0` uses title-only filenames. Set `1` to add track numbers.

@@ -190,7 +190,7 @@ static void Populate(Menu* menu) {
         MenuMethods::SetEnabled(child,recent_id,0);
         MenuMethods::SetVisible(child,recent_id,0);
     }
-    if(inserted) {
+    if(inserted&&state.capture_speed_limit>1) {
         std::wstring label=L"Capture Speed";auto text=Text(label);
         if(auto* speed_menu=MenuMethods::AddSubmenu(child,speed_root_id,&text)) {
             MenuReference speed_reference(speed_menu);

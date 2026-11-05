@@ -43,6 +43,9 @@ and are never written to disk.
   listen generation; a successor transition prevents carrying the old URI forward.
 - If the optional decoded hook cannot be installed safely, capture continues at 1x
   without ownership gating. Accelerated menu choices are disabled.
+- `CaptureSpeedLimit` is a hidden opt-in. Missing, `0`, or `1` removes the
+  Capture Speed submenu entirely; values `2` through `10` expose only the
+  configured range, and larger values normalize to `10`.
 
 ## Formats and publication
 
@@ -62,13 +65,19 @@ and are never written to disk.
 - The ordinary destination resolver always runs first. If it finds no matching
   recording and a parsed candidate contains a different complete Spotify track
   URI, the same resolver is rerun below the library-root `Duplicates` folder.
-  The duplicate filename retains the complete track ID. Same-URI recordings,
-  URI-less legacy recordings, blocked reads, upgrades, and podcasts keep their
-  established behavior and paths.
+  The first verified recording remains canonical. Duplicate filenames use the
+  last 10 track-ID characters, expanding to 14 and then the full 22 only when a
+  different complete URI occupies the shorter name. Full `SPOTIFY_URI` values,
+  never filename text, decide identity. Same-URI recordings, URI-less legacy
+  recordings, blocked reads, upgrades, and podcasts keep their established
+  behavior and paths.
 - Playback-start metadata filling, Auto Skip Downloaded, filename conversion,
   and the current-song folder action use that same final UID fallback. They do
   not infer identity from a filename or authorize replacement of the canonical
   conflict.
+- Track metadata retains full `SPOTIFY_URI` and, when available, full
+  `SPOTIFY_ALBUM_URI`. Album identity is provenance for manual review; it does
+  not authorize replacement or change the ordinary folder layout.
 - Episode enrichment uses an episode URI plus title/show identity and preserves
   publisher fields through the metadata cache and final MP3 tags.
 

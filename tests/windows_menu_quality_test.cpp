@@ -236,6 +236,11 @@ int main() {
   wchar_t module[2048];assert(GetModuleFileNameW(nullptr,module,2048));
   std::wstring ini=module;ini=ini.substr(0,ini.find_last_of(L'\\'))+L"\\SpotifyHistory.ini";
   DeleteFileW(ini.c_str());
+  Model hidden_speed;Init(hidden_speed);
+  hidden_speed.entries={{1,5,L"First"},{2,5,L"Second"},{3,5,L"Third"}};
+  Populate(&hidden_speed.api);
+  assert(hidden_speed.child&&Index(&hidden_speed.child->api,speed_root_id)<0&&
+         hidden_speed.child->extra_children.find(speed_root_id)==hidden_speed.child->extra_children.end());
   assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeedLimit",L"4",ini.c_str()));
   history::InitSettings(nullptr);
   assert(history::SetLyrics(true));
