@@ -21,7 +21,7 @@
 - Modify: `native/history_settings.cpp`
 - Modify: `SpotifyHistory.ini`
 
-1. Add scenarios proving missing/one/nonzero values enable acceleration, zero
+1. Add scenarios proving one/nonzero values enable acceleration, missing/zero
    disables it, malformed values fail closed, and legacy values impose no ceiling.
 2. Run the focused Windows settings scenarios and observe the pre-change
    failure.
@@ -46,7 +46,7 @@
 ### Task 3: Verify the branch
 
 **Files:**
-- Modify: `docs/wiki/settings.md` if the settings table needs the hidden key.
+- Modify: `docs/wiki/settings.md` if the settings table needs the INI-only key.
 
 1. Document the restart-only visibility switch at a high level.
 2. Run the full portable suite and full Windows code-path suite.

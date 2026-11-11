@@ -2,6 +2,239 @@ The current consolidated diagnostics regression entry point is
 `bash test-diagnostics.sh [SPOTIFY_DLL]`. Earlier dated sections below preserve
 historical evidence and may name wrappers that this entry point has replaced.
 
+## 2026-11-11: Never Pause
+
+The requested `NeverPause` setting defaults to -1 (hidden and inactive).
+0 shows the menu control off; 1 shows it on. Missing, malformed and duplicate
+values fall back to -1. Visible menu changes persist without advancing the
+capture epoch. Hidden stale-menu commands cannot enable the setting.
+
+The existing renderer heartbeat checks paused local Spotify state independently
+of download/enrichment preferences. It calls Resume/Play, never a toggle, with
+a two-second cooldown and one unsettled command at a time. Manual pauses and
+paused terminal/buffering states are eligible; remote, unknown-local, playing
+and disabled states send no commands. Missing methods, exceptions and rejected
+commands leave polling alive. No additional worker or timer was introduced.
+
+The real-collector regression failed before implementation because no resume
+was dispatched, then passed with the new loop. It covers native Resume, native
+Play, wrapper Play, exact cooldown, enable/disable, invalid/missing settings,
+unknown/remote targets, pending promises, throws/rejection and metadata-less
+terminal buffering. The portable suite passed and review found no actionable
+issues. All Windows gates passed across the full invocation and corrected
+remainder run. The initial invocation stopped at the old exact collector-config
+assertion in `windows_metadata_identity_test`; it now includes the new disabled
+field. The next invocation passed through production build/startup, both menu
+variants, capture and settings cases, then exposed a new duplicate-key fixture
+setup error: create-only writing was attempted after another fixture write had
+already created the INI. That fixture now creates its duplicate text first.
+The complete settings matrix and every remaining Windows gate were rerun and
+passed, including diagnostics and the terminal-podcast regression. These were
+fixture corrections; production behavior required no further changes.
+
+`git diff --check`, generated/bundled INI equality, compiled default bytes,
+archive DLL/INI identity and internal/external checksums passed. The current
+packaged DLL SHA-256 is
+`f64ec98b2172920012a526f1282691b0375f4d4554d05c8d93ec3f21893318cb`.
+The user's existing four synthetic 4x-rejection log entries remained unchanged.
+No live Never Pause replay was performed, and this feature build has not been
+installed into the running Spotify. The previous podcast fix remains installed;
+the new DLL and launcher ZIP are ready under `dist/`.
+
+## 2026-11-11: terminal podcast buffering investigation
+
+An authorized replay with temporary diagnostic logging reproduced a complete
+MP3 remaining pending after its episode ended. Spotify first repeated the old
+playback instance in buffering, then changed instance and stayed paused/buffering
+without another Ready snapshot. The transition handler had already validated
+the complete, bound MP3, but its successor-Ready wait prevented natural listen
+completion. This was not a compressed-buffer limit failure.
+
+`PodcastEndWithoutReadySuccessor` reproduced the wait before implementation.
+An initial fix passed a synthetic sub-second-tail case but still failed live:
+Spotify stopped Ready updates 1.222 seconds before the episode end, then changed
+instance 1.232509 seconds after that sample. The ordinary different-key natural
+end check required the last position to be within one playback second of the
+end. A separate 1.6-second-tail regression failed against that first fix.
+
+The handler now infers a terminal position only for a positively different
+monitored instance after an ownership hold, one fully validated bound MP3 and
+no observed controls. A copied listen uses the existing same-key terminal-pause
+check: eligible coverage, at most three seconds since the last sample and a
+projected clock that reached the end. Its completed state goes directly through
+the existing recording path, preserving the actual finish time. This narrowly
+expands the admissible last-sample gap; it does not treat prefetched audio as
+playback proof. The matrix covers the live timestamps, the longer buffering tail,
+a transition before its projected end, early prefetch, stale timing, skips,
+controls, unchanged instance, missing capture and ambiguous capture.
+
+Final-revision focused/full Windows playback diagnostics, collector/native
+prior-control boundary, all four collector suites, diagnostic source and
+ownership-log checks, capture-association suite and production build passed.
+The strengthened regression also reaches the production save queue with the
+original completion time. The full portable suite passed earlier in this
+investigation. Independent review found no material issues; `git diff --check`
+passed. The entire Windows suite was not repeated for this narrow follow-up.
+
+A final authorized live replay completed at the terminal instance transition:
+122.688 seconds of measured listening for a 122.723-second episode. Publication
+immediately logged that the same-quality recording already existed on disk.
+The existing MP3 stayed in place, so this validates live completion and reuse,
+not a new live file write. The standalone media probe found the title unavailable
+after Spotify reset to idle; the completion and publication outcomes were already
+logged before that probe and are the evidence for this run.
+
+Temporary diagnostic settings were restored to the original INI byte-for-byte
+(LogLevel=1, DebugHookDiagnostics=0), then Spotify was restarted. Private logs
+and the original DLL backup remain under ignored validation storage. The tested
+DLL is installed and packaged. Its SHA-256 is
+`b0256b2dd4278e89b8c4af707d7ef082646fbd965a1cb79bc6cd27a7e9bad628`.
+The launcher ZIP, DLL/INI identity and internal/external checksum manifests were
+verified. No claim is made here about the separately reported unexpected-pause
+issue: the observed pause in these replays occurred at the episode's end.
+
+## 2026-11-11: saved INI template and large podcasts
+
+The bundled INI and generated UTF-16 INI now use the user's saved template,
+including its wording, ordering and Podcasts=1 default. The final requested
+MaxBufferedMiB default is 512, and accepted values clamp to 8-1024 MiB.
+Explicit existing opt-outs remain supported. The source user INI was read only.
+Normalized text comparison confirmed that the bundled template matches it.
+
+The former MP3 frame cap rejected 1,000,001 frames even below the old file-size
+limit. A new virtual-frame regression failed before implementation and now
+checks that case, files above 512 MiB, the largest frame-aligned file under
+1 GiB, oversize rejection before reads, and the existing 24-hour duration bound.
+The new frame cap is 3,600,000 (maximum supported frame frequency over 24 hours).
+Shared recording inspection, locked publication reads and MP3 file limits now
+agree on 1 GiB. AAC-specific construction budgets remain separate. This raises
+the compressed-capture allowance, not a process-wide peak-memory guarantee.
+
+`bash test-large-podcast.sh` passed on Windows: a 536,872,012-byte synthetic MP3
+was tagged, staged/published, read back, renamed and reused without another
+save. This is structural container/file validation, not an independent audio
+decode or a live Spotify episode. The optional fixture uses roughly 1.1 GiB RAM
+and 513 MiB temporary disk and removes its output recording afterward.
+
+Focused Windows new/missing defaults, Podcasts=0, buffer=1024, oversize-clamp
+and undersize-clamp scenarios passed. The full portable suite, production build
+and 50,000-mutation ASan/UBSan campaign passed. Independent static review found
+no important introduced defects. All Windows gates completed as described below.
+
+The initial full Windows invocation failed in `windows_settings_failure_test`
+because its snapshot could race the asynchronous startup migration write. The
+fixture now waits for `FlushSettings(5000)` before fault injection; its focused
+rerun passed. Preceding Windows gates passed, and all remaining wrappers passed
+in sequence. Production defaults/persistence behavior did not require
+a change for this fixture issue.
+
+The refreshed launcher ZIP contains the exact saved-template INI and matches the
+built DLL; embedded/internal and external checksum manifests were verified. The
+then-current `dist/version.dll` SHA-256 was
+`50ae88d8b3a0bb1fed5f4900263d1f5cf8b58ed03574eae7aa5b97713fd1cfe9`.
+The user log's four earlier synthetic 4x-rejection lines remained unchanged.
+
+## 2026-11-11: menu defaults and test log isolation
+
+The follow-up build defaults `CaptureSpeedLimit` to `0` in the settings object,
+fast startup state, generated/shipped INI and missing-key migration. Playback
+remains `CaptureSpeed=1`. Explicit existing nonzero opt-ins are preserved.
+The option is described as an INI-only switch; the previous "Hidden INI" label
+was removed from both INI sources and current documentation was updated.
+
+The menu regression failed before the change at
+`!ShowCaptureSpeed(speed_default)`. After the change, all 32 normal Windows
+settings scenarios, the Windows menu and history executables, the portable
+suite, embedded-default consistency check and production build passed.
+The full Windows suite and sanitizer run in the section below predate this
+defaults-only follow-up and were not repeated. Independent static review found
+no important issues in the defaults, migration or logging isolation changes.
+
+The user's `request=4x rejected; active=1x` warnings came from the menu test's
+deliberate stale-menu command while capability was disabled. That executable
+had initialized logging at the default user Music location. Level 1 includes
+warnings by policy. Its log destination now points to its Windows TEMP fixture
+before initialization; the history fixture also redirects logging before
+exercising settings. An isolated rerun passed and left the user's count of
+these warning lines unchanged at four. Existing user log lines were not edited.
+
+The refreshed package remains
+`dist/Floggfy-v1.3-RC6-duplicate-fix-Launcher-Windows-x64.zip`; its DLL SHA-256 is
+`59f7f5ac9aaef683e6b1553d60d9fa1c82d6eaae33a2a276bf70b72e371c535b`.
+Archive checksums, DLL identity, `CaptureSpeed=1`, `CaptureSpeedLimit=0` and the
+updated INI wording were verified after packaging. The existing Spotify
+installation and its explicit INI values were not replaced.
+
+The default INI was then shortened from 147 to 57 lines (6,686 to 1,698
+characters), grouping formats under Allowed Download Formats and retaining
+brief dependency/range explanations. All option names and values were
+compared before/after and remained identical. The generated/shipped INI
+consistency check, fresh Windows new/missing-settings scenarios and production
+build passed. The package was refreshed and its INI, DLL and checksums verified.
+
+The reported unexpected-pause issue remains unconfirmed. Static inspection
+found no explicit pause dispatch; the collector's playback command is auto-skip
+to the next track. Shared blocking locks in audio callbacks, including the
+decoded-activity path at 1x, are a stall risk to investigate. The decoded-activity
+lock also bypasses the existing QueueGuard timing counters. Acceleration changes
+decoded output spans only above 1x. These observations do not establish that a
+callback stall caused Spotify to enter a persistent paused state.
+
+## 2026-11-11: RC6 unresolved duplicate routing
+
+The fresh clone's `main` was an ancestor of v1.3-RC6 and lacked 68 files of
+RC6 changes. Work is based on exact tag commit `7b825e3` on
+`fix/rc6-duplicate-routing`. The downloaded RC6 DLL matched its published
+SHA-256 `c3e10c37aeb63e449af5b016c201a70a25f1a8de5b0ea7adf53714cb63334013`.
+
+Issue #26's in-album hex-name symptom was reproduced with real Windows files:
+an occupant without a usable ID and a different text identity caused RC6 to
+publish a new canonical collision suffix. The regression failed at the assertion
+that the saved path begins with the root `Duplicates` hierarchy. Missing and
+malformed IDs now use `[no-id-<hash>]` there; valid IDs retain `[t-<id>]`.
+Matching canonical/legacy files stay in place. A separate failing regression
+proved a late-ID-enrichment lookup gap; a bounded lookup-only no-ID alias fixes
+replay, Song discovery and track-number conversion without enabling no-ID writes
+for valid-ID requests. Differing nonempty URI identities remain conservative.
+
+Verified on WSL with Windows-thread MinGW GCC 14:
+
+- `bash test-native.sh`: passed on RC6 and the final change.
+- `bash test-directory-lookup.sh --duplicate-routing`: passed on the final change.
+  Five missing/malformed-ID scenarios exercise actual publication, byte-for-byte
+  occupant preservation, locked-file deferral, replay, 16-to-24-bit upgrades,
+  Song lookup and conversion. Enriched-ID reuse and occupied write namespaces
+  are covered too.
+- `bash test-native-windows.sh`: passed in full on the final change, including
+  the normal directory-lookup entry point and corrected publication-log fixture.
+  Its two optional current-client binary probes were skipped by the default
+  invocation; the installed-client discovery check described below ran separately.
+- Portable layout tests also compiled and passed as a native Windows executable.
+- `bash build-native.sh`: passed; existing vendor warnings remain visible.
+- `bash test-capture-fuzz.sh 50000 4043931417`: passed under ASan/UBSan, including
+  50,000 decoder ownership lifecycles and 2,000 collector lifecycle sequences.
+- Independent static review found no remaining important defects after the
+  late-ID correction.
+
+A full final Windows run found one stale assertion in
+`TestPublicationLogging`: it expected a corrupt occupant's new collision file
+at the old in-album hash path. Updated the assertion to require the duplicate
+destination and absence of that old path, retaining the original-byte check.
+That run exited 3; the corrected full Windows suite subsequently passed, exit 0.
+
+The initial duplicate-only test package used
+`dist/Floggfy-v1.3-RC6-duplicate-fix-Launcher-Windows-x64.zip`.
+Its DLL matched `build/version.dll` and the archive's internal checksums were
+verified. That initial DLL SHA-256 was
+`c71a96501e5c5510477c50220d0ac69a5d050815c760e0fda95f7d11fc365566`.
+
+Read-only checks against installed Spotify 1.3.8.620 found its capture, decoded
+output, ownership and Connect hook patterns; AAC ownership was not verified by
+that static probe. A live native Windows media-session read passed. No Floggfy
+DLL was installed in Spotify, no playback was initiated, and no user recordings
+were changed. This establishes fixture behavior and client discovery, not a
+live end-to-end Spotify save.
+
 ## Release 1.2.4 handoff
 
 The maintainer approved merge and release after controlled use on Windows x64

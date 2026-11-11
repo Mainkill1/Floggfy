@@ -141,13 +141,13 @@ RecordingRead InspectRecordingFile(const std::wstring& path,RecordingFile& out) 
     try {
         // Deny writes while inspecting. Checked reads avoid mapped-file page
         // faults escaping C++ exception handling on unavailable storage. The
-        // owned buffer is bounded to 512 MiB and is never used on capture paths.
+        // owned buffer is bounded to 1 GiB and is never used on capture paths.
         Handle file{CreateFileW(WindowsPath(path).c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_DELETE,
             nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
         if(file.value==INVALID_HANDLE_VALUE)return RecordingRead::ReadError;
         LARGE_INTEGER size={};
         if(!GetFileSizeEx(file.value,&size))return RecordingRead::ReadError;
-        if(size.QuadPart<4||size.QuadPart>512LL*1024*1024)return RecordingRead::InvalidContainer;
+        if(size.QuadPart<4||size.QuadPart>static_cast<LONGLONG>(kMaximumRecordingBytes))return RecordingRead::InvalidContainer;
         std::vector<uint8_t> bytes(size_t(size.QuadPart));
         constexpr size_t chunk=1024*1024;
         for(size_t offset=0;offset<bytes.size();) {

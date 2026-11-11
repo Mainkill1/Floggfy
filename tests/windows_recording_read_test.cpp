@@ -9,6 +9,7 @@
 #include "../native/flac_history_core.h"
 #include "../native/history_settings.h"
 #include "../native/mp3_stream.h"
+#include "../native/recording_limits.h"
 namespace {
 enum class Failure {None,ReadError,ShortRead,Oversize,SizeChanged,Allocation};
 Failure failure=Failure::None;
@@ -25,7 +26,7 @@ thread_local bool allocation_failed=false;
 BOOL WINAPI CheckedSize(HANDLE file,PLARGE_INTEGER size) {
  if(!GetFileSizeEx(file,size))return FALSE;
  const auto call=size_calls++;
- if(failure==Failure::Oversize)size->QuadPart=512LL*1024*1024+1;
+ if(failure==Failure::Oversize)size->QuadPart=static_cast<LONGLONG>(history::kMaximumRecordingBytes)+1;
  if(failure==Failure::SizeChanged&&call)++size->QuadPart;
  if(failure==Failure::Allocation&&!call)fail_allocation=true;
  return TRUE;

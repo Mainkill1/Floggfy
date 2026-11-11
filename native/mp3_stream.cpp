@@ -1,12 +1,15 @@
 #include "mp3_stream.h"
 #include "compressed_buffer.h"
+#include "recording_limits.h"
 #include <algorithm>
 #include <array>
 #include <cstring>
 #include <limits>
 namespace history {
 namespace {
-constexpr std::size_t kFileLimit=512u*1024u*1024u,kTagLimit=16u*1024u*1024u;
+constexpr std::size_t kFileLimit=kMaximumRecordingBytes,kTagLimit=16u*1024u*1024u;
+// At most 41 2/3 frames/second across the supported MPEG versions and rates.
+constexpr unsigned kFrameLimit=86400u*48000u/1152u;
 bool Fail(std::string& error,const char* text) {error=text;return false;}
 bool Syncsafe(const std::uint8_t* bytes,std::size_t& value) noexcept {
     if((bytes[0]|bytes[1]|bytes[2]|bytes[3])&0x80)return false;
@@ -116,7 +119,7 @@ Mp3Scan ScanMp3(const Bytes& bytes,Mp3Info& out,std::string& error,bool accept_t
         if(!frames){expected_rate=rate;expected_channels=channels;}
         else if(rate!=expected_rate||channels!=expected_channels){Fail(error,"MP3 format changed midstream");return Mp3Scan::Invalid;}
         const unsigned per_frame=version==3?1152:576;
-        if(samples>std::numeric_limits<std::uint64_t>::max()-per_frame||frames==1000000) {
+        if(samples>std::numeric_limits<std::uint64_t>::max()-per_frame||frames==kFrameLimit) {
             Fail(error,"MP3 frame count exceeds limit");return Mp3Scan::Invalid;
         }
         samples+=per_frame;++frames;at+=std::size_t(frame_size);

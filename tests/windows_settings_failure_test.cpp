@@ -80,6 +80,9 @@ int main() {
     const auto path=directory+L"\\SpotifyHistory.ini";DeleteFileW(path.c_str());
     const std::wstring original=L"; preserve unknown configuration comment\r\n[To Disk]\r\nDownloads=0\r\nMetadata=0\r\nMenu=0\r\nLog=0\r\nLyrics=1\r\nOgg=1\r\nFlac=1\r\nUpdateExistingMetadata=0\r\n[Unknown]\r\nKeep=original\r\n";
     assert(history::settings_file::Write(path,original,true));history::InitSettings(nullptr);
+    // Finish startup migration before snapshotting the baseline and injecting
+    // a new failure; otherwise a legitimate initial write races this assertion.
+    assert(history::FlushSettings(5000));
     auto before=Bytes(path);const auto persisted=Progress();
     failure=Failure::AfterRead;throw_logging=true;assert(history::SetLyrics(false));
     const auto failed=history::GetSettings().generation;

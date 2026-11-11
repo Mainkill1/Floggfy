@@ -8,9 +8,10 @@ void QueueDiagnostic(const char*) {}
 }
 int main(int argc,char** argv) {
   assert(argc==2);
-  assert(history::Settings{}.downloads&&history::Settings{}.update_existing_metadata&&!history::Settings{}.auto_skip_downloaded&&!history::Settings{}.aac&&!history::Settings{}.podcasts&&!history::Settings{}.windows_playback_fallback&&history::Settings{}.capture_speed==1&&history::Settings{}.capture_speed_limit==1&&history::Settings{}.log_level==1);
+  assert(history::Settings{}.downloads&&history::Settings{}.update_existing_metadata&&!history::Settings{}.auto_skip_downloaded&&!history::Settings{}.aac&&history::Settings{}.podcasts&&!history::Settings{}.windows_playback_fallback&&history::Settings{}.capture_speed==1&&history::Settings{}.capture_speed_limit==0&&history::Settings{}.log_level==1);
+  assert(history::Settings{}.never_pause==-1);
   assert(!history::AACEnabled());
-  assert(!history::PodcastsEnabled());
+  assert(history::PodcastsEnabled());
   const std::string scenario=argv[1];
   wchar_t module[2048];assert(GetModuleFileNameW(nullptr,module,2048));
   std::wstring path=module;path=path.substr(0,path.find_last_of(L'\\'))+L"\\SpotifyHistory.ini";
@@ -28,11 +29,22 @@ int main(int argc,char** argv) {
     else if(scenario=="fallback-tab") assert(fallback_fixture(L"\t1"));
     else if(scenario=="fallback-word") assert(fallback_fixture(L"true"));
     else if(scenario=="fallback-duplicate") assert(fallback_fixture(L"1",L"1"));
+    else if(scenario=="never-pause-duplicate") assert(history::settings_file::Write(path,
+      L"[To Disk]\r\nMenu=0\r\nNeverPause=1\r\nNeverPause=1\r\n",true));
     else if(scenario=="log-duplicate") assert(history::settings_file::Write(path,
       L"[To Disk]\r\nMenu=0\r\nLogLevel=4\r\nLogLevel=0\r\n",true));
     else assert(WritePrivateProfileStringW(L"To Disk",L"Menu",L"0",path.c_str()));
     if(scenario=="aac-one") assert(WritePrivateProfileStringW(L"To Disk",L"AAC",L"1",path.c_str()));
     if(scenario=="podcasts-one") assert(WritePrivateProfileStringW(L"To Disk",L"Podcasts",L"1",path.c_str()));
+    if(scenario=="podcasts-zero") assert(WritePrivateProfileStringW(L"To Disk",L"Podcasts",L"0",path.c_str()));
+    if(scenario=="buffer-1024") assert(WritePrivateProfileStringW(L"History",L"MaxBufferedMiB",L"1024",path.c_str()));
+    if(scenario=="buffer-over") assert(WritePrivateProfileStringW(L"History",L"MaxBufferedMiB",L"2048",path.c_str()));
+    if(scenario=="buffer-under") assert(WritePrivateProfileStringW(L"History",L"MaxBufferedMiB",L"1",path.c_str()));
+    if(scenario=="never-pause-hidden") assert(WritePrivateProfileStringW(L"To Disk",L"NeverPause",L"-1",path.c_str()));
+    if(scenario=="never-pause-off") assert(WritePrivateProfileStringW(L"To Disk",L"NeverPause",L"0",path.c_str()));
+    if(scenario=="never-pause-on") assert(WritePrivateProfileStringW(L"To Disk",L"NeverPause",L"1",path.c_str()));
+    if(scenario=="never-pause-invalid") assert(WritePrivateProfileStringW(L"To Disk",L"NeverPause",L"2",path.c_str()));
+    if(scenario=="never-pause-padded") assert(WritePrivateProfileStringW(L"To Disk",L"NeverPause",L"01",path.c_str()));
     if(scenario=="auto-skip-one") assert(WritePrivateProfileStringW(L"To Disk",L"AutoSkipDownloaded",L"1",path.c_str()));
     if(scenario=="auto-skip-invalid") assert(WritePrivateProfileStringW(L"To Disk",L"AutoSkipDownloaded",L"2",path.c_str()));
     if(scenario=="auto-skip-padded") assert(WritePrivateProfileStringW(L"To Disk",L"AutoSkipDownloaded",L"01",path.c_str()));
@@ -72,8 +84,9 @@ int main(int argc,char** argv) {
   history::InitSettings(nullptr);
   auto s=history::GetSettings();
   assert(s.downloads==(scenario!="zero" && scenario!="legacy-zero"));
-  const bool speed_disabled=scenario=="speed-10-limit-zero"||scenario=="speed-10-limit-invalid"||
-    scenario=="speed-10-limit-padded";
+  assert(s.max_buffered_mib==(scenario=="buffer-1024"||scenario=="buffer-over"?1024u:scenario=="buffer-under"?8u:512u));
+  const bool speed_disabled=!(scenario=="speed-10-limit-10"||scenario=="speed-10-limit-over"||
+    scenario=="speed-2-limit-3"||scenario=="speed-4-limit-3"||scenario=="speed-10-limit-one");
   const auto expected_speed=speed_disabled?1u:
     scenario=="speed-2-limit-3"?2u:scenario=="speed-4-limit-3"?4u:
     scenario.rfind("speed-10",0)==0||scenario=="speed-10"?10u:1u;
@@ -97,8 +110,8 @@ int main(int argc,char** argv) {
   if(scenario=="new") {
     assert(GetPrivateProfileIntW(L"To Disk",L"Downloads",9,path.c_str())==1);
     assert(GetPrivateProfileIntW(L"To Disk",L"AAC",9,path.c_str())==0);
-    assert(GetPrivateProfileIntW(L"To Disk",L"Podcasts",9,path.c_str())==0);
-    assert(GetPrivateProfileIntW(L"To Disk",L"CaptureSpeedLimit",9,path.c_str())==1);
+    assert(GetPrivateProfileIntW(L"To Disk",L"Podcasts",9,path.c_str())==1);
+    assert(GetPrivateProfileIntW(L"To Disk",L"CaptureSpeedLimit",9,path.c_str())==0);
     assert(GetPrivateProfileIntW(L"To Disk",L"Windows Playback Fallback",9,path.c_str())==0);
     assert(GetPrivateProfileIntW(L"To Disk",L"UpdateExistingMetadata",9,path.c_str())==1);
     assert(GetPrivateProfileIntW(L"To Disk",L"AutoSkipDownloaded",9,path.c_str())==0);
@@ -107,7 +120,7 @@ int main(int argc,char** argv) {
     assert(ReadFile(file,bom,2,&count,nullptr)&&count==2&&bom[0]==0xff&&bom[1]==0xfe);CloseHandle(file);
   }
   assert(s.aac==(scenario=="aac-one"));
-  assert(s.podcasts==(scenario=="podcasts-one"));
+  assert(s.podcasts==(scenario!="podcasts-zero"));
   assert(history::AACEnabled()==(s.downloads&&s.aac));
   assert(history::PodcastsEnabled()==(s.downloads&&s.podcasts));
   if(s.podcasts) {
@@ -122,6 +135,21 @@ int main(int argc,char** argv) {
   }
   assert(s.lyrics==(scenario!="lyrics-zero"));
   assert(s.update_existing_metadata==(scenario!="updates-zero"));
+  const int expected_never_pause=scenario=="never-pause-on"?1:scenario=="never-pause-off"?0:-1;
+  assert(s.never_pause==expected_never_pause);
+  const auto never_pause_epoch=history::CaptureEpoch();
+  const auto never_pause_generation=history::GetSettings().generation;
+  if(expected_never_pause<0) {
+    assert(!history::SetNeverPause(true)&&history::GetSettings().never_pause==-1);
+    assert(history::GetSettings().generation==never_pause_generation);
+  } else {
+    assert(history::SetNeverPause(expected_never_pause==0));
+    assert(history::GetSettings().never_pause==1-expected_never_pause&&
+           history::GetSettings().generation>never_pause_generation);
+    assert(history::SetNeverPause(expected_never_pause==1));
+  }
+  assert(history::CaptureEpoch()==never_pause_epoch&&history::FlushSettings(5000));
+  assert(int(GetPrivateProfileIntW(L"To Disk",L"NeverPause",99,path.c_str()))==expected_never_pause);
   assert(s.auto_skip_downloaded==(scenario=="auto-skip-one"));
   const auto epoch=history::CaptureEpoch();
   const auto fallback_generation=history::GetSettings().generation;

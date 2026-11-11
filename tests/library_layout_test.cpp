@@ -28,9 +28,28 @@ int main() {
     check(component.size()<=104 && ends(component,L" [t-0000000001].ogg"),
           "duplicate filename preserves compact identifier within title and extension budget");
     auto invalid=c;invalid.spotify_uri="spotify:track:short";
-    check(DuplicateOutputPath(L"D:\\Media",invalid,L".ogg").empty(),"invalid track identity cannot select duplicate namespace");
+    const auto unresolved=DuplicateOutputPath(L"D:\\Media",invalid,L".ogg");
+    check(unresolved.find(L"\\Duplicates\\Music\\Artists\\")!=std::wstring::npos&&
+          unresolved.find(L"Test Track [no-id-")!=std::wstring::npos,
+          "invalid track identity gets an explicit missing-ID duplicate name");
     invalid.spotify_uri.clear();
-    check(DuplicateOutputPath(L"D:\\Media",invalid,L".ogg").empty(),"missing track identity cannot select duplicate namespace");
+    check(DuplicateOutputPath(L"D:\\Media",invalid,L".ogg")==
+          L"D:\\Media\\Duplicates\\Music\\Artists\\Test-Artist\\Test Album\\Test Track [no-id-4fd7d61a57324c22].ogg",
+          "missing ID has a stable catalog hash independent of platform wchar size");
+    check(DuplicateOutputPath(L"D:\\Media",invalid,L".ogg")==unresolved,
+          "missing and malformed IDs use the same stable catalog fallback");
+    const auto lookup_paths=DuplicateLookupPaths(L"D:\\Media",c,L".ogg");
+    check(lookup_paths.size()==4&&lookup_paths.back()==unresolved&&DuplicateOutputPaths(L"D:\\Media",c,L".ogg").size()==3,
+          "ID enrichment discovers the no-ID home without adding a no-ID write target");
+    auto changed=invalid;changed.disc=2;
+    check(DuplicateOutputPath(L"D:\\Media",changed,L".ogg")!=unresolved,
+          "disc identity distinguishes unresolved collision names");
+    invalid.title=std::wstring(120,L'\u97f3');
+    const auto no_id=DuplicateOutputPath(L"D:\\Media",invalid,L".flac",false,true);
+    const auto no_id_component=no_id.substr(no_id.find_last_of(L'\\')+1);
+    check(no_id_component.size()==105&&no_id_component.rfind(L"01 - ",0)==0&&
+          no_id_component.find(L" [no-id-")!=std::wstring::npos&&ends(no_id_component,L"].flac"),
+          "long unresolved title retains numbering and marker inside the stem budget");
     auto long_name=c;long_name.title=std::wstring(120,L'\u97f3');
     const auto long_paths=DuplicateOutputPaths(L"D:\\Media",long_name,L".m4a");
     check(long_paths.size()==3,"duplicate namespace exposes compact, expanded and full identifiers");

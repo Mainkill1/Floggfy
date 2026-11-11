@@ -48,6 +48,7 @@ g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/bounded_queue_test.cpp -o build/b
 build/bounded-queue-test
 node tests/metadata_collector_test.js
 node tests/auto_skip_collector_test.js
+node tests/never_pause_collector_test.js
 
 python3 tests/create_cache_fixtures.py build/cache-fixtures
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/cached_metadata_test.cpp native/cached_metadata.cpp native/rich_metadata.cpp -o build/cached-metadata-test
@@ -71,6 +72,8 @@ build/metadata-update-test
 # Supported AAC packets retain their configuration, timing and original bytes.
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/mp3_stream_test.cpp native/mp3_stream.cpp -o build/mp3-stream-test
 build/mp3-stream-test
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/mp3_limits_test.cpp -o build/mp3-limits-test
+build/mp3-limits-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/spac_stream_test.cpp native/spac_stream.cpp native/mp3_stream.cpp -o build/spac-stream-test
 build/spac-stream-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/aac_container_test.cpp native/aac_container.cpp native/image_info.cpp build/minimp4-native-test.o -o build/aac-container-test

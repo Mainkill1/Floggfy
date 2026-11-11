@@ -5,6 +5,7 @@
 #include "vorbis_headers.h"
 #include "aac_stream.h"
 #include "compressed_buffer.h"
+#include "recording_limits.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -363,7 +364,7 @@ bool ReadRecordingArtwork(const std::vector<uint8_t>& bytes,RecordingArtwork& ou
 }
 bool InspectRecording(const uint8_t* bytes,size_t size,RecordingFile& out) {
     out={};
-    if(!bytes || size<4 || size>512u*1024*1024) return false;
+    if(!bytes || size<4 || size>kMaximumRecordingBytes) return false;
     bool valid=false;
     if(!std::memcmp(bytes,"fLaC",4)) valid=Flac(bytes,size,out);
     else if(!std::memcmp(bytes,"OggS",4)) valid=Ogg(bytes,size,out);

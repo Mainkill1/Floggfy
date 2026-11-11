@@ -42,6 +42,10 @@ static void EffectiveDebug() {
     signal=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(signal);
     Settings opted_out;opted_out.log_level=4;opted_out.debug_networking=true;opted_out.debug_connect=false;
     assert(BuildCollectorOptions(opted_out).find(L",connect:false,")!=std::wstring::npos);
+    for(int value:{-1,0,1}) {
+        Settings config;config.never_pause=value;config.metadata=false;config.downloads=false;
+        assert(BuildCollectorOptions(config).find(value==1?L"neverPause:true":L"neverPause:false")!=std::wstring::npos);
+    }
     Settings auto_skip;auto_skip.auto_skip_downloaded=true;auto_skip.generation=9;
     AutoSkipRequest request{7,9,"spotify:track:0000000000000000000001","playback-1"};
     const auto requested=BuildCollectorOptions(auto_skip,request);

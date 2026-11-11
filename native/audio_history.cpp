@@ -138,7 +138,7 @@ std::array<uint64_t,16> ownership_output_logged{};
 unsigned ownership_output_logged_count=0,ownership_output_logged_next=0;
 std::atomic<bool> quality_enabled{false};
 std::wstring output;
-size_t memory_limit=500*1024*1024;
+size_t memory_limit=size_t{kDefaultBufferedMiB}*1024*1024;
 static double Now() { return double(GetTickCount64())/1000.0; }
 static void Log(LogKind kind,const char* message) {
     LogEvent(kind,kind==LogKind::Diagnostic?"audio":kind==LogKind::Warning?"warning":
@@ -1049,10 +1049,11 @@ static FilenameConversion ConvertResolvedFilename(RecordingDestination& resolved
         return FilenameConversion::Unchanged;
     auto expected=OutputPath(settings.root,catalog,extension,settings.music_folder,false);
     if(duplicates) {
-        const auto candidates=DuplicateOutputPaths(settings.root,catalog,extension,settings.music_folder,false);
+        const auto candidates=DuplicateLookupPaths(settings.root,catalog,extension,settings.music_folder,false);
         expected.clear();
         for(const auto& candidate:candidates) {
-            const auto marker_begin=candidate.rfind(L" [t-");
+            auto marker_begin=candidate.rfind(L" [t-");
+            if(marker_begin==std::wstring::npos)marker_begin=candidate.rfind(L" [no-id-");
             const auto marker_end=marker_begin==std::wstring::npos?std::wstring::npos:candidate.find(L']',marker_begin);
             if(expected.empty())expected=candidate;
             if(marker_end!=std::wstring::npos&&resolved.path.find(candidate.substr(marker_begin,marker_end-marker_begin+1))!=std::wstring::npos) {
@@ -1085,13 +1086,14 @@ struct PublicationDestinations {
     bool existing_lossless=false;
     bool existing_vorbis=false;
     bool explicit_uid_conflict=false;
+    bool filename_conflict=false;
     bool duplicate_namespace=false;
 };
 static DestinationFailure ResolvePublicationDestinations(const Capture& capture,const Settings& settings,
     const Catalog& catalog,const Quality& quality,bool duplicates,PublicationDestinations& out) {
     out={};out.duplicate_namespace=duplicates;
     auto paths=[&](const wchar_t* extension) {
-        if(duplicates)return DuplicateOutputPaths(settings.root,catalog,extension,settings.music_folder,settings.track_number_in_filename);
+        if(duplicates)return DuplicateLookupPaths(settings.root,catalog,extension,settings.music_folder,settings.track_number_in_filename);
         return std::vector<std::wstring>{OutputPath(settings.root,catalog,extension,settings.music_folder,settings.track_number_in_filename)};
     };
     const auto capture_paths=paths(capture.Extension());
@@ -1101,14 +1103,19 @@ static DestinationFailure ResolvePublicationDestinations(const Capture& capture,
     auto resolve=[&](const wchar_t* extension) {
         RecordingDestination selected;bool writable=false;
         const auto candidates=paths(extension);
+        const auto write_paths=duplicates?DuplicateOutputPaths(settings.root,catalog,extension,
+            settings.music_folder,settings.track_number_in_filename):candidates;
         for(const auto& base:candidates) {
             auto current=ResolveRecordingDestination(base,catalog,settings.track_number_in_filename,&directory);
+            if(!duplicates&&current.state==RecordingDestinationState::Vacant&&current.path!=base)
+                out.filename_conflict=true;
             if(current.state==RecordingDestinationState::Blocked||current.state==RecordingDestinationState::Existing)return current;
             if(!duplicates)return current;
             // Keep scanning for an exact historical home even when an earlier
             // visible suffix has become vacant. The first non-conflicting
             // vacancy remains the write target if no exact match exists.
-            if(!writable&&!current.explicit_uid_conflict){selected=std::move(current);writable=true;}
+            if(!writable&&!current.explicit_uid_conflict&&std::find(write_paths.begin(),write_paths.end(),base)!=write_paths.end())
+                {selected=std::move(current);writable=true;}
         }
         return selected;
     };
@@ -1189,13 +1196,12 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
         return finish(Publication::Failed,"failed","preferred recording could not be inspected; publication deferred");
     if(failure!=DestinationFailure::None)
         return finish(Publication::Failed,"failed","no safe recording destination; existing files retained");
-    // The established namespace always runs first. Only its final, explicit
-    // different-track UID result can enter the additive Duplicates namespace.
-    // Exact and legacy matches, upgrades, blocked reads, and URI-less files all
-    // retain their existing paths and behavior.
+    // Keep exact and legacy matches in place. A new collision suffix belongs
+    // under Duplicates even when missing IDs prevent proving a UID conflict.
+    // Unreadable candidates still defer publication before this point.
     const bool canonical_match=destinations.format_upgrade||destinations.existing_lossless||
         destinations.existing_vorbis||destinations.resolved.state==RecordingDestinationState::Existing;
-    if(!canonical_match&&destinations.explicit_uid_conflict) {
+    if(!canonical_match&&(destinations.explicit_uid_conflict||destinations.filename_conflict)) {
         PublicationDestinations duplicate;
         failure=ResolvePublicationDestinations(c,settings,catalog,quality,true,duplicate);
         if(failure!=DestinationFailure::None)
@@ -1396,18 +1402,19 @@ static void ProcessFilenameCheck(const FilenameCheck& check) {
             (convert||update||auto_skip);
     };
     if(!current())return;
-    bool explicit_uid_conflict=false;
+    bool filename_conflict=false;
     auto inspect=[&](RecordingDirectory& directory,bool duplicates) {
         for(const auto& format:kRecordingFormats) {
             if(!SupportsMedia(format,check.catalog.kind))continue;
             if(!current())return true;
             const auto bases=duplicates
-                ?DuplicateOutputPaths(check.settings.root,check.catalog,format.extension,check.settings.music_folder,false)
+                ?DuplicateLookupPaths(check.settings.root,check.catalog,format.extension,check.settings.music_folder,false)
                 :std::vector<std::wstring>{OutputPath(check.settings.root,check.catalog,format.extension,check.settings.music_folder,false)};
             for(const auto& base:bases) {
              if(base.empty())continue;
              auto resolved=ResolveRecordingDestination(base,check.catalog,false,&directory);
-             if(!duplicates)explicit_uid_conflict=explicit_uid_conflict||resolved.explicit_uid_conflict;
+             if(!duplicates)filename_conflict=filename_conflict||resolved.explicit_uid_conflict||
+                 (resolved.state==RecordingDestinationState::Vacant&&resolved.path!=base);
              if(!current()||resolved.state==RecordingDestinationState::Blocked)return true;
              if(resolved.state!=RecordingDestinationState::Existing||!resolved.recording.complete)continue;
             if(check.settings.convert_numbered_filenames&&!check.settings.track_number_in_filename&&
@@ -1449,7 +1456,7 @@ static void ProcessFilenameCheck(const FilenameCheck& check) {
     };
     RecordingDirectory directory;
     if(!ListRecordingDirectory(OutputPath(check.settings.root,check.catalog,L".flac",check.settings.music_folder,false),directory,&check.catalog))return;
-    if(inspect(directory,false)||!explicit_uid_conflict)return;
+    if(inspect(directory,false)||!filename_conflict)return;
     const auto duplicate=DuplicateOutputPath(check.settings.root,check.catalog,L".flac",check.settings.music_folder,false);
     RecordingDirectory duplicate_directory;
     if(duplicate.empty()||!ListRecordingDirectory(duplicate,duplicate_directory,&check.catalog))return;
@@ -2299,7 +2306,23 @@ static bool FinishAppTransition(const Media& next,Listen& listen,const Media& cu
         !next.playback_instance.empty()&&next.playback_instance!=current.playback_instance&&
         buffers.ownership_hold_generation==listen.generation;
     const bool awaiting_ready=next.transition_pending||observed_successor_stage;
-    if(awaiting_ready&&next.control_monitoring&&listen.eligible&&listen.playing) {
+    // Spotify can buffer before its last timeline sample, then pause on a new
+    // playbackId without a successor Ready. Infer the terminal position only
+    // from a complete bound MP3 and that monitored transition. The ordinary
+    // pause check still requires eligible coverage, <=3s freshness and a clock
+    // that reached the end; prefetched bytes alone cannot complete a listen.
+    auto ending=listen;
+    std::string done;
+    if(observed_successor_stage&&!current.playback_instance.empty()&&
+       current.source==MediaSource::Spotify&&next.control_monitoring&&!next.prior_control&&
+       listen.eligible&&listen.playing) {
+        ownership::OwnershipBinding binding{};
+        auto* capture=BoundCompleteCaptureForListen(buffers,listen,current,binding);
+        if(capture&&capture->mp3)
+            done=ending.Observe(listen.identity,current.duration,current.duration,false,
+                                time,ending.capture_speed);
+    }
+    if(awaiting_ready&&done.empty()&&next.control_monitoring&&listen.eligible&&listen.playing) {
         buffers.pending_natural_generation=listen.generation;
         buffers.pending_natural_time=time;
         buffers.pending_natural_playback_instance=
@@ -2343,15 +2366,16 @@ static bool FinishAppTransition(const Media& next,Listen& listen,const Media& cu
     const bool ownership_hold_proven=buffers.ownership_hold_generation==listen.generation;
     // The app's transition timestamp, rather than time spent buffering, closes
     // the old listen. The new track cannot accrue coverage until it is playing.
-    auto ending=listen;
-    std::string done;
-    if(!same)done=ending.Observe(next.ListenKey(),0,current.duration,false,time,ending.capture_speed);
-    else if(next.position>=current.duration)done=ending.Observe(next.ListenKey(),next.position,current.duration,false,time,ending.capture_speed);
-    else if(next.position>=0&&next.position<=1.5) {
-        ending.Observe(next.ListenKey(),next.position,current.duration,true,time,ending.capture_speed);
-        if(ending.transient && listen.last_position+(time-listen.last_time)*listen.capture_speed>=listen.duration-0.1) {
-            buffers.ownership_hold_generation=0;
-            listen=std::move(ending);return true; // Confirm a same-URI repeat on fresh unbuffered progress.
+    if(done.empty()) {
+        ending=listen;
+        if(!same)done=ending.Observe(next.ListenKey(),0,current.duration,false,time,ending.capture_speed);
+        else if(next.position>=current.duration)done=ending.Observe(next.ListenKey(),next.position,current.duration,false,time,ending.capture_speed);
+        else if(next.position>=0&&next.position<=1.5) {
+            ending.Observe(next.ListenKey(),next.position,current.duration,true,time,ending.capture_speed);
+            if(ending.transient && listen.last_position+(time-listen.last_time)*listen.capture_speed>=listen.duration-0.1) {
+                buffers.ownership_hold_generation=0;
+                listen=std::move(ending);return true; // Confirm a same-URI repeat on fresh unbuffered progress.
+            }
         }
     }
     if(!done.empty()&&(current.source==MediaSource::Spotify||windows_natural_bridge)) {

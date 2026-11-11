@@ -1,5 +1,10 @@
 # Manual Duplicate Routing Design
 
+The missing-identity routing policy below records the original RC6 design.
+It is extended by [unresolved duplicate routing](2026-11-11-unresolved-duplicate-routing-design.md):
+new unresolved collisions also use Duplicates, with `[no-id-<hash>]` when the
+incoming Spotify track ID is absent or malformed.
+
 ## Outcome
 
 Keep the first verified recording at its canonical library path. If a later

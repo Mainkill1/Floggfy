@@ -27,7 +27,7 @@ struct DestinationRequest {
     bool track_numbers=false;
     Catalog catalog;
     std::wstring flac,ogg,aac,mp3;
-    std::array<std::wstring,3> duplicate_flac,duplicate_ogg,duplicate_aac,duplicate_mp3;
+    std::array<std::wstring,4> duplicate_flac,duplicate_ogg,duplicate_aac,duplicate_mp3;
 };
 SRWLOCK destination_lock=SRWLOCK_INIT;
 INIT_ONCE destination_once=INIT_ONCE_STATIC_INIT;
@@ -72,13 +72,13 @@ static const std::wstring& FormatPath(const DestinationRequest& request,Codec co
     if(codec==Codec::Aac)return request.aac;
     return request.mp3;
 }
-static std::array<std::wstring,3>& DuplicateFormatPaths(DestinationRequest& request,Codec codec) {
+static std::array<std::wstring,4>& DuplicateFormatPaths(DestinationRequest& request,Codec codec) {
     if(codec==Codec::Flac)return request.duplicate_flac;
     if(codec==Codec::Vorbis)return request.duplicate_ogg;
     if(codec==Codec::Aac)return request.duplicate_aac;
     return request.duplicate_mp3;
 }
-static const std::array<std::wstring,3>& DuplicateFormatPaths(const DestinationRequest& request,Codec codec) {
+static const std::array<std::wstring,4>& DuplicateFormatPaths(const DestinationRequest& request,Codec codec) {
     if(codec==Codec::Flac)return request.duplicate_flac;
     if(codec==Codec::Vorbis)return request.duplicate_ogg;
     if(codec==Codec::Aac)return request.duplicate_aac;
@@ -90,8 +90,8 @@ static std::array<const std::wstring*,4> FormatPaths(const DestinationRequest& r
         paths[count++]=&FormatPath(request,format.codec);
     return paths;
 }
-static std::array<const std::wstring*,12> AllDuplicateFormatPaths(const DestinationRequest& request) {
-    std::array<const std::wstring*,12> paths{};size_t count=0;
+static std::array<const std::wstring*,16> AllDuplicateFormatPaths(const DestinationRequest& request) {
+    std::array<const std::wstring*,16> paths{};size_t count=0;
     for(const auto& format:kRecordingFormats)if(SupportsMedia(format,request.catalog.kind))
         for(const auto& path:DuplicateFormatPaths(request,format.codec))paths[count++]=&path;
     return paths;
@@ -210,24 +210,25 @@ static std::wstring ProbeSavedSong(const DestinationRequest& request,Verificatio
             }
         }
     }
-    // The ordinary namespace has now completed its unchanged search. Enter the
-    // duplicate namespace only when that resolver proves a different complete
-    // Spotify track UID occupied at least one candidate.
-    bool explicit_uid_conflict=false;
+    // Publication also routes unresolved collision vacancies beneath Duplicates.
+    // Missing IDs cannot authorize replacement, but must not hide a saved file.
+    bool filename_conflict=false;
     for(const auto* base:paths) {
         if(!base)break;
         if(!CurrentRequest(request))return {};
         const auto resolved=ResolveRecordingDestination(*base,request.catalog,request.track_numbers,&directory);
         if(resolved.state==RecordingDestinationState::Blocked)return unavailable();
-        explicit_uid_conflict=explicit_uid_conflict||resolved.explicit_uid_conflict;
+        filename_conflict=filename_conflict||resolved.explicit_uid_conflict||
+            (resolved.state==RecordingDestinationState::Vacant&&resolved.path!=*base);
     }
-    if(!explicit_uid_conflict)return unavailable();
+    if(!filename_conflict)return unavailable();
     const auto duplicates=AllDuplicateFormatPaths(request);
     if(!duplicates[0]||duplicates[0]->empty())return unavailable();
     RecordingDirectory duplicate_directory;
     if(!ListRecordingDirectory(*duplicates[0],duplicate_directory,&request.catalog))return unavailable();
     for(const auto* base:duplicates) {
         if(!base)break;
+        if(base->empty())continue;
         if(!CurrentRequest(request))return {};
         FileSignature signature;
         if(VerifySavedFile(*base,request,duplicate_directory,signature)) {
@@ -236,6 +237,7 @@ static std::wstring ProbeSavedSong(const DestinationRequest& request,Verificatio
     }
     for(const auto* base:duplicates) {
         if(!base)break;
+        if(base->empty())continue;
         if(!CurrentRequest(request))return {};
         for(const auto& file:RecordingPathCandidates(*base,request.catalog,true,request.track_numbers)) {
             if(file==*base)continue;
@@ -316,7 +318,7 @@ void PublishSongDestination(std::uint64_t identity,const std::wstring& root,
         if(identity && !root.empty()) {
             for(const auto& format:kRecordingFormats)if(SupportsMedia(format,catalog.kind)) {
                 FormatPath(request,format.codec)=OutputPath(root,catalog,format.extension,music_folder,track_numbers);
-                const auto paths=DuplicateOutputPaths(root,catalog,format.extension,music_folder,track_numbers);
+                const auto paths=DuplicateLookupPaths(root,catalog,format.extension,music_folder,track_numbers);
                 auto& stored=DuplicateFormatPaths(request,format.codec);
                 for(size_t i=0;i<stored.size()&&i<paths.size();++i)stored[i]=paths[i];
             }

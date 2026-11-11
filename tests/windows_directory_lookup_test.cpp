@@ -44,12 +44,19 @@ static BOOL WINAPI CountSignature(LPCWSTR path,GET_FILEEX_INFO_LEVELS level,LPVO
 #include "recording_fixture.h"
 using namespace history;
 namespace {
+bool enrich_identity=true;
 void ResetCounts(){listings=attribute_checks=recording_opens=signature_checks=0;}
 void Write(const std::wstring& path,const std::vector<uint8_t>& bytes) {
     assert(EnsureDirectory(path.substr(0,path.find_last_of(L'\\'))));
     HANDLE file=CreateFileW(WindowsPath(path).c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,0,nullptr);
     assert(file!=INVALID_HANDLE_VALUE);DWORD written=0;
     assert(WriteFile(file,bytes.data(),DWORD(bytes.size()),&written,nullptr)&&written==bytes.size());CloseHandle(file);
+}
+std::vector<uint8_t> FixtureBytes(const std::wstring& path) {
+    HANDLE file=CreateFileW(WindowsPath(path).c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr);
+    assert(file!=INVALID_HANDLE_VALUE);const auto size=GetFileSize(file,nullptr);assert(size!=INVALID_FILE_SIZE);
+    std::vector<uint8_t> bytes(size);DWORD read=0;
+    assert(ReadFile(file,bytes.data(),size,&read,nullptr)&&read==size);CloseHandle(file);return bytes;
 }
 Catalog Song(const wchar_t* title) {
     Catalog c;c.artist=L"Artist";c.album=L"Album";c.title=title;c.track=3;c.disc=2;c.duration=1;
@@ -58,7 +65,8 @@ Catalog Song(const wchar_t* title) {
 }
 std::vector<uint8_t> Audio(const Catalog& c,unsigned bits=16,bool ogg=false) {
     Tags tags;tags.fields={{"TITLE",Utf8(c.title)},{"ARTIST","Artist"},{"ALBUMARTIST","Artist"},
-        {"ALBUM","Album"},{"SPOTIFY_URI",c.spotify_uri},{"HISTORY_MEDIA_DURATION","1"},
+        {"ALBUM","Album"},{"SPOTIFY_URI",c.spotify_uri},{"HISTORY_MEDIA_DURATION",std::to_string(c.duration)},
+        {"TRACKNUMBER",std::to_string(c.track)},{"DISCNUMBER",std::to_string(c.disc)},
         {"HISTORY_COMPLETE_LISTEN","1"},{"HISTORY_CAPTURE",ogg?"native compressed Ogg pages":"native compressed FLAC input"}};
     std::vector<uint8_t> bytes;std::string error;
     assert(ogg?TagOgg(recording_fixture::ogg(),tags,bytes,error):TagFlac(recording_fixture::fixture(44100,bits),tags,bytes,error));
@@ -206,6 +214,103 @@ void PreferredPublication(const std::wstring& root) {
         assert(DeleteFileW(WindowsPath(path).c_str()));
     }
 }
+void UnresolvedDuplicates(const std::wstring& root) {
+    enrich_identity=false;
+    {ExclusiveSrw guard(history::lock);history::settings.root=root;history::settings.metadata=false;
+     history::settings.downloads=true;history::settings.flac=true;history::settings.music_folder=false;
+     history::settings.track_number_in_filename=false;history::settings.convert_numbered_filenames=false;}
+    struct Scenario {const wchar_t* title;const char* incoming;const char* existing;};
+    for(const auto& scenario:{
+        Scenario{L"Legacy occupant","spotify:track:AAAAAAAAAAAAAAAAAAAAAA",""},
+        Scenario{L"Missing incoming ID","","spotify:track:BBBBBBBBBBBBBBBBBBBBBB"},
+        Scenario{L"Both IDs missing","",""},
+        Scenario{L"Malformed incoming ID","spotify:track:short",""},
+        Scenario{L"Malformed existing ID","spotify:track:AAAAAAAAAAAAAAAAAAAAAA","spotify:track:short"}}) {
+        auto c=Song(scenario.title);c.spotify_uri=scenario.incoming;
+        const auto base=OutputPath(root,c,L".flac");
+        auto prior=c;prior.spotify_uri=scenario.existing;prior.duration=3; // Same filename, different text identity.
+        const auto original=Audio(prior);Write(base,original);
+        const auto old_hash=ResolveRecordingDestination(base,c).path;
+        assert(old_hash!=base&&!old_hash.empty());
+        Media media;media.title=c.title;media.artist=media.album_artist=c.artist;media.album=c.album;
+        media.track=c.track;media.duration=c.duration;media.spotify_uri=c.spotify_uri;
+        auto publish=[&](unsigned bits=16) {
+            const auto source=recording_fixture::fixture(44100,bits);Capture capture;
+            capture.lossless=true;capture.metadata=true;capture.bytes=source.size();
+            size_t offset=0;assert(ParseFlacMetadata(source,capture.flac,offset)==FlacParse::Valid);
+            capture.coverage.samples=16;assert(capture.data.Append(source.data(),source.size(),1024*1024));
+            Heard heard;heard.media=media;heard.start=1;heard.finish=2;
+            return Publish(capture,heard,CaptureEpoch());
+        };
+        HANDLE held=CreateFileW(WindowsPath(base).c_str(),GENERIC_READ,0,nullptr,OPEN_EXISTING,0,nullptr);
+        assert(held!=INVALID_HANDLE_VALUE&&publish()==Publication::Failed);CloseHandle(held);
+        assert(publish()==Publication::Saved);
+        std::vector<RecentDownload> recent;assert(ReadRecentDownloads(recent)&&!recent.empty());
+        const auto saved=recent.front().path;
+        assert(saved.rfind(root+L"\\Duplicates\\",0)==0); // RC6 creates old_hash in the album folder.
+        assert(saved.find(ValidSpotifyTrackUri(c.spotify_uri)?L" [t-AAAAAAAAAA]":L" [no-id-")!=std::wstring::npos);
+        assert(GetFileAttributesW(WindowsPath(old_hash).c_str())==INVALID_FILE_ATTRIBUTES);
+        RecordingFile recording;assert(ReadRecording(base,recording)&&MatchesRecording(recording,prior));
+        assert(ReadRecording(saved,recording)&&recording.complete&&MatchesRecording(recording,c));
+        assert(publish()==Publication::Skipped&&publish(24)==Publication::Saved);
+        assert(ReadRecording(saved,recording)&&recording.quality.bits==24&&MatchesRecording(recording,c));
+
+        DestinationRequest request;request.catalog=c;request.serial=51;request.flac=base;
+        request.ogg=OutputPath(root,c,L".ogg");request.aac=OutputPath(root,c,L".m4a");
+        for(const auto& format:kRecordingFormats) {
+            const auto names=DuplicateLookupPaths(root,c,format.extension);
+            auto& paths=DuplicateFormatPaths(request,format.codec);
+            for(size_t i=0;i<paths.size()&&i<names.size();++i)paths[i]=names[i];
+        }
+        destination_enabled=true;request_serial=51;VerificationCache cache;
+        assert(ProbeSavedSong(request,cache)==saved);destination_enabled=false;
+        // Track-start conversion must find the same unresolved duplicate.
+        const auto numbered=saved.substr(0,saved.find_last_of(L'\\')+1)+L"03 - "+saved.substr(saved.find_last_of(L'\\')+1);
+        assert(MoveFileW(WindowsPath(saved).c_str(),WindowsPath(numbered).c_str()));
+        {ExclusiveSrw guard(history::lock);history::settings.convert_numbered_filenames=true;}
+        FilenameCheck check;check.catalog=c;check.settings=GetSettings();check.serial=filename_check_serial.load();
+        ProcessFilenameCheck(check);
+        assert(GetFileAttributesW(WindowsPath(numbered).c_str())==INVALID_FILE_ATTRIBUTES);
+        assert(ReadRecording(saved,recording)&&recording.quality.bits==24);
+        assert(FixtureBytes(base)==original); // Colliding audio/tags remain byte-for-byte intact.
+        {ExclusiveSrw guard(history::lock);history::settings.convert_numbered_filenames=false;}
+        if(c.spotify_uri.empty()) {
+            // A later metadata heartbeat must find the old no-ID home rather
+            // than publish a second file under the newly available track ID.
+            media.spotify_uri="spotify:track:AAAAAAAAAAAAAAAAAAAAAA";
+            assert(publish()==Publication::Skipped);
+            assert(ReadRecording(saved,recording)&&recording.quality.bits==24);
+            auto enriched=c;enriched.spotify_uri=media.spotify_uri;
+            request.catalog=enriched;
+            for(const auto& format:kRecordingFormats) {
+                const auto names=DuplicateLookupPaths(root,enriched,format.extension);
+                auto& paths=DuplicateFormatPaths(request,format.codec);paths={};
+                for(size_t i=0;i<paths.size()&&i<names.size();++i)paths[i]=names[i];
+            }
+            destination_enabled=true;cache={};assert(ProbeSavedSong(request,cache)==saved);destination_enabled=false;
+            assert(MoveFileW(WindowsPath(saved).c_str(),WindowsPath(numbered).c_str()));
+            {ExclusiveSrw guard(history::lock);history::settings.convert_numbered_filenames=true;}
+            check.catalog=enriched;check.settings=GetSettings();ProcessFilenameCheck(check);
+            assert(GetFileAttributesW(WindowsPath(numbered).c_str())==INVALID_FILE_ATTRIBUTES);
+            assert(ReadRecording(saved,recording)&&recording.quality.bits==24);
+            {ExclusiveSrw guard(history::lock);history::settings.convert_numbered_filenames=false;}
+        }
+        assert(DeleteFileW(WindowsPath(saved).c_str())&&DeleteFileW(WindowsPath(base).c_str()));
+        if(ValidSpotifyTrackUri(c.spotify_uri)) {
+            // A no-ID lookup alias must never become a new write target when
+            // all valid-ID suffixes are occupied by other track identities.
+            auto unrelated=c;unrelated.spotify_uri="spotify:track:BBBBBBBBBBBBBBBBBBBBBB";
+            Write(base,Audio(unrelated));const auto occupied=DuplicateOutputPaths(root,c,L".flac");
+            for(const auto& path:occupied)Write(path,Audio(unrelated));
+            assert(publish()==Publication::Failed);
+            auto unidentified=c;unidentified.spotify_uri.clear();
+            assert(GetFileAttributesW(WindowsPath(DuplicateOutputPath(root,unidentified,L".flac")).c_str())==INVALID_FILE_ATTRIBUTES);
+            for(const auto& path:occupied)assert(DeleteFileW(WindowsPath(path).c_str()));
+            assert(DeleteFileW(WindowsPath(base).c_str()));
+        }
+    }
+    enrich_identity=true;
+}
 void StableArtistFolder(const std::wstring& root) {
     Media media;media.title=L"Collaborative track";media.artist=media.album_artist=L"Artist";
     media.album=L"Album";media.track=3;media.duration=1;media.playing=true;
@@ -251,7 +356,8 @@ std::uint64_t MetadataRevision(){return 0;}
 std::string ReadClientPlaybackQuality(const Media&){return {};}
 void EnrichCatalog(const Media& media,Catalog& c){
     c.disc=2;std::string id(22,'0');if(!media.title.empty())id.back()=char('0'+(media.title.front()%10));
-    c.spotify_uri="spotify:track:"+id;if(media.title==L"Collaborative track")c.artist=L"Artist; Guest";
+    if(enrich_identity)c.spotify_uri="spotify:track:"+id;
+    if(media.title==L"Collaborative track")c.artist=L"Artist; Guest";
 }
 void EnrichTags(const Media&,Tags&) {}
 }
@@ -259,12 +365,17 @@ int wmain(int argc,wchar_t** argv) {
     wchar_t executable[32768];assert(GetModuleFileNameW(nullptr,executable,32768));
     const std::wstring exe=executable,root=exe.substr(0,exe.find_last_of(L'\\'))+L"\\Music-\u97f3\u697d";
     history::log_level_value=0;
+    if(argc==2&&std::wstring(argv[1])==L"--duplicate-routing") {
+        UnresolvedDuplicates(root);
+        puts("PASS: unresolved collisions stay in Duplicates; missing IDs are named; replay, upgrades, Song and conversion reuse the same file");
+        return 0;
+    }
     if(argc==2&&std::wstring(argv[1])==L"--song-cache") {
         MenuLookup(root);StableArtistFolder(root);
         puts("PASS: verified Song cache avoids directory listings; misses back off; refresh bypasses cooldown; enriched artist tags retain stable folder lookup, prefix conversion and equal-quality reuse");
         return 0;
     }
-    Lookups(root);Conversion(root);MenuLookup(root);PreferredPublication(root);StableArtistFolder(root);
+    Lookups(root);Conversion(root);MenuLookup(root);PreferredPublication(root);StableArtistFolder(root);UnresolvedDuplicates(root);
     puts("PASS: one directory listing per lookup across formats; only listed recordings inspected; collision/best-quality reuse, casefold, recovery, blocked/partial/bounded enumeration, conversion and menu cache");
     return 0;
 }

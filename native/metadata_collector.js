@@ -137,6 +137,23 @@
  function remember(o){if(!records.includes(o)){if(records.length>=96)records.shift();records.push(o);}}
  function method(o,k){for(let i=0;object(o)&&i<4;i++,o=Object.getPrototypeOf(o)){const v=own(o,k);if(typeof v==='function')return v;}return undefined;}
  function options(){return own(window,'__floggfyConfig')||{};}
+ let neverPauseLast=-Infinity,neverPausePending=false;
+ function resumePausedPlayback(state){
+  if(own(options(),'neverPause')!==true||own(state,'isPaused')!==true||neverPausePending)return;
+  const now=performance.now();if(now-neverPauseLast<2000)return;
+  let local;
+  try{local=own(own(method(connectDevices,'getConnectState')?.call(connectDevices),'activeDevice'),'isLocal');}catch{}
+  if(local!==true)return;
+  const wrapper=own(own(window,'Spicetify'),'Player');
+  const stock=method(player,'resume')||method(player,'play');
+  const play=stock||method(wrapper,'play'),target=stock?player:wrapper;if(!play)return;
+  neverPauseLast=now;neverPausePending=true;
+  const settled=()=>{neverPausePending=false;};
+  try{
+   const result=play.call(target),then=method(result,'then');
+   if(then)then.call(result,settled,settled);else settled();
+  }catch{settled();}
+ }
  let lastAutoSkipToken=0;
  function dispatchAutoSkip(state,uri){
   const config=options(),token=own(config,'skipToken'),expected=own(config,'skipUri'),instance=own(config,'skipInstance');
@@ -431,6 +448,7 @@
    automatic();scan();bindTimeline();if(!player){debugObservation();connectDiagnostics();playback({v:1});unavailableTimeline('player-unavailable');return;}
    const state=method(player,'getState').call(player),item=own(state,'item'),m=own(item,'metadata')||{},uri=text(own(item,'uri'));
    debugObservation(state,item);connectDiagnostics(state);emitTimelineState(state);
+   resumePausedPlayback(state);
    if(!/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')){
     playback({v:1});unavailableTimeline('track-unavailable',state,unsupportedPlaybackKind(item,m,uri));return;
    }

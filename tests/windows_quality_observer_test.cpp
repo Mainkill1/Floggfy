@@ -447,9 +447,12 @@ static void TestPublicationLogging() {
   assert(EnsureDirectory(path.substr(0,path.find_last_of(L'\\'))));
   HANDLE f=CreateFileW(path.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,0,nullptr);DWORD n;
   assert(f!=INVALID_HANDLE_VALUE&&WriteFile(f,"unknown",7,&n,nullptr));CloseHandle(f);
-  const auto alternate=ResolveRecordingDestination(path,CatalogFor(heard.media)).path;assert(alternate!=path && !alternate.empty());
+  const auto old_alternate=ResolveRecordingDestination(path,CatalogFor(heard.media)).path;
+  assert(old_alternate!=path && !old_alternate.empty());
+  const auto alternate=DuplicateOutputPath(settings.root,CatalogFor(heard.media),L".flac",settings.music_folder);
   capture=make(44100,24);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Saved);
   Quality alternate_quality;assert(ExistingRecording(alternate,CatalogFor(heard.media),alternate_quality));
+  assert(GetFileAttributesW(old_alternate.c_str())==INVALID_FILE_ATTRIBUTES);
   f=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr);char preserved[7]{};
   assert(f!=INVALID_HANDLE_VALUE && ReadFile(f,preserved,7,&n,nullptr) && n==7 && !memcmp(preserved,"unknown",7));CloseHandle(f);
   assert(DeleteFileW(path.c_str()) && DeleteFileW(alternate.c_str()));

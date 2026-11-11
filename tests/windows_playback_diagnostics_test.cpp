@@ -113,6 +113,81 @@ void PodcastCaptureEvents() {
            "an old-to-new identity transition finalizes the completed generation's exact MP3 decoder");
     decoded_sink_target=nullptr;
 }
+void PodcastEndWithoutReadySuccessor() {
+    const auto fragment=PodcastMp3();std::vector<uint8_t> source(fragment.begin(),fragment.begin()+10);
+    for(unsigned i=0;i<1566;++i)source.insert(source.end(),fragment.begin()+10,fragment.end());
+    Mp3Info info;std::string error;assert(InspectMp3Source(source.data(),source.size(),info,error));
+    const auto previous_target=decoded_sink_target;decoded_sink_target=reinterpret_cast<void*>(0x1000);
+    enum class EndCase { Natural, LiveTrace, BufferingTail, BufferingEarly, Early, Stale,
+                         Skip, Control, PriorControl, SameInstance, MissingCapture, Ambiguous };
+    struct End { EndCase kind; double tail,elapsed; bool completes; };
+    const End cases[]={
+        {EndCase::Natural,.6,.65,true},
+        {EndCase::LiveTrace,1.222,1.232509,true},
+        {EndCase::BufferingTail,1.6,1.65,true},
+        {EndCase::BufferingEarly,1.6,1,false},
+        {EndCase::Early,10,.65,false},
+        {EndCase::Stale,.6,4,false},
+        {EndCase::Skip,.6,.65,false},
+        {EndCase::Control,.6,.65,false},
+        {EndCase::PriorControl,.6,.65,false},
+        {EndCase::SameInstance,.6,.65,false},
+        {EndCase::MissingCapture,.6,.65,false},
+        {EndCase::Ambiguous,.6,.65,false},
+    };
+    for(const auto& test:cases) {
+        const auto scenario=test.kind;
+        ownership::DecoderOwnershipTracker tracker;tracker.Reset(29);
+        CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+        Slot slot{};slot.context=0x7100;slot.time=100;slot.epoch=29;slot.capture=true;slot.kind=AudioEventKind::Mp3Begin;
+        ProcessMp3Capture(slot,buffers);
+        for(size_t at=0;at<source.size();) {
+            const auto amount=std::min(source.size()-at,sizeof(slot.bytes));slot.kind=AudioEventKind::Mp3Bytes;
+            slot.length=unsigned(amount);memcpy(slot.bytes,source.data()+at,amount);slot.time+=.001;
+            ProcessMp3Capture(slot,buffers);at+=amount;
+        }
+        ownership::DecodedActivity activity{};activity.owner=slot.context;activity.calls=1;
+        activity.produced_floats=100;activity.consumed_bytes=source.size();activity.kept_floats=100;
+        activity.first=100.01;activity.last=100.2;activity.epoch=29;tracker.ObserveDecoded(activity);
+        Media episode;episode.source=MediaSource::Spotify;episode.spotify_uri="spotify:episode:0000000000000000000001";
+        episode.playback_instance="episode-one";episode.duration=info.Duration();episode.playing=true;
+        assert(BindReadyCapture(buffers,episode,81,100.3));
+        Listen listen;listen.identity=episode.ListenKey();listen.eligible=true;listen.playing=true;
+        listen.start_time=100;listen.last_time=100+episode.duration-test.tail;
+        listen.last_position=episode.duration-test.tail;
+        listen.duration=episode.duration;listen.generation=81;listen.capture_speed=1;
+        Media buffering=episode;buffering.position=listen.last_position;buffering.control_monitoring=true;
+        std::vector<Heard> heard;
+        assert(FinishAppTransition(buffering,listen,episode,heard,buffers,listen.last_time+.05));
+        assert(heard.empty()&&buffers.ready.size()==1&&buffers.ownership_hold_generation==81);
+        // Spotify resets playbackId and pauses in buffering after the episode ends.
+        // No successor Ready arrives. Full bound audio + natural end must close it.
+        if(scenario!=EndCase::SameInstance)buffering.playback_instance="episode-two";
+        buffering.position=0;buffering.playing=false;
+        buffering.explicit_skip=scenario==EndCase::Skip;
+        buffering.explicit_control=scenario==EndCase::Control;
+        buffering.prior_control=scenario==EndCase::PriorControl;
+        if(scenario==EndCase::MissingCapture)buffers.ready.clear();
+        if(scenario==EndCase::Ambiguous)buffers.ready.front()->ambiguous=true;
+        const double transition_time=listen.last_time+test.elapsed;
+        FinishAppTransition(buffering,listen,episode,heard,buffers,transition_time);
+        if(test.completes) {
+            assert(heard.size()==1&&heard.front().generation==81&&
+                   std::fabs(heard.front().finish-(100+episode.duration))<.001);
+            assert(!buffers.pending_natural_generation&&!listen.eligible);
+            SchedulePublications(heard,buffers,29,transition_time);
+            SaveJob job;assert(saves.Pop(job)&&job.capture->mp3&&job.heard.generation==81&&
+                               !job.heard.provisional&&heard.empty()&&buffers.ready.empty());
+            publishing_reserved.fetch_sub(job.reserved);
+        } else {
+            assert(heard.empty()&&"prefetch, controls, stale timing or uncertain ownership cannot prove completion");
+            if(scenario!=EndCase::Skip&&scenario!=EndCase::Control&&scenario!=EndCase::SameInstance)
+                assert(buffers.pending_natural_generation==81);
+        }
+    }
+    decoded_sink_target=previous_target;
+    puts("PASS: natural podcast end completes without successor Ready; incomplete or uncertain transitions stay uncompleted");
+}
 void ObservePlayback() {
     PlaybackDiagnostics state;Media media;media.title=L"Song";media.artist=L"Artist";
     media.position=1;media.duration=100;media.playing=true;media.playback_status=4;
@@ -1848,6 +1923,7 @@ void EnrichTags(const Media&,Tags&){}
 int wmain(int argc,wchar_t** argv) {
     // Use in-memory preferences only. Never read or write the user's INI/music.
     InterlockedExchange(&history::log_level_value,4);
+    if(argc==2&&!wcscmp(argv[1],L"--podcast-end")) {PodcastEndWithoutReadySuccessor();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--pending-prior-control-stdin")) {
         const std::string payload(std::istreambuf_iterator<char>(std::cin),{});
         ClientPlaybackRecord record;std::string error;
@@ -1869,7 +1945,7 @@ int wmain(int argc,wchar_t** argv) {
         return 0;
     }
     assert(argc==1);
-    Connectivity();PodcastCatalog();PublicationLogging();PodcastCaptureEvents();ReadyUpgradesPreboundPlaybackGeneration();EmptyPlaybackIdNaturalTransitionIsRetried();UnclassifiedMonitoredTransitionWaitsForReady();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();BoundNaturalTransitionUsesFinalCaptureEvidence();DjVoiceDoesNotBlockMusicStart();CurrentItemChangeReconcilesDjSuccessor();CurrentItemChangeBeforeStreamOutputReconcilesDjSuccessor();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailLifecycle();ReadyDurationCorroboratesDecoder();WindowsReadyNaturalAppTransitionPublishes();TransitionPublicationMatrixStress();BoundWindowsIdentitySurvivesMetadataRefinement();MissingPlaybackWarning();AdvertisementStageIsNotDownloadFailure();ObservePlayback();CoverageAndFailures();SameContextFlacRestartBeginsFreshCapture();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
+    Connectivity();PodcastCatalog();PublicationLogging();PodcastCaptureEvents();PodcastEndWithoutReadySuccessor();ReadyUpgradesPreboundPlaybackGeneration();EmptyPlaybackIdNaturalTransitionIsRetried();UnclassifiedMonitoredTransitionWaitsForReady();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();BoundNaturalTransitionUsesFinalCaptureEvidence();DjVoiceDoesNotBlockMusicStart();CurrentItemChangeReconcilesDjSuccessor();CurrentItemChangeBeforeStreamOutputReconcilesDjSuccessor();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailLifecycle();ReadyDurationCorroboratesDecoder();WindowsReadyNaturalAppTransitionPublishes();TransitionPublicationMatrixStress();BoundWindowsIdentitySurvivesMetadataRefinement();MissingPlaybackWarning();AdvertisementStageIsNotDownloadFailure();ObservePlayback();CoverageAndFailures();SameContextFlacRestartBeginsFreshCapture();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
     puts("PASS: observed transitions, one FLAC failure context/outcome, original callback semantics, profiling-only intervals, basic-mode zero profiling and changed-only NLM observations");
     return 0;
 }

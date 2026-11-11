@@ -26,10 +26,11 @@ Save the music you play in Spotify on Windows.
 - **Capture Speed** defaults to **1x**. Faster settings are intended for muted,
   unattended capture: the saved compressed audio is unchanged, but live playback
   can sound choppy and Spotify's progress display may be inaccurate. The Capture
-  Speed menu is enabled by default. Set `CaptureSpeedLimit=0` in
-  `SpotifyHistory.ini` and fully restart Spotify to hide it and disable acceleration.
+  Speed menu is disabled by default. Set `CaptureSpeedLimit=1` in
+  `SpotifyHistory.ini` and fully restart Spotify to enable it.
 - **Disable Automix** under **Edit → Preferences → Playback**. It trims songs and prevents complete saves.
 - Music saves under `Music\Spotify\Artists\Artist\Album`; enabled podcasts save under `Podcasts\Show`.
+- New filename collisions go under `Duplicates`, retaining the artist/album hierarchy. Files without a valid Spotify track ID use `Title [no-id-<hash>]`; known IDs use `Title [t-<id>]`. Existing recordings are reused in place.
 - For FLAC, select lossless playback in Spotify.
 - Click **Song** to open a saved song's folder. Unsaved songs stay greyed out.
 - **Latest Downloads** lists the last ten songs saved during the current run.
@@ -39,14 +40,17 @@ Save the music you play in Spotify on Windows.
 ## Settings
 
 - **To Disk** provides **Downloads**, **Save Location**, **FLAC**, **Ogg**, **Podcasts**, **Lyrics** and optional **Capture Speed** controls.
-- **Capture Speed** appears by default. `CaptureSpeedLimit=0` hides it; missing or
-  any valid nonzero value enables every supported speed when acceleration is available.
+- **Capture Speed** is disabled by default. `CaptureSpeedLimit=0` or a missing value
+  hides it; any valid nonzero value enables every supported speed when acceleration is available.
+- **Never Pause** resumes paused local Spotify playback, including manual pauses.
+  `NeverPause=-1` (default) hides and disables it; `0` shows it off; `1` shows it on.
+  Menu changes apply immediately. Restart Spotify after changing the INI.
 - `SpotifyHistory.ini` is created automatically. Keep it when upgrading, and fully restart Spotify after editing it.
 - `UpdateExistingMetadata=1` fills missing details, lyrics, and improved artwork as soon as playback identifies an owned existing song; finishing another listen is not required. Set `0` to leave its metadata unchanged.
 - `TrackNumberInFilename=0` uses title-only filenames. Set `1` to add track numbers.
 - `ConvertNumberedFilenames=0`: set `1` to remove old track-number prefixes. Numbering disables conversion.
 - `AAC=1` enables AAC saving as M4A. It defaults to `0`.
-- **Podcasts** is a default-off live toggle. Complete episodes retain their native MP3 audio under `Podcasts\Show`.
+- **Podcasts** is enabled by default. Complete episodes retain their native MP3 audio under `Podcasts\Show`.
 - `Menu=0` disables the menu; configured saving continues.
 - Playback tracking uses Spotify app state and track URIs. `Windows Playback Fallback=1` enables the Windows media-session compatibility fallback; it defaults to `0`.
 - `Metadata=0` disables enrichment while retaining app playback tracking.

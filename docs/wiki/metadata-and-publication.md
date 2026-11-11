@@ -96,6 +96,13 @@ vacancy is selected. The result is one of:
 - **Blocked:** an existing candidate cannot be read; retry later instead of making
   a possible duplicate.
 
+When canonical lookup would allocate a collision suffix, publication instead
+uses the root `Duplicates` hierarchy. This also covers unresolved collisions
+without two valid Spotify track IDs. A valid incoming ID uses `[t-<id>]`;
+an absent/malformed ID uses `[no-id-<hash>]`. Song lookup and track-start checks
+use the same fallback. Existing canonical/legacy matches retain their paths.
+Neither filename suffix authorizes a metadata merge, overwrite or upgrade.
+
 FLAC can replace lower verified quality, including a complete owned Ogg for the
 same recording. In that cross-format case, Floggfy locks the exact Ogg, carries
 its retained metadata into the FLAC, verifies the published FLAC, and only then

@@ -114,7 +114,7 @@ int main(){
         unidentified_sequence,unidentified_diagnostic)==history::ClientMediaRead::Unavailable&&
         "malformed unidentified markers must fail closed");
     const auto options=history::CollectorOptions();
-    assert(options==L"window.__floggfyConfig={metadata:true,lyrics:true,autoSkip:false,debug:false,connect:false,networking:false};");
+    assert(options==L"window.__floggfyConfig={metadata:true,lyrics:true,neverPause:false,autoSkip:false,debug:false,connect:false,networking:false};");
     FILETIME utc;GetSystemTimeAsFileTime(&utc);
     const auto sampled=((uint64_t(utc.dwHighDateTime)<<32)|utc.dwLowDateTime)-116444736000000000ULL;
     auto timeline_payload=L"FLOGGFY_TIMELINE_V1:v=1&title=App&artist=Artist&album=Album&uri=spotify:track:0000000000000000000001&duration=180&position=0&paused=0&buffering=0&local=1&sampled_ms="+std::to_wstring(sampled/10000);

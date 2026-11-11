@@ -51,7 +51,7 @@ Important controls include:
 | Podcasts | Enable native MP3 episode capture and the Podcasts layout |
 | Lyrics / Metadata | Control enrichment and later metadata filling |
 | Capture Speed | Select 1x or any supported accelerated mode when the native capability is available |
-| CaptureSpeedLimit | INI-only, restart-only visibility switch; explicit 0 hides/disables acceleration, while missing or any valid nonzero value enables it |
+| CaptureSpeedLimit | INI-only, restart-only visibility switch; defaults to 0, missing/0 hides the menu and disables acceleration, any valid nonzero value enables it |
 | Windows Playback Fallback | INI-only, default-off compatibility source when Spotify state is unavailable |
 | TrackNumberInFilename | Add track prefixes to filenames |
 | ConvertNumberedFilenames | Safely remove recognized old prefixes when numbering is disabled |

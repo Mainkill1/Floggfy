@@ -3,13 +3,13 @@
 ## Purpose
 
 Accelerated capture remains bounded to the supported choices and can be hidden
-with one restart-only INI switch. The normal startup behavior exposes the menu.
+with one restart-only INI switch. The menu is disabled by default.
 
 ## Configuration contract
 
 - `CaptureSpeedLimit` is read from `[To Disk]` in `SpotifyHistory.ini` at
   startup. It is not exposed as a menu setting.
-- A missing value defaults to enabled and is written as `1`.
+- A missing value defaults to disabled and is written as `0`.
 - Exactly `0` disables acceleration and hides the Capture Speed submenu.
 - Any valid nonzero integer enables acceleration and normalizes internally to `1`.
 - Malformed, duplicate, negative, or padded values fail closed as disabled.

@@ -23,19 +23,26 @@ runtime helper.
 `SpotifyHistory.ini` is included with the release and is created beside
 `version.dll` on first launch when missing.
 The top-left menu contains **To Disk** with Downloads, Save Location, FLAC, Ogg,
-Podcasts, Lyrics and Capture Speed.
+Podcasts, Lyrics and optional Capture Speed and Never Pause controls.
 Checkbox labels and capture switches change immediately when clicked. INI
 persistence runs in a background worker.
+
+**Never Pause** sends Resume/Play when local Spotify is paused, including manual
+pauses. `NeverPause=-1` (default) hides and disables the control; `0` shows it off;
+`1` shows it on. It uses the existing playback poll, retries no more than once
+every two seconds, and waits for an outstanding command to settle before retrying.
+Changing the menu toggle preserves current capture buffers. Restart after INI edits.
 
 ```ini
 [To Disk]
 Downloads=1
 Menu=1
+NeverPause=-1
 NetworkPatch=0
 Save Location=
 Flac=1
 Ogg=1
-Podcasts=0
+Podcasts=1
 CaptureSpeed=1
 Metadata=1
 Lyrics=1
@@ -46,7 +53,7 @@ DebugNetworking=0
 DebugHookDiagnostics=0
 
 [History]
-MaxBufferedMiB=500
+MaxBufferedMiB=512
 ```
 
 - **Downloads:** master switch. Start the next track from its beginning after
@@ -74,11 +81,12 @@ MaxBufferedMiB=500
   current track so it must be replayed from the beginning. If the decoded-output
   hook is unavailable or becomes invalid, Floggfy safely falls back to `1x`.
   `CaptureSpeedLimit` is a restart-only visibility switch: `0` hides the menu and
-  disables acceleration. Missing or any valid nonzero value enables the menu and
+  disables acceleration. It defaults to `0`; a missing value also disables it.
+  Any valid nonzero value enables the menu and
   every supported choice when the decoded-output hook is available.
 - **AAC:** INI-only, default `0`. Set `AAC=1` and restart to capture supported
   low-quality SpAC/AAC streams as M4A. Downloads still controls all saving.
-- **Podcasts:** menu/INI toggle, default `0`. When enabled, fully listened
+- **Podcasts:** menu/INI toggle, default `1`. When enabled, fully listened
   `spotify:episode:` items save their original MP3 frames under
   `Podcasts\<Show>\<Episode>.mp3`. No PCM recording or transcoding is used.
 - **Metadata:** enriches tracks using existing client state, cached metadata, and Spotify's authenticated track/album services. Set 0 and restart to disable its hooks.
@@ -142,7 +150,7 @@ normal queue slots. One worker drains bounded batches fairly. Records retain the
 enqueue-time timestamps; per-queue omission summaries report contention/overflow
 without globally deduplicating real events.
 
-- **MaxBufferedMiB:** 8–512 MiB, default 500, limits compressed capture allocations.
+- **MaxBufferedMiB:** 8–1024 MiB, default 512, limits compressed capture allocations.
   There is also an approximately 16 MiB event queue sized for bounded 10x
   transition bursts, artwork, and a temporary
   completed-file buffer during native tagging. Oversized tracks are discarded.
@@ -171,6 +179,13 @@ remain in metadata. Existing title-only, numbered or disc-prefixed filenames
 are recognized and reused; switching naming mode never authorizes a second copy.
 Title, artist, album, album artist and track/disc numbers are embedded
 in the single audio file.
+If a filename is occupied and no matching recording can be verified, new audio
+is saved under `Duplicates` with the same folder hierarchy. Valid Spotify track
+IDs use RC6's `[t-<id>]` suffix. Missing or malformed track IDs use
+`[no-id-<16-digit hash>]` so unresolved identities are visible during manual review.
+The hash is a naming aid; recording metadata still controls reuse and upgrades.
+Unreadable candidates defer saving. Existing hex-suffixed files remain discoverable
+in their original folders; this does not migrate an existing library.
 Validated cover artwork is included when available; missing artwork does not
 discard completed audio. No image/JSON
 sidecars or per-song directories are created. Buffers remain in RAM until a
@@ -402,7 +417,7 @@ Already completed audio that arrived on time may still use the separate ten-minu
 reconciliation window. Completeness, duration, identity and unique-association
 checks remain required, and the five-song/memory limits still apply.
 Existing-file inspection uses checked reads with a separate temporary buffer
-capped at 512 MiB; storage errors reject the inspection without stalling capture.
+capped at 1 GiB; storage errors reject the inspection without stalling capture.
 Spotify's cached PlayerAPI is the primary playback source. Track identity uses the
 Spotify URI and playback instance rather than a Windows title/artist snapshot. Progress comes from the
 app's position-at-timestamp, timestamp and pause state, following the model used
@@ -514,7 +529,7 @@ matching recording, rather than scanning directories or maintaining another cach
 5. Start a fresh track at position zero and let it finish. Seeking, skipping,
    truncated input, decoder errors and ambiguous association prevent saving.
 6. For unusually large lossless tracks, increase MaxBufferedMiB within the
-   512 MiB limit.
+   1024 MiB limit.
    Check the destination is writable and has space; try a local drive.
 7. After a Spotify update, check the log for missing or ambiguous audio targets.
    The dynamic resolver supports shifted functions but safely rejects rewritten

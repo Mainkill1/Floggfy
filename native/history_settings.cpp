@@ -20,158 +20,72 @@ static bool IsMusic(std::wstring root) {
     return !music_path.empty() && (_wcsicmp(root.c_str(),music_path.c_str())==0 ||
         _wcsicmp(root.c_str(),(music_path+L"\\Spotify").c_str())==0);
 }
-static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,aac_enabled=0,podcasts_enabled=0,capture_epoch=0,capture_speed_value=1,capture_speed_limit_value=1,capture_acceleration_available=0,log_level_value=1,networking_enabled=0,connect_logging_enabled=1,hook_diagnostics_enabled=0;
+static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,aac_enabled=0,podcasts_enabled=1,capture_epoch=0,capture_speed_value=1,capture_speed_limit_value=0,capture_acceleration_available=0,log_level_value=1,networking_enabled=0,connect_logging_enabled=1,hook_diagnostics_enabled=0;
 static HANDLE settings_signal=nullptr,persist_done=nullptr;
 // A failed attempt is observable without acknowledging bytes never committed.
 static volatile LONG persisted_generation=-1,failed_generation=-1,persist_failed=0;
 static constexpr char default_ini[]=
-    "; Floggfy configuration\r\n"
-    "; ---------------------\r\n"
-    "; Fully quit every Spotify.exe process before editing this file, then restart.\r\n"
-    "; Settings changed from the To Disk menu are applied and saved automatically.\r\n"
-    "; Unless a setting says otherwise, use exactly 0 for disabled or 1 for enabled.\r\n"
-    "; Floggfy is an unofficial client modification. Spotify updates can make optional\r\n"
-    "; hooks unavailable; unsupported features fail closed instead of guessing.\r\n"
+    "; Floggfy configuration: 0=off, 1=on.\r\n"
     "\r\n"
     "[To Disk]\r\n"
-    "; === General capture and interface ===\r\n"
-    "\r\n"
-    "; Master switch for new audio capture, publication, and existing-file metadata\r\n"
-    "; updates. 0 leaves existing files untouched and disables every format below.\r\n"
-    "; Default: 1.\r\n"
     "Downloads=1\r\n"
-    "\r\n"
-    "; Show Floggfy's To Disk submenu in Spotify. This changes only the interface;\r\n"
-    "; Downloads and other enabled background features still run when Menu=0.\r\n"
-    "; INI-only and restart-required. Default: 1.\r\n"
     "Menu=1\r\n"
-    "\r\n"
-    "; Root folder for music, podcasts, duplicate collisions, and log files.\r\n"
-    "; Empty uses the Windows Music known folder plus \\Spotify. A custom value must be\r\n"
-    "; an absolute drive or UNC path. The To Disk menu can change this while running.\r\n"
-    "Save Location=\r\n"
-    "\r\n"
-    "; === Output formats ===\r\n"
-    "; Format switches retain Spotify's original compressed stream; they do not\r\n"
-    "; convert one codec into another or improve the quality Spotify supplied.\r\n"
-    "\r\n"
-    "; Save native Ogg Vorbis music. Default: 1.\r\n"
-    "Ogg=1\r\n"
-    "\r\n"
-    "; Save native FLAC music only when Spotify actually supplies lossless FLAC.\r\n"
-    "; Selecting FLAC here does not force Spotify's playback quality. Default: 1.\r\n"
-    "Flac=1\r\n"
-    "\r\n"
-    "; Save supported native AAC/SpAC music as M4A. AAC is normally a lower-quality\r\n"
-    "; source and support depends on the Spotify build. INI-only; restart required.\r\n"
-    "; Default: 0.\r\n"
-    "Aac=0\r\n"
-    "\r\n"
-    "; Save fully listened Spotify episodes as native MP3 under Podcasts\\<Show>.\r\n"
-    "; Partial episodes, ads, and ordinary music are not published as podcasts.\r\n"
-    "; Default: 0.\r\n"
-    "Podcasts=0\r\n"
-    "\r\n"
-    "; === Metadata and automatic actions ===\r\n"
-    "\r\n"
-    "; Enable Spotify-backed title, artist, album, artwork, and related enrichment.\r\n"
-    "; 0 disables enrichment hooks but not basic capture identity. Restart required.\r\n"
-    "; Default: 1.\r\n"
-    "Metadata=1\r\n"
-    "\r\n"
-    "; Request and embed available lyrics without opening Spotify's lyrics panel.\r\n"
-    "; Requires Metadata=1. Disabling retains lyrics already stored in files.\r\n"
-    "; Default: 1.\r\n"
-    "Lyrics=1\r\n"
-    "\r\n"
-    "; Update missing lyrics, artwork, and tags as soon as an owned existing file is\r\n"
-    "; identified. This does not replace its audio unless a verified quality upgrade\r\n"
-    "; is also available. Requires Downloads=1 and Metadata=1. Default: 1.\r\n"
-    "UpdateExistingMetadata=1\r\n"
-    "\r\n"
-    "; After the existing-file metadata check completes, skip downloaded music when\r\n"
-    "; the current source cannot provide a better FLAC replacement. Never skips\r\n"
-    "; podcasts or an unverified file. Disabled by default to avoid surprise skips.\r\n"
     "AutoSkipDownloaded=0\r\n"
     "\r\n"
-    "; === Filenames ===\r\n"
+    "; Never Pause: -1=hidden, 0=off, 1=on.\r\n"
+    "NeverPause=-1\r\n"
     "\r\n"
-    "; Prefix new music filenames with the known track number. Existing audio is not\r\n"
-    "; renamed merely by enabling this option. INI-only; restart required. Default: 0.\r\n"
+    "; Remove old number prefixes; requires TrackNumberInFilename=0.\r\n"
+    "ConvertNumberedFilenames=0\r\n"
     "TrackNumberInFilename=0\r\n"
     "\r\n"
-    "; When numbering is disabled, rename verified older numbered files to title-only\r\n"
-    "; names at playback start without rewriting their audio. Automatically disabled\r\n"
-    "; when TrackNumberInFilename=1. INI-only; restart required. Default: 0.\r\n"
-    "ConvertNumberedFilenames=0\r\n"
+    "; Blank uses Windows Music\\Spotify. Custom paths must be absolute.\r\n"
+    "Save Location=\r\n"
     "\r\n"
-    "; === Playback evidence and compatibility ===\r\n"
+    "; Allowed Download Formats (original streams, no conversion)\r\n"
+    "; AAC is usally low quality and is not shown in menu - just don't use.\r\n"
+    "Ogg=1\r\n"
+    "Flac=1\r\n"
+    "Podcasts=1\r\n"
+    "Aac=0\r\n"
     "\r\n"
-    "; Last-resort playback-state source when Spotify's own app state is unavailable.\r\n"
-    "; Windows media state has weaker identity evidence, so keep this off unless the\r\n"
-    "; Spotify source is broken on the installed client. Restart required. Default: 0.\r\n"
-    "Windows Playback Fallback=0\r\n"
+    "; Metadata (lyrics and updates require Metadata=1)\r\n"
+    "Metadata=1\r\n"
+    "Lyrics=1\r\n"
     "\r\n"
-    "; Local capture/playback rate. Accepted values are exactly 1, 2, 4, 8, or 10.\r\n"
-    "; WARNING: accelerated modes can make Spotify fetch media and poll services much\r\n"
-    "; faster than normal. Repeated unattended use can trigger throttling or account\r\n"
-    "; enforcement, including a possible service ban. This use is unsupported and at\r\n"
-    "; your own risk. Acceleration can also sound choppy and show inaccurate progress.\r\n"
-    "; Saved compressed audio is not resampled. If the required hook is unavailable,\r\n"
-    "; Floggfy falls back to 1x. Restart after manual edits. Default: 1.\r\n"
+    "; Fill missing tags, artwork and lyrics in existing recordings.\r\n"
+    "UpdateExistingMetadata=1\r\n"
+    "\r\n"
+    "; 0 disables acceleration and removes the speed menu; 1 enables it.\r\n"
+    "CaptureSpeedLimit=0\r\n"
+    "\r\n"
+    "; Speeds: 1, 2, 4, 8, 10. Acceleration can cause choppy playback and throttling.\r\n"
+    "; Accelerated use may trigger account restrictions.\r\n"
     "CaptureSpeed=1\r\n"
     "\r\n"
-    "; Hidden INI safety switch for the Capture Speed menu; despite its legacy name,\r\n"
-    "; this is not a numeric ceiling. 0 hides the menu, disables acceleration, and\r\n"
-    "; forces a saved accelerated speed back to 1x at startup. Missing or any valid\r\n"
-    "; nonzero value shows all supported choices when the hook is available.\r\n"
-    "; INI-only and restart-required. Default: 1.\r\n"
-    "CaptureSpeedLimit=1\r\n"
+    "; Compatibility: enable only for the matching problem.\r\n"
+    "; Use Windows media state if Spotify's app playback tracking is unavailable.\r\n"
+    "Windows Playback Fallback=0\r\n"
     "\r\n"
-    "; Compatibility workaround for systems where disabled Microsoft NCSI checks make\r\n"
-    "; Spotify falsely report no internet. It reports a usable adapter as connected\r\n"
-    "; inside Spotify only; it does not change Windows, test bandwidth, or force audio\r\n"
-    "; quality. Enable only for that specific false-offline problem. Restart required.\r\n"
-    "; Default: 0.\r\n"
+    "; Work around Spotify falsely reporting no internet. AKA NCIS patch.\r\n"
     "NetworkPatch=0\r\n"
     "\r\n"
-    "; === Logging and diagnostics ===\r\n"
-    "; Logs use local timestamps and are stored under Save Location. Each log is capped\r\n"
-    "; at 5 MiB. Diagnostic lanes use separate files and bounded queues.\r\n"
-    "\r\n"
-    "; General log detail. Only exact values 0, 1, 2, and 4 are valid:\r\n"
-    ";   0 = no logging\r\n"
-    ";   1 = completed tracks plus warnings and failures\r\n"
-    ";   2 = level 1 plus starts, upgrades, skips, renames, and setting activity\r\n"
-    ";   4 = level 2 plus playback, metadata, capture, and ownership diagnostics\r\n"
-    "; General events use Floggfy.log; level-4 detail uses Floggfy-diagnostics.log.\r\n"
-    "; Missing or invalid values normalize to 1. Default: 1.\r\n"
+    "; Logging: 0=off, 1=finished/warnings/failures, 2=activity, 4=diagnostics.\r\n"
+    "; Logs use Save Location; each is capped at 5 MiB.\r\n"
     "LogLevel=1\r\n"
     "\r\n"
-    "; At LogLevel=4, record cached Connect playback-target changes and passive local\r\n"
-    "; action observations in Floggfy-diagnostics.log. It sends no commands or extra\r\n"
-    "; requests and omits device names and IDs. Restart required. Default: 1.\r\n"
+    "; These diagnostic switches require LogLevel=4.\r\n"
     "DebugConnect=1\r\n"
     "\r\n"
-    "; At LogLevel=4, enable bounded read-only Connect/enrichment observations in\r\n"
-    "; Floggfy-networking.log. No raw payloads, media, credentials, URLs, device names,\r\n"
-    "; or device IDs are written. Adds an optional compatibility-sensitive hook, so\r\n"
-    "; leave disabled unless diagnosing a networking/control problem. Restart required.\r\n"
-    "; Default: 0.\r\n"
+    "; Extra network observations; adds an optional hook.\r\n"
     "DebugNetworking=0\r\n"
     "\r\n"
-    "; At LogLevel=4, profile callback/queue timing and worker progress in\r\n"
-    "; Floggfy-hook-diagnostics.log. It performs no media or memory dumps, but adds\r\n"
-    "; diagnostic overhead. Enable only while investigating stalls. Restart required.\r\n"
-    "; Default: 0.\r\n"
+    "; Callback and worker timing; adds diagnostic overhead.\r\n"
     "DebugHookDiagnostics=0\r\n"
     "\r\n"
     "[History]\r\n"
-    "; Total compressed audio Floggfy may retain in RAM while correlating captures.\r\n"
-    "; Values are clamped to 8-512 MiB. A low limit can discard long or overlapping\r\n"
-    "; streams; a high limit permits more memory use. No scratch audio is written to\r\n"
-    "; disk. INI-only and restart-required. Default: 500.\r\n"
-    "MaxBufferedMiB=500\r\n";
+    "; RAM limit in MiB (8-1024).\r\n"
+    "MaxBufferedMiB=512\r\n";
 static bool CreateDefaultIni(const std::wstring& path) {
     std::wstring text;for(const char* p=default_ini;*p;++p)text+=wchar_t(*p);
     return settings_file::Write(path,text,true);
@@ -211,11 +125,11 @@ static bool ReadCaptureSpeed(Settings& target,const std::wstring& path) {
 }
 static bool ReadCaptureSpeedLimit(Settings& target,const std::wstring& path) {
     std::wstring text;bool unicode=false;
-    if(!settings_file::Read(path,text,unicode)) {target.capture_speed_limit=1;return false;}
+    if(!settings_file::Read(path,text,unicode)) {target.capture_speed_limit=0;return false;}
     const auto option=settings_file::Find(text,L"CaptureSpeedLimit");
     if(!option.present||option.duplicate||option.value.empty()||option.value!=option.raw_value||
        (option.value.size()>1&&option.value.front()==L'0')) {
-        target.capture_speed_limit=option.present?0:1;
+        target.capture_speed_limit=0;
         return !option.present;
     }
     bool nonzero=false;
@@ -245,6 +159,19 @@ static bool ReadAutoSkipDownloaded(Settings& target,const std::wstring& path) {
     const auto value=settings_file::Find(text,L"AutoSkipDownloaded");
     target.auto_skip_downloaded=value.present&&!value.duplicate&&value.raw_value==L"1";
     return !value.present||value.duplicate||(value.raw_value!=L"0"&&value.raw_value!=L"1");
+}
+static bool ReadNeverPause(Settings& target,const std::wstring& path) {
+    target.never_pause=-1;
+    std::wstring text;bool unicode=false;
+    if(!settings_file::Read(path,text,unicode))return false;
+    const auto value=settings_file::Find(text,L"NeverPause");
+    if(value.present&&!value.duplicate) {
+        if(value.raw_value==L"1")target.never_pause=1;
+        else if(value.raw_value==L"0")target.never_pause=0;
+        else if(value.raw_value!=L"-1")return true;
+        return false;
+    }
+    return true;
 }
 static bool ReadLogLevel(Settings& target,const std::wstring& path) {
     std::wstring text;bool unicode=false;
@@ -297,7 +224,7 @@ static void InsertMissingRestartDefaults(std::wstring& text) {
         if(!settings_file::Find(text,flag.key).present)
             settings_file::Set(text,flag.key,flag.default_value?L"1":L"0");
     if(!settings_file::Find(text,L"CaptureSpeedLimit").present)
-        settings_file::Set(text,L"CaptureSpeedLimit",L"1");
+        settings_file::Set(text,L"CaptureSpeedLimit",L"0");
 }
 static bool ReachedGeneration(volatile LONG& progress,unsigned expected) {
     return static_cast<LONG>(unsigned(InterlockedCompareExchange(&progress,0,0))-expected)>=0;
@@ -321,6 +248,7 @@ static DWORD WINAPI PersistSettings(LPVOID) {
                 settings_file::Set(text,L"CaptureSpeed",std::to_wstring(snapshot.capture_speed));
                 flag(L"UpdateExistingMetadata",snapshot.update_existing_metadata);
                 flag(L"AutoSkipDownloaded",snapshot.auto_skip_downloaded);
+                settings_file::Set(text,L"NeverPause",std::to_wstring(snapshot.never_pause));
                 settings_file::Set(text,L"LogLevel",std::to_wstring(snapshot.log_level));
                 settings_file::Erase(text,L"Log");settings_file::Erase(text,L"DebugLog");
                 InsertMissingRestartDefaults(text);
@@ -386,15 +314,16 @@ void InitSettings(HMODULE proxy) {
     if(capture_speed_disallowed)settings.capture_speed=1;
     const bool windows_playback_fallback_pending=ReadWindowsPlaybackFallback(settings,ini);
     const bool auto_skip_pending=ReadAutoSkipDownloaded(settings,ini);
+    const bool never_pause_pending=ReadNeverPause(settings,ini);
     const bool log_level_pending=ReadLogLevel(settings,ini);
     const bool restart_options_pending=ReadRestartOptions(settings,ini);
-    const bool startup_options_pending=filename_options_pending||capture_speed_pending||capture_speed_limit_pending||capture_speed_disallowed||windows_playback_fallback_pending||auto_skip_pending||log_level_pending||restart_options_pending;
+    const bool startup_options_pending=filename_options_pending||capture_speed_pending||capture_speed_limit_pending||capture_speed_disallowed||windows_playback_fallback_pending||auto_skip_pending||never_pause_pending||log_level_pending||restart_options_pending;
     settings.aac=GetPrivateProfileIntW(L"To Disk",L"AAC",0,ini.c_str())!=0;
-    settings.podcasts=GetPrivateProfileIntW(L"To Disk",L"Podcasts",0,ini.c_str())!=0;
+    settings.podcasts=GetPrivateProfileIntW(L"To Disk",L"Podcasts",1,ini.c_str())!=0;
     settings.metadata=GetPrivateProfileIntW(L"To Disk",L"Metadata",1,ini.c_str())!=0;
     settings.lyrics=GetPrivateProfileIntW(L"To Disk",L"Lyrics",1,ini.c_str())!=0;
     settings.update_existing_metadata=GetPrivateProfileIntW(L"To Disk",L"UpdateExistingMetadata",1,ini.c_str())!=0;
-    settings.max_buffered_mib=std::max(8u,std::min(512u,GetPrivateProfileIntW(L"History",L"MaxBufferedMiB",500,ini.c_str())));
+    settings.max_buffered_mib=std::max(8u,std::min(kMaximumBufferedMiB,GetPrivateProfileIntW(L"History",L"MaxBufferedMiB",kDefaultBufferedMiB,ini.c_str())));
     wchar_t raw[2048],expanded[4096];
     GetPrivateProfileStringW(L"To Disk",L"Save Location",L"",raw,2048,ini.c_str());
     PWSTR music=nullptr;
@@ -469,6 +398,14 @@ bool SetPodcasts(bool v) { return Set(L"Podcasts",v,settings.podcasts,&podcasts_
 bool SetWindowsPlaybackFallback(bool v) { return Set(L"Windows Playback Fallback",v,settings.windows_playback_fallback,nullptr,false); }
 bool SetLyrics(bool v) { return Set(L"Lyrics",v,settings.lyrics,nullptr,false); }
 bool SetAutoSkipDownloaded(bool v) { return Set(L"AutoSkipDownloaded",v,settings.auto_skip_downloaded,nullptr,false); }
+bool SetNeverPause(bool enabled) {
+    {
+    ExclusiveSrw guard(lock);
+    if(!settings_signal||settings.never_pause<0)return false;
+    settings.never_pause=enabled?1:0;++settings.generation;
+    }
+    SetEvent(settings_signal);return true;
+}
 bool SetUpdateExistingMetadata(bool v) { return Set(L"UpdateExistingMetadata",v,settings.update_existing_metadata,nullptr,false); }
 bool SetCaptureSpeed(unsigned speed) {
     if(!CaptureSpeedAvailable(speed))return false;

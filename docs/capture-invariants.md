@@ -44,8 +44,8 @@ and are never written to disk.
 - If the optional decoded hook cannot be installed safely, capture continues at 1x
   without ownership gating. Accelerated menu choices are disabled.
 - `CaptureSpeedLimit` is a restart-only visibility switch. Explicit `0` removes
-  the Capture Speed submenu and disables acceleration. Missing or any valid
-  nonzero value enables the submenu and all supported speeds.
+  the Capture Speed submenu and disables acceleration. Missing values default
+  to `0`; any valid nonzero value enables the submenu and all supported speeds.
 
 ## Formats and publication
 

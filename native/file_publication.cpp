@@ -29,7 +29,7 @@ struct StagingFile {
 };
 bool ReadLockedRecording(HANDLE file,std::vector<uint8_t>& bytes) {
     LARGE_INTEGER size{};
-    if(!GetFileSizeEx(file,&size) || size.QuadPart<4 || size.QuadPart>512LL*1024*1024)return false;
+    if(!GetFileSizeEx(file,&size) || size.QuadPart<4 || size.QuadPart>static_cast<LONGLONG>(kMaximumRecordingBytes))return false;
     bytes.resize(size_t(size.QuadPart));
     for(size_t offset=0;offset<bytes.size();) {
         const DWORD wanted=DWORD(std::min<size_t>(1024*1024,bytes.size()-offset));
