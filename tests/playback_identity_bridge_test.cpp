@@ -135,6 +135,26 @@ int main() {
     assert(match && match->owner == 0x6000 && match->decoder == 0x7000);
     assert(match->metadata_generation == 10 && match->sequence == 50);
 
+    // Correctness queries are non-destructive. The worker may see the exact
+    // playback ID before decoded output makes its capture bindable, so the
+    // same retained observation must still be available on the next pass.
+    DiagnosticBridge retryable;
+    assert(!retryable.Observe(0x6100,0x7100,6,51,raw.data(),raw.size(),
+                              SnapshotRole::PlayerPlaybackId));
+    std::array<Match,kObservationCapacity> queried{};
+    assert(retryable.QueryMatches(kFirst,20,6,queried.data(),queried.size())==1);
+    assert(queried[0].decoder==0x7100&&queried[0].metadata_generation==20&&
+           queried[0].epoch==6);
+    queried={};
+    assert(retryable.QueryMatches(kFirst,20,6,queried.data(),queried.size())==1&&
+           queried[0].sequence==51&&
+           "a failed first binding attempt cannot consume exact identity evidence");
+    assert(retryable.QueryMatches(kFirst,20,7,queried.data(),queried.size())==0&&
+           "an observation from an earlier capture epoch cannot bind a new session");
+    retryable.Reset();
+    assert(retryable.QueryMatches(kFirst,20,6,queried.data(),queried.size())==0&&
+           "capture settings reset all retained direct identity evidence");
+
     // Capture epoch zero is the normal initial settings epoch.
     DiagnosticBridge initial_epoch;
     assert(initial_epoch.SetExpected(kFirst, 1));

@@ -333,6 +333,14 @@ static void TestExistingMetadataAtPlaybackStart() {
   lyrics=false;for(const auto& field:duplicate_updated.tags.fields)if(field.first=="LYRICS"&&field.second=="automatic lyric fill")lyrics=true;
   assert(lyrics);
   assert(DeleteFileW(path.c_str())&&DeleteFileW(duplicate.c_str()));
+  write_file(duplicate,existing);++enrichment_revision;
+  const auto orphaned_duplicate_before=metadata_update_calls;
+  PublishCurrentDestination(media,GetSettings());auto orphaned_check=TakeFilenameCheck();assert(orphaned_check);
+  ProcessFilenameCheck(*orphaned_check);
+  assert(metadata_update_calls==orphaned_duplicate_before+1&&
+         ReadRecording(duplicate,duplicate_updated)&&MatchesRecording(duplicate_updated,catalog)&&
+         "metadata lookup must retain an established duplicate after its canonical conflict is deleted");
+  assert(DeleteFileW(duplicate.c_str()));
   std::puts("PASS: existing owned recording receives delayed lyrics during partial playback");
 }
 static void TestAutoSkipDownloaded() {

@@ -210,18 +210,14 @@ static std::wstring ProbeSavedSong(const DestinationRequest& request,Verificatio
             }
         }
     }
-    // Publication also routes unresolved collision vacancies beneath Duplicates.
-    // Missing IDs cannot authorize replacement, but must not hide a saved file.
-    bool filename_conflict=false;
+    // Preserve established duplicate homes even if the original canonical
+    // conflict disappeared. Missing IDs still require an exact text match.
     for(const auto* base:paths) {
         if(!base)break;
         if(!CurrentRequest(request))return {};
         const auto resolved=ResolveRecordingDestination(*base,request.catalog,request.track_numbers,&directory);
         if(resolved.state==RecordingDestinationState::Blocked)return unavailable();
-        filename_conflict=filename_conflict||resolved.explicit_uid_conflict||
-            (resolved.state==RecordingDestinationState::Vacant&&resolved.path!=*base);
     }
-    if(!filename_conflict)return unavailable();
     const auto duplicates=AllDuplicateFormatPaths(request);
     if(!duplicates[0]||duplicates[0]->empty())return unavailable();
     RecordingDirectory duplicate_directory;

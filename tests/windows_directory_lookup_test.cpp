@@ -122,8 +122,9 @@ void Conversion(const std::wstring& root) {
     ResetCounts();ProcessFilenameCheck(check);assert(listings==1&&attribute_checks==0);
     assert(GetFileAttributesW(WindowsPath(old).c_str())!=INVALID_FILE_ATTRIBUTES);
     assert(DeleteFileW(WindowsPath(old).c_str())&&DeleteFileW(WindowsPath(title).c_str()));
-    // All formats absent still requires only one directory enumeration.
-    ResetCounts();ProcessFilenameCheck(check);assert(listings==1&&attribute_checks==0&&recording_opens==0);
+    // A miss checks both the canonical and persistent duplicate namespaces,
+    // with one shared enumeration per namespace for every supported format.
+    ResetCounts();ProcessFilenameCheck(check);assert(listings==2&&attribute_checks==0&&recording_opens==0);
 
     // The third supported family uses the same listing after FLAC/Ogg misses.
     const auto m4a=OutputPath(root,c,L".m4a"),m4a_old=m4a.substr(0,slash+1)+L"03 - "+m4a.substr(slash+1);
@@ -155,6 +156,14 @@ void Conversion(const std::wstring& root) {
 void MenuLookup(const std::wstring& root) {
     const auto c=Song(L"Menu");DestinationRequest request;request.catalog=c;request.serial=41;request.generation=7;
     request.flac=OutputPath(root,c,L".flac");request.ogg=OutputPath(root,c,L".ogg");request.aac=OutputPath(root,c,L".m4a");
+    auto duplicate_paths=[&](const wchar_t* extension,auto& stored) {
+        const auto paths=DuplicateLookupPaths(root,c,extension);
+        assert(paths.size()==stored.size());
+        for(size_t i=0;i<stored.size();++i)stored[i]=paths[i];
+    };
+    duplicate_paths(L".flac",request.duplicate_flac);
+    duplicate_paths(L".ogg",request.duplicate_ogg);
+    duplicate_paths(L".m4a",request.duplicate_aac);
     const auto slash=request.ogg.find_last_of(L'\\');const auto old=request.ogg.substr(0,slash+1)+L"03 - "+request.ogg.substr(slash+1);
     Write(old,Audio(c,16,true));destination_enabled=true;request_serial=41;
     VerificationCache cache;ResetCounts();assert(ProbeSavedSong(request,cache)==old);
@@ -170,7 +179,7 @@ void MenuLookup(const std::wstring& root) {
     FILETIME changed_time{changed.LowPart,changed.HighPart};assert(SetFileTime(edit,nullptr,nullptr,&changed_time));CloseHandle(edit);
     ResetCounts();assert(ProbeSavedSong(request,cache)==old&&listings==1&&recording_opens==1);
     assert(DeleteFileW(WindowsPath(old).c_str()));ResetCounts();
-    assert(ProbeSavedSong(request,cache).empty()&&listings==1&&recording_opens==0);
+    assert(ProbeSavedSong(request,cache).empty()&&listings==2&&recording_opens==0);
     ResetCounts();
     for(unsigned i=0;i<3;++i)assert(ProbeSavedSong(request,cache).empty());
     assert(listings==0&&recording_opens==0&&signature_checks==0);
@@ -191,8 +200,8 @@ void MenuLookup(const std::wstring& root) {
     Write(next.flac,Audio(next.catalog));ResetCounts();
     assert(ProbeSavedSong(next,cache)==next.flac&&listings==1&&recording_opens==1);
     assert(DeleteFileW(WindowsPath(next.flac).c_str())&&DeleteFileW(WindowsPath(old).c_str()));
-    ResetCounts();assert(ProbeSavedSong(next,cache).empty()&&listings==1);
-    next.generation++;ResetCounts();assert(ProbeSavedSong(next,cache).empty()&&listings==1); // New settings bypass cooldown.
+    ResetCounts();assert(ProbeSavedSong(next,cache).empty()&&listings==2);
+    next.generation++;ResetCounts();assert(ProbeSavedSong(next,cache).empty()&&listings==2); // New settings bypass cooldown.
     next.generation++;deny_listing=true;ResetCounts();assert(ProbeSavedSong(next,cache).empty()&&listings==1);
     deny_listing=false;ResetCounts();assert(ProbeSavedSong(next,cache).empty()&&listings==0&&signature_checks==0);
     next.serial--;ResetCounts();assert(ProbeSavedSong(next,cache).empty()&&listings==0&&signature_checks==0);
@@ -295,7 +304,17 @@ void UnresolvedDuplicates(const std::wstring& root) {
             assert(ReadRecording(saved,recording)&&recording.quality.bits==24);
             {ExclusiveSrw guard(history::lock);history::settings.convert_numbered_filenames=false;}
         }
-        assert(DeleteFileW(WindowsPath(saved).c_str())&&DeleteFileW(WindowsPath(base).c_str()));
+        assert(DeleteFileW(WindowsPath(base).c_str()));
+        assert(publish()==Publication::Skipped);
+        destination_enabled=true;request_serial=51;cache={};
+        assert(ProbeSavedSong(request,cache)==saved);destination_enabled=false;
+        assert(MoveFileW(WindowsPath(saved).c_str(),WindowsPath(numbered).c_str()));
+        {ExclusiveSrw guard(history::lock);history::settings.convert_numbered_filenames=true;}
+        check.settings=GetSettings();ProcessFilenameCheck(check);
+        assert(GetFileAttributesW(WindowsPath(numbered).c_str())==INVALID_FILE_ATTRIBUTES);
+        assert(ReadRecording(saved,recording)&&recording.quality.bits==24);
+        {ExclusiveSrw guard(history::lock);history::settings.convert_numbered_filenames=false;}
+        assert(DeleteFileW(WindowsPath(saved).c_str()));
         if(ValidSpotifyTrackUri(c.spotify_uri)) {
             // A no-ID lookup alias must never become a new write target when
             // all valid-ID suffixes are occupied by other track identities.
