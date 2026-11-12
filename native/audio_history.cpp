@@ -2584,10 +2584,11 @@ static bool FinishAppTransition(const Media& next,Listen& listen,const Media& cu
         buffers.ownership_hold_generation==listen.generation;
     const bool awaiting_ready=next.transition_pending||observed_successor_stage;
     // Spotify can buffer before its last timeline sample, then pause on a new
-    // playbackId without a successor Ready. Infer the terminal position only
-    // from a complete bound MP3 and that monitored transition. The ordinary
-    // pause check still requires eligible coverage, <=3s freshness and a clock
-    // that reached the end; prefetched bytes alone cannot complete a listen.
+    // playbackId without a successor Ready. MP3 needs that changed-instance
+    // boundary because it has no container EOS; an explicit terminal-context
+    // assertion can close any fully validated bound codec. The ordinary pause
+    // check still requires eligible coverage, <=3s freshness and a clock that
+    // reached the end; prefetched bytes alone cannot complete a listen.
     auto ending=listen;
     std::string done;
     // Explicit SDK context clearance refers to the old episode, not a new
@@ -2602,7 +2603,7 @@ static bool FinishAppTransition(const Media& next,Listen& listen,const Media& cu
        listen.eligible&&listen.playing) {
         ownership::OwnershipBinding binding{};
         auto* capture=BoundCompleteCaptureForListen(buffers,listen,current,binding);
-        if(capture&&capture->mp3)
+        if(capture&&(capture->mp3||terminal_context))
             done=ending.Observe(listen.identity,current.duration,current.duration,false,
                                 time,ending.capture_speed);
     }
