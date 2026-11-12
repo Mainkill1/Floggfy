@@ -92,6 +92,72 @@ void DumpStreamHooks() {
     ResetDecodedActivityQueue();
     puts("PASS: real decoder hook dumps exact consumed bytes even when decoded output is rejected, preserving original returns and LastError");
 }
+std::string JsonString(const std::string& line,const char* name) {
+    const std::string key=std::string{"\""}+name+"\":\"";const auto begin=line.find(key);
+    assert(begin!=std::string::npos);const auto value=begin+key.size(),end=line.find('"',value);
+    assert(end!=std::string::npos);return line.substr(value,end-value);
+}
+std::uint64_t JsonUnsigned(const std::string& line,const char* name) {
+    const std::string key=std::string{"\""}+name+"\":";const auto begin=line.find(key);
+    assert(begin!=std::string::npos);const auto value=begin+key.size();
+    return std::stoull(line.substr(value));
+}
+unsigned HexNibble(char value) {
+    if(value>='0'&&value<='9')return unsigned(value-'0');
+    if(value>='a'&&value<='f')return unsigned(value-'a'+10);
+    if(value>='A'&&value<='F')return unsigned(value-'A'+10);
+    assert(false&&"invalid playback identity hex");return 0;
+}
+void ReplayCapturedMp3(const wchar_t* raw_path,const wchar_t* metadata_path) {
+    std::ifstream raw_file(std::filesystem::path(raw_path),std::ios::binary);
+    const std::vector<std::uint8_t> raw{std::istreambuf_iterator<char>(raw_file),{}};
+    std::ifstream metadata{std::filesystem::path(metadata_path)};
+    assert(!raw.empty()&&metadata);
+
+    const auto prior_pump=original_playback_pump;const auto prior_offset=playback_pump_decoder_offset;
+    original_playback_pump=[](void*,void*,void*)->int{return 17;};playback_pump_decoder_offset=0x70;
+    queue=new Slot[capacity];event=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(event);
+    head=tail=count=0;ResetMp3Probes();ResetCaptureQueueLosses();ResetPlaybackIdentityBridge();ResetDecodedActivityQueue();
+
+    constexpr uintptr_t decoder=0x9870;const auto epoch=CaptureEpoch();CaptureBuffers buffers;
+    std::array<unsigned char,0x100> owner{};std::array<unsigned char,0x200> provider{};
+    std::array<unsigned char,0xa00> state{};const auto provider_ptr=reinterpret_cast<uintptr_t>(provider.data());
+    const auto state_ptr=reinterpret_cast<uintptr_t>(state.data());
+    memcpy(owner.data()+0x70,&decoder,sizeof(decoder));memcpy(owner.data()+0x78,&provider_ptr,sizeof(provider_ptr));
+    memcpy(provider.data()+0x1e8,&state_ptr,sizeof(state_ptr));
+    const auto drain=[&]{Slot slot{};while(Pop(slot))ProcessMp3Capture(slot,buffers);};
+
+    std::string line;std::size_t input_end=0,last_marker=0;unsigned playback_markers=0;
+    double time=100;
+    while(std::getline(metadata,line)) {
+        if(line.find("\"kind\":\"gap\"")!=std::string::npos)assert(false&&"captured replay contains an input gap");
+        if(line.find("\"kind\":\"playback\"")!=std::string::npos) {
+            const auto offset=std::size_t(JsonUnsigned(line,"offset"));const auto instance=JsonString(line,"instance");
+            assert(offset==input_end&&instance.size()==32);
+            for(unsigned index=0;index<16;++index)state[0x9b8+index]=
+                static_cast<unsigned char>((HexNibble(instance[index*2])<<4)|HexNibble(instance[index*2+1]));
+            assert(PlaybackPumpHook(owner.data(),nullptr,nullptr)==17);drain();last_marker=offset;++playback_markers;
+        } else if(line.find("\"kind\":\"input\"")!=std::string::npos) {
+            const auto offset=std::size_t(JsonUnsigned(line,"offset"));const auto bytes=std::size_t(JsonUnsigned(line,"bytes"));
+            assert(offset==input_end&&bytes<=raw.size()-offset);
+            QueueMp3Encoded(decoder,raw.data()+offset,bytes,time,epoch);drain();input_end+=bytes;time+=.001;
+        }
+    }
+    assert(playback_markers>=3&&input_end==raw.size()&&last_marker<raw.size());
+    const auto active=buffers.active.find(decoder);assert(active!=buffers.active.end());
+    const auto expected=raw.size()-last_marker;
+    assert(active->second->bytes==expected&&active->second->data.size()==expected&&
+           "the reused decoder must retain only the stream after the final native playback boundary");
+    for(std::size_t index=0;index<expected;++index)assert(active->second->data[index]==raw[last_marker+index]);
+    Mp3Info info;std::string error;assert(InspectMp3Source(active->second->data,info,error)&&info.complete);
+    assert(buffers.ready.size()==1&&"the completed first stream survives while the interrupted replay is discarded");
+
+    ResetMp3Probes();ResetCaptureQueueLosses();ResetPlaybackIdentityBridge();
+    CloseHandle(event);event=nullptr;delete[] queue;queue=nullptr;head=tail=count=0;
+    original_playback_pump=prior_pump;playback_pump_decoder_offset=prior_offset;
+    std::cout<<"PASS: captured callback replay retained "<<expected<<" successor bytes across "
+             <<playback_markers<<" native playback identities (duration="<<info.Duration()<<")\n";
+}
 void PodcastCaptureEvents() {
     const auto source=PodcastMp3();const double duration=3456.0/44100.0;
     decoded_sink_target=reinterpret_cast<void*>(0x1000);
@@ -2096,6 +2162,7 @@ int wmain(int argc,wchar_t** argv) {
     InterlockedExchange(&history::log_level_value,4);
     if(argc==2&&!wcscmp(argv[1],L"--queue-epoch")) {ProductionCaptureQueueLossEpochs();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--stream-dump")) {DumpStreamHooks();return 0;}
+    if(argc==4&&!wcscmp(argv[1],L"--dump-replay")) {ReplayCapturedMp3(argv[2],argv[3]);return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--podcast-end")) {PodcastEndWithoutReadySuccessor();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--pending-prior-control-stdin")) {
         const std::string payload(std::istreambuf_iterator<char>(std::cin),{});
