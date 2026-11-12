@@ -39,6 +39,8 @@ x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_metadata_identity_test.cpp -
  -lruntimeobject -lwinhttp -o "$floggfy_test_root/windows-metadata-identity-test.exe"
 "$floggfy_test_root/windows-history-test.exe"
 "$floggfy_test_root/windows-metadata-identity-test.exe"
+"$floggfy_test_root/windows-metadata-identity-test.exe" --unknown-cef
+"$floggfy_test_root/windows-metadata-identity-test.exe" --missing-cef-exports
 
 x86_64-w64-mingw32-g++ "${common[@]}" tests/cached_metadata_test.cpp native/cached_metadata.cpp native/rich_metadata.cpp -o "$floggfy_test_root/cached-metadata-test.exe"
 "$floggfy_test_root/cached-metadata-test.exe" "$(wslpath -w "$floggfy_test_root/cache-fixtures")"

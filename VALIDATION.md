@@ -1735,3 +1735,30 @@ metadata and publication tests. Its optional supplied-client probes were skipped
 inside that suite; the separate installed-client discovery probe above passed.
 The live song then completed and published `Artists/Parker Jack/911/911.flac`
 (23,692,843 bytes; 16-bit, 44,100 Hz) at 03:27:54, followed by the next track.
+
+## 2026-11-12 unknown-version hook policy
+
+At the user's request, removed the CEF metadata version gate entirely, including
+its unused identity table and allowlist test. Metadata now attempts attachment
+regardless of reported CEF identity. Required task/factory exports, callback
+structure sizes, hook activation and rollback checks remain. An audit of the
+remaining hook startup paths found no other Spotify/CEF version gates: audio,
+decoder ownership, Connect, menu and connectivity use runtime discovery already.
+
+Added Windows integration cases to the normal suite. A synthetic host exporting
+CEF version 999 initially failed preparation under the old gate; after removal,
+actual MinHook preparation/activation and factory forwarding succeed. A host
+missing the task export still rejects startup without creating worker resources.
+Existing callback identity/ownership and startup rollback cases passed. The full
+Linux/native suite, focused Windows metadata integration cases, shell syntax
+checks and installed-client discovery probe passed. The full Windows suite was
+not repeated after this narrowly scoped removal; it passed before this change.
+
+Built with Win32 MinGW; imports contain Windows system libraries only. Installed
+DLL and build SHA-256:
+`d4779da830badaa22d9653cc9baa65dd27db773faf430ba568d9e67efb3088e6`.
+Live Spotify PID 47592 started normally and reported `client-timeline-ready` with
+the current title and playing state, decoded output and a bound FLAC capture.
+The original INI was restored byte-for-byte (SHA-256
+`2e681179739ae60e1f349c6968e051ec084e328a104a97962d591b46aaa49530`).
+Temporary diagnostics remain active in this process until the next restart.

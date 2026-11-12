@@ -301,7 +301,8 @@ duplicating the previous completion. Seeks and excessive observation gaps remain
 conservative rejection cases. Metadata fields absent from the public Windows session
 are not invented. Audio targets are discovered from invariant decoder instructions
 and Windows x64 function metadata; missing or ambiguous matches disable capture.
-Menu integration checks its supported CEF version and structure sizes.
+All hooks attempt discovery on unknown Spotify/CEF versions. Menu and metadata
+integration check required exports and structure layouts without a version list.
 
 Renderer console diagnostics use a dedicated bounded entry point. Reserved
 `FLOGGFY_STATUS:` / `FLOGGFY_NETWORK_V1:` messages are consumed even when rejected,

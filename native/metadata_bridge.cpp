@@ -1,6 +1,5 @@
 #define WIN32_LEAN_AND_MEAN
 #include "metadata_bridge.h"
-#include "cef_identity.h"
 #include "hook_init_state.h"
 #include "hook_rollback.h"
 #include "hook_startup_minhook.h"
@@ -464,10 +463,8 @@ bool PrepareMetadataCollector(HMODULE cef) {
  const auto now=static_cast<std::uint64_t>(GetTickCount64());
  if(!metadata_init.TryBegin(now))return false;
  // Basic app playback observation stays active when optional enrichment is disabled.
- auto address=GetProcAddress(cef,"cef_version_info");int(*version)(int)=nullptr;static_assert(sizeof(version)==sizeof(address));memcpy(&version,&address,sizeof(version));
- if(!version||!cef_compat::IsSupported({version(0),version(1),version(2),version(3)})){
-  LogEvent(LogKind::Warning,"warning","metadata CEF identity unsupported; revision is not in the audited compatibility table");metadata_init.MarkUnsupported();return false;
- }
+ // Attempt attachment on every CEF revision. Required exports and callback
+ // structure checks below determine whether the observer can attach.
  auto post_address=GetProcAddress(cef,"cef_post_task");memcpy(&post_task,&post_address,sizeof(post_task));
  if(!post_task){LogEvent(LogKind::Warning,"warning","metadata collector unsupported: cef_post_task missing");metadata_init.MarkUnsupported();return false;}
  message_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);

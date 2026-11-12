@@ -47,7 +47,35 @@ static HANDLE PrepareWorkerForFinalization() {
     assert(DuplicateHandle(GetCurrentProcess(),history::metadata_preparation_thread,GetCurrentProcess(),&retained,0,FALSE,DUPLICATE_SAME_ACCESS));
     history::metadata_prepared=true;return retained;
 }
-int main(){
+// A future CEF identity must not prevent discovery of compatible exports.
+extern "C" __declspec(dllexport) int cef_version_info(int) { return 999; }
+extern "C" __declspec(dllexport) int cef_post_task(int,history::Task* task) {
+    task->base.release(&task->base);return 0;
+}
+extern "C" __declspec(dllexport) __attribute__((noinline)) int cef_browser_host_create_browser(
+    const void*,history::Client*,const history::String*,const void*,void*,void*) { return 17; }
+
+int main(int argc,char** argv){
+    if(argc==2&&!std::strcmp(argv[1],"--unknown-cef")) {
+        assert(history::PrepareMetadataCollector(GetModuleHandleW(nullptr))&&
+               "unknown CEF versions must reach export-based hook preparation");
+        assert(MH_ApplyQueued()==MH_OK);
+        history::FinalizeMetadataCollector(true);
+        auto address=GetProcAddress(GetModuleHandleW(nullptr),"cef_browser_host_create_browser");
+        history::Create create=nullptr;static_assert(sizeof(create)==sizeof(address));
+        std::memcpy(&create,&address,sizeof(create));
+        assert(create&&create(nullptr,nullptr,nullptr,nullptr,nullptr,nullptr)==17);
+        assert(history::metadata_init.State()==hooks::InitState::Active);
+        std::puts("PASS: unknown CEF identity attaches discovered factory and preserves its return");
+        return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--missing-cef-exports")) {
+        assert(!history::PrepareMetadataCollector(GetModuleHandleW(L"kernel32.dll")));
+        assert(history::metadata_init.State()==hooks::InitState::Unsupported);
+        assert(!history::metadata_prepared&&!history::metadata_running);
+        std::puts("PASS: missing CEF task export prevents hook startup without allocating worker resources");
+        return 0;
+    }
     assert(history::metadata_init.TryBegin(GetTickCount64()));
     auto clean_worker=PrepareWorkerForFinalization();
     history::FinishMetadataStartup(false,false);

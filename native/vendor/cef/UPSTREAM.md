@@ -16,8 +16,10 @@ The menu integration uses CEF's published structure sizes as a runtime capabilit
 contract. It requires only the prefix through `set_checked`, checks every method
 it calls for executable memory, and accepts larger append-compatible structures.
 It hooks the exported `cef_menu_model_create` factory and does not gate on CEF
-version numbers. Metadata integration has a wider ABI surface and retains its
-separate exact CEF identity table. Original delegate callbacks and references are
+version numbers. Metadata integration also attempts attachment on unknown CEF
+versions, requiring task/factory exports and checking callback structure sizes.
+The audited revisions above document the expected ABI rather than restricting
+which versions may attach. Original delegate callbacks and references are
 forwarded through a proxy without changing the original callback object.
 
 Transferred callback arguments and factory ownership follow CEF's translator
