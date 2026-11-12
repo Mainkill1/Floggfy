@@ -19,6 +19,7 @@ public:
     bool RetainPrefixAndSuffix(size_t prefix,size_t suffix) noexcept;
     // Only compile a contiguous source after a complete listen; release blocks
     // before creating the tagged output. At most one additional full buffer.
+    bool SplitSuffix(size_t offset,CompressedBuffer& suffix,size_t available);
     std::vector<uint8_t> Flatten();
 };
 }

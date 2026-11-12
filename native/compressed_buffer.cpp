@@ -34,6 +34,17 @@ bool CompressedBuffer::RetainPrefixAndSuffix(size_t prefix,size_t suffix) noexce
     while(blocks.size()>required)blocks.pop_back();
     return true;
 }
+bool CompressedBuffer::SplitSuffix(size_t offset,CompressedBuffer& suffix,size_t available) {
+    if(offset>length||&suffix==this||suffix.size())return false;
+    CompressedBuffer result;
+    for(size_t at=offset;at<length;) {
+        const auto amount=std::min(length-at,block_size-at%block_size);
+        if(!result.Append(blocks[at/block_size].get()+at%block_size,amount,
+                          available>=result.capacity()?available-result.capacity():0))return false;
+        at+=amount;
+    }
+    RetainPrefixAndSuffix(offset,length);suffix=std::move(result);return true;
+}
 std::vector<uint8_t> CompressedBuffer::Flatten() {
     std::vector<uint8_t> output(length); size_t p=0;
     for(const auto& block:blocks) { size_t n=std::min(block_size,length-p); memcpy(output.data()+p,block.get(),n); p+=n; }

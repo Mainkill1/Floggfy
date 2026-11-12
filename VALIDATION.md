@@ -2,6 +2,39 @@ The current consolidated diagnostics regression entry point is
 `bash test-diagnostics.sh [SPOTIFY_DLL]`. Earlier dated sections below preserve
 historical evidence and may name wrappers that this entry point has replaced.
 
+## 2026-11-11: captured decoder-reuse replay and pause-gap validation
+
+`test-dump-replay.sh STREAM.bin STREAM.jsonl` replays DumpStreams input records
+and native playback markers through the production MP3 queue and capture worker.
+The raw audio remains local and is not copied into the repository. Against the
+pre-fix implementation, the captured replay failed because one reused decoder
+retained all three sources as one buffer. After reconciliation, the same replay
+retained exactly the 1,347,906 bytes after the final native marker and parsed
+3,548,160 samples at 44.1 kHz (80.457143 seconds). The prior complete source was
+preserved, while the interrupted repeated source was discarded.
+
+Committed synthetic regressions cover complete, partial and initially rejected
+predecessors; first and repeated native identities; playback changes during an
+in-flight callback; prefetched and split ID3 headers; partial old frames; ID3v1
+trailers; tagless streams; queue saturation; pending-generation input loss; and
+ambiguous multiple source starts. The observational playback hook preserves the
+caller's LastError and is installed independently of LogLevel and DumpStreams so
+normal podcast capture receives the same decoder-reuse boundaries.
+
+Pause/gap tests distinguish elapsed wall time from missing input. A 900-second
+MP3 callback gap without loss retained all 200 frames. Explicit queue loss did
+not stitch a frame-aligned suffix onto discarded bytes. Removing whole MP3
+frames still produced a structurally valid shortened stream, but expected-media
+duration validation kept it unpublished. FLAC resumes from the same sample/frame
+position after a long pause and rejects non-contiguous frame/sample numbers. Ogg
+page-sequence and AAC access-unit gap regressions remain green.
+
+The final portable/native suite and consolidated Windows diagnostics both passed
+with exit 0 after these tests were added. The real 6.1 MB replay, focused decoder
+reuse, raw-dump hook and pause-continuity runs also passed. The production build
+completed successfully; SHA-256 is
+`7b21f95d712042a3ccdaf0d49165d7212cf80d126e2c9c3f9df70a821a3cf953`.
+
 ## 2026-11-11: forensic stream dumps (release still held)
 
 `DumpStreams=0` is a restart-only opt-in, independent of LogLevel and normal
@@ -39,10 +72,9 @@ at the recorded source header/marker offset 4,761,856 recovered all 3,548,160
 samples (80.457143 seconds). This proves the diagnostic preservation and cut
 point; it does not claim the production stitching issue is fixed.
 
-The pending prefix/suffix reconciliation experiment is preserved separately and
-has unresolved review findings. It is not part of this diagnostic build or PR
-head. PR #25 remains draft; no 1.3 tag or release has been published. DumpStreams
-and the isolated temporary output path remain enabled for investigation. The
+The prefix/suffix reconciliation is now integrated and validated by the section
+above. PR #25 remains draft; no 1.3 tag or release has been published. DumpStreams
+remains enabled under the normal `Save Location\DumpStreams` directory. The
 temporary Never Pause test setting was restored to -1; LogLevel is 1 and hook
 timing diagnostics are off.
 
@@ -93,7 +125,6 @@ complete portable suite and full Windows playback diagnostics passed. Independen
 review found no material issue. The candidate DLL is installed, SHA-256
 `3262e7bd1dae5a9f852f5548a6647f8299cfd732caff7eefc2ebce6042e91b1e`.
 The complete Windows rerun and live podcast publication replay remain pending.
-Temporary test output and diagnostic settings are still active during replay.
 Earlier dated sections below describe previous revisions, not final release
 qualification.
 

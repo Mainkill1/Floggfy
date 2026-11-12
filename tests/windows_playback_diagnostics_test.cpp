@@ -66,7 +66,8 @@ void DumpStreamHooks() {
     Settings preferences;preferences.dump_streams=true;
     assert(NeedPlaybackIdentity(spotify::DiscoveryResult::Found,preferences));
     assert(!NeedPlaybackIdentity(spotify::DiscoveryResult::MissingTarget,preferences));
-    preferences.dump_streams=false;assert(!NeedPlaybackIdentity(spotify::DiscoveryResult::Found,preferences));
+    preferences.dump_streams=false;assert(NeedPlaybackIdentity(spotify::DiscoveryResult::Found,preferences)&&
+        "decoder reuse boundaries must remain available at normal logging with dumps disabled");
     InterlockedExchange(&history::log_level_value,prior_level);
     wchar_t temp[MAX_PATH]{};assert(GetTempPathW(MAX_PATH,temp));
     const auto root=std::filesystem::path(temp)/(L"Floggfy-dump-hooks-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64()));
@@ -212,6 +213,195 @@ void PodcastCaptureEvents() {
            direct_heard[0].generation==71&&direct_listen.generation==72&&
            "an old-to-new identity transition finalizes the completed generation's exact MP3 decoder");
     decoded_sink_target=nullptr;
+}
+void* crossing_owner=nullptr;unsigned char* crossing_instance=nullptr;
+CaptureBuffers* crossing_buffers=nullptr;const std::vector<uint8_t>* crossing_source=nullptr;
+void* DecodeAcrossPlayback(void*,void* result,decoded_output::Span* decoded,decoded_output::Span* encoded,bool) {
+    *crossing_instance=2;SetLastError(7654);
+    assert(PlaybackPumpHook(crossing_owner,nullptr,nullptr)==17&&GetLastError()==4321);
+    constexpr uintptr_t decoder=0x9870;const auto epoch=CaptureEpoch();
+    QueueMp3Encoded(decoder,crossing_source->data(),crossing_source->size(),101,epoch);
+    Slot slot{};while(Pop(slot))ProcessMp3Capture(slot,*crossing_buffers);
+    QueueDecodedActivity(decoder,66,crossing_source->size(),66,101,epoch,Mp3Generation(decoder,epoch));
+    encoded->data=static_cast<unsigned char*>(encoded->data)+encoded->size;encoded->size=0;
+    decoded->data=static_cast<float*>(decoded->data)+2;decoded->size-=2;
+    SetLastError(4321);return result;
+}
+void PodcastDecoderReuse() {
+    const auto prior_decode=original_decoded_process;
+    const auto prior_pump=original_playback_pump;const auto prior_offset=playback_pump_decoder_offset;
+    original_playback_pump=[](void*,void*,void*)->int{
+        assert(GetLastError()==7654&&"observational playback work must preserve the caller's LastError");
+        SetLastError(4321);return 17;
+    };playback_pump_decoder_offset=0x70;
+    queue=new Slot[capacity];event=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(event);
+    const auto source=PodcastMp3();
+    constexpr uintptr_t decoder=0x9870;const auto epoch=CaptureEpoch();
+    for(const unsigned scenario:{0u,1u,2u,3u,4u,5u,6u,7u,8u,9u,10u,11u}) {
+        head=tail=count=0;ResetMp3Probes();ResetCaptureQueueLosses();ResetPlaybackIdentityBridge();ResetDecodedActivityQueue();
+        CaptureBuffers buffers;auto second=source;second.back()=42;
+        if(scenario==7||scenario==8)second.erase(second.begin(),second.begin()+10);
+        std::array<unsigned char,0x100> owner{};std::array<unsigned char,0x200> provider{};
+        std::array<unsigned char,0xa00> state{};
+        const auto provider_ptr=reinterpret_cast<uintptr_t>(provider.data());
+        const auto state_ptr=reinterpret_cast<uintptr_t>(state.data());
+        memcpy(owner.data()+0x70,&decoder,sizeof(decoder));memcpy(owner.data()+0x78,&provider_ptr,sizeof(provider_ptr));
+        memcpy(provider.data()+0x1e8,&state_ptr,sizeof(state_ptr));state[0x9b8]=1;
+        const auto pump=[&]{SetLastError(7654);assert(PlaybackPumpHook(owner.data(),nullptr,nullptr)==17&&GetLastError()==4321);};
+        if(scenario!=3&&scenario!=9)pump();
+        if(scenario==2){const unsigned char unknown[]={1,2,3,4};QueueMp3Encoded(decoder,unknown,sizeof(unknown),100,epoch);}
+        else QueueMp3Encoded(decoder,source.data(),(scenario==1||scenario==10||scenario==11)?17:source.size(),100,epoch);
+        Slot slot{};while(Pop(slot))ProcessMp3Capture(slot,buffers);
+        // Repeated IDs and a first identity observation do not split a stream.
+        pump();while(Pop(slot))ProcessMp3Capture(slot,buffers);
+        assert(buffers.ready.empty()&&"first or repeated identity observation does not split the source");
+        if(scenario>=7)buffers.active.at(decoder)->mp3_bound_duration=3456.0/44100;
+        const size_t prefetched=(scenario==5||scenario==9||scenario==10)?950:
+            (scenario==6||scenario==11)?3:scenario==8?417:0;
+        if(prefetched){QueueMp3Encoded(decoder,second.data(),prefetched,100.5,epoch);while(Pop(slot))ProcessMp3Capture(slot,buffers);}
+        const auto old_generation=Mp3Generation(decoder,epoch);
+        if(scenario==4) {
+            crossing_owner=owner.data();crossing_instance=state.data()+0x9b8;crossing_buffers=&buffers;crossing_source=&second;
+            original_decoded_process=DecodeAcrossPlayback;float samples[4]{};
+            decoded_output::Span decoded{samples,4},encoded{const_cast<uint8_t*>(source.data()+17),source.size()-17};
+            void* result=reinterpret_cast<void*>(0x1230);
+            assert(DecodedSinkHook(reinterpret_cast<void*>(decoder),result,&decoded,&encoded,true)==result&&GetLastError()==4321);
+            const auto loss=TakeCaptureQueueLosses();assert(loss.count==1&&loss.entries[0].context==decoder&&loss.entries[0].epoch==epoch&&loss.entries[0].mp3_generation==old_generation);
+            assert(!ApplyCaptureQueueLosses(buffers,loss,101.1)&&buffers.active.count(decoder)&&!buffers.active.at(decoder)->ambiguous);
+            DecodedActivitySlot output{};assert(PopDecodedActivity(output)&&output.calls==1&&output.produced_floats==66&&!PopDecodedActivity(output)&&"late old output cannot supply ownership evidence for the new source");
+            assert(!count&&"late old bytes cannot cross into the new lifecycle");
+        } else {
+            state[0x9b8]=2;pump();assert(Pop(slot));ProcessMp3Capture(slot,buffers);
+            const auto completed_before=(scenario==5||scenario==9)?1u:0u;
+            assert(buffers.ready.size()==completed_before&&"a media-change marker alone cannot finalize old bytes");
+        }
+        const auto new_generation=Mp3Generation(decoder,epoch);assert(new_generation!=old_generation);
+        if(scenario!=4)QueueMp3Encoded(decoder,second.data()+prefetched,second.size()-prefetched,101,epoch);
+        while(Pop(slot))ProcessMp3Capture(slot,buffers);
+        if(scenario==8) {
+            assert(buffers.active.at(decoder)->mp3_pending_generation&&buffers.ready.empty());
+            assert(!CompleteMp3Capture(buffers.active.find(decoder),buffers,102)&&"an untagged late boundary cannot publish a guessed prefix or shortened suffix");
+            continue;
+        }
+        if(scenario==10||scenario==11) {
+            assert(buffers.active.at(decoder)->mp3_pending_generation&&buffers.ready.empty()&&
+                   !CompleteMp3Capture(buffers.active.find(decoder),buffers,102)&&
+                   "a late marker after prefetched bytes cannot authorize a non-frame-aligned guessed cut");
+            continue;
+        }
+        assert(buffers.active.count(decoder)&&buffers.active.at(decoder)->bytes==second.size()&&
+               "a changed native instance on the same decoder must start an independent MP3");
+        std::vector<uint8_t> captured;for(size_t i=0;i<buffers.active.at(decoder)->data.size();++i)captured.push_back(buffers.active.at(decoder)->data[i]);
+        assert(captured==second&&Mp3Generation(decoder,epoch)==new_generation&&"retiring the old capture cannot erase the new probe");
+        assert(buffers.ready.size()==((scenario==0||scenario==3||scenario==5||scenario==6||scenario==7||scenario==9)?1u:0u)&&
+               "complete old audio survives; incomplete and rejected old sources never become ready");
+        QueueMp3Encoded(decoder,second.data()+10,second.size()-10,101.1,epoch,new_generation);
+        while(Pop(slot))ProcessMp3Capture(slot,buffers);
+        assert(buffers.active.at(decoder)->bytes==second.size()*2-10);
+        if(scenario==0) {
+            count=capacity;state[0x9b8]=3;pump();
+            auto loss=TakeCaptureQueueLosses();assert(loss.count==1&&loss.entries[0].context==decoder);
+            head=tail=count=0;QueueMp3Encoded(decoder,second.data(),second.size(),102,epoch);
+            assert(!Pop(slot)&&"a lost boundary cannot authorize a fresh capture");
+        }
+    }
+    for(const bool prior_inflight:{false,true}) {
+        head=tail=count=0;ResetMp3Probes();ResetCaptureQueueLosses();ResetPlaybackIdentityBridge();
+        CaptureBuffers buffers;auto second=source;second.back()=42;
+        std::array<unsigned char,0x100> owner{};std::array<unsigned char,0x200> provider{};
+        std::array<unsigned char,0xa00> state{};const auto provider_ptr=reinterpret_cast<uintptr_t>(provider.data());
+        const auto state_ptr=reinterpret_cast<uintptr_t>(state.data());
+        memcpy(owner.data()+0x70,&decoder,sizeof(decoder));memcpy(owner.data()+0x78,&provider_ptr,sizeof(provider_ptr));
+        memcpy(provider.data()+0x1e8,&state_ptr,sizeof(state_ptr));state[0x9b8]=1;
+        SetLastError(7654);assert(PlaybackPumpHook(owner.data(),nullptr,nullptr)==17&&GetLastError()==4321);
+        QueueMp3Encoded(decoder,source.data(),source.size(),100,epoch);Slot slot{};
+        while(Pop(slot))ProcessMp3Capture(slot,buffers);
+        QueueMp3Encoded(decoder,second.data(),3,100.5,epoch);while(Pop(slot))ProcessMp3Capture(slot,buffers);
+        if(prior_inflight)assert(Mp3Generation(decoder,epoch,true));
+        state[0x9b8]=2;SetLastError(7654);assert(PlaybackPumpHook(owner.data(),nullptr,nullptr)==17&&GetLastError()==4321);
+        while(Pop(slot))ProcessMp3Capture(slot,buffers);
+        const auto pending=Mp3Generation(decoder,epoch);
+        assert(buffers.active.at(decoder)->mp3_pending_generation==pending&&
+               buffers.active.at(decoder)->mp3_prior_uncertain==prior_inflight);
+        CaptureQueueLossBatch loss;loss.count=1;loss.entries[0]={decoder,epoch,pending};
+        assert(!ApplyCaptureQueueLosses(buffers,loss,101)&&buffers.active.empty()&&
+               buffers.ready.size()==(prior_inflight?0u:1u)&&
+               "pending-successor loss preserves only a validated predecessor with no older callback in flight");
+        QueueMp3Encoded(decoder,second.data()+3,second.size()-3,101.1,epoch);
+        while(Pop(slot))ProcessMp3Capture(slot,buffers);
+        assert(buffers.active.empty()&&"successor bytes missing their prefix cannot restart after pending-generation loss");
+    }
+    ResetMp3Probes();ResetCaptureQueueLosses();ResetPlaybackIdentityBridge();
+    CloseHandle(event);event=nullptr;delete[] queue;queue=nullptr;head=tail=count=0;
+    original_decoded_process=prior_decode;original_playback_pump=prior_pump;playback_pump_decoder_offset=prior_offset;
+    puts("PASS: native playback boundaries separate reused MP3 decoders, recover rejected probes and retain complete old audio");
+}
+std::vector<uint8_t> PodcastFrames(unsigned frames,uint8_t payload=0) {
+    std::vector<uint8_t> out={'I','D','3',4,0,0,0,0,0,0};
+    for(unsigned frame=0;frame<frames;++frame) {
+        const auto at=out.size();out.resize(at+417,payload);
+        out[at]=0xff;out[at+1]=0xfb;out[at+2]=0x90;out[at+3]=0;
+    }
+    return out;
+}
+void PodcastPauseContinuity() {
+    queue=new Slot[capacity];event=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(event);
+    constexpr uintptr_t decoder=0xa870;const auto epoch=CaptureEpoch();const auto source=PodcastFrames(200);
+    const auto split=std::size_t(10+100*417);Slot slot{};
+    {
+        ResetMp3Probes();ResetCaptureQueueLosses();head=tail=count=0;CaptureBuffers buffers;
+        QueueMp3Encoded(decoder,source.data(),split,100,epoch);while(Pop(slot))ProcessMp3Capture(slot,buffers);
+        QueueMp3Encoded(decoder,source.data()+split,source.size()-split,1000,epoch);while(Pop(slot))ProcessMp3Capture(slot,buffers);
+        assert(buffers.active.at(decoder)->bytes==source.size()&&
+               CompleteMp3Capture(buffers.active.find(decoder),buffers,1000)&&buffers.ready.size()==1&&
+               buffers.ready.front()->mp3_info.frames==200&&
+               "a long pause without missing input must retain one exact MP3 lifecycle");
+    }
+    {
+        ResetMp3Probes();ResetCaptureQueueLosses();head=tail=count=0;
+        ownership::DecoderOwnershipTracker tracker;tracker.Reset(epoch);CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+        QueueMp3Encoded(decoder,source.data(),split,100,epoch);while(Pop(slot))ProcessMp3Capture(slot,buffers);
+        const auto generation=Mp3Generation(decoder,epoch);CaptureQueueLossBatch loss;
+        loss.count=1;loss.entries[0]={decoder,epoch,generation};
+        assert(!ApplyCaptureQueueLosses(buffers,loss,900)&&buffers.active.empty());
+        QueueMp3Encoded(decoder,source.data()+split,source.size()-split,1000,epoch);
+        while(Pop(slot))ProcessMp3Capture(slot,buffers);
+        assert(buffers.active.count(decoder)&&buffers.active.at(decoder)->bytes==source.size()-split&&
+               "a frame-aligned suffix may restart after loss but must not stitch onto discarded bytes");
+        ownership::DecodedActivity activity{};activity.owner=decoder;activity.calls=1;
+        activity.produced_floats=100;activity.kept_floats=100;activity.consumed_bytes=source.size()-split;
+        activity.first=1000;activity.last=1001;activity.epoch=epoch;tracker.ObserveDecoded(activity);
+        Media episode;episode.source=MediaSource::Spotify;episode.spotify_uri="spotify:episode:0000000000000000000001";
+        episode.playback_instance="pause-gap";episode.duration=200.0*1152/44100;episode.playing=true;
+        Listen listen;listen.identity=episode.ListenKey();listen.eligible=true;listen.playing=true;
+        listen.generation=90;listen.start_time=100;listen.last_time=1001;listen.last_position=episode.duration;
+        listen.duration=episode.duration;
+        const auto bound=BindReadyCapture(buffers,episode,90,1001);
+        assert((!bound||!FinalizeBoundMp3Capture(buffers,listen,episode,1002))&&buffers.ready.empty()&&
+               "a known input loss cannot publish a shorter, frame-aligned suffix as the full episode");
+    }
+    {
+        ResetMp3Probes();ResetCaptureQueueLosses();head=tail=count=0;
+        ownership::DecoderOwnershipTracker tracker;tracker.Reset(epoch);CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+        std::vector<uint8_t> missing(source.begin(),source.begin()+split);
+        missing.insert(missing.end(),source.begin()+split+50*417,source.end());
+        QueueMp3Encoded(decoder,missing.data(),missing.size(),100,epoch);while(Pop(slot))ProcessMp3Capture(slot,buffers);
+        Mp3Info parsed;std::string error;assert(InspectMp3Source(buffers.active.at(decoder)->data,parsed,error)&&parsed.frames==150);
+        ownership::DecodedActivity activity{};activity.owner=decoder;activity.calls=1;
+        activity.produced_floats=100;activity.kept_floats=100;activity.consumed_bytes=missing.size();
+        activity.first=100;activity.last=101;activity.epoch=epoch;tracker.ObserveDecoded(activity);
+        Media episode;episode.source=MediaSource::Spotify;episode.spotify_uri="spotify:episode:0000000000000000000001";
+        episode.playback_instance="silent-frame-gap";episode.duration=200.0*1152/44100;episode.playing=true;
+        Listen listen;listen.identity=episode.ListenKey();listen.eligible=true;listen.playing=true;
+        listen.generation=91;listen.start_time=100;listen.last_time=101;listen.last_position=episode.duration;
+        listen.duration=episode.duration;
+        const auto bound=BindReadyCapture(buffers,episode,91,101);
+        assert((!bound||!FinalizeBoundMp3Capture(buffers,listen,episode,102))&&buffers.ready.empty()&&
+               "whole missing MP3 frames have no page counter, so duration validation must reject the short capture");
+    }
+    ResetMp3Probes();ResetCaptureQueueLosses();CloseHandle(event);event=nullptr;
+    delete[] queue;queue=nullptr;head=tail=count=0;
+    puts("PASS: long pauses preserve exact MP3 bytes; known and frame-aligned gaps remain unpublished");
 }
 void PodcastEndWithoutReadySuccessor() {
     const auto fragment=PodcastMp3();std::vector<uint8_t> source(fragment.begin(),fragment.begin()+10);
@@ -2163,6 +2353,8 @@ int wmain(int argc,wchar_t** argv) {
     if(argc==2&&!wcscmp(argv[1],L"--queue-epoch")) {ProductionCaptureQueueLossEpochs();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--stream-dump")) {DumpStreamHooks();return 0;}
     if(argc==4&&!wcscmp(argv[1],L"--dump-replay")) {ReplayCapturedMp3(argv[2],argv[3]);return 0;}
+    if(argc==2&&!wcscmp(argv[1],L"--podcast-reuse")) {PodcastDecoderReuse();return 0;}
+    if(argc==2&&!wcscmp(argv[1],L"--pause-continuity")) {PodcastPauseContinuity();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--podcast-end")) {PodcastEndWithoutReadySuccessor();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--pending-prior-control-stdin")) {
         const std::string payload(std::istreambuf_iterator<char>(std::cin),{});
@@ -2185,7 +2377,7 @@ int wmain(int argc,wchar_t** argv) {
         return 0;
     }
     assert(argc==1);
-    Connectivity();PodcastCatalog();PublicationLogging();PodcastCaptureEvents();PodcastEndWithoutReadySuccessor();DirectIdentityRetriesAndIgnoresLogVerbosity();ReadyUpgradesPreboundPlaybackGeneration();EmptyPlaybackIdNaturalTransitionIsRetried();UnclassifiedMonitoredTransitionWaitsForReady();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();BoundNaturalTransitionUsesFinalCaptureEvidence();DjVoiceDoesNotBlockMusicStart();CurrentItemChangeReconcilesDjSuccessor();CurrentItemChangeBeforeStreamOutputReconcilesDjSuccessor();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();ProductionCaptureQueueLossEpochs();ContextSpecificCaptureQueueLoss();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailLifecycle();ReadyDurationCorroboratesDecoder();WindowsReadyNaturalAppTransitionPublishes();TransitionPublicationMatrixStress();BoundWindowsIdentitySurvivesMetadataRefinement();MissingPlaybackWarning();AdvertisementStageIsNotDownloadFailure();ObservePlayback();CoverageAndFailures();SameContextFlacRestartBeginsFreshCapture();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();DumpStreamHooks();
+    Connectivity();PodcastCatalog();PublicationLogging();PodcastCaptureEvents();PodcastDecoderReuse();PodcastPauseContinuity();PodcastEndWithoutReadySuccessor();DirectIdentityRetriesAndIgnoresLogVerbosity();ReadyUpgradesPreboundPlaybackGeneration();EmptyPlaybackIdNaturalTransitionIsRetried();UnclassifiedMonitoredTransitionWaitsForReady();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();BoundNaturalTransitionUsesFinalCaptureEvidence();DjVoiceDoesNotBlockMusicStart();CurrentItemChangeReconcilesDjSuccessor();CurrentItemChangeBeforeStreamOutputReconcilesDjSuccessor();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();ProductionCaptureQueueLossEpochs();ContextSpecificCaptureQueueLoss();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailLifecycle();ReadyDurationCorroboratesDecoder();WindowsReadyNaturalAppTransitionPublishes();TransitionPublicationMatrixStress();BoundWindowsIdentitySurvivesMetadataRefinement();MissingPlaybackWarning();AdvertisementStageIsNotDownloadFailure();ObservePlayback();CoverageAndFailures();SameContextFlacRestartBeginsFreshCapture();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();DumpStreamHooks();
     puts("PASS: observed transitions, one FLAC failure context/outcome, original callback semantics, profiling-only intervals, basic-mode zero profiling and changed-only NLM observations");
     return 0;
 }

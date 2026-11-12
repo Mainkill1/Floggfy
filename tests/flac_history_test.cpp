@@ -22,6 +22,12 @@ int main(int argc,char**argv) {
     FlacCoverage c;
     check(c.Frame(info,4096,44100,2,16,0,0) && !c.Complete(info),"first fixed-block decoder frame");
     check(c.Frame(info,4096,44100,2,16,0,1) && c.Complete(info),"contiguous sample coverage reaches total");
+    FlacCoverage paused;
+    check(paused.Frame(info,4096,44100,2,16,0,0),"FLAC coverage begins before a long pause");
+    // No callback occurs during a pause, so wall-clock time cannot alter the
+    // expected frame/sample number. The next contiguous frame resumes safely.
+    check(paused.Frame(info,4096,44100,2,16,0,1)&&paused.Complete(info),
+          "long pause preserves contiguous FLAC sample coverage");
     FlacCoverage gap; check(!gap.Frame(info,4096,44100,2,16,0,1),"missing first frame rejected");
     FlacCoverage variable; check(variable.Frame(info,4096,44100,2,16,1,0) && !variable.Frame(info,4096,44100,2,16,1,5000),"variable-block seek/gap rejected");
     Tags tags; tags.fields={{"TITLE","Track"},{"ARTIST","Artist"},{"ALBUM","Album"}};

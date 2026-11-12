@@ -78,18 +78,22 @@ void Frame(std::vector<std::uint8_t>& tag,const char* id,const std::vector<std::
     tag.insert(tag.end(),id,id+4);Syncsafe(tag,payload.size());tag.push_back(0);tag.push_back(0);
     tag.insert(tag.end(),payload.begin(),payload.end());
 }
-enum class Mp3Scan {Invalid,Incomplete,Complete};
+enum class Mp3Scan {Invalid,Incomplete,Complete,Boundary};
 template<class Bytes>
-Mp3Scan ScanMp3(const Bytes& bytes,Mp3Info& out,std::string& error,bool accept_truncated_tail) {
+Mp3Scan ScanMp3(const Bytes& bytes,Mp3Info& out,std::string& error,bool accept_truncated_tail,
+                std::size_t* boundary=nullptr,const Mp3Info* resume=nullptr) {
     out={};error.clear();const auto size=bytes.size();
     if(size<4||size>kFileLimit){Fail(error,"invalid MP3 size");return Mp3Scan::Invalid;}
     std::size_t tag_begin=0,at=0;unsigned id3_version=0;
-    if(!Id3Range(bytes,tag_begin,at,id3_version,error))return Mp3Scan::Invalid;
+    if(resume&&resume->frames)at=resume->audio_offset+resume->audio_size;
+    else if(!Id3Range(bytes,tag_begin,at,id3_version,error))return Mp3Scan::Invalid;
+    if(at>size)return Mp3Scan::Invalid;
     std::size_t end=size;
     if(end-at>=128&&Match(bytes,end-128,"TAG",3))end-=128;
-    if(end<=at){Fail(error,"MP3 has no audio frames");return Mp3Scan::Invalid;}
-    unsigned expected_rate=0,expected_channels=0,frames=0;std::uint64_t samples=0;
-    const std::size_t audio=at;
+    if(end<at||(!resume&&end==at)){Fail(error,"MP3 has no audio frames");return Mp3Scan::Invalid;}
+    unsigned expected_rate=resume?resume->rate:0,expected_channels=resume?resume->channels:0,frames=resume?resume->frames:0;
+    std::uint64_t samples=resume?resume->samples:0;
+    const std::size_t audio=resume&&resume->frames?resume->audio_offset:at;
     const auto truncated=[&](const char* message) {
         Fail(error,message);
         if(!accept_truncated_tail||!frames)return Mp3Scan::Invalid;
@@ -97,6 +101,17 @@ Mp3Scan ScanMp3(const Bytes& bytes,Mp3Info& out,std::string& error,bool accept_t
         return Mp3Scan::Incomplete;
     };
     while(at<end) {
+        if(boundary&&frames&&end-at>128&&Match(bytes,at,"TAG",3)) {
+            const auto next=at+128;
+            if(Match(bytes,next,"ID3",std::min<std::size_t>(3,end-next))) {
+                *boundary=next;out={expected_rate,expected_channels,frames,samples,audio,at-audio,true};
+                return Mp3Scan::Boundary;
+            }
+        }
+        if(boundary&&frames&&Match(bytes,at,"ID3",std::min<std::size_t>(3,end-at))) {
+            *boundary=at;out={expected_rate,expected_channels,frames,samples,audio,at-audio,true};
+            return Mp3Scan::Boundary;
+        }
         if(end-at<4)return truncated("truncated MP3 frame header");
         const std::uint32_t h=(std::uint32_t(bytes[at])<<24)|(std::uint32_t(bytes[at+1])<<16)|
                               (std::uint32_t(bytes[at+2])<<8)|bytes[at+3];
@@ -140,6 +155,34 @@ bool InspectMp3Source(const CompressedBuffer& bytes,Mp3Info& out,std::string& er
     out={};error.clear();
     try {return ScanMp3(bytes,out,error,false)==Mp3Scan::Complete;}
     catch(...) {out={};error.clear();return false;}
+}
+namespace {
+struct Mp3Suffix {
+    const CompressedBuffer& source;std::size_t offset,length;
+    std::size_t size() const noexcept{return length;}
+    std::uint8_t operator[](std::size_t at) const noexcept{return source[offset+at];}
+};
+}
+bool FindMp3StreamStart(const CompressedBuffer& bytes,Mp3Info& cursor,std::size_t& offset) noexcept {
+    try {
+        Mp3Info next;std::string error;
+        const auto status=ScanMp3(bytes,next,error,true,&offset,&cursor);
+        if(next.frames)cursor=next;
+        return status==Mp3Scan::Boundary;
+    }catch(...){return false;}
+}
+bool InspectMp3Prefix(const CompressedBuffer& bytes,std::size_t offset,Mp3Info& info) noexcept {
+    info={};if(offset>bytes.size())return false;
+    try {
+        std::string error;
+        const auto status=ScanMp3(Mp3Suffix{bytes,offset,bytes.size()-offset},info,error,true);
+        return status!=Mp3Scan::Invalid&&info.frames>0;
+    }catch(...){info={};return false;}
+}
+bool InspectMp3Range(const CompressedBuffer& bytes,std::size_t offset,std::size_t length,Mp3Info& info) noexcept {
+    info={};if(offset>bytes.size()||length>bytes.size()-offset)return false;
+    try {std::string error;return ScanMp3(Mp3Suffix{bytes,offset,length},info,error,false)==Mp3Scan::Complete;}
+    catch(...){info={};return false;}
 }
 bool MakeOwnedMp3(const std::uint8_t* source,std::size_t size,const Tags& tags,
                   std::vector<std::uint8_t>& out,std::string& error) {

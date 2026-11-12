@@ -18,6 +18,11 @@ int main() {
     check(std::equal(compacted.begin(),compacted.begin()+17,bytes.begin())&&
           std::equal(compacted.begin()+17,compacted.end(),bytes.begin()+70000),
           "compaction retains exact selected bytes");
+    CompressedBuffer split,suffix;check(split.Append(bytes.data(),bytes.size(),3*65536),"split fixture");
+    check(!split.SplitSuffix(65531,suffix,0)&&split.size()==bytes.size()&&!suffix.size(),"split cap preserves both inputs");
+    check(split.SplitSuffix(65531,suffix,2*65536),"split at an unaligned byte boundary");
+    check(split.Flatten()==std::vector<uint8_t>(bytes.begin(),bytes.begin()+65531)&&
+          suffix.Flatten()==std::vector<uint8_t>(bytes.begin()+65531,bytes.end()),"split preserves exact prefix and suffix across blocks");
     check(b.Flatten()==bytes && b.size()==0 && b.capacity()==0,"completed compilation preserves bytes and releases blocks");
     puts("PASS: bounded fixed RAM blocks, rejection preservation and complete-buffer compilation");
 }

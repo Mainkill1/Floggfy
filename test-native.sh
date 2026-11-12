@@ -72,6 +72,8 @@ build/metadata-update-test
 # Supported AAC packets retain their configuration, timing and original bytes.
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/mp3_stream_test.cpp native/mp3_stream.cpp -o build/mp3-stream-test
 build/mp3-stream-test
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/mp3_boundary_test.cpp native/mp3_stream.cpp native/compressed_buffer.cpp -o build/mp3-boundary-test
+build/mp3-boundary-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/mp3_limits_test.cpp -o build/mp3-limits-test
 build/mp3-limits-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/spac_stream_test.cpp native/spac_stream.cpp native/mp3_stream.cpp -o build/spac-stream-test
