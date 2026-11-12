@@ -253,7 +253,15 @@ std::unique_ptr<Capture> NativeCapture(Codec codec) {
         std::string error;assert(InspectMp3Source(source.data(),source.size(),capture->mp3_info,error));
     }
     assert(capture->data.Append(source.data(),source.size(),source.size()+65536));
-    capture->bytes=source.size();return capture;
+    capture->bytes=source.size();
+    if(capture->mp3) {
+        assert(ValidateFinalCapture(*capture)==FinalCaptureValidation::Incomplete);
+        // This uncounted source fixture represents an observed source end
+        // corroborated by its bound episode duration.
+        capture->mp3_source_closed=true;capture->mp3_bound_duration=capture->mp3_info.Duration();
+        assert(ValidateFinalCapture(*capture)==FinalCaptureValidation::Valid);
+    }
+    return capture;
 }
 void NativePodcastPublication(const std::wstring& root) {
     enrich_identity=false;
