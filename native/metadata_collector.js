@@ -175,16 +175,17 @@
   if(own(options(),'debug')!==true||!object(state)||(own(state,'isBuffering')!==true&&object(item))){terminalDebugPrevious=undefined;return;}
   const kind=value=>value===null?'null':value===undefined?'missing':object(value)?'object':'other';
   const flag=value=>typeof value==='boolean'?Number(value):'?';
-  const presence=value=>typeof value==='string'?Number(value.length>0):value===undefined||value===null?0:'?';
+  // Presence only: 0=empty string, 1=value, n=null, ?=missing, o=other.
+  const presence=value=>typeof value==='string'?Number(value.length>0):value===null?'n':value===undefined?'?':'o';
   const number=value=>Number.isSafeInteger(value)&&value>=0&&value<=4294967295?value:'?';
-  const message='FLOGGFY_STATUS:terminal obs item='+kind(item)+' context='+kind(own(state,'context'))+
-   ' uri='+presence(own(item,'uri'))+' instance='+presence(own(state,'playbackId'))+
+  const flags='FLOGGFY_STATUS:terminal item='+kind(item)+' ctx='+kind(own(state,'context'))+
+   ' uri='+presence(own(item,'uri'))+' inst='+presence(own(state,'playbackId'))+
    ' paused='+flag(own(state,'isPaused'))+' buf='+flag(own(state,'isBuffering'))+
-   ' pos_ms='+number(own(state,'positionAsOfTimestamp'))+' length_ms='+number(own(state,'duration'))+
-   ' local='+timelineLocal+' monitoring='+Number(!!(controlBinding?.active&&controlBinding.observing&&controlBinding.player===player));
-  if(message===terminalDebugPrevious)return;terminalDebugPrevious=message;
+   ' local='+timelineLocal+' mon='+Number(!!(controlBinding?.active&&controlBinding.observing&&controlBinding.player===player));
+  const clock='FLOGGFY_STATUS:terminal-clock pos_ms='+number(own(state,'positionAsOfTimestamp'))+' length_ms='+number(own(state,'duration'))+' ctx_uri='+presence(own(own(state,'context'),'uri'));
+  const key=flags+clock;if(key===terminalDebugPrevious)return;terminalDebugPrevious=key;
   const stamp=own(state,'timestamp'),age=typeof stamp==='number'?Math.max(0,Math.floor(Date.now()-stamp)):undefined;
-  console.info(message+' age_ms='+number(age));
+  console.info(flags);console.info(clock+' age_ms='+number(age));
  }
  let debugPrevious;
  function debugObservation(state,item){

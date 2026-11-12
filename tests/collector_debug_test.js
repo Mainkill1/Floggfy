@@ -59,9 +59,11 @@ console.log('PASS: debug-only bounded raw observations, private change flags, de
   PlayerAPI:{getState:()=>endpoint},ConnectDevicesAPI:{getConnectState:()=>({activeDevice:{isLocal:true}})}
  }}},document:{querySelector:()=>null},console:{info:x=>messages.push(x)},performance:{now:()=>clock},Date:{now:()=>clock},encodeURIComponent};
  vm.runInNewContext(script,sandbox);
- const endpoints=()=>messages.filter(x=>x.startsWith('FLOGGFY_STATUS:terminal obs '));
+ const endpoints=()=>messages.filter(x=>x.startsWith('FLOGGFY_STATUS:terminal '));
  assert.equal(endpoints().length,1,'cleared endpoint must remain diagnosable without item metadata');
- assert(endpoints()[0].includes('item=null context=null uri=0 instance=0 paused=1 buf=1 pos_ms=122000 length_ms=122000 local=1 monitoring=0 age_ms=100'));
+ assert(endpoints()[0].includes('item=null ctx=null uri=? inst=0 paused=1 buf=1 local=1 mon=0'));
+ assert(messages.includes('FLOGGFY_STATUS:terminal-clock pos_ms=122000 length_ms=122000 ctx_uri=? age_ms=100'));
+ assert(messages.filter(x=>x.startsWith('FLOGGFY_STATUS:terminal')).every(x=>x.length<100));
  clock+=500;sandbox.window.__floggfyPoll();assert.equal(endpoints().length,1,'unchanged terminal state is silent');
  endpoint.item={uri:'PRIVATE_URI'};endpoint.context={uri:'PRIVATE_CONTEXT'};endpoint.playbackId='PRIVATE_ID';
  sandbox.window.__floggfyPoll();assert.equal(endpoints().length,2);
