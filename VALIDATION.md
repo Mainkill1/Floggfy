@@ -1881,3 +1881,26 @@ and `native_field`; per-stream metadata now joins with `association=native-insta
 Replaying the new session with `auto` also passed and produced MP3 / 44,100 Hz
 labels without any separately supplied native-memory value. This verifies the
 display path; it does not claim a fresh complete long-podcast publication.
+
+## 2026-11-12 pre-release MP3 music association correction
+
+Pre-merge review found that Ready association excluded all unbound MP3s for a
+track URI before the worker's exact-ID binder could run. Added a regression that
+observes a full native ID, calls the real `AssociateListen` first, and only then
+binds. It failed at capture retention against the prior source, then passed after
+preserving the MP3 whose exact decoder owner and full ID match the Ready item.
+Unmatched voice/ad captures keep their previous exclusion path; later ownership,
+completeness and publication checks are unchanged. Independent re-review found
+no remaining Critical/Important issue in that correction.
+
+The corrected Windows playback diagnostics and real-dump quality replay pass.
+The original release-check native suite and 50,000-mutation sanitizer/lifecycle
+checks passed; Windows release checks continue separately. Release/merge remain
+on hold pending final candidate testing requested by the user.
+
+At the user's request, installed candidate SHA-256
+`448ebd3d460333c49b151dcdb87b724d6f32e2947ac37b7abd5bb5fade70783e`.
+Spotify PID 39800 loaded the Spotify-local VERSION.dll after restart. The INI
+hash at installation was `522b2575d3272ed98c9a7e35dab8fb99c70d2e5a199c35e90061dc384e11e0f7`
+and remained unchanged; the user had edited it since the earlier validation.
+The prior DLL is preserved as `version.dll.backup-before-mp3-ready-test`.

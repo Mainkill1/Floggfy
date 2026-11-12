@@ -1771,6 +1771,8 @@ static void ClearPendingNaturalTransition(CaptureBuffers& buffers) noexcept {
 }
 static bool ExcludeUnboundMp3Interludes(CaptureBuffers& buffers,const Media& media) {
     if(media.spotify_uri.rfind("spotify:track:",0)!=0||!buffers.ownership_tracker)return false;
+    std::array<playback_identity::Match,playback_identity::kObservationCapacity> matches{};
+    size_t match_count=0;unsigned matched_epoch=~0u;
     bool excluded=false;
     for(auto it=buffers.active.begin();it!=buffers.active.end();) {
         auto& capture=*it->second;
@@ -1778,6 +1780,21 @@ static bool ExcludeUnboundMp3Interludes(CaptureBuffers& buffers,const Media& med
            buffers.ownership_tracker->Binding(capture.capture_token).state==ownership::OwnershipState::Bound) {
             ++it;continue;
         }
+        // Ready association precedes the worker's exact binder. Preserve a
+        // matching MP3 song here so that binder can run; unmatched voice/ad
+        // captures retain the existing exclusion behavior.
+        if(capture.decoder_owner&&matched_epoch!=capture.capture_epoch) {
+            AcquireSRWLockShared(&playback_identity_lock);
+            match_count=playback_identity_bridge.QueryMatches(media.playback_instance,1,
+                capture.capture_epoch,matches.data(),matches.size());
+            ReleaseSRWLockShared(&playback_identity_lock);
+            matched_epoch=capture.capture_epoch;
+        }
+        bool exact=false;
+        for(size_t index=0;index<match_count;++index)
+            if(matches[index].role==playback_identity::SnapshotRole::PlayerPlaybackId&&
+               matches[index].decoder==capture.decoder_owner){exact=true;break;}
+        if(exact){++it;continue;}
         ReleaseMp3Probe(capture.capture_context,capture.capture_epoch,capture.mp3_generation);
         buffers.ownership_tracker->AbortCapture(
             capture.capture_token,ownership::CaptureAbortReason::InvalidData);

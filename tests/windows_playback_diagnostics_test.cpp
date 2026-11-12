@@ -297,6 +297,18 @@ void Mp3MusicCaptureEvents() {
         track.spotify_uri="spotify:track:0000000000000000000001";
         track.playback_instance=direct?"mp3-track-direct":"mp3-track-fallback";
         track.title=L"MP3 music";track.album=L"Album";track.duration=duration;track.playing=true;
+        if(direct) {
+            track.playback_instance="00112233445566778899aabbccddeeff";
+            ResetPlaybackIdentityBridge();playback_identity::Instance instance{};
+            assert(playback_identity::ParseInstance(track.playback_instance,instance));
+            assert(playback_identity_bridge.SetExpected(track.playback_instance,81));
+            assert(playback_identity_bridge.Observe(0x7200,owner,23,1,instance.bytes.data(),instance.bytes.size(),
+                playback_identity::SnapshotRole::PlayerPlaybackId));
+            Listen observed;Media current;std::vector<Heard> completed;
+            AssociateListen(track,observed,current,completed,buffers,300.25);
+            assert(buffers.active.count(owner)&&"Ready association must retain an exactly identified MP3 song before generic interlude exclusion");
+            ResetPlaybackIdentityBridge();
+        }
         uint64_t playback=0;
         if(direct) {
             std::array<playback_identity::Match,playback_identity::kObservationCapacity> matches{};

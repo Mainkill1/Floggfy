@@ -2,6 +2,8 @@
 
 Save the music you play in Spotify on Windows.
 
+Tested with the Spotify 1.3.9.2055 desktop update on Windows x64.
+
 - Saves fully played songs with available artwork, metadata and lyrics.
 - Organizes music by album artist and album.
 - Skips existing songs unless better audio is available, and can fill in missing metadata.
