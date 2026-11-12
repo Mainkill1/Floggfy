@@ -1679,6 +1679,14 @@ Final verification:
   were reproduced and fixed. Follow-up review found no Critical, Important, or
   Minor issues and marked the branch ready to merge.
 
-No final DLL was installed and no release or live-save claim is made here. A
-fresh native-format podcast must still publish under the real Spotify host from
-this exact build before the PR/release gate is cleared.
+After the synthetic gates passed, the exact `build/version.dll` above replaced
+the installed automatic-mode DLL beside Spotify. The prior DLL (SHA-256
+`7b21f95d712042a3ccdaf0d49165d7212cf80d126e2c9c3f9df70a821a3cf953`)
+was preserved as `version.dll.backup-20261112-native-podcast-pretest`. Spotify
+was restarted and its main process loaded
+`C:\Users\main\AppData\Roaming\Spotify\VERSION.dll`; the installed file still
+matched `c8d3746858b9bb042c26f8e627fea0953430b5d113411ec6ef1312611a1b4805`.
+The installed INI hash remained
+`2e681179739ae60e1f349c6968e051ec084e328a104a97962d591b46aaa49530`.
+This is installation/startup evidence only. A fresh native-format podcast must
+still publish under the real Spotify host before the PR/release gate is cleared.
