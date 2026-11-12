@@ -31,7 +31,8 @@ int main(int argc, char **argv) {
     live.duration = 200;
     live.fields["ARTIST"] = "Lead";
     assert(MergeCachedMetadata(m, live) && live.fields.at("ARTIST") == "Lead; Guest" &&
-           live.artist == "Lead");
+           live.artist == "Lead" && live.album_uri==m.album_uri &&
+           live.fields.at("SPOTIFY_ALBUM_URI")==m.album_uri);
     auto stale = m;
     stale.fields["ARTIST"] = "Lead; Old Guest; Other";
     live.fields["ARTIST"] = "Lead; Current Guest";

@@ -60,6 +60,36 @@ std::vector<std::uint8_t> Fixture() {
     Bytes(image,0x2307,{0x48,0x89,0x51,0x08,0x48,0x89,0x01,0x48,0x8b,0xc1,
         0x48,0xc7,0x41,0x10,0x00,0x00,0x00,0x00,0xc3});return image;
 }
+std::vector<std::uint8_t> CurrentFixture() {
+    auto image=Fixture();
+    std::fill(image.begin()+0x1000,image.begin()+0x1800,0);
+    // Current client saves input/output in RBX/RSI and reads the body through RBX.
+    Bytes(image,0x1020,{0x48,0x8b,0xda,0x48,0x8b,0xf1});
+    Bytes(image,0x1040,{0x48,0x8b,0xcb});Call(image,0x1043,0x2100);
+    Bytes(image,0x1048,{0x48,0x8b,0x53,0x20});
+    // The first parse is the compressed envelope and must not be observed.
+    Bytes(image,0x1080,{0x48,0x8d,0x4d,0xf8});Call(image,0x1084,0x2000);
+    Bytes(image,0x1089,{0x84,0xc0});
+    // A decoded body is produced through one sink/state, feed and finalizer chain,
+    // then passed to the same audited native-string adapter.
+    Bytes(image,0x1100,{0x48,0x8d,0x55,0xd8,0x48,0x8d,0x4c,0x24,0x60});
+    Call(image,0x1109,0x2100);
+    Bytes(image,0x110e,{0x48,0x8d,0x54,0x24,0x60,0x48,0x8d,0x4d,0xa0});
+    Call(image,0x1117,0x2300);
+    Bytes(image,0x111c,{0x48,0x8d,0x55,0xb8,0x4c,0x39,0x6d,0xd0,0x48,0x0f,0x47,0x55,0xb8,
+        0x44,0x8b,0x45,0xc8,0x48,0x8d,0x4d,0xa0});
+    Call(image,0x1131,0x2500);
+    Bytes(image,0x1136,{0x48,0x8d,0x4d,0xa0});Call(image,0x113a,0x2600);
+    Bytes(image,0x113f,{0x48,0x8d,0x55,0xd8,0x48,0x8d,0x4c,0x24,0x38});
+    Call(image,0x1148,0x2000);Bytes(image,0x114d,{0x84,0xc0});
+    // Uncompressed complete commands use the same output local and adapter.
+    Bytes(image,0x1300,{0x48,0x8d,0x4c,0x24,0x38});Call(image,0x1305,0x2000);
+    Bytes(image,0x130a,{0x84,0xc0});
+    Literal(image,0x1400,0x4000,"Received player command: %s");
+    Literal(image,0x1500,0x4100,"sent_by_device_id");
+    Literal(image,0x1600,0x4200,"Unable to parse connect player command:\n%s");
+    return image;
+}
 void Reject(std::vector<std::uint8_t> image,spotify::DiscoveryResult expected) {
     spotify::ConnectDecodeTargets out{1,2,3};
     assert(spotify::DiscoverConnectDecodeTargets(image.data(),image.size(),out)==expected);
@@ -92,4 +122,13 @@ void TestConnectHookDiscovery() {
     Bytes(bad,0x135a,{0x84,0xc0});Reject(bad,spotify::DiscoveryResult::InconsistentLayout);
     bad=image;Put<std::uint32_t>(bad,0x5010,0x2028);Reject(bad,spotify::DiscoveryResult::InconsistentLayout);
     bad=image;bad[0x2319]=0x90;Reject(bad,spotify::DiscoveryResult::InconsistentLayout);
+
+    image=CurrentFixture();out={};
+    assert(spotify::DiscoverConnectDecodeTargets(image.data(),image.size(),out)==spotify::DiscoveryResult::Found);
+    assert(out.parser==0x2000&&out.plain_return==0x130a&&out.decoded_return==0x114d);
+    bad=image;bad[0x1022]^=0xff;Reject(bad,spotify::DiscoveryResult::InconsistentLayout);
+    bad=image;bad[0x104a]^=0xff;Reject(bad,spotify::DiscoveryResult::InconsistentLayout);
+    bad=image;bad[0x1120]^=0xff;Reject(bad,spotify::DiscoveryResult::InconsistentLayout);
+    bad=image;bad[0x1146]^=0xff;Reject(bad,spotify::DiscoveryResult::InconsistentLayout);
+    bad=image;Call(bad,0x1305,0x2100);Reject(bad,spotify::DiscoveryResult::InconsistentLayout);
 }

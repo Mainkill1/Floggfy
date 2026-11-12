@@ -142,6 +142,23 @@ PlaybackLevel ParsePlaybackLevel(const std::string &value) {
   if(value == "lossless_24") return PlaybackLevel::Lossless24;
   return PlaybackLevel::Unknown;
 }
+PlaybackQualitySnapshot WithPlaybackEncoding(PlaybackQualitySnapshot out,const Quality& encoding) {
+  switch(encoding.codec) {
+    case Codec::Vorbis:out.format=PlaybackFormat::Ogg;break;
+    case Codec::Flac:out.format=PlaybackFormat::Flac;break;
+    case Codec::Mp3:out.format=PlaybackFormat::Mp3;break;
+    case Codec::Aac:out.format=PlaybackFormat::Aac;break;
+  }
+  out.rate=encoding.rate;out.channels=encoding.channels;
+  out.bits=encoding.codec==Codec::Flac?encoding.bits:0;
+  if(encoding.codec==Codec::Flac)
+    out.level=encoding.bits==24?PlaybackLevel::Lossless24:PlaybackLevel::Lossless;
+  else if(out.level==PlaybackLevel::Unknown||out.level==PlaybackLevel::Lossless||out.level==PlaybackLevel::Lossless24)
+    out.level=encoding.codec==Codec::Vorbis&&encoding.bitrate==320000?PlaybackLevel::VeryHigh:
+              encoding.codec==Codec::Vorbis&&encoding.bitrate==160000?PlaybackLevel::High:
+              encoding.codec==Codec::Vorbis&&encoding.bitrate==96000?PlaybackLevel::Normal:PlaybackLevel::Lossy;
+  return out;
+}
 PlaybackQualitySnapshot PlaybackQualityTracker::Snapshot(const std::string &client_quality) const {
   PlaybackQualitySnapshot out;
   out.identity = PlaybackIdentity(identity_);
@@ -173,18 +190,9 @@ PlaybackQualitySnapshot PlaybackQualityTracker::Snapshot(const std::string &clie
   if (out.level != PlaybackLevel::Unknown &&
       ((c.format == PlaybackFormat::Flac && !lossless) || (c.format == PlaybackFormat::Ogg && lossless)))
     return out;
-  out.format = c.format;
-  out.rate = c.format == PlaybackFormat::Flac ? c.flac.rate : c.ogg.rate;
-  out.channels = c.format == PlaybackFormat::Flac ? c.flac.channels : c.ogg.channels;
-  if (c.format == PlaybackFormat::Flac) {
-    out.bits = c.flac.bits;
-    out.level = c.flac.bits == 24 ? PlaybackLevel::Lossless24 : PlaybackLevel::Lossless;
-  } else if (out.level == PlaybackLevel::Unknown) {
-    out.level = c.ogg.bitrate == 320000 ? PlaybackLevel::VeryHigh :
-                c.ogg.bitrate == 160000 ? PlaybackLevel::High :
-                c.ogg.bitrate == 96000 ? PlaybackLevel::Normal : PlaybackLevel::Lossy;
-  }
-  return out;
+  return WithPlaybackEncoding(out,c.format==PlaybackFormat::Flac?
+    Quality{Codec::Flac,c.flac.rate,c.flac.channels,c.flac.bits,0}:
+    Quality{Codec::Vorbis,c.ogg.rate,c.ogg.channels,0,c.ogg.bitrate});
 }
 uint64_t PlaybackIdentity(const std::string &key) {
   if (key.empty()) return 0;
@@ -223,7 +231,13 @@ std::array<std::wstring, 4> PlaybackQualityLabels(const PlaybackQualitySnapshot 
                                       std::wstring(L"Quality: ")+level, L"Format: Unavailable",
                                       L"Sample rate: Unavailable"};
   if (q.format == PlaybackFormat::Unknown) return rows;
-  rows[2] = q.format == PlaybackFormat::Flac ? L"Format: FLAC" : L"Format: Ogg";
+  switch(q.format) {
+    case PlaybackFormat::Flac:rows[2]=L"Format: FLAC";break;
+    case PlaybackFormat::Ogg:rows[2]=L"Format: Ogg";break;
+    case PlaybackFormat::Mp3:rows[2]=L"Format: MP3";break;
+    case PlaybackFormat::Aac:rows[2]=L"Format: AAC";break;
+    default:break;
+  }
   if (q.rate) {
     auto number = std::to_wstring(q.rate);
     for (int p = int(number.size()) - 3; p > 0; p -= 3) number.insert(size_t(p), L",");

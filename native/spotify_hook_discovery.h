@@ -43,7 +43,11 @@ struct AacHookTargets {std::uint32_t initialize=0,push=0,destroy=0;};
 // Optional: a missing AAC capability never disables existing FLAC/Ogg capture.
 DiscoveryResult DiscoverAacHookTargets(const std::uint8_t* mapped_image,
     std::size_t available,AacHookTargets& targets) noexcept;
-struct DecodedOutputTarget {std::uint32_t rva=0;};
+struct DecodedOutputTarget {
+    std::uint32_t rva=0;
+    std::uint32_t caller_rva=0;
+    std::int32_t decoder_offset=0;
+};
 // Optional shared decoder dispatcher. Discovery validates the x64 unwind entry,
 // codec virtual call and exact input/output span accounting before hooking it.
 DiscoveryResult DiscoverDecodedOutputTarget(const std::uint8_t* mapped_image,

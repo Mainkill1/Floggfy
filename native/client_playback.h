@@ -14,6 +14,19 @@ struct ClientPlaybackRecord {
     int local=-1;
     std::string instance;
 };
+enum class ClientInterstitialKind { None,Interstitial,Advertisement };
+inline bool ParseClientActiveWithoutUri(const std::string& input,
+                                        ClientInterstitialKind* kind=nullptr) noexcept {
+    ClientInterstitialKind parsed=ClientInterstitialKind::None;
+    if(input=="v=1&unavailable=track-unavailable&active=1"||
+       input=="v=1&unavailable=track-unavailable&active=1&kind=interstitial")
+        parsed=ClientInterstitialKind::Interstitial;
+    else if(input=="v=1&unavailable=track-unavailable&active=1&kind=advertisement")
+        parsed=ClientInterstitialKind::Advertisement;
+    else return false;
+    if(kind)*kind=parsed;
+    return true;
+}
 inline bool ParseClientPlayback(const std::string& input,ClientPlaybackRecord& out,std::string& error) {
     const auto fail=[&](const char* reason){error=reason;return false;};
     if(input.size()>16384)return fail("client-payload-too-large");
@@ -80,7 +93,7 @@ inline bool ParseClientPlayback(const std::string& input,ClientPlaybackRecord& o
     }
     out=std::move(record);error.clear();return true;
 }
-struct ClientTransition {std::string uri,instance;double sampled_ms=0,transition_ms=0,position=-1;bool explicit_skip=false,explicit_control=false,control_monitoring=false,natural=false,pending=false;};
+struct ClientTransition {std::string uri,instance;double sampled_ms=0,transition_ms=0,position=-1;bool explicit_skip=false,explicit_control=false,control_monitoring=false,natural=false,pending=false,terminal=false;};
 inline bool ParseClientTransition(const std::string& input,ClientTransition& out) {
     if(input.size()>16384||input.find('\0')!=std::string::npos)return false;
     std::map<std::string,std::string> values;
@@ -88,7 +101,7 @@ inline bool ParseClientTransition(const std::string& input,ClientTransition& out
         auto end=input.find('&',p);if(end==std::string::npos)end=input.size();
         const auto eq=input.find('=',p);if(eq==std::string::npos||eq>=end)return false;
         const auto key=input.substr(p,eq-p);
-        if(key!="v"&&key!="blocked"&&key!="uri"&&key!="instance"&&key!="sampled_ms"&&key!="transition_ms"&&key!="position_ms"&&key!="manual"&&key!="controlled"&&key!="monitoring"&&key!="natural"&&key!="pending")return false;
+        if(key!="v"&&key!="blocked"&&key!="uri"&&key!="instance"&&key!="sampled_ms"&&key!="transition_ms"&&key!="position_ms"&&key!="manual"&&key!="controlled"&&key!="monitoring"&&key!="natural"&&key!="pending"&&key!="terminal")return false;
         if(!values.emplace(key,input.substr(eq+1,end-eq-1)).second)return false;
         p=end+1;
     }
@@ -116,12 +129,18 @@ inline bool ParseClientTransition(const std::string& input,ClientTransition& out
     const auto pending=values.find("pending");
     if(pending!=values.end()&&pending->second!="0"&&pending->second!="1")return false;
     if(natural!=values.end()&&natural->second=="1"&&pending!=values.end()&&pending->second=="1")return false;
+    const auto terminal=values.find("terminal");
+    if(terminal!=values.end()&&terminal->second!="0"&&terminal->second!="1")return false;
+    const bool cleared=terminal!=values.end()&&terminal->second=="1";
+    if(cleared&&(record.metadata.uri.rfind("spotify:episode:",0)!=0||record.instance.empty()||
+       monitoring->second!="1"||values["natural"]=="1"||values["pending"]=="1"||
+       values["manual"]=="1"||values["controlled"]=="1"))return false;
     out={record.metadata.uri,record.instance,record.sampled_ms,changed,position,
          manual!=values.end()&&manual->second=="1",
          controlled!=values.end()&&controlled->second=="1",
          monitoring->second=="1",
          natural!=values.end()&&natural->second=="1",
-         pending!=values.end()&&pending->second=="1"};return true;
+         pending!=values.end()&&pending->second=="1",cleared};return true;
 }
 
 }

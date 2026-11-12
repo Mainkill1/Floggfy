@@ -434,6 +434,69 @@ void TestReadyClockSkewCannotRejectLifecycle() {
     assert(bound.listen_generation==1);
 }
 
+void TestCurrentItemChangeReconsidersOnlyUniqueAmbiguousSuccessor() {
+    DecoderOwnershipTracker tracker;tracker.Reset(1);
+    const auto outgoing=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,1.0,1,1);
+    tracker.ObserveDecoded(Activity(0x1000,1.1,1.2,1,2));
+    tracker.ObservePlayback("instance-a","spotify:track:0000000000000000000001",1,1.3);
+    State(tracker,outgoing,OwnershipState::Bound);
+
+    const auto voice=tracker.BeginCapture(DecoderCodec::Mp3,0x2000,0,2.0,1,3);
+    tracker.ObserveDecoded(Activity(0x2000,2.1,2.2,1,4));
+    const auto music=tracker.BeginCapture(DecoderCodec::Flac,0x3000,0,2.2,1,5);
+    tracker.ObserveDecoded(Activity(0x3000,2.3,2.4,1,6));
+    State(tracker,voice,OwnershipState::Conflict);
+    State(tracker,music,OwnershipState::Conflict);
+    tracker.AbortCapture(voice,CaptureAbortReason::InvalidData);
+    assert(tracker.ReconsiderAmbiguousSuccessor(music));
+    State(tracker,music,OwnershipState::AwaitingPlaybackInstance);
+    tracker.ObservePlayback("instance-b","spotify:track:0000000000000000000002",2,2.5);
+    assert(State(tracker,music,OwnershipState::Bound).listen_generation==2);
+
+    tracker.Reset(2);
+    const auto first=tracker.BeginCapture(DecoderCodec::Flac,0x4000,0,3.0,2,10);
+    tracker.ObserveDecoded(Activity(0x4000,3.1,3.2,2,11));
+    tracker.ObservePlayback("old","spotify:track:0000000000000000000003",3,3.3);
+    State(tracker,first,OwnershipState::Bound);
+    const auto second=tracker.BeginCapture(DecoderCodec::Flac,0x5000,0,4.0,2,12);
+    tracker.ObserveDecoded(Activity(0x5000,4.1,4.2,2,13));
+    const auto third=tracker.BeginCapture(DecoderCodec::Flac,0x6000,0,4.1,2,14);
+    tracker.ObserveDecoded(Activity(0x6000,4.3,4.4,2,15));
+    State(tracker,second,OwnershipState::Conflict);
+    State(tracker,third,OwnershipState::Conflict);
+    assert(!tracker.ReconsiderAmbiguousSuccessor(second)&&
+           !tracker.ReconsiderAmbiguousSuccessor(third)&&
+           "two viable music successors must remain ambiguous");
+
+    tracker.Reset(3);
+    const auto lost=tracker.BeginCapture(DecoderCodec::Flac,0x7000,0,5.0,3,20);
+    tracker.ObserveDecoded(Activity(0x7000,5.1,5.2,3,21));
+    tracker.ObservationLost(ObservationLoss::CaptureQueue,5.3);
+    assert(!tracker.ReconsiderAmbiguousSuccessor(lost)&&
+           "observation loss must remain terminal");
+}
+
+void TestExactDecoderIdentityResolvesSameCodecConflict() {
+    DecoderOwnershipTracker tracker;tracker.Reset(1);
+    const auto outgoing=tracker.BeginCapture(DecoderCodec::Flac,0x8000,0,0.5,1,1);
+    tracker.ObserveDecoded(Activity(0x8000,0.6,0.7,1,2));
+    tracker.ObservePlayback("outgoing","spotify:track:0000000000000000000098",98,0.8);
+    State(tracker,outgoing,OwnershipState::Bound);
+    const auto first=tracker.BeginCapture(DecoderCodec::Flac,0x8100,0,1.0,1,3);
+    tracker.ObserveDecoded(Activity(0x8100,1.1,1.2,1,4));
+    const auto second=tracker.BeginCapture(DecoderCodec::Flac,0x8200,0,1.2,1,5);
+    tracker.ObserveDecoded(Activity(0x8200,1.3,1.4,1,6));
+    State(tracker,first,OwnershipState::Conflict);
+    State(tracker,second,OwnershipState::Conflict);
+
+    assert(tracker.BindCaptureExact(second,"exact-playback",
+        "spotify:track:0000000000000000000099",99,1.5));
+    const auto selected=State(tracker,second,OwnershipState::Bound);
+    assert(selected.listen_generation==99&&
+           selected.playback_token==tracker.PlaybackToken("exact-playback"));
+    State(tracker,first,OwnershipState::Conflict);
+}
+
 void TestBoundedCaptureAndOwnerStorage() {
     DecoderOwnershipTracker tracker;tracker.Reset(1);
     std::uint64_t first_capture=0;
@@ -483,6 +546,8 @@ int main() {
     TestElapsedTimeNeverRejectsOwnershipEvidence();
     TestBlankIdOutgoingAndSuccessorUseLifecycleStages();
     TestReadyClockSkewCannotRejectLifecycle();
+    TestCurrentItemChangeReconsidersOnlyUniqueAmbiguousSuccessor();
+    TestExactDecoderIdentityResolvesSameCodecConflict();
     TestBoundedCaptureAndOwnerStorage();
     TestBoundedPlaybackStorage();
 }

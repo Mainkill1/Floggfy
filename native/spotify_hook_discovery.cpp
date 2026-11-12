@@ -386,15 +386,17 @@ DiscoveryResult DiscoverDecodedOutputTarget(const std::uint8_t* mapped_image,
     if(caller_result!=DiscoveryResult::Found)return caller_result;
     const auto call=caller.rva+0x2c9;
     std::int32_t relative=0;
-    static constexpr std::uint8_t decoder_load[]={0x49,0x8b,0x4e,0x70};
-    if(!Range(image.image_size,call-4,sizeof(decoder_load))||
+    static constexpr std::uint8_t decoder_load[]={0x49,0x8b,0x4e};
+    std::int8_t decoder_offset=0;
+    if(!Range(image.image_size,call-4,sizeof(decoder_load)+sizeof(decoder_offset))||
        std::memcmp(image.base+call-4,decoder_load,sizeof(decoder_load))||
+       !Read(image.base,image.image_size,call-1,decoder_offset)||decoder_offset<=0||
        !Range(image.image_size,call,5)||image.base[call]!=0xe8||
        !Read(image.base,image.image_size,call+1,relative)||
        std::int64_t(call)+5+relative!=found.rva||
        !Range(image.image_size,caller.rva+0x48c,sizeof(stereo))||
        std::memcmp(image.base+caller.rva+0x48c,stereo,sizeof(stereo)))return DiscoveryResult::InconsistentLayout;
-    target.rva=found.rva;return DiscoveryResult::Found;
+    target={found.rva,caller.rva,decoder_offset};return DiscoveryResult::Found;
 }
 
 DiscoveryResult DiscoverDecoderOwnershipLayout(const std::uint8_t* mapped_image,
@@ -573,6 +575,8 @@ struct ConnectParserCalls {
     std::uint32_t wrapper = 0;
 };
 
+enum class ConnectAbi : unsigned char { Legacy, Current };
+
 DiscoveryResult FindConnectCommandFunction(const Image& image,
                                            ConnectCommandFunction& command) noexcept {
     unsigned anchors = 0;
@@ -593,8 +597,8 @@ DiscoveryResult FindConnectCommandFunction(const Image& image,
     return anchors ? DiscoveryResult::Found : DiscoveryResult::MissingTarget;
 }
 
-bool VerifyConnectCommandInput(const Image& image,
-                               const ConnectCommandFunction& command) noexcept {
+bool VerifyConnectCommandInput(const Image& image,const ConnectCommandFunction& command,
+                               ConnectAbi abi) noexcept {
     const auto owner = command.begin;
     const auto finish = command.end;
     if (finish - owner < kConnectMinimumCommandSize ||
@@ -605,33 +609,43 @@ bool VerifyConnectCommandInput(const Image& image,
 
     // mov rsi,rdx; mov rdi,rcx saves the input separately from the output.
     static constexpr std::uint8_t input_save[] = {0x48,0x8b,0xf2,0x48,0x8b,0xf9};
+    static constexpr std::uint8_t current_input_save[] = {0x48,0x8b,0xda,0x48,0x8b,0xf1};
     // mov rcx,rdx; call compression_check; mov rdx,[rsi+20h].
     // The final load obtains the native body string from the saved input.
     static constexpr std::uint8_t input_body[] = {0x48,0x8b,0xca};
     static constexpr std::uint8_t body_load[] = {0x48,0x8b,0x56,0x20};
+    static constexpr std::uint8_t current_input_body[] = {0x48,0x8b,0xcb};
+    static constexpr std::uint8_t current_body_load[] = {0x48,0x8b,0x53,0x20};
     constexpr std::uint32_t kCompressionCheckOffset = 3;
     constexpr std::uint32_t kBodyLoadOffset = 8;
     constexpr std::uint32_t kBodySequenceSize = 12;
     bool input = false, body = false;
     for (auto at = owner; at < finish; ++at) {
-        if (ConnectBytes(image, at, input_save) && finish - at >= sizeof(input_save)) input = true;
+        if ((abi==ConnectAbi::Legacy&&ConnectBytes(image,at,input_save))||
+            (abi==ConnectAbi::Current&&ConnectBytes(image,at,current_input_save))) input=true;
         std::uint32_t compression_check = 0;
-        if (finish - at >= kBodySequenceSize && ConnectBytes(image, at, input_body) &&
-            ConnectCall(image, at + kCompressionCheckOffset, owner, finish, compression_check) &&
-            ConnectBytes(image, at + kBodyLoadOffset, body_load)) body = true;
+        const bool body_arguments=abi==ConnectAbi::Legacy?ConnectBytes(image,at,input_body):
+            ConnectBytes(image,at,current_input_body);
+        const bool body_result=abi==ConnectAbi::Legacy?ConnectBytes(image,at+kBodyLoadOffset,body_load):
+            ConnectBytes(image,at+kBodyLoadOffset,current_body_load);
+        if (finish-at>=kBodySequenceSize&&body_arguments&&
+            ConnectCall(image,at+kCompressionCheckOffset,owner,finish,compression_check)&&body_result) body=true;
     }
     return input && body;
 }
 
 bool VerifyConnectParserCalls(const Image& image, const ConnectCommandFunction& command,
-                              ConnectParserCalls& calls) noexcept {
+                              ConnectAbi abi,ConnectParserCalls& calls) noexcept {
     const auto owner = command.begin;
     const auto finish = command.end;
     // lea rdx,[rbp-78h]; lea rcx,[rsp+48h] supplies decoded string/output locals.
     static constexpr std::uint8_t decoded[] = {0x48,0x8d,0x55,0x88,0x48,0x8d,0x4c,0x24,0x48};
+    static constexpr std::uint8_t current_decoded[] = {0x48,0x8d,0x55,0xd8,0x48,0x8d,0x4c,0x24,0x38};
     // Complete-command parses share [rsp+48h]; the envelope uses [rbp-30h].
     static constexpr std::uint8_t complete[] = {0x48,0x8d,0x4c,0x24,0x48};
     static constexpr std::uint8_t envelope[] = {0x48,0x8d,0x4d,0xd0};
+    static constexpr std::uint8_t current_complete[] = {0x48,0x8d,0x4c,0x24,0x38};
+    static constexpr std::uint8_t current_envelope[] = {0x48,0x8d,0x4d,0xf8};
     static constexpr std::uint8_t test[] = {0x84,0xc0}; // test al,al checks parser success.
     constexpr std::uint32_t kDecodedCallOffset = 9;
     constexpr std::uint32_t kDecodedTestOffset = 14;
@@ -642,7 +656,9 @@ bool VerifyConnectParserCalls(const Image& image, const ConnectCommandFunction& 
     unsigned decoded_count = 0, complete_count = 0;
     for (auto at = owner; finish - at >= kDecodedSequenceSize; ++at) {
         std::uint32_t target = 0;
-        if (ConnectBytes(image, at, decoded) &&
+        const bool arguments=abi==ConnectAbi::Legacy?ConnectBytes(image,at,decoded):
+            ConnectBytes(image,at,current_decoded);
+        if (arguments &&
             ConnectCall(image, at + kDecodedCallOffset, owner, finish, target) &&
             ConnectBytes(image, at + kDecodedTestOffset, test)) {
             if (++decoded_count > 1) return false;
@@ -657,20 +673,22 @@ bool VerifyConnectParserCalls(const Image& image, const ConnectCommandFunction& 
         if (!ConnectCall(image, at, owner, finish, target) || target != calls.wrapper) continue;
         ++total_calls;
         if (at >= owner + kCompleteArgumentSize && finish - at >= kCallAndTestSize &&
-            ConnectBytes(image, at - kCompleteArgumentSize, complete) &&
+            (abi==ConnectAbi::Legacy?ConnectBytes(image,at-kCompleteArgumentSize,complete):
+             ConnectBytes(image,at-kCompleteArgumentSize,current_complete)) &&
             ConnectBytes(image, at + kConnectCallSize, test)) {
             ++complete_count;
             if (at != calls.decoded) calls.plain = at;
         } else if (at >= owner + kEnvelopeArgumentSize && finish - at >= kCallAndTestSize &&
-                   ConnectBytes(image, at - kEnvelopeArgumentSize, envelope) &&
+                   (abi==ConnectAbi::Legacy?ConnectBytes(image,at-kEnvelopeArgumentSize,envelope):
+                    ConnectBytes(image,at-kEnvelopeArgumentSize,current_envelope)) &&
                    ConnectBytes(image, at + kConnectCallSize, test)) ++envelope_count;
     }
     return total_calls == 3 && complete_count == 2 && envelope_count == 1 &&
            calls.plain && calls.plain > calls.decoded;
 }
 
-bool VerifyConnectInflaterPipeline(const Image& image, const ConnectCommandFunction& command,
-                                   const ConnectParserCalls& calls) noexcept {
+bool VerifyConnectLegacyInflaterPipeline(const Image& image,const ConnectCommandFunction& command,
+                                         const ConnectParserCalls& calls) noexcept {
     const auto owner = command.begin;
     const auto finish = command.end;
     // The decoded parse follows feed AND finalization. A feed-return observer
@@ -703,6 +721,49 @@ bool VerifyConnectInflaterPipeline(const Image& image, const ConnectCommandFunct
            ctor != push && ctor != close && push != close &&
            ctor != calls.wrapper && push != calls.wrapper && close != calls.wrapper;
 }
+bool VerifyConnectCurrentInflaterPipeline(const Image& image,const ConnectCommandFunction& command,
+                                          const ConnectParserCalls& calls) noexcept {
+    const auto owner=command.begin,finish=command.end;
+    // The current client builds a sink around the decoded string, moves that
+    // state, feeds the selected encoded body and finalizes it before parsing the
+    // sink string. The exact local relationship is required; calls alone are not
+    // sufficient evidence that the parse sees complete decompressed input.
+    static constexpr std::uint8_t create[]={0x48,0x8d,0x55,0xd8,0x48,0x8d,0x4c,0x24,0x60};
+    static constexpr std::uint8_t move[]={0x48,0x8d,0x54,0x24,0x60,0x48,0x8d,0x4d,0xa0};
+    static constexpr std::uint8_t feed[]={0x48,0x8d,0x55,0xb8,0x4c,0x39,0x6d,0xd0,
+        0x48,0x0f,0x47,0x55,0xb8,0x44,0x8b,0x45,0xc8,0x48,0x8d,0x4d,0xa0};
+    static constexpr std::uint8_t finalize[]={0x48,0x8d,0x4d,0xa0};
+    static constexpr std::uint8_t decoded[]={0x48,0x8d,0x55,0xd8,0x48,0x8d,0x4c,0x24,0x38};
+    constexpr std::uint32_t kDecodedCallOffset=72;
+    if(calls.decoded<owner+kDecodedCallOffset)return false;
+    const auto pipeline=calls.decoded-kDecodedCallOffset;
+    std::uint32_t create_target=0,move_target=0,push=0,close=0;
+    const bool create_bytes=ConnectBytes(image,pipeline,create);
+    const bool create_call=ConnectCall(image,pipeline+9,owner,finish,create_target);
+    const bool move_bytes=ConnectBytes(image,pipeline+14,move);
+    const bool move_call=ConnectCall(image,pipeline+23,owner,finish,move_target,false)&&
+        ConnectInflaterConstructor(image,move_target);
+    const bool feed_bytes=ConnectBytes(image,pipeline+28,feed);
+    const bool feed_call=ConnectCall(image,pipeline+49,owner,finish,push);
+    const bool finalize_bytes=ConnectBytes(image,pipeline+54,finalize);
+    const bool finalize_call=ConnectCall(image,pipeline+58,owner,finish,close);
+    const bool decoded_bytes=ConnectBytes(image,pipeline+63,decoded);
+    return create_bytes&&create_call&&move_bytes&&move_call&&feed_bytes&&feed_call&&
+        finalize_bytes&&finalize_call&&decoded_bytes&&
+        create_target!=move_target&&create_target!=push&&create_target!=close&&
+        move_target!=push&&move_target!=close&&push!=close&&
+        create_target!=calls.wrapper&&move_target!=calls.wrapper&&
+        push!=calls.wrapper&&close!=calls.wrapper;
+}
+bool VerifyConnectLayout(const Image& image,const ConnectCommandFunction& command,
+                         ConnectAbi abi,ConnectParserCalls& calls) noexcept {
+    const bool input=VerifyConnectCommandInput(image,command,abi);
+    const bool parser=VerifyConnectParserCalls(image,command,abi,calls);
+    const bool pipeline=input&&parser&&(abi==ConnectAbi::Legacy?
+        VerifyConnectLegacyInflaterPipeline(image,command,calls):
+        VerifyConnectCurrentInflaterPipeline(image,command,calls));
+    return input&&parser&&pipeline;
+}
 } // namespace
 
 DiscoveryResult DiscoverConnectDecodeTargets(const std::uint8_t* mapped_image,
@@ -713,11 +774,11 @@ DiscoveryResult DiscoverConnectDecodeTargets(const std::uint8_t* mapped_image,
     ConnectCommandFunction command;
     const auto result = FindConnectCommandFunction(image, command);
     if (result != DiscoveryResult::Found) return result;
-    ConnectParserCalls calls;
-    if (!VerifyConnectCommandInput(image, command) ||
-        !VerifyConnectParserCalls(image, command, calls) ||
-        !VerifyConnectInflaterPipeline(image, command, calls))
-        return DiscoveryResult::InconsistentLayout;
+    ConnectParserCalls legacy{},current{};
+    const bool legacy_found=VerifyConnectLayout(image,command,ConnectAbi::Legacy,legacy);
+    const bool current_found=VerifyConnectLayout(image,command,ConnectAbi::Current,current);
+    if(legacy_found==current_found)return DiscoveryResult::InconsistentLayout;
+    const auto& calls=legacy_found?legacy:current;
     targets = {calls.wrapper, calls.plain + kConnectCallSize, calls.decoded + kConnectCallSize};
     return DiscoveryResult::Found;
 }

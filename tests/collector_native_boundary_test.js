@@ -28,8 +28,25 @@ const sandbox={
  Date:{now:()=>now},
  encodeURIComponent
 };
+if(process.argv[2]==='--terminal')state.item.uri='spotify:episode:0000000000000000000001';
 vm.runInNewContext(script,sandbox);
 const prefix='FLOGGFY_TIMELINE_V1:';
+if(process.argv[2]==='--terminal'){
+ state.isBuffering=true;sandbox.window.__floggfyPoll();
+ state.item=null;state.playbackId=null;state.context={uri:''};state.duration=undefined;state.positionAsOfTimestamp=0;
+ sandbox.window.__floggfyPoll();
+ const terminal=messages.filter(value=>value.startsWith(prefix)&&value.includes('terminal=1')).at(-1);
+ if(!terminal)throw new Error('collector did not emit explicit terminal context clearance');
+ process.stdout.write(terminal.slice(prefix.length));process.exit(0);
+}
+if(process.argv[2]==='--active-without-uri'){
+ state.item={...state.item,uri:''};
+ sandbox.window.__floggfyPoll();
+ const marker=messages.filter(value=>value.startsWith(prefix)).at(-1);
+ if(!marker)throw new Error('collector did not emit a URI-less active marker');
+ process.stdout.write(marker.slice(prefix.length));
+ process.exit(0);
+}
 if(process.argv[2]==='--pending-prior-control'){
  state.isBuffering=true;state.playbackId='';
  state.item={...state.item,uri:'spotify:track:0000000000000000000002'};

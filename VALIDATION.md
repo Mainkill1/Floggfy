@@ -2,6 +2,365 @@ The current consolidated diagnostics regression entry point is
 `bash test-diagnostics.sh [SPOTIFY_DLL]`. Earlier dated sections below preserve
 historical evidence and may name wrappers that this entry point has replaced.
 
+## 2026-11-11: captured decoder-reuse replay and pause-gap validation
+
+`test-dump-replay.sh STREAM.bin STREAM.jsonl` replays DumpStreams input records
+and native playback markers through the production MP3 queue and capture worker.
+The raw audio remains local and is not copied into the repository. Against the
+pre-fix implementation, the captured replay failed because one reused decoder
+retained all three sources as one buffer. After reconciliation, the same replay
+retained exactly the 1,347,906 bytes after the final native marker and parsed
+3,548,160 samples at 44.1 kHz (80.457143 seconds). The prior complete source was
+preserved, while the interrupted repeated source was discarded.
+
+Committed synthetic regressions cover complete, partial and initially rejected
+predecessors; first and repeated native identities; playback changes during an
+in-flight callback; prefetched and split ID3 headers; partial old frames; ID3v1
+trailers; tagless streams; queue saturation; pending-generation input loss; and
+ambiguous multiple source starts. The observational playback hook preserves the
+caller's LastError and is installed independently of LogLevel and DumpStreams so
+normal podcast capture receives the same decoder-reuse boundaries.
+
+Pause/gap tests distinguish elapsed wall time from missing input. A 900-second
+MP3 callback gap without loss retained all 200 frames. Explicit queue loss did
+not stitch a frame-aligned suffix onto discarded bytes. Removing whole MP3
+frames still produced a structurally valid shortened stream, but expected-media
+duration validation kept it unpublished. FLAC resumes from the same sample/frame
+position after a long pause and rejects non-contiguous frame/sample numbers. Ogg
+page-sequence and AAC access-unit gap regressions remain green.
+
+The final portable/native suite and consolidated Windows diagnostics both passed
+with exit 0 after these tests were added. The real 6.1 MB replay, focused decoder
+reuse, raw-dump hook and pause-continuity runs also passed. The production build
+completed successfully; SHA-256 is
+`7b21f95d712042a3ccdaf0d49165d7212cf80d126e2c9c3f9df70a821a3cf953`.
+
+## 2026-11-11: forensic stream dumps (release still held)
+
+`DumpStreams=0` is a restart-only opt-in, independent of LogLevel and normal
+recording/format switches. When enabled, a bounded background writer preserves
+continuous consumed input for each decoder/epoch under a UTC start timestamp.
+Timestamped raw files have matching JSONL metadata logs and a session index.
+Native IDs, URI/title/artist/album, duration/position/state, callback timestamps,
+input groups and physical/logical byte offsets support manual reconciliation.
+Rejected recordings retain their raw input. Gaps identify affected streams,
+sequence/time ranges and missing bytes; uncertain metadata associations remain
+explicitly unresolved. No disk I/O occurs in the decoder callback.
+
+The initial functional test failed before implementation. The standalone Windows
+dump and JSON suites now pass, including decoder reuse, exact bytes, rejected
+output, metadata-before-ID ordering, mixed-case IDs, located gaps, lost identity
+and shutdown drain. Production-hook tests pass with unchanged native return and
+LastError values, epoch changes during decoding and LogLevel=1 identity-hook
+enablement. Strict INI opt-in/default tests, the portable suite, production build
+and generated/bundled INI equality pass. The full Windows wrapper reached every
+final PASS line but returned termination status 143; a focused consolidated
+current-client diagnostics rerun passed with exit 0, including discovery against
+the installed Spotify DLL. The final saturated-gap confidence regression also
+passed after guarding identity restoration through the end of an unknown range.
+
+The final installed diagnostic build matches the production DLL, SHA-256
+`7dd626a42faf2b1a1d36e5f961e3c4d7b46ad410e228db07a12b60c9b14e300b`.
+The preceding live replay used
+`a162471889f61a56a1d4d962d0fe3e33f16e5548ecd2b6e93f0112d8f1fe35d3`;
+the final revision only tightens metadata confidence during saturated loss.
+Live capture at LogLevel=1 produced confirmed per-stream metadata with zero dump
+gaps. A complete 247.432-second podcast saved normally and independently decoded
+to 10,911,744 samples at 44.1 kHz. After decoder reuse, an 80.457-second podcast
+was not saved normally, but its full input remained in the dump. Manual splitting
+at the recorded source header/marker offset 4,761,856 recovered all 3,548,160
+samples (80.457143 seconds). This proves the diagnostic preservation and cut
+point; it does not claim the production stitching issue is fixed.
+
+The prefix/suffix reconciliation is now integrated and validated by the section
+above. PR #25 remains draft; no 1.3 tag or release has been published. DumpStreams
+remains enabled under the normal `Save Location\DumpStreams` directory. The
+temporary Never Pause test setting was restored to -1; LogLevel is 1 and hook
+timing diagnostics are off.
+
+## 2026-11-11: release 1.3 integration and live release gate (in progress)
+
+PR #25 includes both the RC6 fixes and its five later safety commits. Integration
+review found that FLAC, Ogg and AAC captures did not initialize their capture
+epoch before scoped queue-loss checks. Capture ownership now sets the context
+and epoch for every codec. A production-path regression failed before the fix
+and passed afterward, including stale-epoch isolation.
+
+The integrated source at `104484929a7e141507f761b85b821e9dd7f19fc2` passed the
+full portable suite, deterministic 50,000-mutation sanitizer campaign, complete
+Windows suite, focused playback diagnostics and duplicate directory tests.
+Two independent production builds and the installed DLL had SHA-256
+`c187400eeedcb4b82b18b88eb6649ccb9de37f0e7e572d5958502dc10928920d`.
+
+Live validation used an isolated temporary output directory. Never Pause
+recovered from a public Windows media-session Pause command. A full 96-second,
+24-bit, 44.1-kHz stereo FLAC decoded independently to 4,233,600 samples. A second
+full replay included another controlled Pause and automatic recovery; its
+independently decoded PCM hash and sample count matched the uninterrupted take.
+
+A subsequent podcast captured complete MP3 data but remained pending when
+Spotify repeated its existing playback instance in buffering and never emitted
+a successor Ready or a different instance. This terminal pattern is not covered
+by the earlier changed-instance fix. Publication has not passed this live gate.
+PR #25 remains draft; no 1.3 tag or release has been published.
+
+Bounded debug-only terminal presence/clock diagnostics were added to investigate
+that failure. Their collector privacy/deduplication and native renderer gateway
+tests passed. The installed tracing DLL matches the production build at
+`37ccc90993da8f26e7207610c338e14283e42d9e`, SHA-256
+`bb9416c2af76775043aa66144dee8f401efc521edf7c28a09a925aa55fd92498`.
+A second replay captured the explicit terminal state: after buffering 0.978
+seconds before the reported end, Spotify set item and playbackId to null and
+context.uri to an empty string. No successor ID arrived. The collector now emits
+a dedicated terminal-context assertion only for that explicit, fresh clearance,
+anchored to the preceding local monitored episode. Controls, missing fields,
+stale observations and player/locality/identity changes discard the anchor.
+Native completion requires the matching active listen, prior ownership hold,
+one validated bound MP3 and the existing at-most-three-second projected end
+check. Invalid terminal assertions cannot reach provisional successor handling.
+
+The collector and native podcast regressions failed before their respective
+fixes and passed afterward. The real collector-to-native parser boundary,
+complete portable suite and full Windows playback diagnostics passed. Independent
+review found no material issue. The candidate DLL is installed, SHA-256
+`3262e7bd1dae5a9f852f5548a6647f8299cfd732caff7eefc2ebce6042e91b1e`.
+The complete Windows rerun and live podcast publication replay remain pending.
+Earlier dated sections below describe previous revisions, not final release
+qualification.
+
+## 2026-11-11: Never Pause
+
+The requested `NeverPause` setting defaults to -1 (hidden and inactive).
+0 shows the menu control off; 1 shows it on. Missing, malformed and duplicate
+values fall back to -1. Visible menu changes persist without advancing the
+capture epoch. Hidden stale-menu commands cannot enable the setting.
+
+The existing renderer heartbeat checks paused local Spotify state independently
+of download/enrichment preferences. It calls Resume/Play, never a toggle, with
+a two-second cooldown and one unsettled command at a time. Manual pauses and
+paused terminal/buffering states are eligible; remote, unknown-local, playing
+and disabled states send no commands. Missing methods, exceptions and rejected
+commands leave polling alive. No additional worker or timer was introduced.
+
+The real-collector regression failed before implementation because no resume
+was dispatched, then passed with the new loop. It covers native Resume, native
+Play, wrapper Play, exact cooldown, enable/disable, invalid/missing settings,
+unknown/remote targets, pending promises, throws/rejection and metadata-less
+terminal buffering. The portable suite passed and review found no actionable
+issues. All Windows gates passed across the full invocation and corrected
+remainder run. The initial invocation stopped at the old exact collector-config
+assertion in `windows_metadata_identity_test`; it now includes the new disabled
+field. The next invocation passed through production build/startup, both menu
+variants, capture and settings cases, then exposed a new duplicate-key fixture
+setup error: create-only writing was attempted after another fixture write had
+already created the INI. That fixture now creates its duplicate text first.
+The complete settings matrix and every remaining Windows gate were rerun and
+passed, including diagnostics and the terminal-podcast regression. These were
+fixture corrections; production behavior required no further changes.
+
+`git diff --check`, generated/bundled INI equality, compiled default bytes,
+archive DLL/INI identity and internal/external checksums passed. The current
+packaged DLL SHA-256 is
+`f64ec98b2172920012a526f1282691b0375f4d4554d05c8d93ec3f21893318cb`.
+The user's existing four synthetic 4x-rejection log entries remained unchanged.
+No live Never Pause replay was performed, and this feature build has not been
+installed into the running Spotify. The previous podcast fix remains installed;
+the new DLL and launcher ZIP are ready under `dist/`.
+
+## 2026-11-11: terminal podcast buffering investigation
+
+An authorized replay with temporary diagnostic logging reproduced a complete
+MP3 remaining pending after its episode ended. Spotify first repeated the old
+playback instance in buffering, then changed instance and stayed paused/buffering
+without another Ready snapshot. The transition handler had already validated
+the complete, bound MP3, but its successor-Ready wait prevented natural listen
+completion. This was not a compressed-buffer limit failure.
+
+`PodcastEndWithoutReadySuccessor` reproduced the wait before implementation.
+An initial fix passed a synthetic sub-second-tail case but still failed live:
+Spotify stopped Ready updates 1.222 seconds before the episode end, then changed
+instance 1.232509 seconds after that sample. The ordinary different-key natural
+end check required the last position to be within one playback second of the
+end. A separate 1.6-second-tail regression failed against that first fix.
+
+The handler now infers a terminal position only for a positively different
+monitored instance after an ownership hold, one fully validated bound MP3 and
+no observed controls. A copied listen uses the existing same-key terminal-pause
+check: eligible coverage, at most three seconds since the last sample and a
+projected clock that reached the end. Its completed state goes directly through
+the existing recording path, preserving the actual finish time. This narrowly
+expands the admissible last-sample gap; it does not treat prefetched audio as
+playback proof. The matrix covers the live timestamps, the longer buffering tail,
+a transition before its projected end, early prefetch, stale timing, skips,
+controls, unchanged instance, missing capture and ambiguous capture.
+
+Final-revision focused/full Windows playback diagnostics, collector/native
+prior-control boundary, all four collector suites, diagnostic source and
+ownership-log checks, capture-association suite and production build passed.
+The strengthened regression also reaches the production save queue with the
+original completion time. The full portable suite passed earlier in this
+investigation. Independent review found no material issues; `git diff --check`
+passed. The entire Windows suite was not repeated for this narrow follow-up.
+
+A final authorized live replay completed at the terminal instance transition:
+122.688 seconds of measured listening for a 122.723-second episode. Publication
+immediately logged that the same-quality recording already existed on disk.
+The existing MP3 stayed in place, so this validates live completion and reuse,
+not a new live file write. The standalone media probe found the title unavailable
+after Spotify reset to idle; the completion and publication outcomes were already
+logged before that probe and are the evidence for this run.
+
+Temporary diagnostic settings were restored to the original INI byte-for-byte
+(LogLevel=1, DebugHookDiagnostics=0), then Spotify was restarted. Private logs
+and the original DLL backup remain under ignored validation storage. The tested
+DLL is installed and packaged. Its SHA-256 is
+`b0256b2dd4278e89b8c4af707d7ef082646fbd965a1cb79bc6cd27a7e9bad628`.
+The launcher ZIP, DLL/INI identity and internal/external checksum manifests were
+verified. No claim is made here about the separately reported unexpected-pause
+issue: the observed pause in these replays occurred at the episode's end.
+
+## 2026-11-11: saved INI template and large podcasts
+
+The bundled INI and generated UTF-16 INI now use the user's saved template,
+including its wording, ordering and Podcasts=1 default. The final requested
+MaxBufferedMiB default is 512, and accepted values clamp to 8-1024 MiB.
+Explicit existing opt-outs remain supported. The source user INI was read only.
+Normalized text comparison confirmed that the bundled template matches it.
+
+The former MP3 frame cap rejected 1,000,001 frames even below the old file-size
+limit. A new virtual-frame regression failed before implementation and now
+checks that case, files above 512 MiB, the largest frame-aligned file under
+1 GiB, oversize rejection before reads, and the existing 24-hour duration bound.
+The new frame cap is 3,600,000 (maximum supported frame frequency over 24 hours).
+Shared recording inspection, locked publication reads and MP3 file limits now
+agree on 1 GiB. AAC-specific construction budgets remain separate. This raises
+the compressed-capture allowance, not a process-wide peak-memory guarantee.
+
+`bash test-large-podcast.sh` passed on Windows: a 536,872,012-byte synthetic MP3
+was tagged, staged/published, read back, renamed and reused without another
+save. This is structural container/file validation, not an independent audio
+decode or a live Spotify episode. The optional fixture uses roughly 1.1 GiB RAM
+and 513 MiB temporary disk and removes its output recording afterward.
+
+Focused Windows new/missing defaults, Podcasts=0, buffer=1024, oversize-clamp
+and undersize-clamp scenarios passed. The full portable suite, production build
+and 50,000-mutation ASan/UBSan campaign passed. Independent static review found
+no important introduced defects. All Windows gates completed as described below.
+
+The initial full Windows invocation failed in `windows_settings_failure_test`
+because its snapshot could race the asynchronous startup migration write. The
+fixture now waits for `FlushSettings(5000)` before fault injection; its focused
+rerun passed. Preceding Windows gates passed, and all remaining wrappers passed
+in sequence. Production defaults/persistence behavior did not require
+a change for this fixture issue.
+
+The refreshed launcher ZIP contains the exact saved-template INI and matches the
+built DLL; embedded/internal and external checksum manifests were verified. The
+then-current `dist/version.dll` SHA-256 was
+`50ae88d8b3a0bb1fed5f4900263d1f5cf8b58ed03574eae7aa5b97713fd1cfe9`.
+The user log's four earlier synthetic 4x-rejection lines remained unchanged.
+
+## 2026-11-11: menu defaults and test log isolation
+
+The follow-up build defaults `CaptureSpeedLimit` to `0` in the settings object,
+fast startup state, generated/shipped INI and missing-key migration. Playback
+remains `CaptureSpeed=1`. Explicit existing nonzero opt-ins are preserved.
+The option is described as an INI-only switch; the previous "Hidden INI" label
+was removed from both INI sources and current documentation was updated.
+
+The menu regression failed before the change at
+`!ShowCaptureSpeed(speed_default)`. After the change, all 32 normal Windows
+settings scenarios, the Windows menu and history executables, the portable
+suite, embedded-default consistency check and production build passed.
+The full Windows suite and sanitizer run in the section below predate this
+defaults-only follow-up and were not repeated. Independent static review found
+no important issues in the defaults, migration or logging isolation changes.
+
+The user's `request=4x rejected; active=1x` warnings came from the menu test's
+deliberate stale-menu command while capability was disabled. That executable
+had initialized logging at the default user Music location. Level 1 includes
+warnings by policy. Its log destination now points to its Windows TEMP fixture
+before initialization; the history fixture also redirects logging before
+exercising settings. An isolated rerun passed and left the user's count of
+these warning lines unchanged at four. Existing user log lines were not edited.
+
+The refreshed package remains
+`dist/Floggfy-v1.3-RC6-duplicate-fix-Launcher-Windows-x64.zip`; its DLL SHA-256 is
+`59f7f5ac9aaef683e6b1553d60d9fa1c82d6eaae33a2a276bf70b72e371c535b`.
+Archive checksums, DLL identity, `CaptureSpeed=1`, `CaptureSpeedLimit=0` and the
+updated INI wording were verified after packaging. The existing Spotify
+installation and its explicit INI values were not replaced.
+
+The default INI was then shortened from 147 to 57 lines (6,686 to 1,698
+characters), grouping formats under Allowed Download Formats and retaining
+brief dependency/range explanations. All option names and values were
+compared before/after and remained identical. The generated/shipped INI
+consistency check, fresh Windows new/missing-settings scenarios and production
+build passed. The package was refreshed and its INI, DLL and checksums verified.
+
+The reported unexpected-pause issue remains unconfirmed. Static inspection
+found no explicit pause dispatch; the collector's playback command is auto-skip
+to the next track. Shared blocking locks in audio callbacks, including the
+decoded-activity path at 1x, are a stall risk to investigate. The decoded-activity
+lock also bypasses the existing QueueGuard timing counters. Acceleration changes
+decoded output spans only above 1x. These observations do not establish that a
+callback stall caused Spotify to enter a persistent paused state.
+
+## 2026-11-11: RC6 unresolved duplicate routing
+
+The fresh clone's `main` was an ancestor of v1.3-RC6 and lacked 68 files of
+RC6 changes. Work is based on exact tag commit `7b825e3` on
+`fix/rc6-duplicate-routing`. The downloaded RC6 DLL matched its published
+SHA-256 `c3e10c37aeb63e449af5b016c201a70a25f1a8de5b0ea7adf53714cb63334013`.
+
+Issue #26's in-album hex-name symptom was reproduced with real Windows files:
+an occupant without a usable ID and a different text identity caused RC6 to
+publish a new canonical collision suffix. The regression failed at the assertion
+that the saved path begins with the root `Duplicates` hierarchy. Missing and
+malformed IDs now use `[no-id-<hash>]` there; valid IDs retain `[t-<id>]`.
+Matching canonical/legacy files stay in place. A separate failing regression
+proved a late-ID-enrichment lookup gap; a bounded lookup-only no-ID alias fixes
+replay, Song discovery and track-number conversion without enabling no-ID writes
+for valid-ID requests. Differing nonempty URI identities remain conservative.
+
+Verified on WSL with Windows-thread MinGW GCC 14:
+
+- `bash test-native.sh`: passed on RC6 and the final change.
+- `bash test-directory-lookup.sh --duplicate-routing`: passed on the final change.
+  Five missing/malformed-ID scenarios exercise actual publication, byte-for-byte
+  occupant preservation, locked-file deferral, replay, 16-to-24-bit upgrades,
+  Song lookup and conversion. Enriched-ID reuse and occupied write namespaces
+  are covered too.
+- `bash test-native-windows.sh`: passed in full on the final change, including
+  the normal directory-lookup entry point and corrected publication-log fixture.
+  Its two optional current-client binary probes were skipped by the default
+  invocation; the installed-client discovery check described below ran separately.
+- Portable layout tests also compiled and passed as a native Windows executable.
+- `bash build-native.sh`: passed; existing vendor warnings remain visible.
+- `bash test-capture-fuzz.sh 50000 4043931417`: passed under ASan/UBSan, including
+  50,000 decoder ownership lifecycles and 2,000 collector lifecycle sequences.
+- Independent static review found no remaining important defects after the
+  late-ID correction.
+
+A full final Windows run found one stale assertion in
+`TestPublicationLogging`: it expected a corrupt occupant's new collision file
+at the old in-album hash path. Updated the assertion to require the duplicate
+destination and absence of that old path, retaining the original-byte check.
+That run exited 3; the corrected full Windows suite subsequently passed, exit 0.
+
+The initial duplicate-only test package used
+`dist/Floggfy-v1.3-RC6-duplicate-fix-Launcher-Windows-x64.zip`.
+Its DLL matched `build/version.dll` and the archive's internal checksums were
+verified. That initial DLL SHA-256 was
+`c71a96501e5c5510477c50220d0ac69a5d050815c760e0fda95f7d11fc365566`.
+
+Read-only checks against installed Spotify 1.3.8.620 found its capture, decoded
+output, ownership and Connect hook patterns; AAC ownership was not verified by
+that static probe. A live native Windows media-session read passed. No Floggfy
+DLL was installed in Spotify, no playback was initiated, and no user recordings
+were changed. This establishes fixture behavior and client discovery, not a
+live end-to-end Spotify save.
+
 ## Release 1.2.4 handoff
 
 The maintainer approved merge and release after controlled use on Windows x64
@@ -1244,3 +1603,304 @@ performed for these two association corrections, and the existing installation
 and preferences were left as previously restored. The earlier live evidence is
 historical coverage of the preceding revision, not a claim that these fixes
 were reproduced live.
+
+## Native-format podcast capture and media-neutral cleanup (2026-11-12)
+
+The three missing long podcast episodes were delivered as Ogg Vorbis, not MP3.
+Their dump streams were structurally complete; publication failed because capture
+association, terminal completion, MP3 collection, and saved-file discovery each
+contained a separate `podcast == MP3` assumption. Media kind is now assigned from
+the associated Spotify URI/metadata after codec capture. Codec parsing and final
+validation remain format-specific.
+
+Behavioral corrections on final source commit `e9edc31`:
+
+- Ogg, FLAC, AAC and MP3 captures can associate with episode metadata without
+  weakening ownership, duration, uniqueness, complete-listen, or final-container
+  validation.
+- `Podcasts` is a late publication policy. MP3 input follows the master
+  `Downloads` switch, and toggling `Podcasts` no longer increments the capture
+  epoch or discards an in-flight stream.
+- MP3 music uses the same fallback/direct ownership and guarded finalization as
+  MP3 episodes; codec no longer decides media kind.
+- The current-song destination worker checks all four native formats for music
+  and podcasts using one directory listing. The obsolete media flag and
+  `SupportsMedia` filter were removed.
+- An explicit terminal episode context may complete any uniquely bound, fully
+  validated native codec; the changed-instance boundary remains MP3-specific
+  because MPEG has no container EOS marker.
+
+Red/green evidence:
+
+- The initial policy test failed to compile before `download_policy.h` existed.
+- Ogg/FLAC episode association failed before the codec/media predicates were
+  removed.
+- A complete Ogg terminal episode remained incomplete before terminal handling
+  was generalized.
+- MP3 music failed fallback binding/finalization before the remaining episode-only
+  checks were removed.
+- The Song destination test could not find Ogg/FLAC/AAC episodes before the
+  codec-only recording format table replaced the old podcast/media split.
+- Real MP3/Ogg/FLAC/AAC compressed fixtures now call `Publish`, re-open through
+  `ReadRecording`, and verify codec, ownership, Spotify identity, extension and
+  `Podcasts\Native Show` placement. `Podcasts=0` rejects every episode, and each
+  non-MP3 source-format switch independently rejects its codec.
+
+Captured Ogg audit used the first complete logical stream in each decoder dump:
+
+- Stream 9 / Vol. 3: 11,515 pages, zero sequence gaps, zero CRC failures, EOS;
+  metadata 4044.591000 s vs decoded 4044.591020 s (20 microseconds).
+- Stream 10 / Vol. 2: 11,544 pages, zero sequence gaps, zero CRC failures, EOS;
+  metadata 4048.849000 s vs decoded 4048.848980 s (20 microseconds).
+- Stream 11 / Vol. 1: 12,510 pages, zero sequence gaps, zero CRC failures, EOS;
+  metadata 4348.343000 s vs decoded 4348.342857 s (143 microseconds). The same
+  decoder dump then contains 1,523,712 bytes from its successor stream; bytes
+  after the first valid EOS are not part of Vol. 1.
+
+Final verification:
+
+- `bash test-native.sh`: exit 0.
+- `bash test-capture-association.sh`: exit 0.
+- `bash test-diagnostics.sh`: exit 0, including MP3-music fallback/direct
+  ownership, reused decoders, pauses/gaps and non-MP3 terminal completion.
+- `bash test-song-shortcut.sh`: exit 0 for MP3 music and every native podcast
+  destination, plus existing menu behavior.
+- `bash test-directory-lookup.sh`: exit 0, including real four-codec podcast
+  publication and policy rejection.
+- `bash test-native-windows.sh`: one complete start-to-finish run at `e9edc31`,
+  exit 0. Optional current-client static discovery checks were skipped because no
+  Spotify DLL argument was supplied. Existing minimp4/stb C warnings remain.
+- Fresh `bash build-native.sh`: exit 0. `build/version.dll` is PE x86-64 with
+  SHA-256 `c8d3746858b9bb042c26f8e627fea0953430b5d113411ec6ef1312611a1b4805`;
+  `build/Floggfy.exe` is PE x86-64 with SHA-256
+  `c16f49ebee32edcf2376fec108a3cded54cc96d46d8edd52b6cb5694d373b896`.
+- `git diff --check`: clean.
+- Independent whole-branch review found three Important stale assumptions; all
+  were reproduced and fixed. Follow-up review found no Critical, Important, or
+  Minor issues and marked the branch ready to merge.
+
+After the synthetic gates passed, the exact `build/version.dll` above replaced
+the installed automatic-mode DLL beside Spotify. The prior DLL (SHA-256
+`7b21f95d712042a3ccdaf0d49165d7212cf80d126e2c9c3f9df70a821a3cf953`)
+was preserved as `version.dll.backup-20261112-native-podcast-pretest`. Spotify
+was restarted and its main process loaded
+`C:\Users\main\AppData\Roaming\Spotify\VERSION.dll`; the installed file still
+matched `c8d3746858b9bb042c26f8e627fea0953430b5d113411ec6ef1312611a1b4805`.
+The installed INI hash remained
+`2e681179739ae60e1f349c6968e051ec084e328a104a97962d591b46aaa49530`.
+This is installation/startup evidence only. A fresh native-format podcast must
+still publish under the real Spotify host before the PR/release gate is cleared.
+
+## 2026-11-12 CEF 156 playback observer repair
+
+The installed Spotify `libcef.dll` exports identity `156.0.15.3660`
+(`cf671c072925b27823a61181152f4f288e8e4306`). The metadata observer's exact
+identity table stopped at CEF 151, so it rejected startup before attaching its
+callbacks. Added this audited identity; unknown revisions remain rejected.
+The regression first failed at the CEF 156 acceptance assertion, then passed.
+The full Linux/native suite passed. Windows callback interception, object
+identity/ownership, menu capability, metadata heartbeat and startup tests passed.
+
+Audited the exact upstream revision using its CEF C API translator. The client,
+display, load, browser, frame, menu and menu delegate tables retain their method
+counts and relevant indices/signatures; browser factories and task posting also
+retain the ABI used by this bridge. See `native/vendor/cef/UPSTREAM.md`.
+
+The first local rebuild accidentally used POSIX MinGW and required
+`libwinpthread-1.dll`. Restored the prior DLL, rebuilt with Win32 MinGW, and
+verified the corrected DLL imports Windows system libraries only. The launcher
+hash is unchanged. Corrected build and installed DLL SHA-256:
+`703c32f995ea5670a6633679ecdef04447200a52d99609cac3496c7adb22f4cc`.
+
+Live Spotify PID 35412 reported `Spotify app observer ready`, then
+`client-timeline-ready` with a title and advancing position. FLAC STREAMINFO and
+decoded-output callbacks bound to the current playback instance. DumpStreams
+recorded Spotify URI, title `911`, artist `Parker Jack`, duration 206.523 seconds
+and advancing playback. The user confirmed the To Disk Song row shows the title.
+
+The read-only current-client discovery probe passed: capture, Ogg, FLAC, AAC,
+decoded output, ownership and Connect were found; decoded RVA `0x1063c80`, caller
+RVA `0x10648c0`, decoder offset 112. AAC capture discovery does not imply verified
+AAC ownership (`aac_verified=0`). Menu discovery remains runtime capability based.
+
+The user's INI was restored byte-for-byte to SHA-256
+`2e681179739ae60e1f349c6968e051ec084e328a104a97962d591b46aaa49530`.
+The current process retains diagnostic logging until its next restart. This
+repairs the observer and verifies hook operation; complete native-format podcast
+publication remains a separate release validation gate.
+
+The full `test-native-windows.sh` run subsequently completed with exit 0,
+including diagnostics, decoder return/LastError preservation, pause/gap handling,
+metadata and publication tests. Its optional supplied-client probes were skipped
+inside that suite; the separate installed-client discovery probe above passed.
+The live song then completed and published `Artists/Parker Jack/911/911.flac`
+(23,692,843 bytes; 16-bit, 44,100 Hz) at 03:27:54, followed by the next track.
+
+## 2026-11-12 unknown-version hook policy
+
+At the user's request, removed the CEF metadata version gate entirely, including
+its unused identity table and allowlist test. Metadata now attempts attachment
+regardless of reported CEF identity. Required task/factory exports, callback
+structure sizes, hook activation and rollback checks remain. An audit of the
+remaining hook startup paths found no other Spotify/CEF version gates: audio,
+decoder ownership, Connect, menu and connectivity use runtime discovery already.
+
+Added Windows integration cases to the normal suite. A synthetic host exporting
+CEF version 999 initially failed preparation under the old gate; after removal,
+actual MinHook preparation/activation and factory forwarding succeed. A host
+missing the task export still rejects startup without creating worker resources.
+Existing callback identity/ownership and startup rollback cases passed. The full
+Linux/native suite, focused Windows metadata integration cases, shell syntax
+checks and installed-client discovery probe passed. The full Windows suite was
+not repeated after this narrowly scoped removal; it passed before this change.
+
+Built with Win32 MinGW; imports contain Windows system libraries only. Installed
+DLL and build SHA-256:
+`d4779da830badaa22d9653cc9baa65dd27db773faf430ba568d9e67efb3088e6`.
+Live Spotify PID 47592 started normally and reported `client-timeline-ready` with
+the current title and playing state, decoded output and a bound FLAC capture.
+The original INI was restored byte-for-byte (SHA-256
+`2e681179739ae60e1f349c6968e051ec084e328a104a97962d591b46aaa49530`).
+Temporary diagnostics remain active in this process until the next restart.
+
+## 2026-11-12 shared decoder details for songs and episodes
+
+The newly completed large podcast MP3 passed the production owned-MP3 structural
+inspector: 62,655,723 bytes, 149,907 frames, 172,692,864 samples, 44,100 Hz stereo,
+3915.937959 seconds and 128,000 bps. Its Spotify episode URI and title tags were
+present. This is container/frame validation, not an independent audio decode.
+
+The missing menu details had three causes: the quality observer only consumed
+Ogg/FLAC events; client episode identities used URIs while worker snapshots used
+title/artist/album; and menu visibility explicitly hid non-FLAC technical rows.
+
+Recording-mode details now reuse the bound capture's existing `Encoding()` and
+ownership tracker for MP3, AAC, Ogg and FLAC. No media-type branch chooses the
+decoder. Current playback token and listen generation must match, competing
+captures reject, and pending/reinitialized MP3 sources cannot supply details.
+MP3 uses its existing incremental frame scan before finalization, avoiding full
+buffer rescans. Header fields are no longer parsed again by the quality observer
+when recording already retains them. The bounded observer remains for downloads
+off and for Ogg/FLAC formats whose saving is disabled.
+
+All Spotify snapshots and Song/auto-skip destinations now use the URI as their
+identity, with label-based fallback only when a URI is absent. A bound decoder's
+technical details take precedence over contradictory client quality. Unknown
+quality, format and sample rate stay hidden; lossy audio never gains an inferred
+PCM bit depth. No guessed Spotify quality tier is assigned to MP3/AAC.
+
+The menu visibility regression failed on the former FLAC-only rule, then passed.
+The full Linux/native suite, focused Windows menu/destination suite, and final
+Windows capture-observer executable passed, including all four formats for both
+song/episode URIs, unbound/wrong-generation rejection, disabled-format observation,
+and auto-skip/publication behavior. The broader Windows run is recorded below
+when complete.
+
+Installed DLL/build SHA-256:
+`034b919d1a22a6e48b94804c79b4d61614f34fbc17a375fd9d3d68983031af81`.
+Spotify restarted normally as PID 40684 at 05:11. The pre-change DLL is preserved
+as `version.dll.backup-before-shared-audio-details`. The INI remains byte-identical
+at SHA-256 `2e681179739ae60e1f349c6968e051ec084e328a104a97962d591b46aaa49530`.
+The user confirmed MP3 details show. The item reported as Ogg with no details was
+the currently playing Vol. 27. Its live raw stream instead begins `ID3 02 00`,
+followed by MPEG-1 Layer III frames: this replay is MP3 with an ID3v2.2 tag.
+The source parser rejected that legacy tag version, leaving incremental header
+details unavailable. This was a second, distinct source-format parsing bug.
+
+Added bounded source ID3v2.2 skipping alongside v2.3/v2.4. Source tags are not
+decoded as owned tags; saved output remains ID3v2.4. Regression first failed on
+v2.2 acceptance, then passed. Tests cover unchanged audio through retagging,
+incremental v2.2 headers/boundaries, reserved flag rejection and future-version
+rejection. The corrected production parser validated 593 consecutive frames in
+the real dump before a later discontinuity. The complete current dump therefore
+does not prove a complete listen/save; incomplete/gapped bytes still reject.
+ID3v2.2's header size/flags follow https://id3.org/id3v2-00 .
+
+The broader Windows suite completed with exit 0. After the final legacy-tag
+change, the full Linux/native suite and native Windows MP3 regression executable
+also passed. The final disabled-format observer correction was independently
+compiled and passed in the Windows capture-observer executable.
+
+Final test DLL SHA-256:
+`97765326649c6591ef5ae9d6c5f5fce9dadd28e3190de7eb37c8cbc071bb2c8a`.
+Live v2.2 menu confirmation and a fresh complete recording remain test gates.
+The reported Vol. 27 issue does not establish a true Ogg display failure on this
+build; a live actual-Ogg replay remains separate validation.
+
+## 2026-11-12 native playback field / dump replay regression
+
+The user's next Vol. 27 replay still showed only its title. Read-only inspection
+of the exact installed binary's worker/client snapshots confirmed equal URI
+identities but no bound technical fields. The native field at the existing player
+path contained an eight-byte prefix, then the complete 16-byte app playback ID.
+The hook had treated the prefix plus the first half of that ID as a complete ID.
+Those values could neither bind directly nor join DumpStreams metadata.
+
+Earlier parser checks and pre-bound quality fixtures did not test this native
+field-to-metadata edge. Added `test-dump-replay.sh --quality`: it reads the actual
+local raw source, recorded `session.jsonl`, and a captured 32-byte native field,
+then exercises the production pump reader, bridge matching, MP3 queue/parser,
+ownership binding, quality publication and menu label generation. It first
+failed at the native ID match, then passed with MP3 / 44,100 Hz labels. It uses
+the first 32 KiB to prove early display readiness, not complete recording validity.
+The raw source remains outside the repository. Old per-stream logs contain only
+the initial unresolved prior metadata because this bug prevented their join;
+the replay therefore uses the session log for the independent app identity.
+
+The hook now observes the bounded 32-byte field and learns a unique payload
+position by matching the full app ID. It does not publish a native ID until that
+layout has been corroborated. Tests preserve both inline and prefixed layouts;
+unknown/ambiguous matches do not establish a layout. New opt-in DumpStreams
+playback records include `native_field`, allowing replay with `auto` instead of a
+separate live memory read. This stays out of normal logging.
+
+Full native tests, real-dump quality replay, Windows playback diagnostics and
+stream-dump JSON/byte/association tests passed. No new hour-long playback was
+required to reproduce and verify this path. Live host validation remains distinct.
+
+Installed the replay-verified build, SHA-256
+`43a8d523d5517c65fb6e20aae94a0b8e364280b62bf3b74328ed10565282f39d`,
+and restarted Spotify as PID 47632. The INI was restored byte-for-byte to its
+original hash; native diagnostic logging is temporarily enabled for this process
+so a fresh native-ID match and decoder binding can be verified during replay.
+Example for new dumps (no source audio is copied into the repository):
+
+```sh
+bash test-dump-replay.sh --quality STREAM.bin SESSION.jsonl auto SPOTIFY_URI
+```
+
+For an older dump without `native_field`, replace `auto` with a separately captured
+32-byte native field encoded as 64 hex digits. A stream's native ID must match
+the independent recorded app metadata; the replay does not reconstruct the missing
+ID bytes from the app value to force a match.
+
+The user subsequently confirmed live playback/details work as expected. The
+native trace independently reported a full `player-id` match at offset `0x8` and
+an exact capture/playback/listen binding. New playback records contain full IDs
+and `native_field`; per-stream metadata now joins with `association=native-instance`.
+Replaying the new session with `auto` also passed and produced MP3 / 44,100 Hz
+labels without any separately supplied native-memory value. This verifies the
+display path; it does not claim a fresh complete long-podcast publication.
+
+## 2026-11-12 pre-release MP3 music association correction
+
+Pre-merge review found that Ready association excluded all unbound MP3s for a
+track URI before the worker's exact-ID binder could run. Added a regression that
+observes a full native ID, calls the real `AssociateListen` first, and only then
+binds. It failed at capture retention against the prior source, then passed after
+preserving the MP3 whose exact decoder owner and full ID match the Ready item.
+Unmatched voice/ad captures keep their previous exclusion path; later ownership,
+completeness and publication checks are unchanged. Independent re-review found
+no remaining Critical/Important issue in that correction.
+
+The corrected Windows playback diagnostics and real-dump quality replay pass.
+The original release-check native suite and 50,000-mutation sanitizer/lifecycle
+checks passed; Windows release checks continue separately. Release/merge remain
+on hold pending final candidate testing requested by the user.
+
+At the user's request, installed candidate SHA-256
+`448ebd3d460333c49b151dcdb87b724d6f32e2947ac37b7abd5bb5fade70783e`.
+Spotify PID 39800 loaded the Spotify-local VERSION.dll after restart. The INI
+hash at installation was `522b2575d3272ed98c9a7e35dab8fb99c70d2e5a199c35e90061dc384e11e0f7`
+and remained unchanged; the user had edited it since the earlier validation.
+The prior DLL is preserved as `version.dll.backup-before-mp3-ready-test`.

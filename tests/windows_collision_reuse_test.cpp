@@ -23,9 +23,17 @@ int main() {
     wchar_t temp[MAX_PATH];assert(GetTempPathW(MAX_PATH,temp));
     const auto root=std::wstring(temp)+L"Floggfy-collision-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64());
     assert(CreateDirectoryW(root.c_str(),nullptr));const auto base=root+L"\\01 - Intro.flac";
-    Catalog a,b;a.spotify_uri="spotify:track:a";b.spotify_uri="spotify:track:b";
-    Write(base,Tagged(a,16));const auto suffix=ResolveRecordingDestination(base,b).path;
+    Catalog a,b;a.spotify_uri="spotify:track:AAAAAAAAAAAAAAAAAAAAAA";b.spotify_uri="spotify:track:BBBBBBBBBBBBBBBBBBBBBB";
+    Write(base,Tagged(a,16));const auto first_conflict=ResolveRecordingDestination(base,b);
+    assert(first_conflict.state==RecordingDestinationState::Vacant&&first_conflict.explicit_uid_conflict);
+    const auto suffix=first_conflict.path;
     assert(!suffix.empty() && suffix!=base);Write(suffix,Tagged(b,24));
+    const auto exact_after_conflict=ResolveRecordingDestination(base,b);
+    assert(exact_after_conflict.state==RecordingDestinationState::Existing&&exact_after_conflict.path==suffix&&
+           exact_after_conflict.explicit_uid_conflict);
+    const auto same_identity=ResolveRecordingDestination(base,a);
+    assert(same_identity.state==RecordingDestinationState::Existing&&same_identity.path==base&&
+           !same_identity.explicit_uid_conflict);
     assert(DeleteFileW(base.c_str()));
     const Quality lower{Codec::Flac,44100,2,16,0},better{Codec::Flac,44100,2,32,0};
     // No resolver state is retained: repeated fresh calls and a vacant ordinary
@@ -57,7 +65,8 @@ int main() {
     assert(!legacy_suffix.empty() && legacy_suffix!=base);
     Write(legacy_suffix,Tagged(legacy,24));
     auto enriched=legacy;enriched.spotify_uri=b.spotify_uri;
-    assert(ResolveRecordingDestination(base,enriched).path==legacy_suffix);
+    const auto legacy_match=ResolveRecordingDestination(base,enriched);
+    assert(legacy_match.path==legacy_suffix&&!legacy_match.explicit_uid_conflict);
     assert(DeleteFileW(legacy_suffix.c_str()));Write(legacy_suffix,Tagged(enriched,24));
     assert(DeleteFileW(base.c_str()));
     assert(ResolveRecordingDestination(base,enriched).path==legacy_suffix && DecideSave(legacy_suffix,lower,enriched)==SaveDecision::Skip);

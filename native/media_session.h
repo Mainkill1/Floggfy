@@ -20,8 +20,10 @@ struct Media {
     bool prior_control=false; // A control on the prior instance acknowledged by this Ready successor.
     bool control_monitoring=false; // Action listener was attached for this transition.
     bool natural_transition=false; // Positive renderer transition evidence; absent is unknown.
+    bool terminal_context=false; // Explicit monitored episode context clearance, anchored to the old instance.
     bool transition_pending=false; // Natural-transition candidate awaiting a successor playback ID.
     std::string Key() const;
+    std::string PlaybackKey() const {return spotify_uri.empty()?Key():spotify_uri;}
     std::string ListenKey() const {
         if(source==MediaSource::Spotify)
             return spotify_uri+(playback_instance.empty()?std::string{}:

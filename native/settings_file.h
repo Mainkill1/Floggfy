@@ -95,7 +95,7 @@ inline bool EqualKey(std::wstring_view text,const wchar_t* key) noexcept {
 }
 // Read the same section/key syntax used by Set, including empty values. Views
 // borrow text; duplicate startup opt-ins are ambiguous and must not enable hooks.
-inline IniValue Find(std::wstring_view text,const wchar_t* key) noexcept {
+inline IniValue Find(std::wstring_view text,const wchar_t* key,const wchar_t* section=L"[To Disk]") noexcept {
     bool inside=false;IniValue result;
     for(size_t position=0;position<text.size();) {
         const auto end=text.find(L'\n',position);
@@ -104,7 +104,7 @@ inline IniValue Find(std::wstring_view text,const wchar_t* key) noexcept {
         if(!physical.empty()&&physical.back()==L'\r')physical.remove_suffix(1);
         const auto line=TrimView(physical);
         if(!line.empty()&&line.front()==L'['&&line.back()==L']') {
-            inside=EqualKey(line,L"[To Disk]");
+            inside=EqualKey(line,section);
         }else if(inside&&!line.empty()&&line.front()!=L';') {
             const auto equal=physical.find(L'=');
             if(equal!=std::wstring_view::npos&&EqualKey(TrimView(physical.substr(0,equal)),key)) {
@@ -119,7 +119,7 @@ inline IniValue Find(std::wstring_view text,const wchar_t* key) noexcept {
     }
     return result;
 }
-inline void Set(std::wstring& text,const wchar_t* key,const std::wstring& value) {
+inline void Set(std::wstring& text,const wchar_t* key,const std::wstring& value,const wchar_t* section=L"[To Disk]") {
     bool inside=false,found_section=false,found_key=false;
     size_t insertion=text.size();
     for(size_t p=0;p<text.size();) {
@@ -127,7 +127,7 @@ inline void Set(std::wstring& text,const wchar_t* key,const std::wstring& value)
         const auto line=Trim(text.substr(p,(end==std::wstring::npos?text.size():end)-p));
         if(!line.empty()&&line.front()==L'['&&line.back()==L']') {
             if(inside)insertion=p;
-            inside=_wcsicmp(line.c_str(),L"[To Disk]")==0;
+            inside=_wcsicmp(line.c_str(),section)==0;
             if(inside){found_section=true;insertion=next;}
         }else if(inside) {
             insertion=next;
@@ -152,19 +152,19 @@ inline void Set(std::wstring& text,const wchar_t* key,const std::wstring& value)
     if(found_key)return;
     if(!found_section) {
         if(!text.empty()&&text.back()!=L'\n')text+=L"\r\n";
-        text+=L"[To Disk]\r\n";insertion=text.size();
+        text+=std::wstring(section)+L"\r\n";insertion=text.size();
     }
     if(insertion&&text[insertion-1]!=L'\n') {text.insert(insertion,L"\r\n");insertion+=2;}
     text.insert(insertion,std::wstring(key)+L"="+value+L"\r\n");
 }
-inline void Erase(std::wstring& text,const wchar_t* key) {
+inline void Erase(std::wstring& text,const wchar_t* key,const wchar_t* section=L"[To Disk]") {
     bool inside=false;
     for(size_t p=0;p<text.size();) {
         const auto end=text.find(L'\n',p);const auto next=end==std::wstring::npos?text.size():end+1;
         const auto physical=text.substr(p,(end==std::wstring::npos?text.size():end)-p);
         const auto line=Trim(physical);
         if(!line.empty()&&line.front()==L'['&&line.back()==L']')
-            inside=_wcsicmp(line.c_str(),L"[To Disk]")==0;
+            inside=_wcsicmp(line.c_str(),section)==0;
         else if(inside&&!line.empty()&&line.front()!=L';') {
             const auto equal=line.find(L'=');
             if(equal!=std::wstring::npos&&_wcsicmp(Trim(line.substr(0,equal)).c_str(),key)==0) {

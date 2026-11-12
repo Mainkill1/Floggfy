@@ -214,8 +214,11 @@ static int OriginalFormat(Delegate*,Menu* menu,String*) {++format_calls;ReleaseM
 static int ReleaseDelegate(Base *) { return 0; }
 #ifdef FLOGGFY_SONG_SHORTCUT_TEST
 int RunMenuQualityTests() {
+  const bool never_pause_hidden=false;
 #else
-int main() {
+int main(int argc,char** argv) {
+  assert(argc==1||(argc==2&&std::string(argv[1])=="--never-pause-hidden"));
+  const bool never_pause_hidden=argc==2;
 #endif
   char setting_line[96]{};
   SettingOutcomeLine(podcasts_id,true,true,setting_line,sizeof(setting_line));
@@ -236,8 +239,24 @@ int main() {
   wchar_t module[2048];assert(GetModuleFileNameW(nullptr,module,2048));
   std::wstring ini=module;ini=ini.substr(0,ini.find_last_of(L'\\'))+L"\\SpotifyHistory.ini";
   DeleteFileW(ini.c_str());
-  assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeedLimit",L"4",ini.c_str()));
+  history::Settings speed_opt_out;speed_opt_out.capture_speed_limit=0;
+  assert(!ShowCaptureSpeed(speed_opt_out));
+  history::Settings speed_default;
+  assert(!ShowCaptureSpeed(speed_default));
+  Model default_speed;Init(default_speed);
+  default_speed.entries={{1,5,L"First"},{2,5,L"Second"},{3,5,L"Third"}};
+  Populate(&default_speed.api);
+  assert(default_speed.child);
+  assert(Index(&default_speed.child->api,28471)<0);
+  const auto default_speed_child=default_speed.child->extra_children.find(speed_root_id);
+  assert(default_speed_child==default_speed.child->extra_children.end());
+  assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeedLimit",L"1",ini.c_str()));
+  assert(WritePrivateProfileStringW(L"To Disk",L"Podcasts",L"0",ini.c_str()));
+  const auto test_log_root=ini.substr(0,ini.find_last_of(L'\\'))+L"\\Menu-test-logs";
+  assert(WritePrivateProfileStringW(L"To Disk",L"Save Location",test_log_root.c_str(),ini.c_str()));
+  if(!never_pause_hidden)assert(WritePrivateProfileStringW(L"To Disk",L"NeverPause",L"0",ini.c_str()));
   history::InitSettings(nullptr);
+  assert(history::GetSettings().root==test_log_root);
   assert(history::SetLyrics(true));
   assert(history::SetCaptureSpeed(1));
   history::PlaybackQualitySnapshot initial;
@@ -281,7 +300,7 @@ int main() {
   assert(child.entries[Index(&child.api,auto_skip_id)].label==L"Auto Skip Downloaded (Disabled)");
   assert(!child.entries[Index(&child.api,podcasts_id)].checked);
   assert(child.entries[Index(&child.api,podcasts_id)].label==L"Podcasts (Disabled)");
-  assert(child.entries.size() == 14); // Nine controls, separator, four quality rows.
+  assert(child.entries.size() == (never_pause_hidden?14u:15u)); // Nine controls, separator, four quality rows.
   const auto speed_child=child.extra_children.find(speed_root_id);
   assert(speed_child!=child.extra_children.end()&&speed_child->second->entries.size()==5);
   assert(speed_child->second->entries[0].checked);
@@ -290,11 +309,11 @@ int main() {
     assert(child.entries[i].type == 1 && !child.entries[i].enabled && !child.entries[i].checked);
   assert(child.entries[quality_index].label.find(L"Example") != std::wstring::npos);
   assert(child.entries[quality_index].visible && child.entries[quality_index+1].visible);
-  assert(!child.entries[quality_index+2].visible && !child.entries[quality_index+3].visible); // Non-FLAC details stay hidden, even after Ogg verification.
+  assert(child.entries[quality_index+2].visible && child.entries[quality_index+3].visible);
   type_calls=0;
   Populate(&root.api);
   assert(type_calls==0); // Existing insertion is not rescanned or repopulated.
-  assert(child.entries.size() == 14 && child.refs == 1);
+  assert(child.entries.size() == (never_pause_hidden?14u:15u) && child.refs == 1);
   capability_queries=type_calls=index_calls=0;
   original_add_submenu=AddChild;
   Model unrelated;Init(unrelated);unrelated.submenu=true;
@@ -318,9 +337,9 @@ int main() {
     Populate(&translated.api);
     assert(translated.child && translated.entries.size()==4);
     assert(translated.entries.back().label==L"To Disk");
-    assert(translated.child->entries.size()==14 && translated.child->refs==1);
+    assert(translated.child->entries.size()==(never_pause_hidden?14u:15u) && translated.child->refs==1);
     Populate(&translated.api);
-    assert(translated.entries.size()==4 && translated.child->entries.size()==14);
+    assert(translated.entries.size()==4 && translated.child->entries.size()==(never_pause_hidden?14u:15u));
   }
   // The client changes first while SMTC still publishes the previous song.
   history::PlaybackQualitySnapshot actual;
@@ -356,18 +375,16 @@ int main() {
   auto& speed_menu=*child.extra_children.at(speed_root_id);
   const auto capture_epoch=history::CaptureEpoch();
   Retain(&child.api.base);WillShow(&wrapped.api,&child.api);
-  assert(speed_menu.entries[0].enabled&&speed_menu.entries[1].enabled&&speed_menu.entries[2].enabled);
-  assert(!speed_menu.entries[3].enabled&&!speed_menu.entries[4].enabled);
-  const auto messages_before_limit=message_calls;
+  for(const auto& entry:speed_menu.entries)assert(entry.enabled);
+  const auto messages_before_acceleration=message_calls;
   Retain(&speed_menu.api.base);Execute(&wrapped.api,&speed_menu.api,first_speed_id+3,0);
-  assert(history::CaptureSpeed()==1&&message_calls==messages_before_limit+1);
+  assert(history::CaptureSpeed()==8&&message_calls==messages_before_acceleration);
   Retain(&speed_menu.api.base);Execute(&wrapped.api,&speed_menu.api,first_speed_id+2,0);
   assert(history::CaptureSpeed()==4&&history::CaptureEpoch()==capture_epoch&&speed_menu.refs==1);
   for(unsigned i=0;i<5;++i)assert(speed_menu.entries[i].checked==(i==2));
   const auto messages_while_active=message_calls;
   Retain(&speed_menu.api.base);Execute(&wrapped.api,&speed_menu.api,first_speed_id+3,0);
-  assert(history::CaptureSpeed()==4&&message_calls==messages_while_active+1);
-  assert(last_message.find(L"current speed")!=std::wstring::npos&&last_message.find(L"1x remains")==std::wstring::npos);
+  assert(history::CaptureSpeed()==8&&message_calls==messages_while_active);
   // Native fallback can change speed/capability while CEF retains this model.
   history::SetCaptureAccelerationAvailable(false);assert(history::SetCaptureSpeed(1));
   Retain(&child.api.base);WillShow(&wrapped.api,&child.api);
@@ -605,14 +622,25 @@ int main() {
   assert(child.entries[Index(&child.api,song_id)].visible && !child.entries[Index(&child.api,song_id)].enabled);
   q.format=history::PlaybackFormat::Ogg;q.level=history::PlaybackLevel::VeryHigh;q.bits=0;
   actual.level=q.level;history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
-  build_root();assert(!child.entries[quality_index+2].visible && !child.entries[quality_index+3].visible);
+  build_root();assert(child.entries[quality_index+2].visible && child.entries[quality_index+3].visible);
+  q.rate=0;history::PublishPlaybackQuality(q);
+  build_root();assert(child.entries[quality_index+2].visible && !child.entries[quality_index+3].visible);
+  q.rate=44100;
+  for(auto format:{history::PlaybackFormat::Mp3,history::PlaybackFormat::Aac}) {
+    q.format=format;q.level=history::PlaybackLevel::Lossy;q.decoder_bound=true;
+    actual.level=history::PlaybackLevel::Lossless;
+    history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
+    build_root();assert(child.entries[quality_index+2].visible&&child.entries[quality_index+3].visible);
+    assert(history::ReadPlaybackQuality().level==history::PlaybackLevel::Lossy);
+  }
+  q.decoder_bound=false;
   q.format=history::PlaybackFormat::Flac;q.level=history::PlaybackLevel::Lossless;q.bits=16;
   actual.level=q.level;history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
   build_root();assert(child.entries[quality_index+2].visible && child.entries[quality_index+3].visible);
   q.format=history::PlaybackFormat::Unknown;history::PublishPlaybackQuality(q);
   build_root();assert(!child.entries[quality_index+2].visible && !child.entries[quality_index+3].visible);
   assert(child.entries[quality_index].visible && child.entries[quality_index+1].visible);
-  assert(child.entries.size()==14 && child.refs==1 && root.refs==1);
+  assert(child.entries.size()==(never_pause_hidden?14u:15u) && child.refs==1 && root.refs==1);
   actual.level=history::PlaybackLevel::Unknown;q.level=actual.level;
   history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
   build_root();assert(!child.entries[quality_index+1].visible); // No Quality: Unavailable placeholder.
@@ -641,6 +669,21 @@ int main() {
   assert(child.entries[Index(&child.api,lyrics_id)].label==L"Lyrics (Disabled)");
   Retain(&child.api.base);Execute(&wrapped.api,&child.api,lyrics_id,0);
   assert(history::GetSettings().lyrics && history::FlushSettings(5000));
+  const auto never_pause_epoch=history::CaptureEpoch();
+  if(never_pause_hidden) {
+    assert(Index(&child.api,28471)<0);
+    Retain(&child.api.base);Execute(&wrapped.api,&child.api,28471,0);
+    assert(history::GetSettings().never_pause==-1);
+  } else {
+    const auto row=Index(&child.api,28471);assert(row>=0&&!child.entries[row].checked);
+    Retain(&child.api.base);Execute(&wrapped.api,&child.api,28471,0);
+    assert(history::GetSettings().never_pause==1&&child.entries[row].checked);
+    assert(child.entries[row].label==L"Never Pause (Enabled)");
+    Retain(&child.api.base);Execute(&wrapped.api,&child.api,28471,0);
+    assert(history::GetSettings().never_pause==0&&!child.entries[row].checked);
+    assert(child.entries[row].label==L"Never Pause (Disabled)");
+  }
+  assert(history::CaptureEpoch()==never_pause_epoch&&history::FlushSettings(5000));
   const auto auto_skip_epoch=history::CaptureEpoch();
   Retain(&child.api.base);Execute(&wrapped.api,&child.api,auto_skip_id,0);
   assert(history::GetSettings().auto_skip_downloaded&&history::CaptureEpoch()==auto_skip_epoch);

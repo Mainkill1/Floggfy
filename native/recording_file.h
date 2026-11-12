@@ -1,6 +1,7 @@
 #pragma once
 #include "library_layout.h"
 #include "ogg_tags.h"
+#include "recording_limits.h"
 #include <cstddef>
 #include <cstdint>
 #include <array>

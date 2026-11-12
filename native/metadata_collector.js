@@ -7,7 +7,7 @@
  const serviceCache=new Map();
  let builder,activeRequests=0,connectDevices;
  let player,root,queue=[],seen=new Set(),walked=0,lastPlayback='',playbackTime=-Infinity;
- let timelineBinding,lastReadyTimeline;
+ let timelineBinding,lastReadyTimeline,episodeEndAnchor;
  let timelineSeen=false,lastTimeline='',timelineTime=-Infinity,timelineBlocked='',timelineLocal='unknown',pendingControl;
  function playback(data){
   const payload=Object.entries(data).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&');
@@ -22,12 +22,41 @@
    console.info('FLOGGFY_TIMELINE_V1:'+payload);lastTimeline=payload;timelineTime=now;
   }
  }
- function unavailableTimeline(reason){lastReadyTimeline=undefined;if(timelineSeen&&!timelineBlocked)timeline({v:1,unavailable:reason});}
+ function unsupportedPlaybackKind(item,metadata,uri){
+  const type=String(own(item,'type')||own(metadata,'type')||own(metadata,'media.type')||'').toLowerCase();
+  return String(uri||'').startsWith('spotify:ad:')||type==='ad'||type==='advertisement'?
+   'advertisement':'interstitial';
+ }
+ function unavailableTimeline(reason,state,kind){
+  lastReadyTimeline=undefined;episodeEndAnchor=undefined;
+  const active=reason==='track-unavailable'&&object(own(state,'item'))&&timelineLocal===1&&own(state,'isPaused')===false&&own(state,'isBuffering')===false;
+  if(active){timelineSeen=true;timeline({v:1,unavailable:reason,active:1,kind});return;}
+  if(!timelineSeen||timelineBlocked)return;
+  timeline({v:1,unavailable:reason});
+ }
+ function terminalTimeline(state){
+  const prior=episodeEndAnchor,stamp=own(state,'timestamp'),sampled=Date.now();
+  if(!prior)return false;
+  if(prior.player!==player||timelineLocal!==1||pendingControl||
+     !controlBinding?.active||!controlBinding.observing||controlBinding.player!==player||
+     sampled-prior.sampled<0||sampled-prior.sampled>3000){episodeEndAnchor=undefined;return false;}
+  if(own(state,'item')!==null||own(state,'playbackId')!==null||
+     own(own(state,'context'),'uri')!==''||own(state,'isBuffering')!==true||
+     typeof own(state,'isPaused')!=='boolean')return false;
+  episodeEndAnchor=undefined;
+  if(typeof stamp!=='number'||!Number.isFinite(stamp)||stamp<prior.stateStamp||
+     sampled-stamp< -250||sampled-stamp>3000)return false;
+  timeline({v:1,blocked:'buffering',uri:prior.uri,instance:prior.instance,
+   sampled_ms:sampled,transition_ms:stamp,monitoring:1,terminal:1});
+  lastReadyTimeline=undefined;return true;
+ }
  function guardTimeline(state){
   timelineLocal='unknown';
   try{const get=method(connectDevices,'getConnectState');const active=own(get&&get.call(connectDevices),'activeDevice');
    const flag=own(active,'isLocal');if(typeof flag==='boolean')timelineLocal=Number(flag);}catch{}
   timelineBlocked=timelineLocal===0?'remote-playback':own(state,'isBuffering')===true?'buffering':'';
+  if(terminalTimeline(state))return true;
+  if(episodeEndAnchor&&(timelineBlocked!=='buffering'||own(own(state,'item'),'uri')!==episodeEndAnchor.uri||own(state,'playbackId')!==episodeEndAnchor.instance))episodeEndAnchor=undefined;
   if(timelineBlocked){
    timelineSeen=true;const blocked={v:1,blocked:timelineBlocked};
    const uri=own(own(state,'item'),'uri'),stamp=own(state,'timestamp'),instance=own(state,'playbackId');
@@ -83,6 +112,8 @@
    readyControlled=true;pendingControl=undefined;
   }
   lastReadyTimeline={player,sampled,stateStamp:stamp,instance,uri:data.uri,playing:!paused&&timelineLocal===1};
+  episodeEndAnchor=data.uri.startsWith('spotify:episode:')&&instance&&lastReadyTimeline.playing&&
+   controlBinding?.active&&controlBinding.observing&&controlBinding.player===player?lastReadyTimeline:undefined;
   timeline({v:1,title:data.title,artist:data.artist||'',album:data.album||'',uri:data.uri,
    duration:duration/1000,position:seconds,sampled_ms:sampled,instance,paused:Number(paused),buffering:Number(buffering),local:timelineLocal,speed:rate,
    controlled:readyControlled?1:undefined,prior_control:readyPriorControlled?1:undefined});
@@ -90,8 +121,10 @@
  function emitTimelineState(state){
   timelineBlocked='';
   const item=own(state,'item'),m=own(item,'metadata')||{},uri=text(own(item,'uri'));
-  guardTimeline(state);
-  if(!/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')){unavailableTimeline('track-unavailable');return;}
+  if(guardTimeline(state))return;
+  if(!/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')){
+   unavailableTimeline('track-unavailable',state,unsupportedPlaybackKind(item,m,uri));return;
+  }
   const show=own(item,'show')||{};
   const data={title:text(own(m,'title')||own(item,'name')),
    artist:text(own(m,'artist_name'))||artists(own(item,'artists'))[0]||text(own(m,'show.publisher')||own(m,'show_name')||own(show,'publisher')),
@@ -124,6 +157,23 @@
  function remember(o){if(!records.includes(o)){if(records.length>=96)records.shift();records.push(o);}}
  function method(o,k){for(let i=0;object(o)&&i<4;i++,o=Object.getPrototypeOf(o)){const v=own(o,k);if(typeof v==='function')return v;}return undefined;}
  function options(){return own(window,'__floggfyConfig')||{};}
+ let neverPauseLast=-Infinity,neverPausePending=false;
+ function resumePausedPlayback(state){
+  if(own(options(),'neverPause')!==true||own(state,'isPaused')!==true||neverPausePending)return;
+  const now=performance.now();if(now-neverPauseLast<2000)return;
+  let local;
+  try{local=own(own(method(connectDevices,'getConnectState')?.call(connectDevices),'activeDevice'),'isLocal');}catch{}
+  if(local!==true)return;
+  const wrapper=own(own(window,'Spicetify'),'Player');
+  const stock=method(player,'resume')||method(player,'play');
+  const play=stock||method(wrapper,'play'),target=stock?player:wrapper;if(!play)return;
+  neverPauseLast=now;neverPausePending=true;
+  const settled=()=>{neverPausePending=false;};
+  try{
+   const result=play.call(target),then=method(result,'then');
+   if(then)then.call(result,settled,settled);else settled();
+  }catch{settled();}
+ }
  let lastAutoSkipToken=0;
  function dispatchAutoSkip(state,uri){
   const config=options(),token=own(config,'skipToken'),expected=own(config,'skipUri'),instance=own(config,'skipInstance');
@@ -140,6 +190,23 @@
   try{const result=next.call(target);const reject=method(result,'catch');if(reject)reject.call(result,()=>{});}catch{}
  }
  // Debug observations are raw local flags, never a diagnosis of their cause.
+ let terminalDebugPrevious;
+ function debugTerminalState(state,item){
+  if(own(options(),'debug')!==true||!object(state)||(own(state,'isBuffering')!==true&&object(item))){terminalDebugPrevious=undefined;return;}
+  const kind=value=>value===null?'null':value===undefined?'missing':object(value)?'object':'other';
+  const flag=value=>typeof value==='boolean'?Number(value):'?';
+  // Presence only: 0=empty string, 1=value, n=null, ?=missing, o=other.
+  const presence=value=>typeof value==='string'?Number(value.length>0):value===null?'n':value===undefined?'?':'o';
+  const number=value=>Number.isSafeInteger(value)&&value>=0&&value<=4294967295?value:'?';
+  const flags='FLOGGFY_STATUS:terminal item='+kind(item)+' ctx='+kind(own(state,'context'))+
+   ' uri='+presence(own(item,'uri'))+' inst='+presence(own(state,'playbackId'))+
+   ' paused='+flag(own(state,'isPaused'))+' buf='+flag(own(state,'isBuffering'))+
+   ' local='+timelineLocal+' mon='+Number(!!(controlBinding?.active&&controlBinding.observing&&controlBinding.player===player));
+  const clock='FLOGGFY_STATUS:terminal-clock pos_ms='+number(own(state,'positionAsOfTimestamp'))+' length_ms='+number(own(state,'duration'))+' ctx_uri='+presence(own(own(state,'context'),'uri'));
+  const key=flags+clock;if(key===terminalDebugPrevious)return;terminalDebugPrevious=key;
+  const stamp=own(state,'timestamp'),age=typeof stamp==='number'?Math.max(0,Math.floor(Date.now()-stamp)):undefined;
+  console.info(flags);console.info(clock+' age_ms='+number(age));
+ }
  let debugPrevious;
  function debugObservation(state,item){
   if(own(options(),'debug')!==true||!object(state)||!object(item)){debugPrevious=undefined;return;}
@@ -195,7 +262,7 @@
      const action=own(own(event,'data'),'action');
      // Any observed control action (including changed/unknown seek names)
      // breaks the evidence chain used for natural-transition recovery.
-     const ready=lastReadyTimeline;lastReadyTimeline=undefined;
+     const ready=lastReadyTimeline;lastReadyTimeline=undefined;episodeEndAnchor=undefined;
      if(action==='play'||action==='resume'){
       if(pendingControl?.action==='pause')pendingControl=undefined;
      }else pendingControl={action,instance:ready?.player===player?ready.instance:''};
@@ -337,6 +404,10 @@
  function merge(data,source,currentItem=false){
   if(!object(source))return;
   const m=own(source,'metadata')||source,album=own(source,'album')||{},date=own(album,'date');
+  const albumUri=text(own(album,'uri')||own(source,'album_uri')||own(m,'album_uri'));
+  if(/^spotify:album:[A-Za-z0-9]{22}$/.test(albumUri||'')){
+   data.album_uri=albumUri;data.SPOTIFY_ALBUM_URI=albumUri;
+  }
   let release=text(own(m,'release_date'))||text(own(m,'album_release_date'))||text(own(source,'release_date'))||text(own(own(source,'releaseDate'),'isoString'))||text(own(own(album,'releaseDate'),'isoString'));
   if(release&&/^\d{4}-\d{2}-\d{2}T/.test(release))release=release.slice(0,10);
   const year=text(own(date,'year')),month=text(own(date,'month')),day=text(own(date,'day'));
@@ -414,7 +485,11 @@
    automatic();scan();bindTimeline();if(!player){debugObservation();connectDiagnostics();playback({v:1});unavailableTimeline('player-unavailable');return;}
    const state=method(player,'getState').call(player),item=own(state,'item'),m=own(item,'metadata')||{},uri=text(own(item,'uri'));
    debugObservation(state,item);connectDiagnostics(state);emitTimelineState(state);
-   if(!/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')){playback({v:1});unavailableTimeline('track-unavailable');return;}
+   debugTerminalState(state,item);
+   resumePausedPlayback(state);
+   if(!/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')){
+    playback({v:1});unavailableTimeline('track-unavailable',state,unsupportedPlaybackKind(item,m,uri));return;
+   }
    const track=uri.startsWith('spotify:track:'),show=own(item,'show')||{};
    const data={v:1,title:text(own(m,'title')||own(item,'name')),
     artist:text(own(m,'artist_name'))||artists(own(item,'artists'))[0]||text(own(m,'show.publisher')||own(m,'show_name')||own(show,'publisher')),

@@ -30,6 +30,23 @@ static void ClientPrivacy() {
     assert(summary.find("request=pause")!=std::string::npos);
     assert(SummarizeClientNetworking("FLOGGFY_STATUS:connect state=connected target=local device_changed=1 controller=unknown",summary));
     assert(SummarizeClientNetworking("FLOGGFY_STATUS:client obs paused=1 buf=0 active=? code=-7 status=503 inst=0 dev=?",summary));
+    assert(SummarizeClientNetworking("FLOGGFY_STATUS:terminal item=null ctx=missing uri=0 inst=0 paused=1 buf=1 local=1 mon=1",summary));
+    assert(summary.find("source=terminal-state")!=std::string::npos);
+    assert(!SummarizeClientNetworking("FLOGGFY_STATUS:terminal item=PRIVATE_URI ctx=missing uri=0 inst=0 paused=1 buf=1 local=1 mon=1",summary));
+    assert(!SummarizeClientNetworking("FLOGGFY_STATUS:terminal item=null ctx=missing uri=0 inst=0 paused=1 buf=1 local=1 mon=1 SECRET",summary));
+    {
+        assert(!history::signal);history::signal=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(history::signal);
+        const auto old_level=history::LogLevel();InterlockedExchange(&history::log_level_value,4);
+        const std::wstring endpoint=L"FLOGGFY_STATUS:terminal item=null ctx=missing uri=0 inst=0 paused=1 buf=1 local=1 mon=1";
+        assert(history::QueueRendererDiagnostic(endpoint));history::Record record;
+        assert(history::Take(history::diagnostic_queue,record)&&"terminal observations must survive the actual renderer gateway size bound");
+        assert(history::QueueRendererDiagnostic(L"FLOGGFY_STATUS:terminal-clock pos_ms=122000 length_ms=122000 ctx_uri=? age_ms=100"));
+        assert(history::Take(history::diagnostic_queue,record)&&std::string(record.detail).find("source=terminal-clock")!=std::string::npos);
+        assert(history::QueueRendererDiagnostic(endpoint+std::wstring(120,L'x')));
+        assert(!history::Take(history::diagnostic_queue,record)&&"oversized renderer observations remain rejected");
+        InterlockedExchange(&history::log_level_value,LONG(old_level));
+        CloseHandle(history::signal);history::signal=nullptr;
+    }
     assert(SummarizeClientNetworking("FLOGGFY_NETWORK_V1:request op=7 kind=lyrics phase=response code=200 elapsed_ms=12",summary));
     assert(summary.find("service=lyrics")!=std::string::npos&&summary.find("direction=in")!=std::string::npos);
     for(const char* message:{

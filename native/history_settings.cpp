@@ -20,80 +20,87 @@ static bool IsMusic(std::wstring root) {
     return !music_path.empty() && (_wcsicmp(root.c_str(),music_path.c_str())==0 ||
         _wcsicmp(root.c_str(),(music_path+L"\\Spotify").c_str())==0);
 }
-static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,aac_enabled=0,podcasts_enabled=0,capture_epoch=0,capture_speed_value=1,capture_speed_limit_value=0,capture_acceleration_available=0,log_level_value=1,networking_enabled=0,connect_logging_enabled=1,hook_diagnostics_enabled=0;
+static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,aac_enabled=0,capture_epoch=0,capture_speed_value=1,capture_speed_limit_value=0,capture_acceleration_available=0,log_level_value=1,networking_enabled=0,connect_logging_enabled=1,hook_diagnostics_enabled=0;
 static HANDLE settings_signal=nullptr,persist_done=nullptr;
 // A failed attempt is observable without acknowledging bytes never committed.
 static volatile LONG persisted_generation=-1,failed_generation=-1,persist_failed=0;
 static constexpr char default_ini[]=
+    "; Floggfy configuration: 0=off, 1=on.\r\n"
+    "\r\n"
     "[To Disk]\r\n"
-    "; Settings also appear in the To Disk menu.\r\n"
     "Downloads=1\r\n"
-    "; Local capture rate: exactly 1, 2, 4, 8, or 10. Default is 1.\r\n"
-    "CaptureSpeed=1\r\n"
-    "; Hidden accelerated-capture ceiling. Missing/0/1=off; 2-10=limit; above 10=10.\r\n"
-    "; Fully quit and restart Spotify after changing.\r\n"
-    "CaptureSpeedLimit=0\r\n"
-    "; Set Menu=0 before starting Spotify to disable native menu integration.\r\n"
     "Menu=1\r\n"
-    "; Use Windows media state only when Spotify's own playback state is unavailable.\r\n"
-    "; 0=off (default), exactly 1=on.\r\n"
-    "Windows Playback Fallback=0\r\n"
-    "; Workaround when disabled/blocked Microsoft online checks (Windows NCSI)\r\n"
-    "; make Windows report \"No Internet\" despite a working connection.\r\n"
-    "; Reports an active adapter with a usable IP as Internet-connected to Spotify,\r\n"
-    "; helping it avoid false-offline restrictions on playback/quality selection.\r\n"
-    "; Spotify-only: does not change Windows network status or re-enable the checks.\r\n"
-    "; Does not test connection speed or force highest quality; choose it in Spotify.\r\n"
-    "; 0=off (default), 1=on. Fully quit and restart Spotify after changing.\r\n"
-    "NetworkPatch=0\r\n"
-    "; Empty uses the Windows Music folder plus \\Spotify.\r\n"
-    "Save Location=\r\n"
-    "; Prefix new filenames with the track number when known.\r\n"
-    "TrackNumberInFilename=0\r\n"
-    "; At track start, rename verified old numbered files without rewriting audio.\r\n"
-    "; TrackNumberInFilename=1 disables conversion.\r\n"
-    "ConvertNumberedFilenames=0\r\n"
-    "Ogg=1\r\n"
-    "; Captures native FLAC when Spotify supplies lossless audio.\r\n"
-    "Flac=1\r\n"
-    "; AAC is usually a low-quality source; opt in explicitly.\r\n"
-    "Aac=0\r\n"
-    "; Save fully listened podcast episodes as native MP3 under Podcasts.\r\n"
-    "Podcasts=0\r\n"
-    "; Enables metadata enrichment using the local Spotify client.\r\n"
-    "Metadata=1\r\n"
-    "; Automatically obtains lyrics; Metadata=0 disables all enrichment.\r\n"
-    "Lyrics=1\r\n"
-    "; Allows metadata-only upgrades to existing saved files.\r\n"
-    "UpdateExistingMetadata=1\r\n"
-    "; Skip verified downloaded music after its metadata check; default off.\r\n"
     "AutoSkipDownloaded=0\r\n"
     "\r\n"
-    "; 0=off; 1=finished tracks/failures; 2=visible lifecycle; 4=diagnostics.\r\n"
+    "; Never Pause: -1=hidden, 0=off, 1=on.\r\n"
+    "NeverPause=-1\r\n"
+    "\r\n"
+    "; Remove old number prefixes; requires TrackNumberInFilename=0.\r\n"
+    "ConvertNumberedFilenames=0\r\n"
+    "TrackNumberInFilename=0\r\n"
+    "\r\n"
+    "; Blank uses Windows Music\\Spotify. Custom paths must be absolute.\r\n"
+    "Save Location=\r\n"
+    "; Save complete unidentified streams in Unmatched after MaxMatchQueue new starts.\r\n"
+    "SaveUnmatched=1\r\n"
+    "\r\n"
+    "; Allowed Download Formats (original streams, no conversion)\r\n"
+    "; AAC is usally low quality and is not shown in menu - just don't use.\r\n"
+    "Ogg=1\r\n"
+    "Flac=1\r\n"
+    "Aac=0\r\n"
+    "\r\n"
+    "; Save complete episodes in their original format.\r\n"
+    "Podcasts=1\r\n"
+    "\r\n"
+    "; Metadata (lyrics and updates require Metadata=1)\r\n"
+    "Metadata=1\r\n"
+    "Lyrics=1\r\n"
+    "\r\n"
+    "; Fill missing tags, artwork and lyrics in existing recordings.\r\n"
+    "UpdateExistingMetadata=1\r\n"
+    "\r\n"
+    "; 0 disables acceleration and removes the speed menu; 1 enables it.\r\n"
+    "CaptureSpeedLimit=0\r\n"
+    "\r\n"
+    "; Speeds: 1, 2, 4, 8, 10. Acceleration can cause choppy playback and throttling.\r\n"
+    "; Accelerated use may trigger account restrictions.\r\n"
+    "CaptureSpeed=1\r\n"
+    "\r\n"
+    "; Compatibility: enable only for the matching problem.\r\n"
+    "; Use Windows media state if Spotify's app playback tracking is unavailable.\r\n"
+    "Windows Playback Fallback=0\r\n"
+    "\r\n"
+    "; Work around Spotify falsely reporting no internet. AKA NCIS patch.\r\n"
+    "NetworkPatch=0\r\n"
+    "\r\n"
+    "; Logging: 0=off, 1=finished/warnings/failures, 2=activity, 4=diagnostics.\r\n"
+    "; Logs use Save Location; each is capped at 5 MiB.\r\n"
     "LogLevel=1\r\n"
     "\r\n"
-    "; Debug options require LogLevel=4. Fully restart Spotify after INI edits.\r\n"
-    "; Cached playback target and local actions go to Floggfy-diagnostics.log.\r\n"
-    "; Set 0 to opt out, including when DebugNetworking=1.\r\n"
-    "; Use exactly 1 to enable. Device names/IDs are omitted; senders may be unknown.\r\n"
+    "; These diagnostic switches require LogLevel=4.\r\n"
     "DebugConnect=1\r\n"
-    "; Deep read-only networking diagnostics; default off. Fully restart after edits.\r\n"
-    "; Requires LogLevel=4. Use exactly 1 to enable; 0/invalid values disable.\r\n"
-    "; Disabled means no decoded-message hook or enrichment network observations.\r\n"
-    "; 1 adds networking observations to Floggfy-networking.log.\r\n"
-    "; Summarizes known Connect/control and enrichment I/O with timing for correlation.\r\n"
-    "; No raw messages, media, credentials, URLs, device names or device IDs are logged.\r\n"
-    "; Unobserved traffic and command execution remain unknown; no commands are changed.\r\n"
+    "\r\n"
+    "; Extra network observations; adds an optional hook.\r\n"
     "DebugNetworking=0\r\n"
-    "; Extra callback/stall diagnostics in Floggfy-hook-diagnostics.log.\r\n"
-    "; Requires LogLevel=4.\r\n"
-    "; Default off; exactly 1 enables callback profiling and slow/pending activities.\r\n"
-    "; LogLevel=4 alone does no callback profiling; no dumps or raw payloads.\r\n"
+    "\r\n"
+    "; Callback and worker timing; adds diagnostic overhead.\r\n"
     "DebugHookDiagnostics=0\r\n"
     "\r\n"
+    "; Saves raw streams and matching metadata to Save Location\\DumpStreams; restart required.\r\n"
+    "DumpStreams=0\r\n"
+    "\r\n"
+    "[Matcher]\r\n"
+    "; New media starts before retiring an unmatched stream (1-100).\r\n"
+    "MaxMatchQueue=5\r\n"
+    "; Time offset tolerance in milliseconds (0-120000).\r\n"
+    "TimeOffsetToleranceMs=10000\r\n"
+    "; Duration tolerance in milliseconds (0-2000).\r\n"
+    "DurationToleranceMs=250\r\n"
+    "\r\n"
     "[History]\r\n"
-    "; Maximum compressed audio held in RAM for one track.\r\n"
-    "MaxBufferedMiB=500\r\n";
+    "; RAM limit in MiB (8-1024).\r\n"
+    "MaxBufferedMiB=512\r\n";
 static bool CreateDefaultIni(const std::wstring& path) {
     std::wstring text;for(const char* p=default_ini;*p;++p)text+=wchar_t(*p);
     return settings_file::Write(path,text,true);
@@ -140,12 +147,12 @@ static bool ReadCaptureSpeedLimit(Settings& target,const std::wstring& path) {
         target.capture_speed_limit=0;
         return !option.present;
     }
-    unsigned value=0;
+    bool nonzero=false;
     for(const auto c:option.value) {
         if(c<L'0'||c>L'9') {target.capture_speed_limit=0;return false;}
-        if(value<=10)value=value*10+unsigned(c-L'0');
+        nonzero|=c!=L'0';
     }
-    target.capture_speed_limit=value<=1?0:std::min(value,10u);
+    target.capture_speed_limit=nonzero?1u:0u;
     return false;
 }
 static bool ReadWindowsPlaybackFallback(Settings& target,const std::wstring& path) {
@@ -167,6 +174,19 @@ static bool ReadAutoSkipDownloaded(Settings& target,const std::wstring& path) {
     const auto value=settings_file::Find(text,L"AutoSkipDownloaded");
     target.auto_skip_downloaded=value.present&&!value.duplicate&&value.raw_value==L"1";
     return !value.present||value.duplicate||(value.raw_value!=L"0"&&value.raw_value!=L"1");
+}
+static bool ReadNeverPause(Settings& target,const std::wstring& path) {
+    target.never_pause=-1;
+    std::wstring text;bool unicode=false;
+    if(!settings_file::Read(path,text,unicode))return false;
+    const auto value=settings_file::Find(text,L"NeverPause");
+    if(value.present&&!value.duplicate) {
+        if(value.raw_value==L"1")target.never_pause=1;
+        else if(value.raw_value==L"0")target.never_pause=0;
+        else if(value.raw_value!=L"-1")return true;
+        return false;
+    }
+    return true;
 }
 static bool ReadLogLevel(Settings& target,const std::wstring& path) {
     std::wstring text;bool unicode=false;
@@ -190,8 +210,10 @@ struct RestartFlag {
     bool Settings::* member;
     bool default_value;
 };
-static constexpr std::array<RestartFlag,4> restart_flags{{
+static constexpr std::array<RestartFlag,6> restart_flags{{
+    {L"SaveUnmatched",&Settings::save_unmatched,true},
     {L"NetworkPatch",&Settings::network_patch,false},
+    {L"DumpStreams",&Settings::dump_streams,false},
     {L"DebugConnect",&Settings::debug_connect,true},
     {L"DebugNetworking",&Settings::debug_networking,false},
     {L"DebugHookDiagnostics",&Settings::debug_hook_diagnostics,false}
@@ -214,12 +236,53 @@ static bool ReadRestartOptions(Settings& target,const std::wstring& path) {
     }
     return ReadRestartOptionsText(target,text);
 }
+struct MatcherOption {const wchar_t* key;unsigned Settings::*member;unsigned initial,minimum,maximum;};
+static constexpr std::array<MatcherOption,3> matcher_options{{
+    {L"MaxMatchQueue",&Settings::matcher_max_queue,5,1,100},
+    {L"TimeOffsetToleranceMs",&Settings::matcher_time_offset_ms,10000,0,120000},
+    {L"DurationToleranceMs",&Settings::matcher_duration_ms,250,0,2000}
+}};
+static bool ParseMatcherUnsigned(const settings_file::IniValue& value,unsigned minimum,unsigned maximum,unsigned& parsed) {
+    parsed=0;
+    if(!value.present||value.duplicate||value.value.empty())return false;
+    for(const auto digit:value.value) {
+        if(digit<L'0'||digit>L'9'||parsed>maximum/10)return false;
+        parsed=parsed*10+unsigned(digit-L'0');
+        if(parsed>maximum)return false;
+    }
+    return parsed>=minimum;
+}
+static bool ReadMatcherOptionsText(Settings& target,std::wstring_view text) {
+    const auto legacy=settings_file::Find(text,L"TimingToleranceSeconds",L"[Matcher]");
+    unsigned legacy_seconds=0;
+    const bool valid_legacy=ParseMatcherUnsigned(legacy,0,120,legacy_seconds);
+    bool needs_persist=legacy.present;
+    for(const auto& option:matcher_options) {
+        const auto value=settings_file::Find(text,option.key,L"[Matcher]");
+        unsigned parsed=0;
+        const bool valid=ParseMatcherUnsigned(value,option.minimum,option.maximum,parsed);
+        const bool migrate=!value.present&&valid_legacy&&option.member==&Settings::matcher_time_offset_ms;
+        target.*(option.member)=valid?parsed:migrate?legacy_seconds*1000:option.initial;
+        needs_persist=needs_persist||!valid;
+    }
+    return needs_persist;
+}
+static bool ReadMatcherOptions(Settings& target,const std::wstring& path) {
+    std::wstring text;bool unicode=false;
+    if(!settings_file::Read(path,text,unicode))return false;
+    return ReadMatcherOptionsText(target,text);
+}
 static void InsertMissingRestartDefaults(std::wstring& text) {
     for(const auto& flag:restart_flags)
         if(!settings_file::Find(text,flag.key).present)
             settings_file::Set(text,flag.key,flag.default_value?L"1":L"0");
     if(!settings_file::Find(text,L"CaptureSpeedLimit").present)
         settings_file::Set(text,L"CaptureSpeedLimit",L"0");
+    Settings migrated;ReadMatcherOptionsText(migrated,text);
+    for(const auto& option:matcher_options)
+        if(!settings_file::Find(text,option.key,L"[Matcher]").present)
+            settings_file::Set(text,option.key,std::to_wstring(migrated.*(option.member)),L"[Matcher]");
+    settings_file::Erase(text,L"TimingToleranceSeconds",L"[Matcher]");
 }
 static bool ReachedGeneration(volatile LONG& progress,unsigned expected) {
     return static_cast<LONG>(unsigned(InterlockedCompareExchange(&progress,0,0))-expected)>=0;
@@ -243,6 +306,7 @@ static DWORD WINAPI PersistSettings(LPVOID) {
                 settings_file::Set(text,L"CaptureSpeed",std::to_wstring(snapshot.capture_speed));
                 flag(L"UpdateExistingMetadata",snapshot.update_existing_metadata);
                 flag(L"AutoSkipDownloaded",snapshot.auto_skip_downloaded);
+                settings_file::Set(text,L"NeverPause",std::to_wstring(snapshot.never_pause));
                 settings_file::Set(text,L"LogLevel",std::to_wstring(snapshot.log_level));
                 settings_file::Erase(text,L"Log");settings_file::Erase(text,L"DebugLog");
                 InsertMissingRestartDefaults(text);
@@ -304,19 +368,21 @@ void InitSettings(HMODULE proxy) {
     const bool filename_options_pending=ReadFilenameOptions(settings,ini);
     const bool capture_speed_pending=ReadCaptureSpeed(settings,ini);
     const bool capture_speed_limit_pending=ReadCaptureSpeedLimit(settings,ini);
-    const bool capture_speed_disallowed=settings.capture_speed>1&&settings.capture_speed>settings.capture_speed_limit;
+    const bool capture_speed_disallowed=settings.capture_speed>1&&!settings.capture_speed_limit;
     if(capture_speed_disallowed)settings.capture_speed=1;
     const bool windows_playback_fallback_pending=ReadWindowsPlaybackFallback(settings,ini);
     const bool auto_skip_pending=ReadAutoSkipDownloaded(settings,ini);
+    const bool never_pause_pending=ReadNeverPause(settings,ini);
     const bool log_level_pending=ReadLogLevel(settings,ini);
     const bool restart_options_pending=ReadRestartOptions(settings,ini);
-    const bool startup_options_pending=filename_options_pending||capture_speed_pending||capture_speed_limit_pending||capture_speed_disallowed||windows_playback_fallback_pending||auto_skip_pending||log_level_pending||restart_options_pending;
+    const bool matcher_options_pending=ReadMatcherOptions(settings,ini);
+    const bool startup_options_pending=filename_options_pending||capture_speed_pending||capture_speed_limit_pending||capture_speed_disallowed||windows_playback_fallback_pending||auto_skip_pending||never_pause_pending||log_level_pending||restart_options_pending||matcher_options_pending;
     settings.aac=GetPrivateProfileIntW(L"To Disk",L"AAC",0,ini.c_str())!=0;
-    settings.podcasts=GetPrivateProfileIntW(L"To Disk",L"Podcasts",0,ini.c_str())!=0;
+    settings.podcasts=GetPrivateProfileIntW(L"To Disk",L"Podcasts",1,ini.c_str())!=0;
     settings.metadata=GetPrivateProfileIntW(L"To Disk",L"Metadata",1,ini.c_str())!=0;
     settings.lyrics=GetPrivateProfileIntW(L"To Disk",L"Lyrics",1,ini.c_str())!=0;
     settings.update_existing_metadata=GetPrivateProfileIntW(L"To Disk",L"UpdateExistingMetadata",1,ini.c_str())!=0;
-    settings.max_buffered_mib=std::max(8u,std::min(512u,GetPrivateProfileIntW(L"History",L"MaxBufferedMiB",500,ini.c_str())));
+    settings.max_buffered_mib=std::max(8u,std::min(kMaximumBufferedMiB,GetPrivateProfileIntW(L"History",L"MaxBufferedMiB",kDefaultBufferedMiB,ini.c_str())));
     wchar_t raw[2048],expanded[4096];
     GetPrivateProfileStringW(L"To Disk",L"Save Location",L"",raw,2048,ini.c_str());
     PWSTR music=nullptr;
@@ -327,7 +393,7 @@ void InitSettings(HMODULE proxy) {
     DWORD length=ExpandEnvironmentStringsW(raw,expanded,4096);
     if(raw[0] && length && length<=4096) {settings.root=expanded;settings.save_location=raw;}
     settings.music_folder=IsMusic(settings.root);
-    downloads_enabled=settings.downloads; ogg_enabled=settings.ogg; flac_enabled=settings.flac; aac_enabled=settings.aac; podcasts_enabled=settings.podcasts;
+    downloads_enabled=settings.downloads; ogg_enabled=settings.ogg; flac_enabled=settings.flac; aac_enabled=settings.aac;
     capture_speed_value=LONG(settings.capture_speed);
     capture_speed_limit_value=LONG(settings.capture_speed_limit);
     log_level_value=LONG(settings.log_level);networking_enabled=settings.debug_networking;connect_logging_enabled=settings.debug_connect;hook_diagnostics_enabled=settings.debug_hook_diagnostics;
@@ -360,7 +426,7 @@ bool HookDiagnosticsEnabled() { return hook_diagnostics_enabled!=0 && DebugLoggi
 bool OggEnabled() { return downloads_enabled && ogg_enabled; }
 bool FlacEnabled() { return downloads_enabled && flac_enabled; }
 bool AACEnabled() { return downloads_enabled && aac_enabled; }
-bool PodcastsEnabled() { return downloads_enabled && podcasts_enabled; }
+bool DownloadsEnabled() { return downloads_enabled!=0; }
 unsigned CaptureEpoch() { return unsigned(InterlockedCompareExchange(&capture_epoch,0,0)); }
 unsigned CaptureSpeed() { return unsigned(InterlockedCompareExchange(&capture_speed_value,0,0)); }
 unsigned CaptureSpeedLimit() { return unsigned(InterlockedCompareExchange(&capture_speed_limit_value,0,0)); }
@@ -368,7 +434,7 @@ bool CaptureAccelerationAvailable() {return InterlockedCompareExchange(&capture_
 void SetCaptureAccelerationAvailable(bool available) {InterlockedExchange(&capture_acceleration_available,available?1:0);}
 bool CaptureSpeedAvailable(unsigned speed) {
     return capture_speed::Supported(speed)&&(speed==1||
-        (speed<=CaptureSpeedLimit()&&CaptureAccelerationAvailable()));
+        (CaptureSpeedLimit()!=0&&CaptureAccelerationAvailable()));
 }
 static bool Set(const wchar_t* key,bool value,bool& field,volatile LONG* fast,bool affects_capture=true) {
     bool ok=false;
@@ -387,10 +453,18 @@ static bool Set(const wchar_t* key,bool value,bool& field,volatile LONG* fast,bo
 bool SetDownloads(bool v) { return Set(L"Downloads",v,settings.downloads,&downloads_enabled); }
 bool SetOgg(bool v) { return Set(L"Ogg",v,settings.ogg,&ogg_enabled); }
 bool SetFlac(bool v) { return Set(L"FLAC",v,settings.flac,&flac_enabled); }
-bool SetPodcasts(bool v) { return Set(L"Podcasts",v,settings.podcasts,&podcasts_enabled); }
+bool SetPodcasts(bool v) { return Set(L"Podcasts",v,settings.podcasts,nullptr,false); }
 bool SetWindowsPlaybackFallback(bool v) { return Set(L"Windows Playback Fallback",v,settings.windows_playback_fallback,nullptr,false); }
 bool SetLyrics(bool v) { return Set(L"Lyrics",v,settings.lyrics,nullptr,false); }
 bool SetAutoSkipDownloaded(bool v) { return Set(L"AutoSkipDownloaded",v,settings.auto_skip_downloaded,nullptr,false); }
+bool SetNeverPause(bool enabled) {
+    {
+    ExclusiveSrw guard(lock);
+    if(!settings_signal||settings.never_pause<0)return false;
+    settings.never_pause=enabled?1:0;++settings.generation;
+    }
+    SetEvent(settings_signal);return true;
+}
 bool SetUpdateExistingMetadata(bool v) { return Set(L"UpdateExistingMetadata",v,settings.update_existing_metadata,nullptr,false); }
 bool SetCaptureSpeed(unsigned speed) {
     if(!CaptureSpeedAvailable(speed))return false;

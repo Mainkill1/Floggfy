@@ -90,11 +90,15 @@ public:
     bool BindCapture(std::uint64_t capture_token,const std::string& playback_id,
                      const std::string& uri,std::uint64_t listen_generation,
                      double observed);
+    bool BindCaptureExact(std::uint64_t capture_token,const std::string& playback_id,
+                          const std::string& uri,std::uint64_t listen_generation,
+                          double observed);
     void ObservePlayback(const std::string& playback_id,const std::string& uri,
                          std::uint64_t listen_generation,double observed);
     void ObserveTransition(const std::string& playback_id,const std::string& uri,
                            double transition_time,bool explicit_skip,
                            bool natural_transition);
+    bool ReconsiderAmbiguousSuccessor(std::uint64_t capture_token) noexcept;
     void ObservationLost(ObservationLoss source,double time);
     void Reset(unsigned epoch);
     OwnershipBinding Binding(std::uint64_t capture_token) const;
@@ -124,6 +128,7 @@ private:
         unsigned epoch=0;
         std::uint64_t playback_token=0;
         std::uint64_t listen_generation=0;
+        std::uint64_t ambiguity_group=0;
         bool active=false;
         bool complete=false;
     };
@@ -158,6 +163,8 @@ private:
     void InvalidateOwner(std::uintptr_t owner,OwnershipReason reason) noexcept;
     void InvalidatePlayback(std::uint64_t playback,OwnershipReason reason) noexcept;
     void Conflict(CaptureRecord& capture,OwnershipReason reason) noexcept;
+    void ConflictSuccessors(CaptureRecord* first,CaptureRecord* second,
+                            CaptureRecord* third=nullptr) noexcept;
     void TryBind(CaptureRecord& capture,PlaybackRecord& playback,double observed) noexcept;
     void ObservePlaybackImpl(const std::string& playback_id,const std::string& uri,
                              std::uint64_t listen_generation,double observed,
@@ -169,6 +176,7 @@ private:
     std::uint64_t next_capture_=1;
     std::uint64_t next_owner_=1;
     std::uint64_t next_playback_=1;
+    std::uint64_t next_ambiguity_=1;
     std::uint64_t sequence_=1;
     std::uint64_t current_capture_=0;
     std::uint64_t pending_capture_=0;

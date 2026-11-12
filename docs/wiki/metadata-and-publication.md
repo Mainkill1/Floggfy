@@ -46,7 +46,7 @@ Codec-specific writers add tags without changing the captured audio:
 | FLAC | `.flac` | FLAC comments and picture blocks |
 | Ogg Vorbis | `.ogg` | Vorbis comments and picture comments |
 | AAC | `.m4a` | MP4/M4A atoms around original AAC packets |
-| Podcast MP3 | `.mp3` | ID3 metadata around original MPEG frames |
+| MP3 | `.mp3` | ID3 metadata around original MPEG frames |
 
 For an existing complete Floggfy recording,
 [`metadata_update_core.cpp`](../../native/metadata_update_core.cpp) fills missing
@@ -73,7 +73,7 @@ components and selects the media-kind layout. Common results are:
 Music\Artists\<album artist>\<album>\<title>.<format>
 Music\Compilations\<album>\<title>.<format>
 Music\Soundtracks\<album>\<title>.<format>
-Podcasts\<show>\[<year>\]<episode>.mp3
+Podcasts\<show>\[<year>\]<episode>.<source format>
 ```
 
 Reserved Windows names, invalid characters, trailing dots/spaces, and excessive
@@ -95,6 +95,13 @@ vacancy is selected. The result is one of:
   is a verified improvement under the format policy.
 - **Blocked:** an existing candidate cannot be read; retry later instead of making
   a possible duplicate.
+
+When canonical lookup would allocate a collision suffix, publication instead
+uses the root `Duplicates` hierarchy. This also covers unresolved collisions
+without two valid Spotify track IDs. A valid incoming ID uses `[t-<id>]`;
+an absent/malformed ID uses `[no-id-<hash>]`. Song lookup and track-start checks
+use the same fallback. Existing canonical/legacy matches retain their paths.
+Neither filename suffix authorizes a metadata merge, overwrite or upgrade.
 
 FLAC can replace lower verified quality, including a complete owned Ogg for the
 same recording. In that cross-format case, Floggfy locks the exact Ogg, carries

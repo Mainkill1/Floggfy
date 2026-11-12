@@ -40,6 +40,14 @@ int main(int argc,char** argv){
         std::cout<<"PASS: real collector Ready payload satisfies native playback protocol\n";
         return 0;
     }
+    if(argc==2&&std::string(argv[1])=="--active-without-uri-stdin") {
+        const std::string payload(std::istreambuf_iterator<char>(std::cin),{});
+        if(!ParseClientActiveWithoutUri(payload)) {
+            std::cerr<<"collector URI-less active marker rejected: "<<payload<<'\n';return 1;
+        }
+        std::cout<<"PASS: real collector URI-less active marker satisfies native protocol\n";
+        return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--transition-stdin") {
         const std::string payload(std::istreambuf_iterator<char>(std::cin),{});
         ClientTransition transition;
@@ -60,10 +68,29 @@ int main(int argc,char** argv){
         std::cout<<"PASS: real collector reused-ID transition satisfies native pending protocol\n";
         return 0;
     }
+    if(argc==2&&std::string(argv[1])=="--terminal-stdin") {
+        const std::string payload(std::istreambuf_iterator<char>(std::cin),{});
+        ClientTransition terminal;
+        assert(ParseClientTransition(payload,terminal)&&terminal.terminal&&terminal.control_monitoring&&
+               !terminal.natural&&!terminal.pending&&!terminal.explicit_control&&!terminal.explicit_skip&&
+               terminal.uri=="spotify:episode:0000000000000000000001"&&terminal.instance=="playback-1");
+        std::cout<<"PASS: real collector context clearance satisfies the native terminal protocol\n";
+        return 0;
+    }
     assert(argc==1);
     const std::string base="v=1&title=Song&artist=Artist&album=Album&uri=spotify:track:0000000000000000000001&duration=180";
     const std::string timeline="&position=12.5&sampled_ms=1793300000000&paused=0&buffering=0&local=1&speed=4";
     ClientPlaybackRecord value;std::string error;
+    ClientInterstitialKind interstitial=ClientInterstitialKind::None;
+    assert(ParseClientActiveWithoutUri("v=1&unavailable=track-unavailable&active=1",&interstitial)&&
+           interstitial==ClientInterstitialKind::Interstitial);
+    assert(ParseClientActiveWithoutUri("v=1&unavailable=track-unavailable&active=1&kind=advertisement",&interstitial)&&
+           interstitial==ClientInterstitialKind::Advertisement);
+    assert(ParseClientActiveWithoutUri("v=1&unavailable=track-unavailable&active=1&kind=interstitial",&interstitial)&&
+           interstitial==ClientInterstitialKind::Interstitial);
+    assert(!ParseClientActiveWithoutUri("v=1&unavailable=track-unavailable&active=1&kind=unknown",&interstitial));
+    assert(!ParseClientActiveWithoutUri("v=1&unavailable=track-unavailable"));
+    assert(!ParseClientActiveWithoutUri("v=1&unavailable=track-unavailable&active=2"));
     assert(ParseClientPlayback(base+timeline,value,error));
     assert(value.metadata.uri=="spotify:track:0000000000000000000001"&&value.position==12.5&&value.sampled_ms==1793300000000&&value.playing&&!value.buffering&&value.local==1&&value.speed==4);
     assert(!ParseClientPlayback(base,value,error));
@@ -84,6 +111,12 @@ int main(int argc,char** argv){
     assert(value.buffering&&value.local==-1);
     ClientTransition transition;
     assert(!ParseClientPlayback(base+"&position="+std::string("0\0junk",6)+"&sampled_ms=1793300000000&paused=0&buffering=0&local=1",value,error));
+    const std::string terminal="v=1&blocked=buffering&uri=spotify%3Aepisode%3A0000000000000000000001&instance=episode-one&sampled_ms=1793300001500&transition_ms=1793300001344&monitoring=1&terminal=1";
+    assert(ParseClientTransition(terminal,transition));
+    for(const auto* invalid:{"&natural=1","&pending=1","&controlled=1","&manual=1"})
+        assert(!ParseClientTransition(terminal+invalid,transition));
+    auto unmonitored=terminal;unmonitored.replace(unmonitored.find("monitoring=1"),12,"monitoring=0");
+    assert(!ParseClientTransition(unmonitored,transition));
     const std::string event="v=1&blocked=buffering&uri=spotify%3Atrack%3A0000000000000000000001&instance=playback-1&sampled_ms=1793300000500&transition_ms=1793300000000&position_ms=0&manual=1&controlled=1&monitoring=1";
     assert(ParseClientTransition(event,transition));
     assert(!transition.natural);

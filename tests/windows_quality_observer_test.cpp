@@ -33,218 +33,124 @@ static int32_t Parser(void *, OggPage *) {
   ++parser_calls;
   return 58;
 }
-static void TestRepeatScheduling() {
-  CaptureBuffers buffers;Listen listen;Media current;std::vector<Heard> heard;
-  Media media;media.title=L"Repeated";media.artist=L"Artist";media.album=L"Album";media.duration=10;media.playing=true;
-  auto sample=[&](double position,double time) {media.position=position;AssociateListen(media,listen,current,heard,buffers,time);};
-  auto capture=[&](double born) {auto value=std::make_unique<Capture>();value->lossless=true;value->flac.rate=1;value->coverage.samples=10;value->born=born;return value;};
-  sample(0,0);buffers.ready.push_back(capture(0));buffers.ready.push_back(capture(10));
-  for(int i=1;i<10;++i)sample(i,i);
-  sample(.1,10.1);sample(1.2,11.2);
-  assert(heard.size()==1 && heard[0].generation==1 && heard[0].start==0 && heard[0].finish==10 && listen.generation==2);
-  assert(CaptureMatchesListen(*buffers.ready[0],heard[0]) && !CaptureMatchesListen(*buffers.ready[1],heard[0]));
-  save_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(save_event);
-  SchedulePublications(heard,buffers,7,11.2);
-  SaveJob first;assert(saves.Pop(first) && first.epoch==7 && first.heard.generation==1 && first.capture->listen_generation==1 && first.capture->born==0);
-  for(int i=12;i<20;++i)sample(i-10,i);
-  sample(.1,20.1);sample(1.2,21.2);
-  assert(heard.size()==1 && heard[0].generation==2 && heard[0].start==10 && heard[0].finish==20 && listen.generation==3);
-  assert(!CaptureMatchesListen(*first.capture,heard[0])); // A prior instance cannot be reused.
-  SchedulePublications(heard,buffers,7,21.2);
-  SaveJob second;assert(saves.Pop(second) && second.heard.generation==2 && second.capture->born==10 && buffers.ready.empty());
-  CloseHandle(save_event);save_event=nullptr;
-  Slot event_slot{};event_slot.kind=AudioEventKind::FlacBegin;event_slot.capture=true;event_slot.epoch=3;event_slot.context=42;
-  PlaybackQualityTracker quality;
-  ProcessCaptureEvent(event_slot,buffers,quality,false,true,4);assert(buffers.active.empty());
-  ProcessCaptureEvent(event_slot,buffers,quality,false,true,3);assert(buffers.active.size()==1);
-  event_slot.kind=AudioEventKind::FlacError;ProcessCaptureEvent(event_slot,buffers,quality,false,true,3);assert(buffers.active.empty());
-  std::puts("PASS: named codec events honor capture epochs; same-title repeat jobs retain distinct completed generations and old boundaries");
+static void TestBoundPlaybackQuality() {
+  for(bool episode:{false,true})for(auto codec:{Codec::Vorbis,Codec::Flac,Codec::Mp3,Codec::Aac}) {
+    ownership::DecoderOwnershipTracker tracker;tracker.Reset(5);
+    CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+    Media media;media.title=L"Bound audio";media.source=MediaSource::Spotify;
+    media.spotify_uri=episode?"spotify:episode:0000000000000000000001":"spotify:track:0000000000000000000001";
+    media.playback_instance="instance";
+    auto c=std::make_unique<Capture>();
+    auto decoder=ownership::DecoderCodec::Ogg;
+    if(codec==Codec::Mp3) {c->mp3=true;c->mp3_scan.rate=44100;c->mp3_scan.channels=2;c->mp3_scan.frames=2;decoder=ownership::DecoderCodec::Mp3;}
+    else if(codec==Codec::Aac) {c->aac=true;c->spac.info.rate=44100;c->spac.info.channels=2;decoder=ownership::DecoderCodec::Aac;}
+    else if(codec==Codec::Flac) {c->lossless=true;c->metadata=true;c->flac.rate=44100;c->flac.channels=2;c->flac.bits=24;decoder=ownership::DecoderCodec::Flac;}
+    else {c->stream.rate=44100;c->stream.channels=2;c->stream.pages=1;}
+    c->capture_token=tracker.BeginCapture(decoder,0x5000,0,100,5,1);
+    ownership::DecodedActivity decoded{};decoded.owner=0x5000;decoded.calls=1;decoded.produced_floats=8192;
+    decoded.first=decoded.last=100;decoded.epoch=5;decoded.sequence=2;tracker.ObserveDecoded(decoded);
+    assert(tracker.BindCaptureExact(c->capture_token,media.playback_instance,media.spotify_uri,7,100.1));
+    buffers.active[0x5000]=std::move(c);
+    PlaybackQualitySnapshot base;base.identity=PlaybackIdentity(media.PlaybackKey());
+    const auto q=BoundPlaybackQuality(buffers,media,7,base);
+    const auto expected=codec==Codec::Mp3?PlaybackFormat::Mp3:codec==Codec::Aac?PlaybackFormat::Aac:
+      codec==Codec::Flac?PlaybackFormat::Flac:PlaybackFormat::Ogg;
+    assert(q.decoder_bound&&q.format==expected&&q.rate==44100&&q.channels==2);
+    assert(q.bits==(codec==Codec::Flac?24u:0u));
+    assert(q.level==(codec==Codec::Flac?PlaybackLevel::Lossless24:PlaybackLevel::Lossy));
+    assert(BoundPlaybackQuality(buffers,media,8,base).format==PlaybackFormat::Unknown);
+    auto next=media;next.playback_instance="next";
+    assert(BoundPlaybackQuality(buffers,next,7,base).format==PlaybackFormat::Unknown);
+    buffers.active.begin()->second->ambiguous=true;
+    assert(BoundPlaybackQuality(buffers,media,7,base).format==PlaybackFormat::Unknown);
+  }
+  // Disabling a format's saving must still allow its bounded header observer.
+  CaptureBuffers buffers;PlaybackQualityTracker quality;
+  quality.Media("disabled-format",L"Disabled format",0,16.0/44100,100);
+  Slot slot{};slot.context=1;slot.time=100;slot.epoch=5;slot.capture=false;
+  slot.kind=AudioEventKind::FlacBegin;ProcessCaptureEvent(slot,buffers,quality,true,true,5);
+  const auto header=recording_fixture::fixture(44100,16);
+  slot.kind=AudioEventKind::FlacBytes;slot.length=42;slot.input_length=42;
+  std::memcpy(slot.bytes,header.data(),42);ProcessCaptureEvent(slot,buffers,quality,true,true,5);
+  assert(quality.Snapshot().format==PlaybackFormat::Flac&&buffers.active.empty());
+  std::puts("PASS: bound Ogg/FLAC/MP3/AAC headers supply identical song/episode details without guessing unbound generations");
 }
 enum class LateCapture { Complete,Timeout,Invalid,PastDeadline };
-static void TestLateCapture(bool flac,bool repeat,LateCapture outcome,bool switch_provider=false,MediaSource provider=MediaSource::Windows) {
-  CaptureBuffers buffers;Listen listen;Media current;std::vector<Heard> heard;
-  Media media;media.title=L"Late ending";media.artist=L"Artist";media.album=L"Album";media.duration=10;media.playing=true;
-  media.source=provider;
-  if(switch_provider)media.spotify_uri="spotify:track:0000000000000000000001";
-  auto sample=[&](double position,double time){media.position=position;AssociateListen(media,listen,current,heard,buffers,time);};
-  sample(0,100);
-  Slot slot{};slot.context=1;slot.time=100;
-  auto page=[&](unsigned sequence,unsigned flags,uint64_t samples) {
-    const auto bytes=recording_fixture::page(sequence?std::vector<uint8_t>{0}:recording_fixture::identification(),sequence,flags,samples);
-    slot.length=unsigned(bytes.size());memcpy(slot.bytes,bytes.data(),bytes.size());ProcessOggCapture(slot,buffers);
-  };
+static std::unique_ptr<Capture> BoundPodcastCandidate(
+    ownership::DecoderOwnershipTracker& tracker,bool flac,uintptr_t owner,double duration,uint64_t sequence) {
+  auto capture=std::make_unique<Capture>();capture->born=100;capture->finished=110;
+  capture->decoder_owner=owner;
   if(flac) {
-    auto c=std::make_unique<Capture>();c->lossless=true;c->metadata=true;c->born=100;
-    c->flac={44100,2,16,44100,44100,441000};c->coverage.samples=396900;c->coverage.frames=9;
-    buffers.active[1]=std::move(c);
-  } else {page(0,2,0);slot.time=109;page(1,0,396900);}
-  auto old_capture=[&]() -> Capture* {
-    if(flac) {const auto it=buffers.active.find(1);return it==buffers.active.end()?nullptr:it->second.get();}
-    return buffers.ogg_active.empty()?nullptr:buffers.ogg_active.begin()->second.get();
-  };
-  for(unsigned i=1;i<=19;++i)sample(i*.5,100+i*.5);
-  if(!repeat){media.title=L"Next song";if(switch_provider)media.spotify_uri="spotify:track:0000000000000000000002";}
-  sample(.1,110.1);
-  if(repeat)sample(1.2,111.2);
-  assert(heard.size()==1&&heard[0].media.title==L"Late ending");
-  assert(old_capture());
-  // The next decoder is unrelated to retention and must survive its cleanup.
-  auto next=std::make_unique<Capture>();next->born=110;buffers.active[2]=std::move(next);
-  if(switch_provider) {
-    media.source=provider==MediaSource::Spotify?MediaSource::Windows:MediaSource::Spotify;
-    sample(4,114);
-    assert(heard.size()==1&&heard[0].media.title==L"Late ending");
-    assert(old_capture());
-    assert(!listen.eligible); // Current B coverage restarts; completed A evidence survives.
-  }
-  const double tail_time=switch_provider?115:111.3;
-  SchedulePublications(heard,buffers,7,switch_provider?114:111.2);
-  SaveJob job;assert(!saves.Pop(job)&&old_capture());
-  if(outcome!=LateCapture::Timeout) {
-    slot.time=outcome==LateCapture::PastDeadline?120.1:tail_time;
-    if(flac) {
-      slot.kind=AudioEventKind::FlacFrame;
-      const uint32_t frame[]={44100,44100,2,0,16,0};
-      const uint64_t number=outcome==LateCapture::Invalid?8:9;
-      memcpy(slot.bytes,frame,sizeof(frame));memcpy(slot.bytes+24,&number,8);
-      ProcessFlacCapture(slot,buffers);
-    } else page(outcome==LateCapture::Invalid?3:2,4,441000);
-  }
-  const auto diagnostic=AssociationFailure(heard[0],buffers,0);
-  assert(diagnostic.find("no matching complete capture")!=std::string::npos);
-  assert(diagnostic.find("Artist - Late ending")!=std::string::npos);
-  SchedulePublications(heard,buffers,7,outcome==LateCapture::Complete?tail_time:121);
-  if(outcome==LateCapture::Complete) {
-    assert(saves.Pop(job)&&job.heard.generation==1&&job.capture->Duration()==10);
-    if(switch_provider)assert(job.heard.media.source==provider);
-    publishing_reserved.fetch_sub(job.reserved);
-  } else if(outcome==LateCapture::PastDeadline) {
-    assert(saves.Pop(job)&&heard.empty()&&!old_capture());
-    publishing_reserved.fetch_sub(job.reserved);
-  } else if(outcome==LateCapture::Invalid) {
-    assert(!saves.Pop(job)&&heard.empty()&&!old_capture());
+    capture->lossless=true;capture->metadata=true;capture->flac.rate=1;
+    capture->flac.channels=2;capture->flac.bits=16;capture->flac.total_samples=uint64_t(duration);
+    capture->coverage.samples=uint64_t(duration);capture->coverage.frames=1;
   } else {
-    assert(!saves.Pop(job)&&heard.size()==1&&old_capture()&&
-           "missing codec completion retains evidence until an explicit lifecycle boundary");
+    capture->stream.complete=true;capture->stream.rate=1;capture->stream.channels=2;
+    capture->stream.samples=int64_t(duration);capture->stream.pages=2;
   }
-  assert(buffers.active.count(2));
+  capture->capture_token=tracker.BeginCapture(flac?ownership::DecoderCodec::Flac:
+      ownership::DecoderCodec::Ogg,owner,flac?0:42,100,5,sequence);
+  ownership::DecodedActivity decoded{};decoded.owner=owner;decoded.calls=1;
+  decoded.produced_floats=8192;decoded.first=100;decoded.last=109.9;decoded.epoch=5;
+  decoded.sequence=sequence+1;tracker.ObserveDecoded(decoded);
+  tracker.CompleteCapture(capture->capture_token,110,sequence+2);
+  return capture;
 }
-static void TestAssociationRejection() {
-  CaptureBuffers buffers;Heard heard;heard.media.title=L"Expected";heard.media.duration=10;
-  heard.start=100;heard.finish=110;heard.generation=1;
-  auto complete=[](double duration) {
-    auto c=std::make_unique<Capture>();c->lossless=true;c->born=100;c->finished=110;
-    c->flac.rate=1;c->coverage.samples=uint64_t(duration);return c;
-  };
-  buffers.ready.push_back(complete(12));
-  assert(!CaptureMatchesListen(*buffers.ready[0],heard));
-  assert(AssociationFailure(heard,buffers,0).find("timing_ready=1 duration_ready=0")!=std::string::npos);
-  std::vector<Heard> pending{heard};SchedulePublications(pending,buffers,7,121);
-  SaveJob job;assert(pending.size()==1&&!saves.Pop(job));
-  SchedulePublications(pending,buffers,7,711);assert(pending.size()==1&&!saves.Pop(job));
-  buffers.ready.clear();buffers.ready.push_back(complete(10));buffers.ready.push_back(complete(10));
-  assert(AssociationFailure(heard,buffers,2).find("ambiguous completed captures")!=std::string::npos);
-  pending={heard};SchedulePublications(pending,buffers,7,111);
-  assert(pending.empty()&&!saves.Pop(job));
-  // A later short/abandoned track must not erase the pending prior ready file.
-  buffers={};buffers.ready.push_back(complete(10));pending={heard};Listen listen;Media current,media;
-  media.title=L"Short next";media.duration=5;media.playing=true;
-  AssociateListen(media,listen,current,pending,buffers,108);
-  media.title=L"Skipped onward";AssociateListen(media,listen,current,pending,buffers,113);
-  assert(buffers.ready.size()==1&&pending.size()==1);
-  SchedulePublications(pending,buffers,7,113);
-  assert(saves.Pop(job)&&job.heard.media.title==L"Expected");publishing_reserved.fetch_sub(job.reserved);
-  // Without a completed listen, an ordinary skip still drops the old capture.
-  buffers={};pending.clear();listen={};current={};media.title=L"Skipped";media.duration=10;
-  AssociateListen(media,listen,current,pending,buffers,100);
-  auto partial=complete(9);buffers.active[1]=std::move(partial);
-  media.title=L"Next";AssociateListen(media,listen,current,pending,buffers,105);
-  assert(pending.empty()&&buffers.active.size()==1);
+static void TestNativeFormatPodcastAssociation() {
+  for(bool flac:{false,true}) {
+    ownership::DecoderOwnershipTracker tracker;tracker.Reset(5);
+    CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+    const auto owner=uintptr_t(flac?0x6100:0x6200);
+    buffers.ready.push_back(BoundPodcastCandidate(tracker,flac,owner,10,1));
+    Media episode;episode.source=MediaSource::Spotify;
+    episode.spotify_uri="spotify:episode:0000000000000000000001";
+    episode.playback_instance=flac?"flac-episode":"ogg-episode";
+    episode.title=L"Native episode";episode.album=L"Show";
+    episode.duration=10;episode.playing=true;
+    uint64_t playback=0;
+    if(flac) {
+      std::array<playback_identity::Match,playback_identity::kObservationCapacity> matches{};
+      matches[0].decoder=owner;matches[0].metadata_generation=7;
+      matches[0].role=playback_identity::SnapshotRole::PlayerPlaybackId;
+      playback=BindDirectReadyCapture(buffers,episode,7,100.2,matches,1);
+    } else {
+      tracker.ObservePlayback(episode.playback_instance,episode.spotify_uri,7,100.1);
+      playback=BindReadyCapture(buffers,episode,7,100.2);
+    }
+    assert(playback);
+    assert(buffers.ready[0]->listen_generation==7);
+  }
+  {
+    ownership::DecoderOwnershipTracker tracker;tracker.Reset(5);
+    CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+    buffers.ready.push_back(BoundPodcastCandidate(tracker,false,0x6300,8,1));
+    Media episode;episode.source=MediaSource::Spotify;
+    episode.spotify_uri="spotify:episode:0000000000000000000002";
+    episode.playback_instance="duration-mismatch";episode.duration=10;episode.playing=true;
+    tracker.ObservePlayback(episode.playback_instance,episode.spotify_uri,8,100.1);
+    assert(!BindReadyCapture(buffers,episode,8,100.2));
+  }
+  {
+    ownership::DecoderOwnershipTracker tracker;tracker.Reset(5);
+    CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+    buffers.ready.push_back(BoundPodcastCandidate(tracker,false,0x6400,10,1));
+    buffers.ready.push_back(BoundPodcastCandidate(tracker,true,0x6500,10,10));
+    Media episode;episode.source=MediaSource::Spotify;
+    episode.spotify_uri="spotify:episode:0000000000000000000003";
+    episode.playback_instance="ambiguous-native";episode.duration=10;episode.playing=true;
+    tracker.ObservePlayback(episode.playback_instance,episode.spotify_uri,9,100.1);
+    assert(!BindReadyCapture(buffers,episode,9,100.2));
+  }
+  std::puts("PASS: Ogg/FLAC episodes bind by playback evidence while duration mismatch and ambiguity reject");
 }
 struct TerminalTailCase {
   const char* name;double tail_time,schedule_time;
     bool reconcile_before_tail,late_start,publish;
 };
-static void TestTerminalPauseTail(bool flac,MediaSource provider,const TerminalTailCase& scenario) {
-  CaptureBuffers buffers;Listen listen;Media current;std::vector<Heard> heard;
-  Media media;media.source=provider;media.spotify_uri="spotify:track:0000000000000000000001";
-  media.title=L"Terminal pause";media.duration=10;media.playing=true;
-  auto sample=[&](double position,double time){media.position=position;AssociateListen(media,listen,current,heard,buffers,time);};
-  Slot slot{};slot.context=1;
-  auto page=[&](unsigned sequence,unsigned flags,uint64_t samples) {
-    const auto bytes=recording_fixture::page(sequence?std::vector<uint8_t>{0}:recording_fixture::identification(),sequence,flags,samples);
-    slot.length=unsigned(bytes.size());memcpy(slot.bytes,bytes.data(),bytes.size());ProcessOggCapture(slot,buffers);
-  };
-  auto old_capture=[&]() -> Capture* {
-    if(flac) {const auto it=buffers.active.find(1);return it==buffers.active.end()?nullptr:it->second.get();}
-    return buffers.ogg_active.empty()?nullptr:buffers.ogg_active.begin()->second.get();
-  };
-  auto begin=[&]{
-    if(flac) {
-      auto c=std::make_unique<Capture>();c->lossless=true;c->metadata=true;c->born=100;
-      c->flac={44100,2,16,44100,44100,441000};c->coverage.samples=396900;c->coverage.frames=9;
-      buffers.active[1]=std::move(c);
-    } else {slot.time=100;page(0,2,0);slot.time=109;page(1,0,396900);}
-    assert(old_capture());
-  };
-  sample(0,100);if(!scenario.late_start)begin();
-  for(unsigned i=1;i<=19;++i)sample(i*.5,100+i*.5);
-  const auto generation=listen.generation;
-  media.playing=false;sample(10,110);
-  assert(heard.size()==1&&heard[0].finish==110&&listen.generation==generation);
-  sample(10,111);assert(heard.size()==1); // Repeated paused polls cannot renew completion.
-  if(scenario.late_start)begin();
-  SaveJob job;
-  if(scenario.reconcile_before_tail) {
-    SchedulePublications(heard,buffers,7,121);
-    assert(!saves.Pop(job)&&heard.size()==1&&old_capture());
-  }
-  slot.time=scenario.tail_time;
-  if(flac) {
-    slot.kind=AudioEventKind::FlacFrame;const uint32_t frame[]={44100,44100,2,0,16,0};const uint64_t number=9;
-    memcpy(slot.bytes,frame,sizeof(frame));memcpy(slot.bytes+24,&number,8);ProcessFlacCapture(slot,buffers);
-  } else page(2,4,441000);
-  SchedulePublications(heard,buffers,7,scenario.schedule_time);
-  const bool queued=saves.Pop(job);
-  if(queued!=scenario.publish)std::fprintf(stderr,"terminal tail case=%s flac=%d provider=%d queued=%d\n",scenario.name,flac,int(provider),queued);
-  assert(queued==scenario.publish);
-  if(queued) {
-    assert(heard.empty()&&job.heard.finish==110&&job.capture->Duration()==10);
-    publishing_reserved.fetch_sub(job.reserved);
-  } else assert(heard.size()==1);
-}
-static void TestTerminalPauseScheduling() {
-  const TerminalTailCase cases[]={
-    {"inside",119.9,119.9,false,false,true},
-    {"exact former cutoff",120,120,false,false,true},
-    {"late without reconciliation",122,122,false,false,true},
-    {"late after reconciliation",122,122,true,false,true},
-    {"completed buffer reconciles later",119,500,false,false,true},
-    {"capture discovered after completion",119,119,false,true,true},
-    {"late capture discovered after completion",122,122,false,true,true},
-    {"late-discovered capture reconciles",122,122,true,true,true},
-  };
-  for(bool flac:{false,true})for(auto provider:{MediaSource::Windows,MediaSource::Spotify})
-    for(const auto& scenario:cases)TestTerminalPauseTail(flac,provider,scenario);
-  puts("PASS: terminal pause retains Ogg/FLAC tails until codec lifecycle evidence resolves them");
-}
 static void TestLateAssociation() {
-  TestRepeatScheduling();
-  save_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(save_event);
-  for(bool flac:{false,true}) {
-    TestLateCapture(flac,false,LateCapture::Complete);
-    TestLateCapture(flac,true,LateCapture::Complete);
-    TestLateCapture(flac,false,LateCapture::Timeout);
-    TestLateCapture(flac,false,LateCapture::Invalid);
-    TestLateCapture(flac,false,LateCapture::PastDeadline);
-  }
-  TestAssociationRejection();
-  TestTerminalPauseScheduling();
-  for(bool flac:{false,true})for(auto provider:{MediaSource::Windows,MediaSource::Spotify})
-    TestLateCapture(flac,false,LateCapture::Complete,true,provider);
-  puts("PASS: both provider-switch directions preserve a prior completed Ogg/FLAC listen and unresolved codec tail");
-  CloseHandle(save_event);save_event=nullptr;
-  puts("PASS: late Ogg/FLAC completion survives natural transitions and repeats; invalid, mismatched and ambiguous captures still reject");
+  TestBoundPlaybackQuality();
+  TestNativeFormatPodcastAssociation();
+  puts("PASS: source-independent codec quality and native episode association");
 }
 static void TestLyricsPublication() {
   wchar_t temp[2048];GetTempPathW(2048,temp);
@@ -287,7 +193,7 @@ static void TestExistingMetadataAtPlaybackStart() {
   assert(SetSaveLocation(std::wstring(temp)+L"Floggfy-existing-metadata-"+std::to_wstring(GetCurrentProcessId())));
   assert(SetDownloads(true)&&SetFlac(true)&&SetOgg(true)&&SetLyrics(true)&&SetUpdateExistingMetadata(true));
   Media media;media.title=L"Existing Track";media.artist=L"Existing Artist";media.album=L"Existing Album";
-  media.track=1;media.duration=16.0/44100;media.playing=true;media.spotify_uri="spotify:track:existing";
+  media.track=1;media.duration=16.0/44100;media.playing=true;media.spotify_uri="spotify:track:AAAAAAAAAAAAAAAAAAAAAA";
   const auto settings=GetSettings();const auto catalog=CatalogFor(media);
   const auto path=OutputPath(settings.root,catalog,L".flac",settings.music_folder);
   assert(EnsureDirectory(path.substr(0,path.find_last_of(L'\\'))));
@@ -313,6 +219,34 @@ static void TestExistingMetadataAtPlaybackStart() {
   assert(lyrics);
   PublishCurrentDestination(media,settings);assert(!TakeFilenameCheck());
   DeleteFileW(path.c_str());
+  // A final explicit UID conflict redirects the existing-file check to the
+  // stable duplicate path, where metadata is still filled during playback.
+  auto other_tags=tags;
+  for(auto& field:other_tags.fields)if(field.first=="SPOTIFY_URI")field.second="spotify:track:BBBBBBBBBBBBBBBBBBBBBB";
+  std::vector<uint8_t> other;assert(TagFlac(recording_fixture::fixture(44100,24),other_tags,other,error));
+  auto write_file=[](const std::wstring& target,const std::vector<uint8_t>& bytes) {
+    assert(EnsureDirectory(target.substr(0,target.find_last_of(L'\\'))));
+    HANDLE output=CreateFileW(target.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,0,nullptr);DWORD count=0;
+    assert(output!=INVALID_HANDLE_VALUE&&WriteFile(output,bytes.data(),DWORD(bytes.size()),&count,nullptr)&&count==bytes.size());CloseHandle(output);
+  };
+  write_file(path,other);
+  const auto duplicate=DuplicateOutputPath(settings.root,catalog,L".flac",settings.music_folder);
+  write_file(duplicate,existing);
+  ++enrichment_revision;const auto duplicate_before=metadata_update_calls;
+  PublishCurrentDestination(media,GetSettings());auto duplicate_check=TakeFilenameCheck();assert(duplicate_check);ProcessFilenameCheck(*duplicate_check);
+  assert(metadata_update_calls==duplicate_before+1);
+  RecordingFile duplicate_updated;assert(ReadRecording(duplicate,duplicate_updated)&&MatchesRecording(duplicate_updated,catalog));
+  lyrics=false;for(const auto& field:duplicate_updated.tags.fields)if(field.first=="LYRICS"&&field.second=="automatic lyric fill")lyrics=true;
+  assert(lyrics);
+  assert(DeleteFileW(path.c_str())&&DeleteFileW(duplicate.c_str()));
+  write_file(duplicate,existing);++enrichment_revision;
+  const auto orphaned_duplicate_before=metadata_update_calls;
+  PublishCurrentDestination(media,GetSettings());auto orphaned_check=TakeFilenameCheck();assert(orphaned_check);
+  ProcessFilenameCheck(*orphaned_check);
+  assert(metadata_update_calls==orphaned_duplicate_before+1&&
+         ReadRecording(duplicate,duplicate_updated)&&MatchesRecording(duplicate_updated,catalog)&&
+         "metadata lookup must retain an established duplicate after its canonical conflict is deleted");
+  assert(DeleteFileW(duplicate.c_str()));
   std::puts("PASS: existing owned recording receives delayed lyrics during partial playback");
 }
 static void TestAutoSkipDownloaded() {
@@ -332,7 +266,7 @@ static void TestAutoSkipDownloaded() {
   DeleteFileW(path.c_str());HANDLE file=CreateFileW(path.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,0,nullptr);
   DWORD written=0;assert(file!=INVALID_HANDLE_VALUE&&WriteFile(file,owned.data(),DWORD(owned.size()),&written,nullptr)&&written==owned.size());CloseHandle(file);
   auto publish_quality=[&](PlaybackFormat format,unsigned rate,unsigned channels,unsigned bits=0) {
-    PlaybackQualitySnapshot quality;quality.identity=PlaybackIdentity(media.Key());quality.format=format;
+    PlaybackQualitySnapshot quality;quality.identity=PlaybackIdentity(media.PlaybackKey());quality.format=format;
     quality.rate=rate;quality.channels=channels;quality.bits=bits;PublishPlaybackQuality(quality);
   };
   const auto initial_token=ReadAutoSkipRequest().token;
@@ -386,7 +320,7 @@ static void WaitLog(const std::string& prefix,const std::string& suffix) {
   std::fprintf(stderr,"Missing activity log: %s ... %s\n",prefix.c_str(),suffix.c_str());assert(false);
 }
 static void TestPublicationLogging() {
-  assert(GetSettings().log_level==1);
+  assert(GetSettings().log_level==2);
   assert(SavedAudioDetails({Codec::Vorbis,44100,2,0,320000},1048576)=="Ogg Vorbis 320 kbps nominal, 44,100 Hz | 1.00 MiB (1048576 bytes)");
   assert(SavedAudioDetails({Codec::Vorbis,44100,2,0,0},1048576)=="Ogg Vorbis, 44,100 Hz | 1.00 MiB (1048576 bytes)");
   wchar_t temp[2048];GetTempPathW(2048,temp);
@@ -427,9 +361,12 @@ static void TestPublicationLogging() {
   assert(EnsureDirectory(path.substr(0,path.find_last_of(L'\\'))));
   HANDLE f=CreateFileW(path.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,0,nullptr);DWORD n;
   assert(f!=INVALID_HANDLE_VALUE&&WriteFile(f,"unknown",7,&n,nullptr));CloseHandle(f);
-  const auto alternate=ResolveRecordingDestination(path,CatalogFor(heard.media)).path;assert(alternate!=path && !alternate.empty());
+  const auto old_alternate=ResolveRecordingDestination(path,CatalogFor(heard.media)).path;
+  assert(old_alternate!=path && !old_alternate.empty());
+  const auto alternate=DuplicateOutputPath(settings.root,CatalogFor(heard.media),L".flac",settings.music_folder);
   capture=make(44100,24);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Saved);
   Quality alternate_quality;assert(ExistingRecording(alternate,CatalogFor(heard.media),alternate_quality));
+  assert(GetFileAttributesW(old_alternate.c_str())==INVALID_FILE_ATTRIBUTES);
   f=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr);char preserved[7]{};
   assert(f!=INVALID_HANDLE_VALUE && ReadFile(f,preserved,7,&n,nullptr) && n==7 && !memcmp(preserved,"unknown",7));CloseHandle(f);
   assert(DeleteFileW(path.c_str()) && DeleteFileW(alternate.c_str()));
@@ -462,8 +399,7 @@ int main(int argc,char** argv) {
   if(argc==2&&std::string(argv[1])=="--association"){TestLateAssociation();return 0;}
   TestLateAssociation();
   wchar_t ini_path[2048];GetModuleFileNameW(nullptr,ini_path,2048);std::wstring ini=ini_path;ini.resize(ini.find_last_of(L'\\')+1);ini+=L"SpotifyHistory.ini";
-  assert(WritePrivateProfileStringW(L"To Disk",L"Log",L"1",ini.c_str()));
-  assert(WritePrivateProfileStringW(L"To Disk",L"DebugLog",L"0",ini.c_str()));
+  assert(WritePrivateProfileStringW(L"To Disk",L"LogLevel",L"2",ini.c_str()));
   InitSettings(nullptr);
   StartSongDestinationWorker(true);
   std::vector<RecentDownload> recent;assert(ReadRecentDownloads(recent)&&recent.empty());

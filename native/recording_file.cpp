@@ -5,6 +5,7 @@
 #include "vorbis_headers.h"
 #include "aac_stream.h"
 #include "compressed_buffer.h"
+#include "recording_limits.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -363,7 +364,7 @@ bool ReadRecordingArtwork(const std::vector<uint8_t>& bytes,RecordingArtwork& ou
 }
 bool InspectRecording(const uint8_t* bytes,size_t size,RecordingFile& out) {
     out={};
-    if(!bytes || size<4 || size>512u*1024*1024) return false;
+    if(!bytes || size<4 || size>kMaximumRecordingBytes) return false;
     bool valid=false;
     if(!std::memcmp(bytes,"fLaC",4)) valid=Flac(bytes,size,out);
     else if(!std::memcmp(bytes,"OggS",4)) valid=Ogg(bytes,size,out);
@@ -390,7 +391,7 @@ bool InspectRecording(const uint8_t* bytes,size_t size,RecordingFile& out) {
         if(valid) {
             out.quality={Codec::Mp3,mp3.rate,mp3.channels,0,
                 mp3.Duration()>0?unsigned((mp3.audio_size*8)/mp3.Duration()):0};
-            const bool owned=Field(out.tags,"HISTORY_COMPLETE_LISTEN")=="1"&&
+            const bool owned=(Field(out.tags,"HISTORY_COMPLETE_STREAM")=="1"||Field(out.tags,"HISTORY_COMPLETE_LISTEN")=="1")&&
                 Field(out.tags,"HISTORY_CAPTURE")=="native compressed MP3 input";
             uint64_t expected_samples=0;
             out.complete=mp3.complete&&(!owned||
@@ -402,7 +403,7 @@ bool InspectRecording(const uint8_t* bytes,size_t size,RecordingFile& out) {
             }
         }
     }
-    out.owned=valid && Field(out.tags,"HISTORY_COMPLETE_LISTEN")=="1" &&
+    out.owned=valid && (Field(out.tags,"HISTORY_COMPLETE_STREAM")=="1"||Field(out.tags,"HISTORY_COMPLETE_LISTEN")=="1") &&
         ((out.quality.codec==Codec::Flac && Field(out.tags,"HISTORY_CAPTURE")=="native compressed FLAC input") ||
          (out.quality.codec==Codec::Vorbis && Field(out.tags,"HISTORY_CAPTURE")=="native compressed Ogg pages") ||
          (out.quality.codec==Codec::Aac && Field(out.tags,"HISTORY_CAPTURE")=="native compressed SpAC AAC packets") ||

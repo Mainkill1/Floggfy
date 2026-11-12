@@ -31,10 +31,40 @@ state.timestamp=now;state.positionAsOfTimestamp=1000;state.speed=4;now+=500;cont
 assert.equal(last().get('speed'),'4');assert.equal(last().get('position'),'3','reported playback speed advances the bounded timeline');
 state.speed=3;now+=500;context.window.__floggfyPoll();assert.equal(last().get('unavailable'),'timeline-fields');
 state.speed=1;
+state.item={uri:'',metadata:{title:'Unidentified audio'}};state.isPaused=false;state.isBuffering=false;
+state.timestamp=now;state.positionAsOfTimestamp=1000;now+=500;context.window.__floggfyPoll();
+assert.equal(last().get('unavailable'),'track-unavailable');
+assert.equal(last().get('active'),'1','local unpaused URI-less audio must be marked as an active unidentified item');
+assert.equal(last().get('kind'),'interstitial','blank active media is identified conservatively as an interstitial');
+state.isPaused=true;state.timestamp=now;now+=500;context.window.__floggfyPoll();
+assert.equal(last().get('unavailable'),'track-unavailable');
+assert.equal(last().get('active'),null,'paused URI-less media is unavailable, not an active interstitial');
+state.item={uri:'spotify:ad:0000000000000000000001',metadata:{title:'Advertisement',type:'ad'}};
+state.isPaused=false;state.timestamp=now;now+=500;context.window.__floggfyPoll();
+assert.equal(last().get('active'),'1');
+assert.equal(last().get('kind'),'advertisement','an explicit Spotify ad identity is logged as an advertisement');
+state.item={uri:'spotify:track:0000000000000000000001',metadata:{title:'Song',artist_name:'Artist',album_title:'Album',duration:'180000'}};
+state.isPaused=false;state.timestamp=now;
 Object.defineProperty(state,'positionAsOfTimestamp',{get(){getters++;throw Error('getter forbidden');},configurable:true});
 now+=500;context.window.__floggfyPoll();assert.equal(getters,0);
 assert(!output.some(x=>x.startsWith('FLOGGFY_METADATA_V1:')));assert.equal(requests,0);
 console.log('PASS: client timeline, URI, pause/buffering/local flags, bounded clocks and Metadata=0 without getters or requests');
+{
+ const coldState={timestamp:now,positionAsOfTimestamp:0,duration:30000,isPaused:false,isBuffering:false,
+  playbackId:'unknown-active',item:{uri:'',metadata:{title:'Unidentified audio'}}};
+ const coldMessages=[];
+ const coldPlayer={getState:()=>coldState,getEvents:()=>({addListener(){},removeListener(){}})};
+ const cold={window:{__floggfyConfig:{metadata:false},Spicetify:{Platform:{PlayerAPI:coldPlayer,
+  ConnectDevicesAPI:{getConnectState:()=>({activeDevice:{isLocal:true}})}}}},document:{querySelector:()=>null},
+  console:{info:value=>coldMessages.push(value)},performance:{now:()=>now},Date:{now:()=>now},
+  setInterval:()=>{},encodeURIComponent};
+ vm.runInNewContext(script,cold);
+ const marker=coldMessages.find(value=>value.startsWith('FLOGGFY_TIMELINE_V1:'));
+ assert(marker,'cold-start URI-less active playback must emit an unidentified marker');
+ const fields=new URLSearchParams(marker.slice('FLOGGFY_TIMELINE_V1:'.length));
+ assert.equal(fields.get('unavailable'),'track-unavailable');assert.equal(fields.get('active'),'1');
+}
+console.log('PASS: cold-start URI-less active playback is marked without prior track state');
 // Producer evidence must remain unknown if action registration is absent or
 // failed; only an observed instance transition during local playing qualifies.
 for(const mode of ['observed','blank','readyblank','reused','missing','throws','manual','seek','paused','same','unavailable','replacement']) {
@@ -202,3 +232,32 @@ console.log('PASS: resume preserves unacknowledged skip and seek evidence');
  assert(reads>=6);
  console.log('PASS: stock Spotify registry polling without Spicetify/events, URI disambiguation, progress, pause and recovery');
 }
+
+// A fresh explicit context clear closes the last episode, even if Spotify never
+// creates a successor playback ID. Buffering alone is not terminal evidence.
+for(const mode of ['ended','early','stale','missing-item','missing-id','missing-context','context-present','remote','unknown-local','control','consumed-control','player-change','unmonitored','track']) {
+ let clock=1793300000000,local=true;
+ let current={timestamp:clock,positionAsOfTimestamp:mode==='early'?10000:269599,duration:270942,isPaused:false,isBuffering:false,
+  playbackId:'episode-one',item:{uri:'spotify:'+(mode==='track'?'track':'episode')+':0000000000000000000001',metadata:{title:'Episode',artist_name:'Artist',album_title:'Album'}}};
+ const handlers=new Map(),messages=[];
+ const api={getState:()=>current,getEvents:()=>({addListener(type,fn){if(mode==='unmonitored'&&type==='action')throw Error('unavailable');handlers.set(type,fn);},removeListener:type=>handlers.delete(type)})};
+ const sandbox={window:{__floggfyConfig:{metadata:false},Spicetify:{Platform:{PlayerAPI:api,ConnectDevicesAPI:{getConnectState:()=>({activeDevice:{isLocal:local}})}}}},
+  document:{querySelector:()=>null},console:{info:line=>messages.push(line)},performance:{now:()=>clock},Date:{now:()=>clock},encodeURIComponent};
+ vm.runInNewContext(script,sandbox);sandbox.window.__floggfyPoll();
+ clock+=373;current={...current,timestamp:clock,positionAsOfTimestamp:mode==='early'?10373:269964,isBuffering:true};sandbox.window.__floggfyPoll();
+ if(mode==='control'||mode==='consumed-control'){
+  handlers.get('action')({data:{action:'seekTo'}});
+  if(mode==='consumed-control')sandbox.window.__floggfyPoll();
+ }
+ if(mode==='player-change')sandbox.window.Spicetify.Platform.PlayerAPI={...api};
+ if(mode==='remote')local=false;if(mode==='unknown-local')local=undefined;
+ clock+=mode==='stale'?4000:1000;
+ current={item:mode==='missing-item'?undefined:null,playbackId:mode==='missing-id'?undefined:null,
+  context:mode==='missing-context'?undefined:{uri:mode==='context-present'?'spotify:show:0000000000000000000001':''},
+  timestamp:clock-156,positionAsOfTimestamp:0,isPaused:false,isBuffering:true};
+ sandbox.window.__floggfyPoll();sandbox.window.__floggfyPoll();
+ const terminals=messages.filter(line=>line.startsWith('FLOGGFY_TIMELINE_V1:')).map(line=>new URLSearchParams(line.slice('FLOGGFY_TIMELINE_V1:'.length))).filter(fields=>fields.get('terminal')==='1');
+ assert.equal(terminals.length,mode==='ended'||mode==='early'?1:0,mode);
+ if(terminals.length){assert.equal(terminals[0].get('instance'),'episode-one');assert.equal(terminals[0].get('transition_ms'),String(clock-156));assert.equal(terminals[0].get('monitoring'),'1');}
+}
+console.log('PASS: explicit episode context clear is fresh, anchored, monitored and disqualified by controls or uncertainty');

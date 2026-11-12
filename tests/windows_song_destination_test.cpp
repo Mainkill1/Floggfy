@@ -133,7 +133,7 @@ static void LegacyNames(const std::wstring& root) {
 }
 int main() {
     using namespace history;
-    Catalog item;item.artist=L"Album Artist";item.album=L"Album: Deluxe";item.title=L"Song";item.track=3;item.disc=1;item.duration=1;item.spotify_uri="spotify:track:song-probe";
+    Catalog item;item.artist=L"Album Artist";item.album=L"Album: Deluxe";item.title=L"Song";item.track=3;item.disc=1;item.duration=1;item.spotify_uri="spotify:track:AAAAAAAAAAAAAAAAAAAAAA";
     wchar_t temp[MAX_PATH];GetTempPathW(MAX_PATH,temp);
     const auto root=std::wstring(temp)+L"Floggfy-existing-song-test-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64());
     assert(GetFileAttributesW(root.c_str())==INVALID_FILE_ATTRIBUTES);
@@ -273,6 +273,21 @@ int main() {
     RefreshSongDestination();AwaitProbe();
     assert(ReadSongDestination(18,11,saved_file)&&saved_file==*suffixed);
     assert(DeleteFileW(WindowsPath(*suffixed).c_str()));
+    for(const auto* extension:{L".ogg",L".flac",L".m4a"}) {
+        const auto native_episode=OutputPath(root,episode,extension);
+        WriteAudio(native_episode,episode);
+        SubmitSong(18,root,episode,false,11);
+        assert(ReadSongDestination(18,11,saved_file)&&saved_file==native_episode&&
+               "Song must discover every native podcast format");
+        assert(DeleteFileW(WindowsPath(native_episode).c_str()));
+        RefreshSongDestination();AwaitProbe();
+    }
+    const auto prior_kind=item.kind;item.kind=MediaKind::Music;
+    const auto music_mp3=OutputPath(root,item,L".mp3",true);
+    WriteAudio(music_mp3,item);SubmitSong(19,root,item,true,11);
+    assert(ReadSongDestination(19,11,saved_file)&&saved_file==music_mp3&&
+           "Song must discover MP3 music without treating it as a podcast");
+    assert(DeleteFileW(WindowsPath(music_mp3).c_str()));item.kind=prior_kind;
     PublishSongDestination(7,root,item,true,11);AwaitProbe();
     assert(ReadSongDestination(7,11,saved_file)&&saved_file==ogg);
     const auto before=saved_file;
@@ -286,7 +301,7 @@ int main() {
     assert(GetTickCount64()-submit_start<100);ReleaseSRWLockExclusive(&destination_lock);
     assert(!ReadSongDestination(7,11,saved_file) && saved_file==before);
     SubmitSong(7,root,item,true,11);
-    auto changed_identity=item;changed_identity.spotify_uri="spotify:track:new-recording-same-label";
+    auto changed_identity=item;changed_identity.spotify_uri="spotify:track:CCCCCCCCCCCCCCCCCCCCCC";
     AcquireSRWLockExclusive(&destination_lock);
     PublishSongDestination(7,root,changed_identity,true,11);ReleaseSRWLockExclusive(&destination_lock);
     assert(!ReadSongDestination(7,11,saved_file)); // Same display key, different recording intent.
@@ -297,12 +312,18 @@ int main() {
     assert(ReadSongDestination(7,11,saved_file) && saved_file==before); // RAM read does no filesystem probes.
     destination_updated=GetTickCount64()-4000;
     assert(!ReadSongDestination(7,11,saved_file) && saved_file==before);
-    auto other=item;other.spotify_uri="spotify:track:other-probe";
+    auto other=item;other.spotify_uri="spotify:track:BBBBBBBBBBBBBBBBBBBBBB";
     WriteAudio(ogg,other); // Preserve a different recording occupying the legacy filename.
-    const auto alternate=ResolveRecordingDestination(ogg,item).path;assert(alternate!=ogg && !alternate.empty());
-    WriteAudio(alternate,item);SubmitSong(7,root,item,true,11);
-    assert(ReadSongDestination(7,11,saved_file) && saved_file==alternate);
-    assert(DeleteFileW(WindowsPath(alternate).c_str()));assert(DeleteFileW(WindowsPath(ogg).c_str()));
+    const auto duplicate_paths=DuplicateOutputPaths(root,item,L".ogg",true);
+    assert(duplicate_paths.size()==3);
+    const auto& duplicate=duplicate_paths[1];
+    WriteAudio(duplicate,item);SubmitSong(7,root,item,true,11);
+    assert(ReadSongDestination(7,11,saved_file) && saved_file==duplicate);
+    assert(DeleteFileW(WindowsPath(ogg).c_str()));
+    RefreshSongDestination();AwaitProbe();
+    assert(ReadSongDestination(7,11,saved_file)&&saved_file==duplicate&&
+           "the Song shortcut must find an established duplicate after the canonical conflict is deleted");
+    assert(DeleteFileW(WindowsPath(duplicate).c_str()));
     ResetEvent(probe_entered);ResetEvent(probe_release);hold_probe=true;RefreshSongDestination();
     assert(WaitForSingleObject(probe_entered,1000)==WAIT_OBJECT_0);
     const auto disable_start=GetTickCount64();StartSongDestinationWorker(false);

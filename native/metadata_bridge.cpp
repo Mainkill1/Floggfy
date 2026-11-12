@@ -1,6 +1,5 @@
 #define WIN32_LEAN_AND_MEAN
 #include "metadata_bridge.h"
-#include "cef_identity.h"
 #include "hook_init_state.h"
 #include "hook_rollback.h"
 #include "hook_startup_minhook.h"
@@ -125,13 +124,14 @@ static std::atomic<bool> enrichment_running{false};
 static void MergeAvailableFields(const RichMetadata& available,RichMetadata& live) {
  CachedTrackMetadata cached;
  cached.uri=available.uri;cached.title=available.title;cached.album=available.album;
+ cached.album_uri=available.album_uri;
  cached.duration=available.duration;cached.fields=available.fields;
  // Uses the established missing-field/richer-date rules: current live values
  // win, while unchanged messages retain already obtained enrichment.
  MergeCachedMetadata(cached,live);
 }
 static bool SameRecordingMetadata(const RichMetadata& left,const RichMetadata& right) {
- return left.title==right.title&&left.artist==right.artist&&left.album==right.album&&
+ return left.title==right.title&&left.artist==right.artist&&left.album==right.album&&left.album_uri==right.album_uri&&
         left.uri==right.uri&&left.artwork_url==right.artwork_url&&left.duration==right.duration&&
         left.fields==right.fields;
 }
@@ -230,12 +230,17 @@ static bool CurrentTimeline(const String* text) {
   if(payload=="v=1&blocked=buffering"||payload.rfind("v=1&blocked=buffering&",0)==0){
    ClientTransition transition;
    if(ParseClientTransition(payload,transition)) {
-    Media next;next.source=MediaSource::Spotify;next.spotify_uri=transition.uri;next.playback_instance=transition.instance;next.position=transition.position;next.explicit_skip=transition.explicit_skip;next.explicit_control=transition.explicit_control;next.control_monitoring=transition.control_monitoring;next.natural_transition=transition.natural;next.transition_pending=transition.pending;
+    Media next;next.source=MediaSource::Spotify;next.spotify_uri=transition.uri;next.playback_instance=transition.instance;next.position=transition.position;next.explicit_skip=transition.explicit_skip;next.explicit_control=transition.explicit_control;next.control_monitoring=transition.control_monitoring;next.natural_transition=transition.natural;next.transition_pending=transition.pending;next.terminal_context=transition.terminal;
     PublishClientBufferingTransition(std::move(next),transition.sampled_ms,transition.transition_ms);
    }else PublishClientMediaUnavailable("client-buffering",true);
    return true;
   }
   if(payload=="v=1&blocked=remote-playback"||payload.rfind("v=1&blocked=remote-playback&",0)==0){PublishClientMediaUnavailable("remote-playback",true);return true;}
+  ClientInterstitialKind interstitial=ClientInterstitialKind::None;
+  if(ParseClientActiveWithoutUri(payload,&interstitial)) {
+   PublishClientMediaUnavailable(interstitial==ClientInterstitialKind::Advertisement?
+    "client-active-advertisement":"client-active-interstitial",true);return true;
+  }
   ClientPlaybackRecord record;std::string error;
   if(!ParseClientPlayback(payload,record,error)){PublishClientMediaUnavailable("client-timeline-unavailable");return true;}
   if(record.local==0){PublishClientMediaUnavailable("remote-playback",true);return true;}
@@ -265,10 +270,8 @@ static bool CurrentPlayback(const String* text) {
    }
    RichMetadata record;std::string error;
    if(ParsePlaybackMetadata(payload,record,error)) {
-    // Episodes can share a title and omit music tags. Keep their URI identity
-    // separate from SMTC's music key; that cannot identify an episode decoder.
-    snapshot.identity=PlaybackIdentity(record.uri.rfind("spotify:episode:",0)==0
-        ? record.uri : record.title+"\x1f"+record.artist+"\x1f"+record.album);
+    snapshot.identity=PlaybackIdentity(record.uri.empty()
+        ? record.title+"\x1f"+record.artist+"\x1f"+record.album : record.uri);
     snapshot.level=ParsePlaybackLevel(record.playback_quality);
     const int length=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,record.title.data(),int(record.title.size()),nullptr,0);
     if(length>0 && length<=4096) {
@@ -368,15 +371,16 @@ void EnrichCatalog(const Media& media,Catalog& catalog) {
  if(!GetSettings().metadata)return;
  const auto title=Utf8(media.title),artist=Utf8(media.artist),album=Utf8(media.album);
  const char* keys[]={"TITLE","ALBUM","ALBUMARTIST","ARTIST","TRACKNUMBER","DISCNUMBER"};
- std::array<std::string,6> fields;std::string uri;
+ std::array<std::string,6> fields;std::string uri,album_uri;
  {SharedSrw guard(cache_lock);
   const auto record=media.spotify_uri.empty()?cache.Find(title,artist,album,media.duration):cache.FindUri(media.spotify_uri);
   if(!record)return;
   uri=record->uri;
+  album_uri=record->album_uri;
   for(size_t i=0;i<fields.size();++i){const auto value=record->fields.find(keys[i]);if(value!=record->fields.end())fields[i]=value->second;}}
  // Decode and allocate the complete replacement outside the cache lock. Keep
  // publication tags and the Song probe on the same canonical directory identity.
- auto next=catalog;next.spotify_uri=std::move(uri);
+ auto next=catalog;next.spotify_uri=std::move(uri);next.spotify_album_uri=std::move(album_uri);
  auto replace=[](std::wstring& target,const std::string& value){auto wide=MetadataWide(value);if(!wide.empty())target.swap(wide);};
  replace(next.title,fields[0]);replace(next.album,fields[1]);
  const auto album_artist=MetadataWide(fields[2]),contributors=MetadataWide(fields[3]);
@@ -457,10 +461,8 @@ bool PrepareMetadataCollector(HMODULE cef) {
  const auto now=static_cast<std::uint64_t>(GetTickCount64());
  if(!metadata_init.TryBegin(now))return false;
  // Basic app playback observation stays active when optional enrichment is disabled.
- auto address=GetProcAddress(cef,"cef_version_info");int(*version)(int)=nullptr;static_assert(sizeof(version)==sizeof(address));memcpy(&version,&address,sizeof(version));
- if(!version||!cef_compat::IsSupported({version(0),version(1),version(2),version(3)})){
-  LogEvent(LogKind::Warning,"warning","metadata CEF identity unsupported; revision is not in the audited compatibility table");metadata_init.MarkUnsupported();return false;
- }
+ // Attempt attachment on every CEF revision. Required exports and callback
+ // structure checks below determine whether the observer can attach.
  auto post_address=GetProcAddress(cef,"cef_post_task");memcpy(&post_task,&post_address,sizeof(post_task));
  if(!post_task){LogEvent(LogKind::Warning,"warning","metadata collector unsupported: cef_post_task missing");metadata_init.MarkUnsupported();return false;}
  message_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);

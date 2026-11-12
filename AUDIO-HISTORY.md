@@ -1,8 +1,8 @@
 # To Disk audio history
 
-The native `version.dll` provides complete-listen history and an optional legacy
+The native `version.dll` saves complete audio streams and provides an optional legacy
 connectivity repair for the Windows x64 Spotify client. It copies the compressed
-Vorbis, FLAC, optionally AAC, or explicitly enabled podcast MP3 bytes that Spotify already reads for playback. It
+Vorbis, FLAC, MP3, or optionally AAC bytes that Spotify already reads for playback. It
 does not request tracks, run FFmpeg, transcode audio, or require an external
 runtime helper.
 
@@ -23,30 +23,44 @@ runtime helper.
 `SpotifyHistory.ini` is included with the release and is created beside
 `version.dll` on first launch when missing.
 The top-left menu contains **To Disk** with Downloads, Save Location, FLAC, Ogg,
-Podcasts, Lyrics and Capture Speed.
+Podcasts, Lyrics and optional Capture Speed and Never Pause controls.
 Checkbox labels and capture switches change immediately when clicked. INI
 persistence runs in a background worker.
+
+**Never Pause** sends Resume/Play when local Spotify is paused, including manual
+pauses. `NeverPause=-1` (default) hides and disables the control; `0` shows it off;
+`1` shows it on. It uses the existing playback poll, retries no more than once
+every two seconds, and waits for an outstanding command to settle before retrying.
+Changing the menu toggle preserves current capture buffers. Restart after INI edits.
 
 ```ini
 [To Disk]
 Downloads=1
 Menu=1
+NeverPause=-1
 NetworkPatch=0
 Save Location=
+SaveUnmatched=1
 Flac=1
 Ogg=1
-Podcasts=0
+Podcasts=1
 CaptureSpeed=1
 Metadata=1
 Lyrics=1
 UpdateExistingMetadata=1
 LogLevel=1
+DumpStreams=0
 DebugConnect=1
 DebugNetworking=0
 DebugHookDiagnostics=0
 
+[Matcher]
+MaxMatchQueue=5
+TimeOffsetToleranceMs=10000
+DurationToleranceMs=250
+
 [History]
-MaxBufferedMiB=500
+MaxBufferedMiB=512
 ```
 
 - **Downloads:** master switch. Start the next track from its beginning after
@@ -60,7 +74,7 @@ MaxBufferedMiB=500
   loaded once at startup; no live detachment of COM hooks is attempted. Missing
   keys are added through the existing atomic settings writer, preserving other
   INI content. Ordinary menu saves preserve existing restart-only entries
-  (`NetworkPatch`, `DebugConnect`, `DebugNetworking`, `DebugHookDiagnostics`),
+  (`NetworkPatch`, `DumpStreams`, `SaveUnmatched`, matcher settings and debug switches),
   including edits made after startup; only missing keys receive defaults.
 - **Save Location:** empty defaults to the Windows Music known folder's `Spotify`
   subfolder, including redirected Music folders. A custom directory is accepted.
@@ -73,11 +87,32 @@ MaxBufferedMiB=500
   progress display may not track real time, and changing speed invalidates the
   current track so it must be replayed from the beginning. If the decoded-output
   hook is unavailable or becomes invalid, Floggfy safely falls back to `1x`.
+  `CaptureSpeedLimit` is a restart-only visibility switch: `0` hides the menu and
+  disables acceleration. It defaults to `0`; a missing value also disables it.
+  Any valid nonzero value enables the menu and
+  every supported choice when the decoded-output hook is available.
 - **AAC:** INI-only, default `0`. Set `AAC=1` and restart to capture supported
   low-quality SpAC/AAC streams as M4A. Downloads still controls all saving.
-- **Podcasts:** menu/INI toggle, default `0`. When enabled, fully listened
-  `spotify:episode:` items save their original MP3 frames under
-  `Podcasts\<Show>\<Episode>.mp3`. No PCM recording or transcoding is used.
+- **Podcasts:** menu/INI toggle, default `1`. When enabled, complete identified
+  `spotify:episode:` items retain their original MP3, Ogg, FLAC, or enabled AAC
+  stream under `Podcasts\<Show>`. No PCM recording or transcoding is used.
+  Changing the toggle preserves in-flight audio; the setting applies when publishing.
+- **MaxMatchQueue:** `[Matcher]`, default `5`, range 1–100. Retire unresolved
+  streams after this many distinct subsequent media starts, including repeats.
+  Pauses, buffering and metadata polling do not advance the count.
+- **TimeOffsetToleranceMs:** `[Matcher]`, default `10000`, range 0–120000 ms.
+  Bounds the relative start-time offset for conservative metadata matching;
+  `0` requires exact playback IDs. Exact IDs can match outside this window when
+  native ownership evidence belongs to the capture lifecycle.
+- **DurationToleranceMs:** `[Matcher]`, default `250`, range 0–2000 ms. Allows
+  small differences between measured audio length and metadata duration.
+  Neither timing setting can make incomplete audio valid. Restart after edits;
+  legacy `TimingToleranceSeconds` migrates to milliseconds when the new key is absent.
+- **SaveUnmatched:** `[To Disk]`, default `1`. At unmatched retirement, save only
+  complete, codec-validated supported audio under `Save Location\Unmatched`,
+  with its audio extension and a JSON correlation sidecar. Incomplete or corrupt
+  preloads are discarded. Set `0` to discard unmatched audio too. Failed complete
+  writes retain their bytes for retry. Raw `DumpStreams` output remains separate.
 - **Metadata:** enriches tracks using existing client state, cached metadata, and Spotify's authenticated track/album services. Set 0 and restart to disable its hooks.
 - **UpdateExistingMetadata:** default on. Set 0 to disable metadata-only changes
   to existing files, including lyrics and artwork upgrades. New audio saves and
@@ -94,9 +129,26 @@ MaxBufferedMiB=500
   decoder-ownership evidence using bounded numeric capture, owner, and playback
   tokens. Raw native addresses, playback IDs, and URIs are never written in
   ownership records. For a structurally verified FLAC/Ogg decoder, only an exact
-  `Bound` listen generation can resolve overlapping metadata candidates. Missing,
-  conflicting, or lost evidence fails closed; unverified AAC retains the legacy
-  association path.
+  native playback identity tied to that capture generation resolves overlapping
+  metadata candidates. Otherwise the matcher requires a unique conservative
+  association; missing, conflicting or lost evidence cannot establish identity.
+  Matcher diagnostics include start/end/duration deltas in milliseconds; the
+  end delta is diagnostic only. Changed `matcher-counts` records report stream
+  and metadata pushes, pops and pending counts, plus matched, saved, skipped and
+  unmatched outcomes, at most once per second. These counters observe retained
+  records and publication; they never authorize a match or save.
+- **DumpStreams:** default `0`; set `1` and restart for forensic capture,
+  independently of LogLevel, download switches and format filters. It writes
+  continuous consumed decoder input to `Save Location\DumpStreams\<UTC start
+  timestamp>\`, with timestamped `.bin` files and matching `.jsonl` metadata
+  logs. Decoder reuse and media changes keep appending to the same decoder/epoch
+  file. `session.jsonl` links input groups, byte offsets, callback start/end times,
+  native playback IDs and app metadata/state observations. Metadata without a
+  matching native ID is marked `association: unresolved`. Missing ranges are
+  explicit gap records; physical offsets describe the saved file, while logical
+  offsets include known omitted input. Unknown loss makes logical offsets null.
+  Dumps survive ordinary recording rejection and are retained until deleted.
+  A clean stop adds `session_end`; its absence indicates an interrupted session.
 - **DebugConnect:** default `1`; requires `LogLevel=4`. Enables cached
   Connect target observations and passive local action requests. `0` opts out of
   those observations even with deep networking enabled. No discovery, playback
@@ -139,7 +191,7 @@ normal queue slots. One worker drains bounded batches fairly. Records retain the
 enqueue-time timestamps; per-queue omission summaries report contention/overflow
 without globally deduplicating real events.
 
-- **MaxBufferedMiB:** 8–512 MiB, default 500, limits compressed capture allocations.
+- **MaxBufferedMiB:** 8–1024 MiB, default 512, limits compressed capture allocations.
   There is also an approximately 16 MiB event queue sized for bounded 10x
   transition bursts, artwork, and a temporary
   completed-file buffer during native tagging. Oversized tracks are discarded.
@@ -159,7 +211,7 @@ Default music paths are:
 ```text
 <Windows Music>\Spotify\Artists\Artist\Album\Title.ogg
 <Windows Music>\Spotify\Artists\Artist\Album\Title.flac
-<Windows Music>\Spotify\Podcasts\Show\Episode.mp3
+<Windows Music>\Spotify\Podcasts\Show\Episode.{mp3,ogg,flac,m4a}
 ```
 
 Album folders have no year prefix. New filenames use the title alone by default.
@@ -168,11 +220,20 @@ remain in metadata. Existing title-only, numbered or disc-prefixed filenames
 are recognized and reused; switching naming mode never authorizes a second copy.
 Title, artist, album, album artist and track/disc numbers are embedded
 in the single audio file.
+If a filename is occupied and no matching recording can be verified, new audio
+is saved under `Duplicates` with the same folder hierarchy. Valid Spotify track
+IDs use RC6's `[t-<id>]` suffix. Missing or malformed track IDs use
+`[no-id-<16-digit hash>]` so unresolved identities are visible during manual review.
+The hash is a naming aid; recording metadata still controls reuse and upgrades.
+Unreadable candidates defer saving. Existing hex-suffixed files remain discoverable
+in their original folders; this does not migrate an existing library.
 Validated cover artwork is included when available; missing artwork does not
-discard completed audio. No image/JSON
-sidecars or per-song directories are created. Buffers remain in RAM until a
-complete listen and complete stream have been verified. Directories are created
-only when publishing a file.
+discard completed audio. Identified saves create no image/JSON sidecars or
+per-song directories. Stream buffers and metadata history are collected
+independently; one matcher/finalizer joins them and schedules publication after
+codec completeness and identity are verified. A completed listen or final UI tick
+is not required. Successful publication or a verified existing-file match releases
+the audio buffer; retries retain it. Directories are created only when publishing.
 
 The INI-only naming options default to `0` and take effect after restarting:
 
@@ -191,15 +252,15 @@ If both options are `1`, numbering wins and conversion is reset to `0` in the IN
 The two settings never compete to rename a file back and forth.
 
 The check lists each known album directory once, then compares expected
-FLAC/Ogg/M4A names and legacy aliases against those lists in memory. Only listed
+FLAC/Ogg/M4A/MP3 names and legacy aliases against those lists in memory. Only listed
 matching candidates are opened for identity/quality validation; absent generated
 names do not cause individual filesystem probes. The list is discarded after
 the operation.
 
 The check uses one coalesced pending request on the existing publication worker;
 rapid track changes discard superseded requests and audio saves take priority.
-There is no library-wide sweep or capture/menu-thread filesystem I/O. A completed
-listen also provides a conversion fallback if its start check could not run.
+There is no library-wide sweep or capture/menu-thread filesystem I/O. Audio
+publication also provides a conversion fallback if its start check could not run.
 Renames do not enter Latest Downloads; existing session entries keep their order
 and follow the new path. Locked, ambiguous or unowned files remain intact. An
 occupied destination does not trigger duplicate deletion or an overwrite.
@@ -259,18 +320,22 @@ Nine actual complete FLAC listens also passed full independent decoding and
 original audio MD5 verification, with embedded artwork and metadata.
 Personal recording details are not published.
 
-Skips, seeks, missing pages/frames, decoder errors, ambiguous track association,
-queue overflow and memory limits prevent publication. Capture begins with source
-headers and a listen observed near position zero. Streams without a known FLAC
-total sample count are currently rejected. Natural same-track repeats establish
-a new listen generation after a bounded timeline/title confirmation interval;
-the original two-second title window remains available after provisional repeat
-confirmation. A continuous delayed title relabels that generation without
-duplicating the previous completion. Seeks and excessive observation gaps remain
-conservative rejection cases. Metadata fields absent from the public Windows session
+Codec readers require source headers and contiguous valid audio through the
+format's completion boundary. Missing pages/frames, decoder errors and truncated
+sources prevent publication; a frame-aligned MP3 prefix alone is not completion
+proof. FLAC requires its advertised total sample count; MP3 validates declared
+Xing/VBRI counts when available and otherwise needs a real source boundary.
+Independent metadata history retains stable playback generations, including
+repeats and paused snapshots. Late, reordered or missing UI end ticks do not
+invalidate complete captured bytes. Ambiguous identity waits for resolution or
+unmatched retirement; queue saturation retries retain bytes, while explicit
+memory limits can discard them. Skipping or seeking cannot manufacture missing
+audio, but does not by itself reject an already complete stream.
+Metadata fields absent from the public Windows session
 are not invented. Audio targets are discovered from invariant decoder instructions
 and Windows x64 function metadata; missing or ambiguous matches disable capture.
-Menu integration checks its supported CEF version and structure sizes.
+All hooks attempt discovery on unknown Spotify/CEF versions. Menu and metadata
+integration check required exports and structure layouts without a version list.
 
 Renderer console diagnostics use a dedicated bounded entry point. Reserved
 `FLOGGFY_STATUS:` / `FLOGGFY_NETWORK_V1:` messages are consumed even when rejected,
@@ -370,14 +435,20 @@ Explorer failures produce an error notice. Menu construction performs no filesys
 or shell work.
 
 The current **Song** row stays visible but greyed out unless a matching saved
-FLAC, Ogg or M4A file exists. When enabled, it opens the containing folder. A separate
+FLAC, Ogg, M4A or MP3 file exists. When enabled, it opens the containing folder. A separate
 worker checks destination paths; capture processing and menu rendering only
 exchange bounded requests and memory snapshots. Superseded results cannot enable
 a different track or save location, and `Menu=0` disables destination probes.
 The shortcut first checks its 16-entry verified-file cache with a fresh file
 signature. Unchanged saved files need no directory listing or audio reread.
-Discovery lists the directory once and compares the three ordinary names before
+Discovery lists the directory once and compares the four ordinary names before
 legacy/collision aliases, stopping at the first complete identity match.
+
+Quality, format and sample-rate rows appear only when their values are known.
+During recording, songs and episodes use the codec headers of the capture bound
+to current playback, including MP3, AAC, Ogg and FLAC. FLAC bit depth is shown
+when known; lossy formats do not acquire an inferred PCM bit depth. A codec's
+lossy/lossless classification does not imply a guessed Spotify quality tier.
 Publication still chooses the best verified existing recording. An unavailable
 Song target is retried after five seconds; changed tracks/settings and successful
 publication refresh bypass that cooldown. Signatures that change trigger discovery
@@ -389,17 +460,14 @@ download history entries.
 
 Tagging, quality checks and publication run in a bounded background worker;
 pending compressed save buffers count against the configured allocation budget.
-Every completed listen fixes a matching unfinished capture's deadline at ten
-seconds after completion, including the same track paused at its duration. A
-provider switch restarts only current listening coverage: previously completed
-listens and their existing decoder-tail deadlines survive. Late-discovered
-captures inherit those deadlines; repeated paused polls and later observations
-cannot extend them. A capture finished after its deadline cannot be published.
-Already completed audio that arrived on time may still use the separate ten-minute
-reconciliation window. Completeness, duration, identity and unique-association
-checks remain required, and the five-song/memory limits still apply.
+Codec readers determine completion independently of playback observations.
+Stream generations retain their own compressed bytes and timing; a separate
+metadata history retains playback identities and labels. The matcher/finalizer
+alone joins these records and queues publication. Complete identified audio can
+save while playback continues, without a completed listen or UI end tick.
+Unresolved streams remain bounded by `MaxMatchQueue` and the memory limit.
 Existing-file inspection uses checked reads with a separate temporary buffer
-capped at 512 MiB; storage errors reject the inspection without stalling capture.
+capped at 1 GiB; storage errors reject the inspection without stalling capture.
 Spotify's cached PlayerAPI is the primary playback source. Track identity uses the
 Spotify URI and playback instance rather than a Windows title/artist snapshot. Progress comes from the
 app's position-at-timestamp, timestamp and pause state, following the model used
@@ -408,23 +476,23 @@ The native heartbeat requests `PlayerAPI.getState()` roughly every 500 ms throug
 the renderer. This reads the app's cached state without a Web API request; it
 continues working when the optional update-event listener is unavailable.
 PlayerAPI update events preserve short transitions between the native heartbeat
-polls. A bounded queue retains those observations in order; overflow invalidates
-coverage rather than silently dropping a buffering or remote-playback guard.
-A buffering transition carries the app's event timestamp, so time spent buffering
-cannot manufacture the missing tail of a listen. Spicetify does not need to be installed. Basic playback observation remains active
+polls. A bounded queue retains those observations in order; lost observations
+cannot establish a metadata association. A buffering transition carries the
+app's event timestamp, but time spent buffering cannot manufacture missing audio.
+Spicetify does not need to be installed. Basic playback observation remains active
 with `Metadata=0`; that setting controls optional enrichment only.
 
 The app source requires a confirmed local playback device. Remote playback and
-buffering invalidate coverage instead of falling through to a possibly stale
+buffering do not fall through to a possibly stale
 Windows session. Renderer snapshots are bounded, strictly parsed and rejected
 when older than three seconds. Clock differences up to 250 ms are tolerated
 without moving an observation into the future. For the same URI and playback
 instance, fresh Ready samples with nondecreasing renderer timestamps cannot
 regress solely through UTC/uptime rounding within that 250 ms bound: their mapped
-time is held at the preceding observation, adding no elapsed coverage. Actual
+time is held at the preceding observation. Actual
 source-clock regressions, identity changes, larger discontinuities and transition
-event times retain the existing guards. Seeks, missing observations and
-source changes cannot be stitched into a complete listen.
+event times retain the existing observation guards. These checks protect metadata
+evidence; source bytes and codec validation establish audio completeness.
 
 When app observations are unavailable or incompatible, the default behavior is
 to keep playback verification unavailable. Set `Windows Playback Fallback=1` in
@@ -436,7 +504,7 @@ be enabled.
 Normal position/timestamp refreshes are accepted when movement agrees with
 uninterrupted playback, allowing 250 ms of rounding difference and clamping at
 the track end. Source/session changes, discontinuous jumps, regressing clocks
-and observation gaps invalidate coverage. Capture consumes sequenced RAM
+and observation gaps invalidate the affected playback observations. Capture consumes sequenced RAM
 snapshots without waiting for COM, disk, enrichment or network work. Stopping an
 observer does not wait for a stalled COM operation. No Windows artwork is fetched.
 
@@ -447,41 +515,22 @@ and numeric timeline values. Persistent failures are summarized at most every
 contain no track titles, URIs, device identifiers or raw renderer payloads.
 The ordinary activity log warns when playback verification remains unavailable
 for three seconds during active capture; brief app-start buffering stays in
-diagnostics. This grace period affects reporting only: coverage invalidation is
-immediate. Completed-only captures have a separate final failure outcome when
-they cannot be saved.
+diagnostics. This grace period affects reporting only and does not decide audio
+completeness or ownership.
 Saved files include `HISTORY_PLAYBACK_SOURCE` so validation can identify the source.
-A five-song history retains app identities, playback instances, timing, completion
-state and refreshed labels. Up to five completed compressed streams remain in RAM
-for matching, within `MaxBufferedMiB`; unmatched records expire after ten minutes.
-Matching must be unique in both directions across streams and completed listens.
-Ambiguous matches stay rejected after expiry or eviction; removing an alternative
-is never treated as evidence of ownership. Observation loss under lock contention
-also invalidates coverage instead of losing a guard silently.
-During a natural crossfade or buffering transition, the prior decoder and its
-complete compressed buffer can remain quarantined for up to 15 seconds while the
-new playback identity settles. Recovery requires a changed playback instance,
-recent local playing observations, and working action monitoring with no observed
-skip. Missing or failed action monitoring leaves the transition unverified;
-same-instance buffering or paused playback cannot recover missing coverage.
-Before publishing a provisional capture, Floggfy validates the immutable completed
-buffer once and requires a unique one-to-one match with no unresolved active
-alternatives. The save worker independently checks integrity before publication.
-Explicit skips and seeks remain
-ineligible and are never recovered from the quarantine.
-Complete unmatched recordings stay in the existing bounded RAM cache. Before
-expiry or capacity eviction, Floggfy tries association once more, then checks the
-retained audio before releasing it. The final cache-check log distinguishes valid
-unmatched audio, ambiguous ownership, deferred publication, incomplete audio, and
-invalid data. A full publication queue retains the candidate for retry within the
-same cache limits. Final checks never invent missing listening coverage.
-When a complete, revalidated FLAC/Ogg capture is already bound to the active
-playback instance, a buffering snapshot that repeats that instance does not flush
-the listen. Floggfy waits for a positively different playback instance and then
-uses the bound listen generation for final metadata reconciliation. This also
-separates consecutive plays of the same URI without relying on title or timing.
-Incomplete decoder tails retain their original ten-second deadline. Audio is
-published as a final file only after complete-listen and integrity checks pass.
+Native playback IDs can establish exact ownership only within the capture's
+lifecycle. Conservative fallback requires a unique one-to-one match in both
+directions, with positive decoder evidence and compatible time offset and duration.
+Removing an alternative through retirement or eviction never proves ownership.
+Decoder reuse and consecutive plays use distinct generations; an earlier native
+identity observation cannot label a later recording merely because the address matches.
+
+After `MaxMatchQueue` distinct subsequent starts, unmatched retirement saves only
+complete codec-validated supported audio when `SaveUnmatched=1`; incomplete or
+corrupt preloads are discarded. Pauses and ordinary updates do not advance that
+count. Queue-full and disk-write retries retain the same bytes and association.
+The save worker independently checks integrity before publication; successful
+publication or a verified existing-file match releases the retained buffer.
 Destination resolution returns a verified matching-file snapshot or an explicit
 vacant/blocked outcome. Publication reuses that snapshot for quality and missing
 metadata decisions; replacement still revalidates the locked object. The bounded
@@ -511,7 +560,7 @@ matching recording, rather than scanning directories or maintaining another cach
 5. Start a fresh track at position zero and let it finish. Seeking, skipping,
    truncated input, decoder errors and ambiguous association prevent saving.
 6. For unusually large lossless tracks, increase MaxBufferedMiB within the
-   512 MiB limit.
+   1024 MiB limit.
    Check the destination is writable and has space; try a local drive.
 7. After a Spotify update, check the log for missing or ambiguous audio targets.
    The dynamic resolver supports shifted functions but safely rejects rewritten
@@ -570,7 +619,7 @@ are omitted. Requests use Spotify's existing client service and remain bounded;
 unsupported service shapes retain basic tags. Lyrics are not guaranteed for every
 track. Synchronized lyrics are embedded as millisecond LRC text in `LYRICS`,
 with plain text used when timing is unavailable or invalid. No sidecars are created.
-After a complete replay, verified existing FLAC and Ogg files can receive missing
+As soon as playback identifies them, verified existing FLAC and Ogg files can receive missing
 text metadata and missing artwork even when no audio upgrade is planned. Existing
 populated text and compressed audio are preserved. Better validated Spotify
 client covers may replace smaller or unmarked legacy thumbnails without reducing
@@ -598,7 +647,8 @@ and the complete packet count must match rendered samples plus source priming.
 Seeks, gaps, unsupported headers, lost events and memory limits prevent saving.
 The parser retains at most one 64 KiB page; its allocation is included in capture
 accounting. AAC contexts are limited to sixteen. Raw captures remain in RAM until
-a complete listen and stream are associated. Publication remuxes unchanged access
+codec-complete audio is matched to metadata or reaches unmatched retirement.
+Publication remuxes unchanged access
 units and exact decoder configuration into M4A with sample-exact edit timing.
 The container inspector checks headers, sample tables, offsets and timing; it does
 not independently decode AAC payloads. Supported profiles are AAC-LC, HE-AAC and

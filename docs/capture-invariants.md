@@ -43,13 +43,16 @@ and are never written to disk.
   listen generation; a successor transition prevents carrying the old URI forward.
 - If the optional decoded hook cannot be installed safely, capture continues at 1x
   without ownership gating. Accelerated menu choices are disabled.
+- `CaptureSpeedLimit` is a restart-only visibility switch. Explicit `0` removes
+  the Capture Speed submenu and disables acceleration. Missing values default
+  to `0`; any valid nonzero value enables the submenu and all supported speeds.
 
 ## Formats and publication
 
 | Media | Captured formats | Destination |
 | --- | --- | --- |
-| Music | FLAC, Ogg Vorbis, optional AAC/M4A | Music library layout |
-| Podcast episode | MP3 | `Podcasts/<show>[/<year>]` |
+| Music | FLAC, Ogg Vorbis, MP3, optional AAC/M4A | Music library layout |
+| Podcast episode | FLAC, Ogg Vorbis, MP3, optional AAC/M4A | `Podcasts/<show>[/<year>]` |
 
 - A completed candidate must pass cheap timing/duration checks and one cached
   structural validation before association. Publication validates the staged file
@@ -59,8 +62,24 @@ and are never written to disk.
   owned-but-incomplete so a later complete recording repairs the same path.
 - Existing files are never replaced by filename alone. Identity, completeness,
   quality policy, exact-object locking, staging, and collision handling all apply.
+- The ordinary destination resolver always runs first. If it finds no matching
+  recording and a parsed candidate contains a different complete Spotify track
+  URI, the same resolver is rerun below the library-root `Duplicates` folder.
+  The first verified recording remains canonical. Duplicate filenames use the
+  last 10 track-ID characters, expanding to 14 and then the full 22 only when a
+  different complete URI occupies the shorter name. Full `SPOTIFY_URI` values,
+  never filename text, decide identity. Same-URI recordings, URI-less legacy
+  recordings, blocked reads, upgrades, and podcasts keep their established
+  behavior and paths.
+- Playback-start metadata filling, Auto Skip Downloaded, filename conversion,
+  and the current-song folder action use that same final UID fallback. They do
+  not infer identity from a filename or authorize replacement of the canonical
+  conflict.
+- Track metadata retains full `SPOTIFY_URI` and, when available, full
+  `SPOTIFY_ALBUM_URI`. Album identity is provenance for manual review; it does
+  not authorize replacement or change the ordinary folder layout.
 - Episode enrichment uses an episode URI plus title/show identity and preserves
-  publisher fields through the metadata cache and final MP3 tags.
+  publisher fields through the metadata cache and final native-format tags.
 
 ## Logging
 

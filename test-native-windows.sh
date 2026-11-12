@@ -35,10 +35,12 @@ x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/wind
 x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/windows-tests/metadata-ogg.o
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_metadata_identity_test.cpp -I native/vendor/libogg/include \
  native/rich_metadata.cpp native/cached_metadata.cpp native/cached_metadata_windows.cpp native/history_settings.cpp native/async_log.cpp \
- native/media_session.cpp native/album_artwork.cpp native/playback_quality_windows.cpp native/playback_quality.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/windows-tests/metadata-ogg.o build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 \
+ native/media_session.cpp native/auto_skip.cpp native/library_layout.cpp native/album_artwork.cpp native/playback_quality_windows.cpp native/playback_quality.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/windows-tests/metadata-ogg.o build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 \
  -lruntimeobject -lwinhttp -o "$floggfy_test_root/windows-metadata-identity-test.exe"
 "$floggfy_test_root/windows-history-test.exe"
 "$floggfy_test_root/windows-metadata-identity-test.exe"
+"$floggfy_test_root/windows-metadata-identity-test.exe" --unknown-cef
+"$floggfy_test_root/windows-metadata-identity-test.exe" --missing-cef-exports
 
 x86_64-w64-mingw32-g++ "${common[@]}" tests/cached_metadata_test.cpp native/cached_metadata.cpp native/rich_metadata.cpp -o "$floggfy_test_root/cached-metadata-test.exe"
 "$floggfy_test_root/cached-metadata-test.exe" "$(wslpath -w "$floggfy_test_root/cache-fixtures")"
@@ -52,9 +54,10 @@ x86_64-w64-mingw32-g++ "${common[@]}" tests/auto_skip_test.cpp native/auto_skip.
 x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/playback_quality_test.cpp "${quality_sources[@]}" -o "$floggfy_test_root/playback-quality-test.exe"
 "$floggfy_test_root/playback-quality-test.exe"
 x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_menu_quality_test.cpp native/library_layout.cpp "${quality_sources[@]}" native/history_settings.cpp native/async_log.cpp build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-menu-quality-test.exe"
+"$floggfy_test_root/windows-menu-quality-test.exe" --never-pause-hidden
 "$floggfy_test_root/windows-menu-quality-test.exe"
 
-x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_quality_observer_test.cpp native/auto_skip.cpp native/decoder_ownership.cpp native/playback_quality_windows.cpp "${quality_sources[@]}" native/media_session.cpp native/library_layout.cpp native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp native/mp3_stream.cpp build/windows-tests/minimp4.o native/vorbis_headers.cpp build/windows-tests/vorbis-headers-stb.o native/existing_quality.cpp native/file_publication.cpp native/metadata_update_core.cpp native/metadata_update_windows.cpp native/recent_downloads.cpp native/song_destination.cpp native/spotify_hook_discovery.cpp native/history_settings.cpp native/async_log.cpp build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_test_root/windows-quality-observer-test.exe"
+x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_quality_observer_test.cpp native/auto_skip.cpp native/decoder_ownership.cpp native/playback_identity_bridge.cpp native/playback_quality_windows.cpp "${quality_sources[@]}" native/media_session.cpp native/library_layout.cpp native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp native/mp3_stream.cpp build/windows-tests/minimp4.o native/vorbis_headers.cpp build/windows-tests/vorbis-headers-stb.o native/existing_quality.cpp native/file_publication.cpp native/metadata_update_core.cpp native/metadata_update_windows.cpp native/recent_downloads.cpp native/song_destination.cpp native/spotify_hook_discovery.cpp native/history_settings.cpp native/async_log.cpp build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_test_root/windows-quality-observer-test.exe"
 "$floggfy_test_root/windows-quality-observer-test.exe"
 
 # Synthetic host preloads System32 VERSION.dll before its entry point.
@@ -83,7 +86,7 @@ x86_64-w64-mingw32-g++ "${common[@]}" tests/album_artwork_test.cpp native/album_
 floggfy_settings_test_root="$floggfy_test_root/settings-defaults"
 mkdir -p "$floggfy_settings_test_root"
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_settings_test.cpp -lole32 -luuid -lshell32 -o "$floggfy_settings_test_root/windows-settings-test.exe"
-for scenario in new missing zero legacy-zero lyrics-zero updates-zero aac-one podcasts-one auto-skip-one auto-skip-invalid auto-skip-padded speed-10 speed-10-limit-10 speed-10-limit-over speed-2-limit-3 speed-4-limit-3 speed-10-limit-zero speed-10-limit-one speed-10-limit-invalid speed-10-limit-padded speed-invalid speed-padded fallback-one fallback-zero fallback-invalid fallback-padded fallback-blank fallback-leading-space fallback-trailing-space fallback-tab fallback-word fallback-duplicate; do
+for scenario in new missing zero legacy-zero lyrics-zero updates-zero aac-one podcasts-one podcasts-zero buffer-1024 buffer-over buffer-under auto-skip-one auto-skip-invalid auto-skip-padded never-pause-hidden never-pause-off never-pause-on never-pause-invalid never-pause-padded never-pause-duplicate speed-10 speed-10-limit-10 speed-10-limit-over speed-2-limit-3 speed-4-limit-3 speed-10-limit-zero speed-10-limit-one speed-10-limit-invalid speed-10-limit-padded speed-invalid speed-padded fallback-one fallback-zero fallback-invalid fallback-padded fallback-blank fallback-leading-space fallback-trailing-space fallback-tab fallback-word fallback-duplicate; do
     "$floggfy_settings_test_root/windows-settings-test.exe" "$scenario"
 done
 
@@ -101,7 +104,7 @@ x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_settings_unicode_test.cpp -l
 
 # Deliberately blocked enrichment must not delay the metadata heartbeat.
 x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_metadata_liveness_test.cpp \
- native/rich_metadata.cpp native/cached_metadata.cpp native/history_settings.cpp native/async_log.cpp \
+ native/rich_metadata.cpp native/cached_metadata.cpp native/auto_skip.cpp native/library_layout.cpp native/history_settings.cpp native/async_log.cpp \
  native/media_session.cpp native/image_info.cpp native/playback_quality_windows.cpp native/playback_quality.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/windows-tests/metadata-ogg.o build/windows-tests/minhook-*.o \
  -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_test_root/windows-metadata-liveness-test.exe"
 "$floggfy_test_root/windows-metadata-liveness-test.exe"
@@ -139,6 +142,9 @@ bash test-directory-lookup.sh
 
 # Album-artist precedence remains separate from guest/contributing credits.
 bash test-album-artists.sh
+
+# Raw forensic input and per-stream metadata are independent of normal recording validation.
+bash test-stream-dumps.sh
 
 # Media-session recovery/diagnostics must not regress when publication changes.
 bash test-media-observer.sh

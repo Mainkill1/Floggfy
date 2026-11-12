@@ -162,7 +162,7 @@ std::uint64_t DecoderOwnershipTracker::BeginCapture(DecoderCodec codec,std::uint
 void DecoderOwnershipTracker::CompleteCapture(std::uint64_t capture_token,double time,
                                                std::uint64_t producer_sequence) {
     auto* capture=FindCapture(capture_token);if(!capture)return;
-    if(!ValidTime(time)||time<=capture->begun)Conflict(*capture,OwnershipReason::InvalidCompletion);
+    if(!ValidTime(time)||time<capture->begun)Conflict(*capture,OwnershipReason::InvalidCompletion);
     capture->active=false;capture->complete=true;capture->completed_at=time;
     capture->completed_sequence=producer_sequence;
 }
@@ -178,9 +178,21 @@ void DecoderOwnershipTracker::AbortCapture(std::uint64_t capture_token,CaptureAb
 void DecoderOwnershipTracker::Conflict(CaptureRecord& capture,OwnershipReason reason) noexcept {
     if(capture.state!=OwnershipState::Invalidated) {
         capture.state=OwnershipState::Conflict;capture.reason=reason;
+        if(reason!=OwnershipReason::AmbiguousSuccessor)capture.ambiguity_group=0;
     }
     if(current_capture_==capture.token)current_capture_=current_playback_=0;
     if(pending_capture_==capture.token)pending_capture_=0;
+}
+
+void DecoderOwnershipTracker::ConflictSuccessors(CaptureRecord* first,CaptureRecord* second,
+                                                  CaptureRecord* third) noexcept {
+    const auto group=next_ambiguity_++;
+    CaptureRecord* records[]={first,second,third};
+    for(auto* capture:records) {
+        if(!capture||capture->state==OwnershipState::Invalidated)continue;
+        capture->ambiguity_group=group;
+        Conflict(*capture,OwnershipReason::AmbiguousSuccessor);
+    }
 }
 
 void DecoderOwnershipTracker::ObserveDecoded(const DecodedActivity& activity) {
@@ -276,17 +288,13 @@ void DecoderOwnershipTracker::ObserveDecoded(const DecodedActivity& activity) {
             if(ordered_successor&&(!pending_capture_||pending_capture_==candidate->token))
                 pending_capture_=candidate->token;
             else {
-                if(!ordered_successor)Conflict(*current,OwnershipReason::AmbiguousSuccessor);
-                if(auto* pending=FindCapture(pending_capture_))
-                    Conflict(*pending,OwnershipReason::AmbiguousSuccessor);
-                Conflict(*candidate,OwnershipReason::AmbiguousSuccessor);
+                auto* pending=FindCapture(pending_capture_);
+                ConflictSuccessors(ordered_successor?nullptr:current,pending,candidate);
             }
             return;
         }
         if(pending_capture_&&pending_capture_!=candidate->token) {
-            if(auto* pending=FindCapture(pending_capture_))
-                Conflict(*pending,OwnershipReason::AmbiguousSuccessor);
-            Conflict(*candidate,OwnershipReason::AmbiguousSuccessor);return;
+            ConflictSuccessors(FindCapture(pending_capture_),candidate);return;
         }
         pending_capture_=candidate->token;
     }
@@ -296,6 +304,26 @@ void DecoderOwnershipTracker::ObserveDecoded(const DecodedActivity& activity) {
            playback&&playback->observed>candidate->first_output)
             TryBind(*candidate,*playback,playback->observed);
     }
+}
+
+bool DecoderOwnershipTracker::ReconsiderAmbiguousSuccessor(
+    std::uint64_t capture_token) noexcept {
+    auto* capture=FindCapture(capture_token);
+    if(!capture||capture->state!=OwnershipState::Conflict||
+       capture->reason!=OwnershipReason::AmbiguousSuccessor||
+       !capture->ambiguity_group||!capture->first_output||
+       (!capture->active&&!capture->complete))return false;
+    for(const auto& other:captures_) {
+        if(other.token==capture->token||other.ambiguity_group!=capture->ambiguity_group)continue;
+        if((other.active||other.complete)&&other.state==OwnershipState::Conflict&&
+           other.reason==OwnershipReason::AmbiguousSuccessor)return false;
+    }
+    if(pending_capture_&&pending_capture_!=capture->token)return false;
+    capture->state=OwnershipState::AwaitingPlaybackInstance;
+    capture->reason=OwnershipReason::DecodedOutputObserved;
+    capture->ambiguity_group=0;
+    pending_capture_=capture->token;
+    return true;
 }
 
 void DecoderOwnershipTracker::TryBind(CaptureRecord& capture,PlaybackRecord& playback,
@@ -349,6 +377,37 @@ bool DecoderOwnershipTracker::BindCapture(std::uint64_t capture_token,
     capture->reason=OwnershipReason::PlaybackStageBound;
     current_capture_=capture->token;current_playback_=playback->token;
     if(pending_capture_==capture->token)pending_capture_=0;
+    return true;
+}
+
+bool DecoderOwnershipTracker::BindCaptureExact(std::uint64_t capture_token,
+    const std::string& playback_id,const std::string& uri,
+    std::uint64_t listen_generation,double observed) {
+    if(playback_id.empty()||!listen_generation||!ValidTime(observed))return false;
+    auto* capture=FindCapture(capture_token);
+    if(!capture||!capture->first_output||(!capture->active&&!capture->complete))return false;
+    auto& playback=EnsurePlayback(playback_id,uri,listen_generation,observed);
+    if(!uri.empty())playback.uri=uri;
+    playback.listen_generation=listen_generation;
+    if(observed>playback.observed)playback.observed=observed;
+    latest_playback_=playback.token;
+
+    if(capture->state==OwnershipState::Bound) {
+        if(capture->playback_token!=playback.token)return false;
+        capture->listen_generation=listen_generation;return true;
+    }
+    const bool exact_conflict=capture->state==OwnershipState::Conflict&&
+        capture->reason==OwnershipReason::AmbiguousSuccessor;
+    if((capture->state!=OwnershipState::AwaitingPlaybackInstance&&!exact_conflict)||
+       (playback.bound_capture&&playback.bound_capture!=capture->token))return false;
+    capture->playback_token=playback.token;
+    capture->listen_generation=listen_generation;
+    capture->ambiguity_group=0;
+    playback.bound_capture=capture->token;
+    capture->state=OwnershipState::Bound;
+    capture->reason=OwnershipReason::PlaybackStageBound;
+    current_capture_=capture->token;current_playback_=playback.token;
+    pending_capture_=0;
     return true;
 }
 
@@ -436,6 +495,7 @@ void DecoderOwnershipTracker::ObservationLost(ObservationLoss,double time) {
 void DecoderOwnershipTracker::Reset(unsigned epoch) {
     captures_={};owners_={};playbacks_={};
     current_capture_=pending_capture_=current_playback_=latest_playback_=0;
+    next_ambiguity_=1;
     epoch_=epoch;
 }
 
