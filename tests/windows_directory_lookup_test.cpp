@@ -42,6 +42,7 @@ static BOOL WINAPI CountSignature(LPCWSTR path,GET_FILEEX_INFO_LEVELS level,LPVO
 #include "../native/song_destination.cpp"
 #undef GetFileAttributesExW
 #include "recording_fixture.h"
+#include "spac_fixture.h"
 using namespace history;
 namespace {
 bool enrich_identity=true;
@@ -115,7 +116,7 @@ void Conversion(const std::wstring& root) {
      history::settings.track_number_in_filename=false;history::settings.generation=7;}
     FilenameCheck check;check.catalog=c;check.settings=GetSettings();check.serial=filename_check_serial.load();
     ResetCounts();ProcessFilenameCheck(check);
-    assert(listings==1&&attribute_checks==0); // One list shared by FLAC/Ogg/M4A checks.
+    assert(listings==1&&attribute_checks==0); // One list shared by all native formats.
     assert(GetFileAttributesW(WindowsPath(old).c_str())==INVALID_FILE_ATTRIBUTES);
     RecordingFile saved;assert(ReadRecording(title,saved)&&saved.complete&&MatchesRecording(saved,c));
     Write(old,Audio(c,16,true)); // Occupied canonical target is never replaced/deleted.
@@ -155,7 +156,8 @@ void Conversion(const std::wstring& root) {
 }
 void MenuLookup(const std::wstring& root) {
     const auto c=Song(L"Menu");DestinationRequest request;request.catalog=c;request.serial=41;request.generation=7;
-    request.flac=OutputPath(root,c,L".flac");request.ogg=OutputPath(root,c,L".ogg");request.aac=OutputPath(root,c,L".m4a");
+    request.flac=OutputPath(root,c,L".flac");request.ogg=OutputPath(root,c,L".ogg");
+    request.aac=OutputPath(root,c,L".m4a");request.mp3=OutputPath(root,c,L".mp3");
     auto duplicate_paths=[&](const wchar_t* extension,auto& stored) {
         const auto paths=DuplicateLookupPaths(root,c,extension);
         assert(paths.size()==stored.size());
@@ -164,6 +166,7 @@ void MenuLookup(const std::wstring& root) {
     duplicate_paths(L".flac",request.duplicate_flac);
     duplicate_paths(L".ogg",request.duplicate_ogg);
     duplicate_paths(L".m4a",request.duplicate_aac);
+    duplicate_paths(L".mp3",request.duplicate_mp3);
     const auto slash=request.ogg.find_last_of(L'\\');const auto old=request.ogg.substr(0,slash+1)+L"03 - "+request.ogg.substr(slash+1);
     Write(old,Audio(c,16,true));destination_enabled=true;request_serial=41;
     VerificationCache cache;ResetCounts();assert(ProbeSavedSong(request,cache)==old);
@@ -196,7 +199,8 @@ void MenuLookup(const std::wstring& root) {
     RefreshSongDestination();request.serial=request_serial.load();request.revision=cache_revision.load();
     ResetCounts();assert(ProbeSavedSong(request,cache)==old&&listings==1&&recording_opens==1);
     auto next=request;next.catalog=Song(L"New menu song");
-    next.flac=OutputPath(root,next.catalog,L".flac");next.ogg=OutputPath(root,next.catalog,L".ogg");next.aac=OutputPath(root,next.catalog,L".m4a");
+    next.flac=OutputPath(root,next.catalog,L".flac");next.ogg=OutputPath(root,next.catalog,L".ogg");
+    next.aac=OutputPath(root,next.catalog,L".m4a");next.mp3=OutputPath(root,next.catalog,L".mp3");
     Write(next.flac,Audio(next.catalog));ResetCounts();
     assert(ProbeSavedSong(next,cache)==next.flac&&listings==1&&recording_opens==1);
     assert(DeleteFileW(WindowsPath(next.flac).c_str())&&DeleteFileW(WindowsPath(old).c_str()));
@@ -222,6 +226,73 @@ void PreferredPublication(const std::wstring& root) {
         assert(listings==1&&attribute_checks==0&&recording_opens==1);
         assert(DeleteFileW(WindowsPath(path).c_str()));
     }
+}
+std::unique_ptr<Capture> NativeCapture(Codec codec) {
+    auto capture=std::make_unique<Capture>();capture->born=1;capture->finished=2;
+    std::vector<uint8_t> source;
+    if(codec==Codec::Flac) {
+        source=recording_fixture::fixture();capture->lossless=true;capture->metadata=true;
+        size_t audio=0;assert(ParseFlacMetadata(source,capture->flac,audio)==FlacParse::Valid);
+        capture->flac_audio_offset=audio;capture->coverage.samples=capture->flac.total_samples;
+        capture->coverage.frames=1;
+    } else if(codec==Codec::Vorbis) {
+        source=recording_fixture::ogg();
+        for(size_t at=0;at<source.size();) {
+            const size_t header=27+source[at+26];size_t length=header;
+            for(size_t index=at+27;index<at+header;++index)length+=source[index];
+            const auto parsed=capture->stream.Push(source.data()+at,length);
+            assert(parsed!=Result::Invalid&&parsed!=Result::Ignore);at+=length;
+        }
+        assert(capture->stream.complete);
+    } else if(codec==Codec::Aac) {
+        source=spac_fixture::stream();capture->aac=true;
+        assert(capture->spac.Push(source.data(),source.size())==AacParse::Complete&&capture->spac.Complete());
+    } else {
+        source.assign(417*4,0);capture->mp3=true;
+        for(size_t at=0;at<source.size();at+=417){source[at]=0xff;source[at+1]=0xfb;source[at+2]=0x90;}
+        std::string error;assert(InspectMp3Source(source.data(),source.size(),capture->mp3_info,error));
+    }
+    assert(capture->data.Append(source.data(),source.size(),source.size()+65536));
+    capture->bytes=source.size();return capture;
+}
+void NativePodcastPublication(const std::wstring& root) {
+    enrich_identity=false;
+    {ExclusiveSrw guard(history::lock);history::settings.root=root;history::settings.downloads=true;
+     history::settings.ogg=true;history::settings.flac=true;history::settings.aac=true;
+     history::settings.podcasts=true;history::settings.metadata=false;history::settings.lyrics=false;
+     history::settings.music_folder=false;history::settings.track_number_in_filename=false;
+     history::settings.convert_numbered_filenames=false;}
+    unsigned index=0;
+    for(const auto& format:kRecordingFormats) {
+        auto capture=NativeCapture(format.codec);Media episode;episode.source=MediaSource::Spotify;
+        episode.spotify_uri="spotify:episode:"+std::string(21,'0')+char('1'+index);
+        episode.title=L"Native episode "+std::to_wstring(index);episode.album=L"Native Show";
+        episode.artist=L"Publisher";episode.duration=capture->Duration();episode.playing=true;
+        Heard heard{episode,1,2,unsigned(index+1)};const auto catalog=CatalogFor(episode);
+        const auto path=OutputPath(root,catalog,format.extension,false);
+        {ExclusiveSrw guard(history::lock);history::settings.podcasts=false;++history::settings.generation;}
+        assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped&&
+               GetFileAttributesW(WindowsPath(path).c_str())==INVALID_FILE_ATTRIBUTES);
+        {ExclusiveSrw guard(history::lock);history::settings.podcasts=true;++history::settings.generation;
+         if(format.codec==Codec::Flac)history::settings.flac=false;
+         else if(format.codec==Codec::Vorbis)history::settings.ogg=false;
+         else if(format.codec==Codec::Aac)history::settings.aac=false;}
+        if(format.codec!=Codec::Mp3) {
+            assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped);
+            ExclusiveSrw guard(history::lock);
+            if(format.codec==Codec::Flac)history::settings.flac=true;
+            else if(format.codec==Codec::Vorbis)history::settings.ogg=true;
+            else history::settings.aac=true;
+            ++history::settings.generation;
+        }
+        assert(Publish(*capture,heard,CaptureEpoch())==Publication::Saved);
+        RecordingFile saved;assert(ReadRecording(path,saved)&&saved.complete&&saved.owned&&
+            saved.quality.codec==format.codec&&MatchesRecording(saved,catalog));
+        assert(path.find(L"\\Podcasts\\Native Show\\")!=std::wstring::npos);
+        assert(DeleteFileW(WindowsPath(path).c_str()));++index;
+    }
+    enrich_identity=true;
+    puts("PASS: MP3/Ogg/FLAC/AAC episodes publish real native files only when media and source policies allow them");
 }
 void UnresolvedDuplicates(const std::wstring& root) {
     enrich_identity=false;
@@ -266,6 +337,7 @@ void UnresolvedDuplicates(const std::wstring& root) {
 
         DestinationRequest request;request.catalog=c;request.serial=51;request.flac=base;
         request.ogg=OutputPath(root,c,L".ogg");request.aac=OutputPath(root,c,L".m4a");
+        request.mp3=OutputPath(root,c,L".mp3");
         for(const auto& format:kRecordingFormats) {
             const auto names=DuplicateLookupPaths(root,c,format.extension);
             auto& paths=DuplicateFormatPaths(request,format.codec);
@@ -394,7 +466,7 @@ int wmain(int argc,wchar_t** argv) {
         puts("PASS: verified Song cache avoids directory listings; misses back off; refresh bypasses cooldown; enriched artist tags retain stable folder lookup, prefix conversion and equal-quality reuse");
         return 0;
     }
-    Lookups(root);Conversion(root);MenuLookup(root);PreferredPublication(root);StableArtistFolder(root);UnresolvedDuplicates(root);
+    Lookups(root);Conversion(root);MenuLookup(root);PreferredPublication(root);NativePodcastPublication(root);StableArtistFolder(root);UnresolvedDuplicates(root);
     puts("PASS: one directory listing per lookup across formats; only listed recordings inspected; collision/best-quality reuse, casefold, recovery, blocked/partial/bounded enumeration, conversion and menu cache");
     return 0;
 }

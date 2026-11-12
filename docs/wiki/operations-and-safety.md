@@ -47,7 +47,7 @@ Important controls include:
 | --- | --- |
 | Downloads | Master capture/publication switch |
 | Save Location | Root of the managed library |
-| FLAC / Ogg / AAC | Enable publication of each music format; AAC is INI-only by default |
+| FLAC / Ogg / AAC | Enable publication of each source format for music and podcasts; AAC is INI-only by default |
 | Podcasts | Allow associated episodes to publish in their native format under the Podcasts layout |
 | Lyrics / Metadata | Control enrichment and later metadata filling |
 | Capture Speed | Select 1x or any supported accelerated mode when the native capability is available |

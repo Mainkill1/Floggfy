@@ -1544,7 +1544,6 @@ static void ProcessFilenameCheck(const FilenameCheck& check) {
     if(!current())return;
     auto inspect=[&](RecordingDirectory& directory,bool duplicates) {
         for(const auto& format:kRecordingFormats) {
-            if(!SupportsMedia(format,check.catalog.kind))continue;
             if(!current())return true;
             const auto bases=duplicates
                 ?DuplicateLookupPaths(check.settings.root,check.catalog,format.extension,check.settings.music_folder,false)
@@ -1872,7 +1871,7 @@ static uint64_t BindReadyCapture(CaptureBuffers& buffers,const Media& media,
         const auto declared=DeclaredCaptureDuration(capture);
         const bool active_ogg_without_duration=!declared&&!capture.lossless&&!capture.aac&&
             !capture.mp3&&capture.stream.pages&&confirmed_transition;
-        const bool active_mp3_without_duration=!declared&&episode&&capture.mp3&&
+        const bool active_mp3_without_duration=!declared&&(episode||track)&&capture.mp3&&
             !capture.finished&&capture.bytes;
         if((!declared&&!active_ogg_without_duration&&!active_mp3_without_duration)||
            (declared&&std::fabs(declared-media.duration)>1.0))return;
@@ -2418,7 +2417,9 @@ static void ProcessMp3Capture(const Slot& s,CaptureBuffers& buffers) {
 }
 static bool FinalizeBoundMp3Capture(CaptureBuffers& buffers,const Listen& listen,
                                     const Media& media,double time) {
-    if(media.spotify_uri.rfind("spotify:episode:",0)!=0||!listen.generation)return false;
+    const bool supported=media.spotify_uri.rfind("spotify:episode:",0)==0||
+        media.spotify_uri.rfind("spotify:track:",0)==0;
+    if(!supported||!listen.generation)return false;
     auto match=buffers.active.end();
     for(auto it=buffers.active.begin();it!=buffers.active.end();++it) {
         auto& capture=*it->second;if(!capture.mp3||capture.ambiguous||!capture.capture_token)continue;

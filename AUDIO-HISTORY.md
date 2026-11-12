@@ -222,7 +222,7 @@ If both options are `1`, numbering wins and conversion is reset to `0` in the IN
 The two settings never compete to rename a file back and forth.
 
 The check lists each known album directory once, then compares expected
-FLAC/Ogg/M4A names and legacy aliases against those lists in memory. Only listed
+FLAC/Ogg/M4A/MP3 names and legacy aliases against those lists in memory. Only listed
 matching candidates are opened for identity/quality validation; absent generated
 names do not cause individual filesystem probes. The list is discarded after
 the operation.
@@ -401,13 +401,13 @@ Explorer failures produce an error notice. Menu construction performs no filesys
 or shell work.
 
 The current **Song** row stays visible but greyed out unless a matching saved
-FLAC, Ogg or M4A file exists. When enabled, it opens the containing folder. A separate
+FLAC, Ogg, M4A or MP3 file exists. When enabled, it opens the containing folder. A separate
 worker checks destination paths; capture processing and menu rendering only
 exchange bounded requests and memory snapshots. Superseded results cannot enable
 a different track or save location, and `Menu=0` disables destination probes.
 The shortcut first checks its 16-entry verified-file cache with a fresh file
 signature. Unchanged saved files need no directory listing or audio reread.
-Discovery lists the directory once and compares the three ordinary names before
+Discovery lists the directory once and compares the four ordinary names before
 legacy/collision aliases, stopping at the first complete identity match.
 Publication still chooses the best verified existing recording. An unavailable
 Song target is retried after five seconds; changed tracks/settings and successful

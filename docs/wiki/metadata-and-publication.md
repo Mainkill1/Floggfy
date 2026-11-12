@@ -46,7 +46,7 @@ Codec-specific writers add tags without changing the captured audio:
 | FLAC | `.flac` | FLAC comments and picture blocks |
 | Ogg Vorbis | `.ogg` | Vorbis comments and picture comments |
 | AAC | `.m4a` | MP4/M4A atoms around original AAC packets |
-| Podcast MP3 | `.mp3` | ID3 metadata around original MPEG frames |
+| MP3 | `.mp3` | ID3 metadata around original MPEG frames |
 
 For an existing complete Floggfy recording,
 [`metadata_update_core.cpp`](../../native/metadata_update_core.cpp) fills missing

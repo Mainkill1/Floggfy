@@ -51,8 +51,8 @@ and are never written to disk.
 
 | Media | Captured formats | Destination |
 | --- | --- | --- |
-| Music | FLAC, Ogg Vorbis, optional AAC/M4A | Music library layout |
-| Podcast episode | MP3 | `Podcasts/<show>[/<year>]` |
+| Music | FLAC, Ogg Vorbis, MP3, optional AAC/M4A | Music library layout |
+| Podcast episode | FLAC, Ogg Vorbis, MP3, optional AAC/M4A | `Podcasts/<show>[/<year>]` |
 
 - A completed candidate must pass cheap timing/duration checks and one cached
   structural validation before association. Publication validates the staged file
@@ -79,7 +79,7 @@ and are never written to disk.
   `SPOTIFY_ALBUM_URI`. Album identity is provenance for manual review; it does
   not authorize replacement or change the ordinary folder layout.
 - Episode enrichment uses an episode URI plus title/show identity and preserves
-  publisher fields through the metadata cache and final MP3 tags.
+  publisher fields through the metadata cache and final native-format tags.
 
 ## Logging
 

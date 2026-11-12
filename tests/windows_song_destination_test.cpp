@@ -273,6 +273,21 @@ int main() {
     RefreshSongDestination();AwaitProbe();
     assert(ReadSongDestination(18,11,saved_file)&&saved_file==*suffixed);
     assert(DeleteFileW(WindowsPath(*suffixed).c_str()));
+    for(const auto* extension:{L".ogg",L".flac",L".m4a"}) {
+        const auto native_episode=OutputPath(root,episode,extension);
+        WriteAudio(native_episode,episode);
+        SubmitSong(18,root,episode,false,11);
+        assert(ReadSongDestination(18,11,saved_file)&&saved_file==native_episode&&
+               "Song must discover every native podcast format");
+        assert(DeleteFileW(WindowsPath(native_episode).c_str()));
+        RefreshSongDestination();AwaitProbe();
+    }
+    const auto prior_kind=item.kind;item.kind=MediaKind::Music;
+    const auto music_mp3=OutputPath(root,item,L".mp3",true);
+    WriteAudio(music_mp3,item);SubmitSong(19,root,item,true,11);
+    assert(ReadSongDestination(19,11,saved_file)&&saved_file==music_mp3&&
+           "Song must discover MP3 music without treating it as a podcast");
+    assert(DeleteFileW(WindowsPath(music_mp3).c_str()));item.kind=prior_kind;
     PublishSongDestination(7,root,item,true,11);AwaitProbe();
     assert(ReadSongDestination(7,11,saved_file)&&saved_file==ogg);
     const auto before=saved_file;

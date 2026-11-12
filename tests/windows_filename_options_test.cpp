@@ -247,6 +247,6 @@ int wmain() {
     save_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(save_event);
     DirectConversions(root);TrackStartChecks(root);PublicationModes(root);
     assert(FlushSettings(5000));CloseHandle(save_event);save_event=nullptr;
-    puts("PASS: naming defaults/conflict persistence; FLAC/Ogg/M4A atomic prefix removal preserves exact bytes; track-start coalescing/cancellation; audio queue independence; mode-aware publication, menu and recent targets");
+    puts("PASS: naming defaults/conflict persistence; native-format atomic prefix removal preserves exact bytes; track-start coalescing/cancellation; audio queue independence; mode-aware publication, menu and recent targets");
     return 0;
 }

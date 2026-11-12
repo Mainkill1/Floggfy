@@ -86,13 +86,12 @@ static const std::array<std::wstring,4>& DuplicateFormatPaths(const DestinationR
 }
 static std::array<const std::wstring*,4> FormatPaths(const DestinationRequest& request) {
     std::array<const std::wstring*,4> paths{};size_t count=0;
-    for(const auto& format:kRecordingFormats)if(SupportsMedia(format,request.catalog.kind))
-        paths[count++]=&FormatPath(request,format.codec);
+    for(const auto& format:kRecordingFormats)paths[count++]=&FormatPath(request,format.codec);
     return paths;
 }
 static std::array<const std::wstring*,16> AllDuplicateFormatPaths(const DestinationRequest& request) {
     std::array<const std::wstring*,16> paths{};size_t count=0;
-    for(const auto& format:kRecordingFormats)if(SupportsMedia(format,request.catalog.kind))
+    for(const auto& format:kRecordingFormats)
         for(const auto& path:DuplicateFormatPaths(request,format.codec))paths[count++]=&path;
     return paths;
 }
@@ -196,7 +195,7 @@ static std::wstring ProbeSavedSong(const DestinationRequest& request,Verificatio
             Remember(request,*base,signature,cache);return *base;
         }
     }
-    // Check all three ordinary names before any collision search. Their
+    // Check all four ordinary names before any collision search. Their
     // containing directory is identical; the menu does not choose an upgrade.
     for(const auto* base:paths) {
         if(!base)break;
@@ -312,7 +311,7 @@ void PublishSongDestination(std::uint64_t identity,const std::wstring& root,
         request.identity=identity;request.generation=settings_generation;request.catalog=catalog;request.track_numbers=track_numbers;
         request.serial=serial;request.intent=intent;request.revision=cache_revision.load(std::memory_order_acquire);
         if(identity && !root.empty()) {
-            for(const auto& format:kRecordingFormats)if(SupportsMedia(format,catalog.kind)) {
+            for(const auto& format:kRecordingFormats) {
                 FormatPath(request,format.codec)=OutputPath(root,catalog,format.extension,music_folder,track_numbers);
                 const auto paths=DuplicateLookupPaths(root,catalog,format.extension,music_folder,track_numbers);
                 auto& stored=DuplicateFormatPaths(request,format.codec);
