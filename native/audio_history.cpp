@@ -4,6 +4,7 @@
 #include "ogg_tags.h"
 #include "flac_history_core.h"
 #include "history_settings.h"
+#include "download_policy.h"
 #include "hook_init_state.h"
 #include "hook_rollback.h"
 #include "metadata_bridge.h"
@@ -1053,9 +1054,6 @@ static const char* CheckBeforeRelease(Capture& capture,const char* reason,
             (capture.bound_identity.empty()?"unknown track":capture.bound_identity));
     return result;
 }
-static bool FormatEnabled(const Capture& capture,const Settings& settings) {
-    return capture.mp3?settings.podcasts:capture.aac?settings.aac:capture.lossless?settings.flac:settings.ogg;
-}
 using Heard=PlaybackListen;
 static double DeclaredCaptureDuration(const Capture& capture) {
     if(capture.mp3&&capture.mp3_info.rate)return capture.mp3_info.Duration();
@@ -1272,8 +1270,8 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     swprintf(stamp,64,L"%04u-%02u-%02uT%02u:%02u:%02uZ",t.wYear,t.wMonth,t.wDay,t.wHour,t.wMinute,t.wSecond);
     auto catalog=CatalogFor(heard.media);
     auto settings=GetSettings();
-    if(settings.capture_epoch!=expected_epoch || !settings.downloads || !FormatEnabled(c,settings)) return finish(Publication::Skipped,"skipped","capture settings changed or downloads/format disabled");
     Quality quality=c.Encoding();
+    if(settings.capture_epoch!=expected_epoch || !PublicationEnabled(quality.codec,catalog.kind,settings)) return finish(Publication::Skipped,"skipped","capture settings changed or downloads/format disabled");
     Tags tags;
     tags.fields={{"TITLE",Utf8(heard.media.title)},{"ARTIST",Utf8(heard.media.artist)},
       {"ALBUM",Utf8(heard.media.album)},{"ALBUMARTIST",Utf8(heard.media.album_artist)},
@@ -1346,7 +1344,8 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
         // An audio duplicate may still have missing metadata. Update only a
         // verified matching recording; this never adds a Latest Downloads entry.
         const auto latest=GetSettings();
-        const bool target_enabled=existing_lossless ? settings.flac : existing_vorbis?settings.ogg:FormatEnabled(c,settings);
+        const auto target_codec=existing_lossless?Codec::Flac:existing_vorbis?Codec::Vorbis:quality.codec;
+        const bool target_enabled=SourceFormatEnabled(target_codec,settings);
         if(!c.mp3&&settings.metadata && settings.update_existing_metadata && target_enabled && latest.generation==settings.generation &&
            latest.downloads && latest.metadata && latest.update_existing_metadata) {
             const auto& path=existing_path;
@@ -1396,7 +1395,7 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     else tagged_ok=c.lossless ? TagFlac(source,tags,tagged,error) : TagOgg(source,tags,tagged,error);
     if(!tagged_ok)return finish(Publication::Failed,"failed","tagging failed: "+error);
     auto latest=GetSettings();
-    if(latest.generation!=settings.generation || !latest.downloads || !FormatEnabled(c,latest)) return finish(Publication::Skipped,"skipped","capture settings changed or downloads/format disabled");
+    if(latest.generation!=settings.generation || !PublicationEnabled(quality.codec,catalog.kind,latest)) return finish(Publication::Skipped,"skipped","capture settings changed or downloads/format disabled");
     if(!Directories(destination.substr(0,destination.find_last_of(L'\\')))) return finish(Publication::Failed,"failed","could not create save directory");
     // Only complete tagged audio reaches the bounded save worker's staged,
     // flushed publication protocol. Recording identity authorizes replacement.
