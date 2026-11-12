@@ -161,6 +161,77 @@ static void TestAssociationRejection() {
   media.title=L"Next";AssociateListen(media,listen,current,pending,buffers,105);
   assert(pending.empty()&&buffers.active.size()==1);
 }
+static std::unique_ptr<Capture> BoundPodcastCandidate(
+    ownership::DecoderOwnershipTracker& tracker,bool flac,uintptr_t owner,double duration,uint64_t sequence) {
+  auto capture=std::make_unique<Capture>();capture->born=100;capture->finished=110;
+  capture->decoder_owner=owner;
+  if(flac) {
+    capture->lossless=true;capture->metadata=true;capture->flac.rate=1;
+    capture->flac.channels=2;capture->flac.bits=16;capture->flac.total_samples=uint64_t(duration);
+    capture->coverage.samples=uint64_t(duration);capture->coverage.frames=1;
+  } else {
+    capture->stream.complete=true;capture->stream.rate=1;capture->stream.channels=2;
+    capture->stream.samples=int64_t(duration);capture->stream.pages=2;
+  }
+  capture->capture_token=tracker.BeginCapture(flac?ownership::DecoderCodec::Flac:
+      ownership::DecoderCodec::Ogg,owner,flac?0:42,100,5,sequence);
+  ownership::DecodedActivity decoded{};decoded.owner=owner;decoded.calls=1;
+  decoded.produced_floats=8192;decoded.first=100;decoded.last=109.9;decoded.epoch=5;
+  decoded.sequence=sequence+1;tracker.ObserveDecoded(decoded);
+  tracker.CompleteCapture(capture->capture_token,110,sequence+2);
+  return capture;
+}
+static void TestNativeFormatPodcastAssociation() {
+  for(bool flac:{false,true}) {
+    ownership::DecoderOwnershipTracker tracker;tracker.Reset(5);
+    CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+    const auto owner=uintptr_t(flac?0x6100:0x6200);
+    buffers.ready.push_back(BoundPodcastCandidate(tracker,flac,owner,10,1));
+    Media episode;episode.source=MediaSource::Spotify;
+    episode.spotify_uri="spotify:episode:0000000000000000000001";
+    episode.playback_instance=flac?"flac-episode":"ogg-episode";
+    episode.title=L"Native episode";episode.album=L"Show";
+    episode.duration=10;episode.playing=true;
+    uint64_t playback=0;
+    if(flac) {
+      std::array<playback_identity::Match,playback_identity::kObservationCapacity> matches{};
+      matches[0].decoder=owner;matches[0].metadata_generation=7;
+      matches[0].role=playback_identity::SnapshotRole::PlayerPlaybackId;
+      playback=BindDirectReadyCapture(buffers,episode,7,100.2,matches,1);
+    } else {
+      tracker.ObservePlayback(episode.playback_instance,episode.spotify_uri,7,100.1);
+      playback=BindReadyCapture(buffers,episode,7,100.2);
+    }
+    assert(playback);
+    assert(buffers.ready[0]->listen_generation==7);
+    Heard completed{episode,100,110,7};std::vector<Heard> heard{completed};
+    SchedulePublications(heard,buffers,5,110);SaveJob job;
+    assert(heard.empty()&&saves.Pop(job)&&job.heard.media.spotify_uri==episode.spotify_uri);
+    publishing_reserved.fetch_sub(job.reserved);
+  }
+  {
+    ownership::DecoderOwnershipTracker tracker;tracker.Reset(5);
+    CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+    buffers.ready.push_back(BoundPodcastCandidate(tracker,false,0x6300,8,1));
+    Media episode;episode.source=MediaSource::Spotify;
+    episode.spotify_uri="spotify:episode:0000000000000000000002";
+    episode.playback_instance="duration-mismatch";episode.duration=10;episode.playing=true;
+    tracker.ObservePlayback(episode.playback_instance,episode.spotify_uri,8,100.1);
+    assert(!BindReadyCapture(buffers,episode,8,100.2));
+  }
+  {
+    ownership::DecoderOwnershipTracker tracker;tracker.Reset(5);
+    CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+    buffers.ready.push_back(BoundPodcastCandidate(tracker,false,0x6400,10,1));
+    buffers.ready.push_back(BoundPodcastCandidate(tracker,true,0x6500,10,10));
+    Media episode;episode.source=MediaSource::Spotify;
+    episode.spotify_uri="spotify:episode:0000000000000000000003";
+    episode.playback_instance="ambiguous-native";episode.duration=10;episode.playing=true;
+    tracker.ObservePlayback(episode.playback_instance,episode.spotify_uri,9,100.1);
+    assert(!BindReadyCapture(buffers,episode,9,100.2));
+  }
+  std::puts("PASS: Ogg/FLAC episodes bind by playback evidence while duration mismatch and ambiguity reject");
+}
 struct TerminalTailCase {
   const char* name;double tail_time,schedule_time;
     bool reconcile_before_tail,late_start,publish;
@@ -231,6 +302,7 @@ static void TestTerminalPauseScheduling() {
 static void TestLateAssociation() {
   TestRepeatScheduling();
   save_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(save_event);
+  TestNativeFormatPodcastAssociation();
   for(bool flac:{false,true}) {
     TestLateCapture(flac,false,LateCapture::Complete);
     TestLateCapture(flac,true,LateCapture::Complete);

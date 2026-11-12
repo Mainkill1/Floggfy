@@ -1868,8 +1868,7 @@ static uint64_t BindReadyCapture(CaptureBuffers& buffers,const Media& media,
     Capture* candidate=nullptr;size_t candidates=0;
     uint64_t already_bound=0;
     const auto inspect=[&](Capture& capture) {
-        if(capture.ambiguous||capture.mp3_source_staged||!capture.decoder_owner||!capture.capture_token||
-           (kind_unknown?capture.mp3:capture.mp3!=episode))return;
+        if(capture.ambiguous||capture.mp3_source_staged||!capture.decoder_owner||!capture.capture_token)return;
         const auto declared=DeclaredCaptureDuration(capture);
         const bool active_ogg_without_duration=!declared&&!capture.lossless&&!capture.aac&&
             !capture.mp3&&capture.stream.pages&&confirmed_transition;
@@ -1916,14 +1915,12 @@ static uint64_t BindDirectReadyCapture(
     size_t match_count) {
     if(!buffers.ownership_tracker||!generation||!media.playing||media.playback_instance.empty()||
        !match_count)return 0;
-    const bool episode=media.spotify_uri.rfind("spotify:episode:",0)==0;
-    const bool track=media.spotify_uri.rfind("spotify:track:",0)==0;
-    if(!episode&&!track)return 0;
+    if(media.spotify_uri.rfind("spotify:episode:",0)!=0&&
+       media.spotify_uri.rfind("spotify:track:",0)!=0)return 0;
     const auto expected_playback=buffers.ownership_tracker->PlaybackToken(media.playback_instance);
     Capture* candidate=nullptr;bool multiple=false;
     const auto inspect=[&](Capture& capture) {
-        if(capture.ambiguous||capture.mp3_source_staged||!capture.capture_token||!capture.decoder_owner||
-           capture.mp3!=episode)return;
+        if(capture.ambiguous||capture.mp3_source_staged||!capture.capture_token||!capture.decoder_owner)return;
         bool exact=false;
         for(size_t index=0;index<match_count;++index)
             if(matches[index].metadata_generation==generation&&
