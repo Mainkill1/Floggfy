@@ -39,6 +39,7 @@ PlaybackQualitySnapshot ReadPlaybackQuality() {
     if (!actual.identity || actual.identity != value.identity || !time || now - time > 3000)
       return actual;
     value.title = actual.title;
+    if(value.decoder_bound)return value;
     if (actual.level != PlaybackLevel::Unknown) {
       const bool lossless = actual.level == PlaybackLevel::Lossless || actual.level == PlaybackLevel::Lossless24;
       if ((value.format == PlaybackFormat::Flac && !lossless) ||

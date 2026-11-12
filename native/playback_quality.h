@@ -1,11 +1,12 @@
 #pragma once
 #include "flac_history_core.h"
 #include "ogg_history_core.h"
+#include "library_layout.h"
 #include <array>
 #include <deque>
 #include <string>
 namespace history {
-enum class PlaybackFormat { Unknown, Ogg, Flac };
+enum class PlaybackFormat { Unknown, Ogg, Flac, Mp3, Aac };
 enum class PlaybackLevel { Unknown, Low, Normal, High, VeryHigh, Lossless, Lossless24, Lossy };
 PlaybackLevel ParsePlaybackLevel(const std::string &);
 struct PlaybackQualitySnapshot {
@@ -16,7 +17,9 @@ struct PlaybackQualitySnapshot {
   unsigned channels = 0;
   unsigned bits = 0;
   PlaybackLevel level = PlaybackLevel::Unknown;
+  bool decoder_bound = false;
 };
+PlaybackQualitySnapshot WithPlaybackEncoding(PlaybackQualitySnapshot,const Quality&);
 class PlaybackQualityTracker {
   struct Candidate {
     uintptr_t context = 0;

@@ -22,7 +22,9 @@ int main() {
     assert(bytes.Append(second.data()+427,second.size()-427,65536));
     CompressedBuffer suffix;assert(bytes.SplitSuffix(cut,suffix,65536));
     assert(bytes.Flatten()==first&&suffix.Flatten()==second);
-    CompressedBuffer invalid;auto bad=second;bad[3]=2;
+    auto legacy=second;legacy[3]=2;CompressedBuffer legacy_bytes;
+    assert(legacy_bytes.Append(legacy.data(),legacy.size(),65536)&&InspectMp3Prefix(legacy_bytes,0,next)&&next.frames==3);
+    CompressedBuffer invalid;auto bad=second;bad[3]=1;
     assert(invalid.Append(bad.data(),bad.size(),65536)&&!InspectMp3Prefix(invalid,0,next));
     CompressedBuffer multiple;auto joined=first;joined.insert(joined.end(),second.begin(),second.end());joined.insert(joined.end(),second.begin(),second.end());
     assert(multiple.Append(joined.data(),joined.size(),65536));cursor={};

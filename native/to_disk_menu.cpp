@@ -126,7 +126,7 @@ static void UpdateQuality(Menu* menu,const history::PlaybackQualitySnapshot* son
     const auto snapshot=history::ReadPlaybackQuality();
     auto labels=history::PlaybackQualityLabels(snapshot);
     if(song) labels[0]=history::PlaybackQualityLabels(*song)[0];
-    const bool flac=snapshot.format==history::PlaybackFormat::Flac;
+    const bool known_format=snapshot.format!=history::PlaybackFormat::Unknown;
     if(MenuMethods::IndexOf(menu,song_id)<0) MenuMethods::AddSeparator(menu);
     for(unsigned i=0;i<labels.size();++i) {
         int id=song_id+int(i);auto text=Text(labels[i]);
@@ -134,7 +134,7 @@ static void UpdateQuality(Menu* menu,const history::PlaybackQualitySnapshot* son
         else MenuMethods::SetLabel(menu,id,&text);
         MenuMethods::SetEnabled(menu,id,int(i==0 && folder && !folder->empty()));
         const bool visible=i==0 || (i==1 ? snapshot.level!=history::PlaybackLevel::Unknown :
-                                     flac && (i==2 || snapshot.rate!=0));
+                                     known_format && (i==2 || snapshot.rate!=0));
         MenuMethods::SetVisible(menu,id,int(visible));
     }
 }

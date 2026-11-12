@@ -1762,3 +1762,67 @@ the current title and playing state, decoded output and a bound FLAC capture.
 The original INI was restored byte-for-byte (SHA-256
 `2e681179739ae60e1f349c6968e051ec084e328a104a97962d591b46aaa49530`).
 Temporary diagnostics remain active in this process until the next restart.
+
+## 2026-11-12 shared decoder details for songs and episodes
+
+The newly completed large podcast MP3 passed the production owned-MP3 structural
+inspector: 62,655,723 bytes, 149,907 frames, 172,692,864 samples, 44,100 Hz stereo,
+3915.937959 seconds and 128,000 bps. Its Spotify episode URI and title tags were
+present. This is container/frame validation, not an independent audio decode.
+
+The missing menu details had three causes: the quality observer only consumed
+Ogg/FLAC events; client episode identities used URIs while worker snapshots used
+title/artist/album; and menu visibility explicitly hid non-FLAC technical rows.
+
+Recording-mode details now reuse the bound capture's existing `Encoding()` and
+ownership tracker for MP3, AAC, Ogg and FLAC. No media-type branch chooses the
+decoder. Current playback token and listen generation must match, competing
+captures reject, and pending/reinitialized MP3 sources cannot supply details.
+MP3 uses its existing incremental frame scan before finalization, avoiding full
+buffer rescans. Header fields are no longer parsed again by the quality observer
+when recording already retains them. The bounded observer remains for downloads
+off and for Ogg/FLAC formats whose saving is disabled.
+
+All Spotify snapshots and Song/auto-skip destinations now use the URI as their
+identity, with label-based fallback only when a URI is absent. A bound decoder's
+technical details take precedence over contradictory client quality. Unknown
+quality, format and sample rate stay hidden; lossy audio never gains an inferred
+PCM bit depth. No guessed Spotify quality tier is assigned to MP3/AAC.
+
+The menu visibility regression failed on the former FLAC-only rule, then passed.
+The full Linux/native suite, focused Windows menu/destination suite, and final
+Windows capture-observer executable passed, including all four formats for both
+song/episode URIs, unbound/wrong-generation rejection, disabled-format observation,
+and auto-skip/publication behavior. The broader Windows run is recorded below
+when complete.
+
+Installed DLL/build SHA-256:
+`034b919d1a22a6e48b94804c79b4d61614f34fbc17a375fd9d3d68983031af81`.
+Spotify restarted normally as PID 40684 at 05:11. The pre-change DLL is preserved
+as `version.dll.backup-before-shared-audio-details`. The INI remains byte-identical
+at SHA-256 `2e681179739ae60e1f349c6968e051ec084e328a104a97962d591b46aaa49530`.
+The user confirmed MP3 details show. The item reported as Ogg with no details was
+the currently playing Vol. 27. Its live raw stream instead begins `ID3 02 00`,
+followed by MPEG-1 Layer III frames: this replay is MP3 with an ID3v2.2 tag.
+The source parser rejected that legacy tag version, leaving incremental header
+details unavailable. This was a second, distinct source-format parsing bug.
+
+Added bounded source ID3v2.2 skipping alongside v2.3/v2.4. Source tags are not
+decoded as owned tags; saved output remains ID3v2.4. Regression first failed on
+v2.2 acceptance, then passed. Tests cover unchanged audio through retagging,
+incremental v2.2 headers/boundaries, reserved flag rejection and future-version
+rejection. The corrected production parser validated 593 consecutive frames in
+the real dump before a later discontinuity. The complete current dump therefore
+does not prove a complete listen/save; incomplete/gapped bytes still reject.
+ID3v2.2's header size/flags follow https://id3.org/id3v2-00 .
+
+The broader Windows suite completed with exit 0. After the final legacy-tag
+change, the full Linux/native suite and native Windows MP3 regression executable
+also passed. The final disabled-format observer correction was independently
+compiled and passed in the Windows capture-observer executable.
+
+Final test DLL SHA-256:
+`97765326649c6591ef5ae9d6c5f5fce9dadd28e3190de7eb37c8cbc071bb2c8a`.
+Live v2.2 menu confirmation and a fresh complete recording remain test gates.
+The reported Vol. 27 issue does not establish a true Ogg display failure on this
+build; a live actual-Ogg replay remains separate validation.

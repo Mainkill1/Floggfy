@@ -44,11 +44,18 @@ static std::string field(const Tags& tags,const char* name) {
     return {};
 }
 int main() {
-    for(unsigned version:{3u,4u}) {
+    for(unsigned version:{2u,3u,4u}) {
         auto bytes=source(version);Mp3Info info;std::string error;
-        check(InspectMp3Source(bytes.data(),bytes.size(),info,error),"ID3v2.3/v2.4 source accepted");
+        check(InspectMp3Source(bytes.data(),bytes.size(),info,error),"ID3v2.2/v2.3/v2.4 source accepted");
         check(error.empty()&&info.rate==44100&&info.channels==2&&info.samples==3456&&
               info.frames==3&&info.audio_offset==53&&info.audio_size==1357,"literal MPEG-1 timing and audio range");
+        Tags tags;tags.fields={{"TITLE","Legacy source"}};
+        std::vector<uint8_t> owned;Mp3Info saved;Tags inspected;
+        check(MakeOwnedMp3(bytes.data(),bytes.size(),tags,owned,error)&&
+              InspectOwnedMp3(owned.data(),owned.size(),saved,inspected,error)&&
+              owned[3]==4&&saved.audio_size==info.audio_size&&
+              !memcmp(owned.data()+saved.audio_offset,bytes.data()+info.audio_offset,info.audio_size),
+              "source tag versions normalize to owned ID3v2.4 without changing compressed audio");
     }
     {
         auto bytes=frame(0xf3,0x80,208,0xc0); // MPEG-2 Layer III, 64 kbps, 22.05 kHz mono.
@@ -119,5 +126,7 @@ int main() {
     reject(frame(0xfb,0x9c,417),"reserved sample rate rejected");
     auto changed=frame(0xfb,0x90,417);append(changed,frame(0xf3,0x80,208));reject(std::move(changed),"format change rejected");
     auto bad_id3=id3(4,0);bad_id3[6]=0x80;append(bad_id3,frame(0xfb,0x90,417));reject(std::move(bad_id3),"invalid synchsafe ID3 size rejected");
-    std::puts("PASS: strict MP3 frame validation, ID3v2.3/v2.4 handling and exact owned audio retention");
+    auto bad_legacy=source(2);bad_legacy[5]=0x20;reject(std::move(bad_legacy),"reserved ID3v2.2 flags rejected");
+    reject(source(5),"unknown ID3 tag version rejected");
+    std::puts("PASS: strict MP3 frame validation, ID3v2.2/v2.3/v2.4 source handling and exact owned audio retention");
 }

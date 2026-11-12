@@ -890,8 +890,11 @@ struct Capture {
         return lossless&&flac.rate?double(coverage.samples)/flac.rate:stream.Duration();
     }
     Quality Encoding() const {
-        if(mp3)return {Codec::Mp3,mp3_info.rate,mp3_info.channels,0,
-            mp3_info.Duration()>0?unsigned((mp3_info.audio_size*8)/mp3_info.Duration()):0};
+        if(mp3) {
+            const auto& info=mp3_info.rate?mp3_info:mp3_scan;
+            return {Codec::Mp3,info.rate,info.channels,0,
+                info.Duration()>0?unsigned((info.audio_size*8)/info.Duration()):0};
+        }
         if(aac)return {Codec::Aac,spac.info.rate,spac.info.channels,0,0};
         if(lossless)return {Codec::Flac,flac.rate,flac.channels,flac.bits,0};
         return {Codec::Vorbis,stream.rate,stream.channels,0,stream.bitrate};
@@ -1086,7 +1089,7 @@ static Catalog CatalogFor(const Media& media) {
 static void QueueFilenameCheck(const Media&,const Settings&);
 static void CancelFilenameChecks();
 static void PublishCurrentDestination(const Media& media,const Settings& settings) {
-    PublishSongDestination(media.title.empty() ? 0 : PlaybackIdentity(media.Key()),
+    PublishSongDestination(media.title.empty() ? 0 : PlaybackIdentity(media.PlaybackKey()),
                            settings.root,CatalogFor(media),settings.music_folder,settings.generation,settings.track_number_in_filename);
     QueueFilenameCheck(media,settings);
 }
@@ -1482,7 +1485,7 @@ static void QueueFilenameCheck(const Media& media,const Settings& settings) {
             return;
         }
         const auto metadata_revision=update?MetadataRevision():0;
-        const auto media_identity=PlaybackIdentity(media.Key());
+        const auto media_identity=PlaybackIdentity(media.PlaybackKey());
         const auto quality=auto_skip?ReadPlaybackQuality():PlaybackQualitySnapshot{};
         auto catalog=CatalogFor(media);
         Tags tags;
@@ -2064,6 +2067,37 @@ static void LogOwnershipBindings(CaptureBuffers& buffers) {
     for(auto& capture:buffers.ogg_active)observe(*capture.second);
     for(auto& capture:buffers.ready)observe(*capture);
 }
+// Reuse the capture's proven ownership and already parsed codec headers. The
+// independent timing tracker remains a fallback when downloads are disabled.
+static PlaybackQualitySnapshot BoundPlaybackQuality(const CaptureBuffers& buffers,
+    const Media& media,uint64_t generation,PlaybackQualitySnapshot fallback) {
+    if(!buffers.ownership_tracker||!generation||media.playback_instance.empty()||
+       fallback.identity!=PlaybackIdentity(media.PlaybackKey()))return fallback;
+    const auto playback=buffers.ownership_tracker->PlaybackToken(media.playback_instance);
+    if(!playback)return fallback;
+    const Capture* selected=nullptr;bool ambiguous=false;
+    const auto inspect=[&](const Capture& capture) {
+        if(capture.ambiguous||capture.mp3_source_staged||capture.mp3_pending_generation||
+           !capture.capture_token)return;
+        const auto binding=buffers.ownership_tracker->Binding(capture.capture_token);
+        if(binding.state!=ownership::OwnershipState::Bound||binding.listen_generation!=generation||
+           binding.playback_token!=playback)return;
+        const auto encoding=capture.Encoding();
+        if(!encoding.rate)return;
+        if(selected)ambiguous=true;else selected=&capture;
+    };
+    for(const auto& entry:buffers.active)inspect(*entry.second);
+    for(const auto& entry:buffers.ogg_active)inspect(*entry.second);
+    for(const auto& entry:buffers.ready)inspect(*entry);
+    if(ambiguous) {
+        fallback.format=PlaybackFormat::Unknown;fallback.rate=fallback.channels=fallback.bits=0;
+        fallback.decoder_bound=false;return fallback;
+    }
+    if(!selected)return fallback;
+    fallback=WithPlaybackEncoding(fallback,selected->Encoding());
+    fallback.decoder_bound=true;
+    return fallback;
+}
 static void ObserveCodecQuality(const Slot& s,PlaybackQualityTracker& quality) {
     switch(s.kind) {
         case AudioEventKind::OggPage: quality.Ogg(s.context,s.bytes,s.length,s.time); break;
@@ -2449,7 +2483,7 @@ static void AbortBoundMp3Capture(CaptureBuffers& buffers,uint64_t generation,
 }
 static void ProcessCaptureEvent(const Slot& s,CaptureBuffers& buffers,PlaybackQualityTracker& quality,
                                 bool observing_quality,bool enabled,unsigned epoch) {
-    if(observing_quality) ObserveCodecQuality(s,quality);
+    if(observing_quality&&(!enabled||!s.capture)) ObserveCodecQuality(s,quality);
     if(!enabled || !s.capture || s.epoch!=epoch) return;
     if(s.kind>=AudioEventKind::Mp3Begin)ProcessMp3Capture(s,buffers);
     else if(s.kind>=AudioEventKind::AacBegin)ProcessAacCapture(s,buffers);
@@ -2957,7 +2991,7 @@ static DWORD WINAPI Worker(LPVOID) {
                         if(!QueueReleaseAudit(*c,"capture settings changed",ReleaseExpectation::DiscardedEvidence,buffers.ownership_tracker))
                             CheckBeforeRelease(*c,"capture settings changed",buffers.ownership_tracker);
                     buffers={};buffers.ownership_tracker=&ownership_tracker;
-                    heard.clear();recent.Clear(); listen={}; current={};
+                    heard.clear();recent.Clear(); listen={}; current={};quality.ClearStreams();
                     last_media=minimum_media_time=now;media_unavailable=false;media_warning={};diagnostics.known=false;CancelFilenameChecks();
                     enabled=capture;
                     ownership_tracker.Reset(preferences.capture_epoch);
@@ -3012,7 +3046,7 @@ static DWORD WINAPI Worker(LPVOID) {
                 last_media=observed_at;media_unavailable=false;
                 diagnostics.Observe(media,observed_at,media_sequence);
                 PublishCurrentDestination(media,preferences);
-                quality.Media(media.Key(),media.title,media.position,media.duration,observed_at,media.playing);
+                quality.Media(media.PlaybackKey(),media.title,media.position,media.duration,observed_at,media.playing);
                 client_quality=ReadClientPlaybackQuality(media);
                 CarryBoundReadyIdentity(media,current,!ownership_transition_uri.empty());
                 const auto playback_uri=media.spotify_uri;
@@ -3093,7 +3127,9 @@ static DWORD WINAPI Worker(LPVOID) {
                 WaitForSingleObject(event,50);continue;
             }
             now=Now();
-            PublishPlaybackQuality(quality.Snapshot(client_quality));
+            const auto quality_snapshot=quality.Snapshot(client_quality);
+            PublishPlaybackQuality(media_unavailable?quality_snapshot:
+                BoundPlaybackQuality(buffers,current,listen.generation,quality_snapshot));
             // Menu settings may change concurrently with snapshot processing.
             // Apply that generation before considering any publication.
             if(GetSettings().generation!=generation) continue;

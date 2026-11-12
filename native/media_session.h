@@ -23,6 +23,7 @@ struct Media {
     bool terminal_context=false; // Explicit monitored episode context clearance, anchored to the old instance.
     bool transition_pending=false; // Natural-transition candidate awaiting a successor playback ID.
     std::string Key() const;
+    std::string PlaybackKey() const {return spotify_uri.empty()?Key():spotify_uri;}
     std::string ListenKey() const {
         if(source==MediaSource::Spotify)
             return spotify_uri+(playback_instance.empty()?std::string{}:

@@ -190,11 +190,13 @@ int main(int argc,char** argv){
     assert(history::CurrentPlayback(&current));
     auto playing=history::ReadPlaybackQuality();
     assert(playing.title[0]==L'N' && playing.level==history::PlaybackLevel::Lossless);
+    assert(playing.identity==history::PlaybackIdentity("spotify:track:0000000000000000000001"));
     wchar_t episode_message[]=L"FLOGGFY_PLAYBACK_V1:v=1&title=Episode&uri=spotify:episode:0000000000000000000001&duration=4030&playback_quality=high";
     current={episode_message,wcslen(episode_message),nullptr};
     assert(history::CurrentPlayback(&current));
     playing=history::ReadPlaybackQuality();
     assert(playing.title[0]==L'E' && playing.level==history::PlaybackLevel::High);
+    assert(playing.identity==history::PlaybackIdentity("spotify:episode:0000000000000000000001"));
     assert(playing.format==history::PlaybackFormat::Unknown);
     // A same-title prior episode must not lend its decoder to a different URI.
     auto previous=playing;previous.format=history::PlaybackFormat::Ogg;previous.rate=44100;

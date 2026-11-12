@@ -309,7 +309,7 @@ int main(int argc,char** argv) {
     assert(child.entries[i].type == 1 && !child.entries[i].enabled && !child.entries[i].checked);
   assert(child.entries[quality_index].label.find(L"Example") != std::wstring::npos);
   assert(child.entries[quality_index].visible && child.entries[quality_index+1].visible);
-  assert(!child.entries[quality_index+2].visible && !child.entries[quality_index+3].visible); // Non-FLAC details stay hidden, even after Ogg verification.
+  assert(child.entries[quality_index+2].visible && child.entries[quality_index+3].visible);
   type_calls=0;
   Populate(&root.api);
   assert(type_calls==0); // Existing insertion is not rescanned or repopulated.
@@ -622,7 +622,18 @@ int main(int argc,char** argv) {
   assert(child.entries[Index(&child.api,song_id)].visible && !child.entries[Index(&child.api,song_id)].enabled);
   q.format=history::PlaybackFormat::Ogg;q.level=history::PlaybackLevel::VeryHigh;q.bits=0;
   actual.level=q.level;history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
-  build_root();assert(!child.entries[quality_index+2].visible && !child.entries[quality_index+3].visible);
+  build_root();assert(child.entries[quality_index+2].visible && child.entries[quality_index+3].visible);
+  q.rate=0;history::PublishPlaybackQuality(q);
+  build_root();assert(child.entries[quality_index+2].visible && !child.entries[quality_index+3].visible);
+  q.rate=44100;
+  for(auto format:{history::PlaybackFormat::Mp3,history::PlaybackFormat::Aac}) {
+    q.format=format;q.level=history::PlaybackLevel::Lossy;q.decoder_bound=true;
+    actual.level=history::PlaybackLevel::Lossless;
+    history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
+    build_root();assert(child.entries[quality_index+2].visible&&child.entries[quality_index+3].visible);
+    assert(history::ReadPlaybackQuality().level==history::PlaybackLevel::Lossy);
+  }
+  q.decoder_bound=false;
   q.format=history::PlaybackFormat::Flac;q.level=history::PlaybackLevel::Lossless;q.bits=16;
   actual.level=q.level;history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
   build_root();assert(child.entries[quality_index+2].visible && child.entries[quality_index+3].visible);

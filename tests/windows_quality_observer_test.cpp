@@ -33,6 +33,48 @@ static int32_t Parser(void *, OggPage *) {
   ++parser_calls;
   return 58;
 }
+static void TestBoundPlaybackQuality() {
+  for(bool episode:{false,true})for(auto codec:{Codec::Vorbis,Codec::Flac,Codec::Mp3,Codec::Aac}) {
+    ownership::DecoderOwnershipTracker tracker;tracker.Reset(5);
+    CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+    Media media;media.title=L"Bound audio";media.source=MediaSource::Spotify;
+    media.spotify_uri=episode?"spotify:episode:0000000000000000000001":"spotify:track:0000000000000000000001";
+    media.playback_instance="instance";
+    auto c=std::make_unique<Capture>();
+    auto decoder=ownership::DecoderCodec::Ogg;
+    if(codec==Codec::Mp3) {c->mp3=true;c->mp3_scan.rate=44100;c->mp3_scan.channels=2;c->mp3_scan.frames=2;decoder=ownership::DecoderCodec::Mp3;}
+    else if(codec==Codec::Aac) {c->aac=true;c->spac.info.rate=44100;c->spac.info.channels=2;decoder=ownership::DecoderCodec::Aac;}
+    else if(codec==Codec::Flac) {c->lossless=true;c->metadata=true;c->flac.rate=44100;c->flac.channels=2;c->flac.bits=24;decoder=ownership::DecoderCodec::Flac;}
+    else {c->stream.rate=44100;c->stream.channels=2;c->stream.pages=1;}
+    c->capture_token=tracker.BeginCapture(decoder,0x5000,0,100,5,1);
+    ownership::DecodedActivity decoded{};decoded.owner=0x5000;decoded.calls=1;decoded.produced_floats=8192;
+    decoded.first=decoded.last=100;decoded.epoch=5;decoded.sequence=2;tracker.ObserveDecoded(decoded);
+    assert(tracker.BindCaptureExact(c->capture_token,media.playback_instance,media.spotify_uri,7,100.1));
+    buffers.active[0x5000]=std::move(c);
+    PlaybackQualitySnapshot base;base.identity=PlaybackIdentity(media.PlaybackKey());
+    const auto q=BoundPlaybackQuality(buffers,media,7,base);
+    const auto expected=codec==Codec::Mp3?PlaybackFormat::Mp3:codec==Codec::Aac?PlaybackFormat::Aac:
+      codec==Codec::Flac?PlaybackFormat::Flac:PlaybackFormat::Ogg;
+    assert(q.decoder_bound&&q.format==expected&&q.rate==44100&&q.channels==2);
+    assert(q.bits==(codec==Codec::Flac?24u:0u));
+    assert(q.level==(codec==Codec::Flac?PlaybackLevel::Lossless24:PlaybackLevel::Lossy));
+    assert(BoundPlaybackQuality(buffers,media,8,base).format==PlaybackFormat::Unknown);
+    auto next=media;next.playback_instance="next";
+    assert(BoundPlaybackQuality(buffers,next,7,base).format==PlaybackFormat::Unknown);
+    buffers.active.begin()->second->ambiguous=true;
+    assert(BoundPlaybackQuality(buffers,media,7,base).format==PlaybackFormat::Unknown);
+  }
+  // Disabling a format's saving must still allow its bounded header observer.
+  CaptureBuffers buffers;PlaybackQualityTracker quality;
+  quality.Media("disabled-format",L"Disabled format",0,16.0/44100,100);
+  Slot slot{};slot.context=1;slot.time=100;slot.epoch=5;slot.capture=false;
+  slot.kind=AudioEventKind::FlacBegin;ProcessCaptureEvent(slot,buffers,quality,true,true,5);
+  const auto header=recording_fixture::fixture(44100,16);
+  slot.kind=AudioEventKind::FlacBytes;slot.length=42;slot.input_length=42;
+  std::memcpy(slot.bytes,header.data(),42);ProcessCaptureEvent(slot,buffers,quality,true,true,5);
+  assert(quality.Snapshot().format==PlaybackFormat::Flac&&buffers.active.empty());
+  std::puts("PASS: bound Ogg/FLAC/MP3/AAC headers supply identical song/episode details without guessing unbound generations");
+}
 static void TestRepeatScheduling() {
   CaptureBuffers buffers;Listen listen;Media current;std::vector<Heard> heard;
   Media media;media.title=L"Repeated";media.artist=L"Artist";media.album=L"Album";media.duration=10;media.playing=true;
@@ -300,6 +342,7 @@ static void TestTerminalPauseScheduling() {
   puts("PASS: terminal pause retains Ogg/FLAC tails until codec lifecycle evidence resolves them");
 }
 static void TestLateAssociation() {
+  TestBoundPlaybackQuality();
   TestRepeatScheduling();
   save_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(save_event);
   TestNativeFormatPodcastAssociation();
@@ -432,7 +475,7 @@ static void TestAutoSkipDownloaded() {
   DeleteFileW(path.c_str());HANDLE file=CreateFileW(path.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,0,nullptr);
   DWORD written=0;assert(file!=INVALID_HANDLE_VALUE&&WriteFile(file,owned.data(),DWORD(owned.size()),&written,nullptr)&&written==owned.size());CloseHandle(file);
   auto publish_quality=[&](PlaybackFormat format,unsigned rate,unsigned channels,unsigned bits=0) {
-    PlaybackQualitySnapshot quality;quality.identity=PlaybackIdentity(media.Key());quality.format=format;
+    PlaybackQualitySnapshot quality;quality.identity=PlaybackIdentity(media.PlaybackKey());quality.format=format;
     quality.rate=rate;quality.channels=channels;quality.bits=bits;PublishPlaybackQuality(quality);
   };
   const auto initial_token=ReadAutoSkipRequest().token;

@@ -410,6 +410,12 @@ The shortcut first checks its 16-entry verified-file cache with a fresh file
 signature. Unchanged saved files need no directory listing or audio reread.
 Discovery lists the directory once and compares the four ordinary names before
 legacy/collision aliases, stopping at the first complete identity match.
+
+Quality, format and sample-rate rows appear only when their values are known.
+During recording, songs and episodes use the codec headers of the capture bound
+to current playback, including MP3, AAC, Ogg and FLAC. FLAC bit depth is shown
+when known; lossy formats do not acquire an inferred PCM bit depth. A codec's
+lossy/lossless classification does not imply a guessed Spotify quality tier.
 Publication still chooses the best verified existing recording. An unavailable
 Song target is retried after five seconds; changed tracks/settings and successful
 publication refresh bypass that cooldown. Signatures that change trigger discovery

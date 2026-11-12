@@ -39,8 +39,8 @@ bool Id3Range(const Bytes& bytes,std::size_t& begin,std::size_t& end,
     const auto size=bytes.size();
     if(size<3||!Match(bytes,0,"ID3",3))return true;
     if(size<10)return Fail(error,"truncated ID3 header");
-    version=bytes[3];if((version!=3&&version!=4)||bytes[4]!=0)return Fail(error,"unsupported ID3 version");
-    const std::uint8_t allowed=version==3?0xe0:0xf0;
+    version=bytes[3];if((version<2||version>4)||bytes[4]!=0)return Fail(error,"unsupported ID3 version");
+    const std::uint8_t allowed=version==2?0xc0:version==3?0xe0:0xf0;
     if(bytes[5]&~allowed)return Fail(error,"invalid ID3 flags");
     std::uint8_t encoded[4]{bytes[6],bytes[7],bytes[8],bytes[9]};
     std::size_t payload=0;if(!Syncsafe(encoded,payload))return Fail(error,"invalid ID3 size");
