@@ -1728,3 +1728,10 @@ The user's INI was restored byte-for-byte to SHA-256
 The current process retains diagnostic logging until its next restart. This
 repairs the observer and verifies hook operation; complete native-format podcast
 publication remains a separate release validation gate.
+
+The full `test-native-windows.sh` run subsequently completed with exit 0,
+including diagnostics, decoder return/LastError preservation, pause/gap handling,
+metadata and publication tests. Its optional supplied-client probes were skipped
+inside that suite; the separate installed-client discovery probe above passed.
+The live song then completed and published `Artists/Parker Jack/911/911.flac`
+(23,692,843 bytes; 16-bit, 44,100 Hz) at 03:27:54, followed by the next track.
