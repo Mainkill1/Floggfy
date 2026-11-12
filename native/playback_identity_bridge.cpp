@@ -100,7 +100,7 @@ bool DiagnosticBridge::MatchObservation(const Observation& observation,const Ins
     if(matches!=1)return false;
     match={observation.owner,observation.decoder,observation.epoch,observation.sequence,
            metadata_generation,observation.owner_generation,representation,
-           observation.role,offset};
+           observation.role,offset,observation.observed_at};
     return true;
 }
 
@@ -129,25 +129,26 @@ bool DiagnosticBridge::SetExpected(std::string_view playback_instance,
 }
 
 bool DiagnosticBridge::NeedsObservation(std::uintptr_t owner,std::uintptr_t decoder,
-                                        unsigned epoch,SnapshotRole role) const noexcept {
+                                        unsigned epoch,SnapshotRole role,double minimum_observed_at) const noexcept {
     if(!owner||!decoder)return false;
     for(std::size_t index=0;index<observation_count_;++index) {
         const auto& prior=observations_[(observation_head_+index)%observations_.size()];
         if(prior.owner==owner&&prior.decoder==decoder&&prior.epoch==epoch&&
-           prior.role==role)return false;
+           prior.role==role&&prior.observed_at>=minimum_observed_at)return false;
     }
     return true;
 }
 
 bool DiagnosticBridge::NeedsObservation(std::uintptr_t owner,std::uintptr_t decoder,
                                         unsigned epoch,SnapshotRole role,
-                                        const void* snapshot,std::size_t snapshot_size) const noexcept {
+                                        const void* snapshot,std::size_t snapshot_size,
+                                        double minimum_observed_at) const noexcept {
     if(!owner||!decoder||!snapshot||!snapshot_size)return false;
     const auto retained_size=std::min(snapshot_size,kMaximumSnapshotBytes);
     for(std::size_t index=0;index<observation_count_;++index) {
         const auto& prior=observations_[(observation_head_+index)%observations_.size()];
         if(prior.owner==owner&&prior.decoder==decoder&&prior.epoch==epoch&&
-           prior.role==role&&prior.size==retained_size&&
+           prior.role==role&&prior.observed_at>=minimum_observed_at&&prior.size==retained_size&&
            !std::memcmp(prior.bytes.data(),snapshot,retained_size))return false;
     }
     return true;
@@ -155,13 +156,14 @@ bool DiagnosticBridge::NeedsObservation(std::uintptr_t owner,std::uintptr_t deco
 
 bool DiagnosticBridge::Observe(std::uintptr_t owner,std::uintptr_t decoder,unsigned epoch,
                                std::uint64_t sequence,const void* snapshot,
-                               std::size_t snapshot_size,SnapshotRole role) noexcept {
+                               std::size_t snapshot_size,SnapshotRole role,
+                               double observed_at,double minimum_observed_at) noexcept {
     if(!owner||!decoder||!sequence||!snapshot||!snapshot_size)return false;
     const auto retained_size=std::min(snapshot_size,kMaximumSnapshotBytes);
     for(std::size_t index=0;index<observation_count_;++index) {
         const auto& prior=observations_[(observation_head_+index)%observations_.size()];
         if(prior.owner==owner&&prior.decoder==decoder&&prior.epoch==epoch&&
-           prior.role==role&&prior.size==retained_size&&
+           prior.role==role&&prior.observed_at>=minimum_observed_at&&prior.size==retained_size&&
            !std::memcmp(prior.bytes.data(),snapshot,retained_size))return false;
     }
     std::uint64_t owner_generation=0;
@@ -188,10 +190,10 @@ bool DiagnosticBridge::Observe(std::uintptr_t owner,std::uintptr_t decoder,unsig
     auto& observation=observations_[slot];
     observation.owner=owner;observation.decoder=decoder;observation.epoch=epoch;
     observation.sequence=sequence;observation.owner_generation=owner_generation;
-    observation.role=role;
+    observation.role=role;observation.observed_at=observed_at;
     observation.size=retained_size;
     std::memcpy(observation.bytes.data(),snapshot,observation.size);
-    pending_observation_=ObservationInfo{owner,decoder,epoch,sequence,owner_generation,role};
+    pending_observation_=ObservationInfo{owner,decoder,epoch,sequence,owner_generation,role,observed_at};
     if(!has_expected_)return false;
     return ResolveExpected();
 }

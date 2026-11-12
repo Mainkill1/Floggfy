@@ -18,6 +18,8 @@ g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/spotify_hook_discovery_test.cpp n
 build/spotify-hook-discovery-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/playback_identity_bridge_test.cpp native/playback_identity_bridge.cpp -o build/playback-identity-bridge-test
 build/playback-identity-bridge-test
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/recording_counters_test.cpp -o build/recording-counters-test
+build/recording-counters-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/decoder_ownership_test.cpp native/decoder_ownership.cpp -o build/decoder-ownership-test
 build/decoder-ownership-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/history_core_test.cpp native/ogg_history_core.cpp -o build/history-core-test

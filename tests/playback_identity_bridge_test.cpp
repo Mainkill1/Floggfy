@@ -174,6 +174,35 @@ int main() {
     assert(retryable.QueryMatches(kFirst,20,6,queried.data(),queried.size())==0&&
            "capture settings reset all retained direct identity evidence");
 
+    // An address can be reused while late metadata still needs an older
+    // snapshot. Time belongs to the observation, not to the metadata query.
+    DiagnosticBridge lifecycles;
+    assert(!lifecycles.Observe(0x6200,0x7200,6,60,raw.data(),raw.size(),
+                              SnapshotRole::PlayerPlaybackId,90.0));
+    assert(lifecycles.QueryMatches(kFirst,21,6,queried.data(),queried.size())==1);
+    assert(queried[0].observed_at==90.0&&queried[0].ObservedDuring(80.0,100.0));
+    assert(!queried[0].ObservedDuring(100.0)&&
+           "historical A evidence cannot claim B after the decoder address is reused");
+    assert(!queried[0].ObservedDuring(80.0,90.0)&&
+           "the next capture closes the predecessor's identity interval exclusively");
+    assert(!lifecycles.NeedsObservation(0x6200,0x7200,6,SnapshotRole::PlayerPlaybackId,
+                                       raw.data(),raw.size(),80.0));
+    assert(lifecycles.NeedsObservation(0x6200,0x7200,6,SnapshotRole::PlayerPlaybackId,
+                                      raw.data(),raw.size(),100.0));
+    assert(lifecycles.NeedsObservation(0x6200,0x7200,6,SnapshotRole::PlayerPlaybackId,100.0));
+    assert(!lifecycles.Observe(0x6200,0x7200,6,61,raw.data(),raw.size(),
+                              SnapshotRole::PlayerPlaybackId,100.1,100.0));
+    assert(!lifecycles.NeedsObservation(0x6200,0x7200,6,SnapshotRole::PlayerPlaybackId,
+                                       raw.data(),raw.size(),100.0));
+    assert(!lifecycles.Observe(0x6200,0x7200,6,62,raw.data(),raw.size(),
+                              SnapshotRole::PlayerPlaybackId,100.2,100.0));
+    assert(lifecycles.QueryMatches(kFirst,22,6,queried.data(),queried.size())==2&&
+           queried[0].sequence==60&&queried[0].observed_at==90.0&&
+           queried[1].sequence==61&&queried[1].observed_at==100.1&&
+           queried[1].ObservedDuring(100.0)&&
+           "refreshing unchanged pre-BOS fields preserves the old capture's historical evidence");
+    Match legacy{};assert(legacy.ObservedDuring(100.0,101.0));
+
     // Capture epoch zero is the normal initial settings epoch.
     DiagnosticBridge initial_epoch;
     assert(initial_epoch.SetExpected(kFirst, 1));

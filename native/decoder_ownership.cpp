@@ -162,7 +162,7 @@ std::uint64_t DecoderOwnershipTracker::BeginCapture(DecoderCodec codec,std::uint
 void DecoderOwnershipTracker::CompleteCapture(std::uint64_t capture_token,double time,
                                                std::uint64_t producer_sequence) {
     auto* capture=FindCapture(capture_token);if(!capture)return;
-    if(!ValidTime(time)||time<=capture->begun)Conflict(*capture,OwnershipReason::InvalidCompletion);
+    if(!ValidTime(time)||time<capture->begun)Conflict(*capture,OwnershipReason::InvalidCompletion);
     capture->active=false;capture->complete=true;capture->completed_at=time;
     capture->completed_sequence=producer_sequence;
 }

@@ -10,6 +10,8 @@ struct Settings {
     int never_pause=-1; // -1 hides/disables the menu item; 0=off, 1=on.
     bool track_number_in_filename=false,convert_numbered_filenames=false;
     bool dump_streams=false; // Continuous raw input and metadata files; restart-only.
+    bool save_unmatched=true; // Save complete unidentified recordings after matcher_max_queue new starts.
+    unsigned matcher_max_queue=5,matcher_time_offset_ms=10000,matcher_duration_ms=250;
     bool debug_hook_diagnostics=false; // Extra bounded activity/stall diagnostics, restart-only.
     bool debug_networking=false; // Master deep-diagnostics hook + separate log; restart-only.
     bool debug_connect=true; // Requires DebugLog; observes cached Connect state/local actions.

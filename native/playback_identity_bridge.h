@@ -47,6 +47,10 @@ struct Match {
     Representation representation=Representation::None;
     SnapshotRole role=SnapshotRole::Owner;
     std::size_t offset=0;
+    double observed_at=0;
+    bool ObservedDuring(double began,double closed_at=0) const noexcept {
+        return !observed_at||(observed_at>=began&&(!closed_at||observed_at<closed_at));
+    }
 };
 
 struct ObservationInfo {
@@ -56,6 +60,7 @@ struct ObservationInfo {
     std::uint64_t sequence=0;
     std::uint64_t owner_generation=0;
     SnapshotRole role=SnapshotRole::Owner;
+    double observed_at=0;
 };
 
 class DiagnosticBridge {
@@ -63,13 +68,15 @@ public:
     bool SetExpected(std::string_view playback_instance,
                      std::uint64_t metadata_generation) noexcept;
     bool NeedsObservation(std::uintptr_t owner,std::uintptr_t decoder,
-                          unsigned epoch,SnapshotRole role=SnapshotRole::Owner) const noexcept;
+                          unsigned epoch,SnapshotRole role=SnapshotRole::Owner,
+                          double minimum_observed_at=0) const noexcept;
     bool NeedsObservation(std::uintptr_t owner,std::uintptr_t decoder,unsigned epoch,
                           SnapshotRole role,const void* snapshot,
-                          std::size_t snapshot_size) const noexcept;
+                          std::size_t snapshot_size,double minimum_observed_at=0) const noexcept;
     bool Observe(std::uintptr_t owner,std::uintptr_t decoder,unsigned epoch,
                  std::uint64_t sequence,const void* snapshot,
-                 std::size_t snapshot_size,SnapshotRole role=SnapshotRole::Owner) noexcept;
+                 std::size_t snapshot_size,SnapshotRole role=SnapshotRole::Owner,
+                 double observed_at=0,double minimum_observed_at=0) noexcept;
     std::size_t QueryMatches(std::string_view playback_instance,
                              std::uint64_t metadata_generation,unsigned epoch,
                              Match* matches,std::size_t capacity) const noexcept;
@@ -87,6 +94,7 @@ private:
         std::uint64_t owner_generation=0;
         std::uint64_t reported_metadata_generation=0;
         SnapshotRole role=SnapshotRole::Owner;
+        double observed_at=0;
         std::size_t size=0;
         std::array<unsigned char,kMaximumSnapshotBytes> bytes{};
     };

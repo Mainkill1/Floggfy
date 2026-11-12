@@ -93,24 +93,33 @@ Mp3Scan ScanMp3(const Bytes& bytes,Mp3Info& out,std::string& error,bool accept_t
     if(end<at||(!resume&&end==at)){Fail(error,"MP3 has no audio frames");return Mp3Scan::Invalid;}
     unsigned expected_rate=resume?resume->rate:0,expected_channels=resume?resume->channels:0,frames=resume?resume->frames:0;
     std::uint64_t samples=resume?resume->samples:0;
+    unsigned declared_frames=resume?resume->declared_frames:0;
+    std::size_t declared_bytes=resume?resume->declared_bytes:0;
     const std::size_t audio=resume&&resume->frames?resume->audio_offset:at;
     const auto truncated=[&](const char* message) {
         Fail(error,message);
         if(!accept_truncated_tail||!frames)return Mp3Scan::Invalid;
         out={expected_rate,expected_channels,frames,samples,audio,at-audio,false};
+        out.declared_frames=declared_frames;out.declared_bytes=declared_bytes;
         return Mp3Scan::Incomplete;
+    };
+    const auto source_boundary=[&](std::size_t next) {
+        *boundary=next;
+        const bool complete=(!declared_frames||frames==declared_frames)&&
+            (!declared_bytes||at-audio==declared_bytes);
+        out={expected_rate,expected_channels,frames,samples,audio,at-audio,complete};
+        out.declared_frames=declared_frames;out.declared_bytes=declared_bytes;
+        return Mp3Scan::Boundary;
     };
     while(at<end) {
         if(boundary&&frames&&end-at>128&&Match(bytes,at,"TAG",3)) {
             const auto next=at+128;
             if(Match(bytes,next,"ID3",std::min<std::size_t>(3,end-next))) {
-                *boundary=next;out={expected_rate,expected_channels,frames,samples,audio,at-audio,true};
-                return Mp3Scan::Boundary;
+                return source_boundary(next);
             }
         }
         if(boundary&&frames&&Match(bytes,at,"ID3",std::min<std::size_t>(3,end-at))) {
-            *boundary=at;out={expected_rate,expected_channels,frames,samples,audio,at-audio,true};
-            return Mp3Scan::Boundary;
+            return source_boundary(at);
         }
         if(end-at<4)return truncated("truncated MP3 frame header");
         const std::uint32_t h=(std::uint32_t(bytes[at])<<24)|(std::uint32_t(bytes[at+1])<<16)|
@@ -131,6 +140,41 @@ Mp3Scan ScanMp3(const Bytes& bytes,Mp3Info& out,std::string& error,bool accept_t
         const std::uint64_t frame_size=scale*bitrate/rate+((h>>9)&1);
         if(frame_size<4){Fail(error,"invalid MP3 frame size");return Mp3Scan::Invalid;}
         if(frame_size>end-at)return truncated("truncated MP3 frame");
+        if(!frames) {
+            const auto big=[&](size_t offset) {
+                return (uint32_t(bytes[offset])<<24)|(uint32_t(bytes[offset+1])<<16)|
+                    (uint32_t(bytes[offset+2])<<8)|bytes[offset+3];
+            };
+            const auto side=version==3?(channels==1?17u:32u):(channels==1?9u:17u);
+            // LAME/FFmpeg keep this offset even when the frame has a CRC.
+            const auto xing=at+4+side;
+            if(xing+4<=at+frame_size&&(Match(bytes,xing,"Xing",4)||Match(bytes,xing,"Info",4))) {
+                if(xing+8>at+frame_size)return truncated("truncated Xing flags");
+                const auto flags=big(xing+4);size_t field=xing+8;
+                if(flags&~15u)return truncated("invalid Xing flags");
+                if(flags&1) {
+                    if(field+4>at+frame_size)return truncated("truncated Xing frame count");
+                    const auto count=big(field);field+=4;
+                    // Xing's frame count excludes its informational frame.
+                    if(count&&count<kFrameLimit)declared_frames=count+1;
+                    else return truncated("invalid Xing frame count");
+                }
+                if(flags&2) {
+                    if(field+4>at+frame_size)return truncated("truncated Xing byte count");
+                    declared_bytes=big(field);field+=4;
+                    if(declared_bytes<frame_size||declared_bytes>kFileLimit)return truncated("invalid Xing byte count");
+                }
+                if(flags&4)field+=100;
+                if(flags&8)field+=4;
+                if(field>at+frame_size)return truncated("truncated Xing fields");
+            } else if(at+40<=at+frame_size&&Match(bytes,at+36,"VBRI",4)) {
+                if(at+54>at+frame_size)return truncated("truncated VBRI declaration");
+                if(bytes[at+40]!=0||bytes[at+41]!=1)return truncated("unsupported VBRI version");
+                declared_bytes=big(at+46);declared_frames=big(at+50);
+                if(!declared_frames||declared_frames>kFrameLimit||declared_bytes<frame_size||declared_bytes>kFileLimit)
+                    return truncated("invalid VBRI declaration");
+            }
+        }
         if(!frames){expected_rate=rate;expected_channels=channels;}
         else if(rate!=expected_rate||channels!=expected_channels){Fail(error,"MP3 format changed midstream");return Mp3Scan::Invalid;}
         const unsigned per_frame=version==3?1152:576;
@@ -138,9 +182,14 @@ Mp3Scan ScanMp3(const Bytes& bytes,Mp3Info& out,std::string& error,bool accept_t
             Fail(error,"MP3 frame count exceeds limit");return Mp3Scan::Invalid;
         }
         samples+=per_frame;++frames;at+=std::size_t(frame_size);
+        if(declared_frames&&frames>declared_frames)return truncated("MP3 exceeds declared frame count");
     }
     if(!frames||double(samples)/expected_rate>86400){Fail(error,"invalid MP3 duration");return Mp3Scan::Invalid;}
-    out={expected_rate,expected_channels,frames,samples,audio,end-audio,true};error.clear();
+    if((declared_frames&&frames<declared_frames)||(declared_bytes&&end-audio<declared_bytes))
+        return truncated("MP3 ends before declared source length");
+    if(declared_bytes&&end-audio>declared_bytes)return truncated("MP3 exceeds declared byte count");
+    out={expected_rate,expected_channels,frames,samples,audio,end-audio,true};
+    out.declared_frames=declared_frames;out.declared_bytes=declared_bytes;error.clear();
     return Mp3Scan::Complete;
 }
 }

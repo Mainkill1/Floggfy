@@ -11,6 +11,12 @@ struct Mp3Info {
     std::uint64_t samples=0;
     std::size_t audio_offset=0,audio_size=0;
     bool complete=false;
+    unsigned declared_frames=0;
+    std::size_t declared_bytes=0;
+    bool DeclaredComplete() const noexcept {
+        return complete&&(declared_frames||declared_bytes)&&(!declared_frames||frames==declared_frames)&&
+            (!declared_bytes||audio_size==declared_bytes);
+    }
     double Duration() const noexcept {return rate?double(samples)/rate:0;}
 };
 bool InspectMp3Source(const std::uint8_t* bytes,std::size_t size,Mp3Info& out,std::string& error) noexcept;

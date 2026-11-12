@@ -7,6 +7,19 @@ void LogEvent(LogKind,const char*,const std::string&) {}
 void QueueDiagnostic(const char*) {}
 }
 int main(int argc,char** argv) {
+  assert(std::string(history::default_ini).find("SaveUnmatched=1")!=std::string::npos&&
+      "first-time setup must preserve unmatched recordings by default");
+  assert(std::string(history::default_ini).find("[Matcher]\r\n")!=std::string::npos&&
+      std::string(history::default_ini).find("TimeOffsetToleranceMs=10000")!=std::string::npos&&
+      std::string(history::default_ini).find("MaxMatchQueue=5")!=std::string::npos&&
+      std::string(history::default_ini).find("TimingToleranceSeconds")==std::string::npos&&
+      "matcher timing defaults must use milliseconds and expose retirement count");
+  for(const auto& fixture:std::array<std::pair<std::wstring,bool>,4>{{
+      {L"",true},{L"SaveUnmatched=0\r\n",false},{L"SaveUnmatched=1\r\n",true},
+      {L"SaveUnmatched=1\r\nSaveUnmatched=0\r\n",false}}}) {
+      history::Settings target;history::ReadRestartOptionsText(target,L"[To Disk]\r\n"+fixture.first);
+      assert(target.save_unmatched==fixture.second);
+  }
   assert(argc==2);
   assert(history::Settings{}.downloads&&history::Settings{}.update_existing_metadata&&!history::Settings{}.auto_skip_downloaded&&!history::Settings{}.aac&&history::Settings{}.podcasts&&!history::Settings{}.windows_playback_fallback&&history::Settings{}.capture_speed==1&&history::Settings{}.capture_speed_limit==0&&history::Settings{}.log_level==1);
   assert(history::Settings{}.never_pause==-1&&!history::Settings{}.dump_streams);

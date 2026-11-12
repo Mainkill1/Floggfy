@@ -3,6 +3,7 @@
 #include <cassert>
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 using namespace history;
 static std::vector<uint8_t> Source(uint8_t payload) {
     std::vector<uint8_t> bytes={'I','D','3',4,0,0,0,0,0,0};
@@ -10,6 +11,41 @@ static std::vector<uint8_t> Source(uint8_t payload) {
     return bytes;
 }
 int main() {
+    {
+        auto declared=Source(0);std::memcpy(declared.data()+46,"Xing",4);
+        declared[53]=3;declared[57]=2;declared[60]=4;declared[61]=0xe3; // 3 physical frames, 1251 bytes.
+        CompressedBuffer growing;Mp3Info scan;size_t boundary=0;
+        for(size_t i=0;i<declared.size();++i) {
+            assert(growing.Append(&declared[i],1,65536));assert(!FindMp3StreamStart(growing,scan,boundary));
+            if(i==426||i==843) {
+                assert(scan.frames==(i==426?1u:2u)&&!scan.complete&&!scan.DeclaredComplete()&&
+                       scan.declared_frames==3&&scan.declared_bytes==1251);
+                Mp3Info prefix;assert(InspectMp3Prefix(growing,0,prefix)&&!prefix.complete&&!prefix.DeclaredComplete());
+            }
+        }
+        assert(scan.DeclaredComplete()&&scan.frames==3&&scan.audio_size==1251);
+        auto next=Source(0);assert(growing.Append(next.data(),2,65536));
+        assert(FindMp3StreamStart(growing,scan,boundary)&&boundary==1261&&scan.DeclaredComplete()&&
+               "source boundary retains the predecessor's validated declaration");
+        Mp3Info exact;assert(InspectMp3Range(growing,0,boundary,exact)&&exact.DeclaredComplete());
+
+        std::vector<uint8_t> tagged=declared;tagged.resize(1389,0);
+        tagged[1261]='T';tagged[1262]='A';tagged[1263]='G';
+        tagged.insert(tagged.end(),next.begin(),next.end());CompressedBuffer trailer;scan={};
+        assert(trailer.Append(tagged.data(),tagged.size(),65536));
+        assert(FindMp3StreamStart(trailer,scan,boundary)&&boundary==1389&&scan.DeclaredComplete()&&
+               scan.audio_size==1251&&"ID3v1 trailer excluded from declared audio length at source boundary");
+        assert(InspectMp3Range(trailer,0,boundary,exact)&&exact.DeclaredComplete());
+
+        declared.resize(844);CompressedBuffer short_source;
+        assert(short_source.Append(declared.data(),declared.size(),65536));scan={};
+        assert(!FindMp3StreamStart(short_source,scan,boundary)&&!scan.complete&&scan.declared_frames==3);
+        assert(short_source.Append(next.data(),next.size(),65536));
+        assert(FindMp3StreamStart(short_source,scan,boundary)&&boundary==844&&
+               !scan.complete&&!scan.DeclaredComplete()&&scan.declared_frames==3&&scan.declared_bytes==1251&&
+               "following source cannot make a short declared predecessor complete");
+        assert(!InspectMp3Range(short_source,0,boundary,exact));
+    }
     auto first=Source(0),second=Source(42);
     const uint8_t fake[]={'I','D','3',4,0,0,0,0,0,0};std::copy(std::begin(fake),std::end(fake),first.begin()+80);
     CompressedBuffer bytes;Mp3Info cursor;size_t cut=0;

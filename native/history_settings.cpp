@@ -41,6 +41,8 @@ static constexpr char default_ini[]=
     "\r\n"
     "; Blank uses Windows Music\\Spotify. Custom paths must be absolute.\r\n"
     "Save Location=\r\n"
+    "; Save complete unidentified streams in Unmatched after MaxMatchQueue new starts.\r\n"
+    "SaveUnmatched=1\r\n"
     "\r\n"
     "; Allowed Download Formats (original streams, no conversion)\r\n"
     "; AAC is usally low quality and is not shown in menu - just don't use.\r\n"
@@ -87,6 +89,14 @@ static constexpr char default_ini[]=
     "\r\n"
     "; Saves raw streams and matching metadata to Save Location\\DumpStreams; restart required.\r\n"
     "DumpStreams=0\r\n"
+    "\r\n"
+    "[Matcher]\r\n"
+    "; New media starts before retiring an unmatched stream (1-100).\r\n"
+    "MaxMatchQueue=5\r\n"
+    "; Time offset tolerance in milliseconds (0-120000).\r\n"
+    "TimeOffsetToleranceMs=10000\r\n"
+    "; Duration tolerance in milliseconds (0-2000).\r\n"
+    "DurationToleranceMs=250\r\n"
     "\r\n"
     "[History]\r\n"
     "; RAM limit in MiB (8-1024).\r\n"
@@ -200,7 +210,8 @@ struct RestartFlag {
     bool Settings::* member;
     bool default_value;
 };
-static constexpr std::array<RestartFlag,5> restart_flags{{
+static constexpr std::array<RestartFlag,6> restart_flags{{
+    {L"SaveUnmatched",&Settings::save_unmatched,true},
     {L"NetworkPatch",&Settings::network_patch,false},
     {L"DumpStreams",&Settings::dump_streams,false},
     {L"DebugConnect",&Settings::debug_connect,true},
@@ -225,12 +236,53 @@ static bool ReadRestartOptions(Settings& target,const std::wstring& path) {
     }
     return ReadRestartOptionsText(target,text);
 }
+struct MatcherOption {const wchar_t* key;unsigned Settings::*member;unsigned initial,minimum,maximum;};
+static constexpr std::array<MatcherOption,3> matcher_options{{
+    {L"MaxMatchQueue",&Settings::matcher_max_queue,5,1,100},
+    {L"TimeOffsetToleranceMs",&Settings::matcher_time_offset_ms,10000,0,120000},
+    {L"DurationToleranceMs",&Settings::matcher_duration_ms,250,0,2000}
+}};
+static bool ParseMatcherUnsigned(const settings_file::IniValue& value,unsigned minimum,unsigned maximum,unsigned& parsed) {
+    parsed=0;
+    if(!value.present||value.duplicate||value.value.empty())return false;
+    for(const auto digit:value.value) {
+        if(digit<L'0'||digit>L'9'||parsed>maximum/10)return false;
+        parsed=parsed*10+unsigned(digit-L'0');
+        if(parsed>maximum)return false;
+    }
+    return parsed>=minimum;
+}
+static bool ReadMatcherOptionsText(Settings& target,std::wstring_view text) {
+    const auto legacy=settings_file::Find(text,L"TimingToleranceSeconds",L"[Matcher]");
+    unsigned legacy_seconds=0;
+    const bool valid_legacy=ParseMatcherUnsigned(legacy,0,120,legacy_seconds);
+    bool needs_persist=legacy.present;
+    for(const auto& option:matcher_options) {
+        const auto value=settings_file::Find(text,option.key,L"[Matcher]");
+        unsigned parsed=0;
+        const bool valid=ParseMatcherUnsigned(value,option.minimum,option.maximum,parsed);
+        const bool migrate=!value.present&&valid_legacy&&option.member==&Settings::matcher_time_offset_ms;
+        target.*(option.member)=valid?parsed:migrate?legacy_seconds*1000:option.initial;
+        needs_persist=needs_persist||!valid;
+    }
+    return needs_persist;
+}
+static bool ReadMatcherOptions(Settings& target,const std::wstring& path) {
+    std::wstring text;bool unicode=false;
+    if(!settings_file::Read(path,text,unicode))return false;
+    return ReadMatcherOptionsText(target,text);
+}
 static void InsertMissingRestartDefaults(std::wstring& text) {
     for(const auto& flag:restart_flags)
         if(!settings_file::Find(text,flag.key).present)
             settings_file::Set(text,flag.key,flag.default_value?L"1":L"0");
     if(!settings_file::Find(text,L"CaptureSpeedLimit").present)
         settings_file::Set(text,L"CaptureSpeedLimit",L"0");
+    Settings migrated;ReadMatcherOptionsText(migrated,text);
+    for(const auto& option:matcher_options)
+        if(!settings_file::Find(text,option.key,L"[Matcher]").present)
+            settings_file::Set(text,option.key,std::to_wstring(migrated.*(option.member)),L"[Matcher]");
+    settings_file::Erase(text,L"TimingToleranceSeconds",L"[Matcher]");
 }
 static bool ReachedGeneration(volatile LONG& progress,unsigned expected) {
     return static_cast<LONG>(unsigned(InterlockedCompareExchange(&progress,0,0))-expected)>=0;
@@ -323,7 +375,8 @@ void InitSettings(HMODULE proxy) {
     const bool never_pause_pending=ReadNeverPause(settings,ini);
     const bool log_level_pending=ReadLogLevel(settings,ini);
     const bool restart_options_pending=ReadRestartOptions(settings,ini);
-    const bool startup_options_pending=filename_options_pending||capture_speed_pending||capture_speed_limit_pending||capture_speed_disallowed||windows_playback_fallback_pending||auto_skip_pending||never_pause_pending||log_level_pending||restart_options_pending;
+    const bool matcher_options_pending=ReadMatcherOptions(settings,ini);
+    const bool startup_options_pending=filename_options_pending||capture_speed_pending||capture_speed_limit_pending||capture_speed_disallowed||windows_playback_fallback_pending||auto_skip_pending||never_pause_pending||log_level_pending||restart_options_pending||matcher_options_pending;
     settings.aac=GetPrivateProfileIntW(L"To Disk",L"AAC",0,ini.c_str())!=0;
     settings.podcasts=GetPrivateProfileIntW(L"To Disk",L"Podcasts",1,ini.c_str())!=0;
     settings.metadata=GetPrivateProfileIntW(L"To Disk",L"Metadata",1,ini.c_str())!=0;
