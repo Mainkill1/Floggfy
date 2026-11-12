@@ -47,9 +47,13 @@ bool ParseInstance(std::string_view value,Instance& out) noexcept {
 }
 
 bool ReadPlaybackInstance(const void* owner,const PlayerPath& path,
-                          ReadMemory read,Instance& out) noexcept {
+                          ReadMemory read,Instance& out,
+                          std::array<unsigned char,kPlayerFieldBytes>* field,
+                          std::size_t payload_offset) noexcept {
     out={};
-    if(!owner||!read)return false;
+    if(field)*field={};
+    if(!owner||!read||payload_offset>kPlayerFieldBytes-kInstanceBytes)return false;
+    std::array<unsigned char,kPlayerFieldBytes> bytes{};
     const auto add=[](std::uintptr_t base,std::size_t offset,std::uintptr_t& result) noexcept {
         if(!base||offset>std::numeric_limits<std::uintptr_t>::max()-base)return false;
         result=base+offset;
@@ -61,9 +65,11 @@ bool ReadPlaybackInstance(const void* owner,const PlayerPath& path,
        !add(source,path.state_offset,address)||
        !read(reinterpret_cast<const void*>(address),&state,sizeof(state))||
        !add(state,path.playback_id_offset,address)||
-       !read(reinterpret_cast<const void*>(address),out.bytes.data(),out.bytes.size())) {
+       !read(reinterpret_cast<const void*>(address),bytes.data(),field?bytes.size():payload_offset+kInstanceBytes)) {
         out={};return false;
     }
+    if(field)*field=bytes;
+    std::copy_n(bytes.begin()+payload_offset,kInstanceBytes,out.bytes.begin());
     bool any=false;
     for(std::size_t index=0;index<out.bytes.size();++index) {
         any=any||out.bytes[index]!=0;

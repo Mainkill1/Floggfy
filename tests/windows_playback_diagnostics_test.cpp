@@ -159,6 +159,67 @@ void ReplayCapturedMp3(const wchar_t* raw_path,const wchar_t* metadata_path) {
     std::cout<<"PASS: captured callback replay retained "<<expected<<" successor bytes across "
              <<playback_markers<<" native playback identities (duration="<<info.Duration()<<")\n";
 }
+void ReplayCapturedQuality(const wchar_t* raw_path,const wchar_t* metadata_path,
+                           const wchar_t* field_hex,const wchar_t* wanted_uri) {
+    std::ifstream raw_file(std::filesystem::path(raw_path),std::ios::binary);
+    const std::vector<uint8_t> raw{std::istreambuf_iterator<char>(raw_file),{}};
+    std::ifstream metadata{std::filesystem::path(metadata_path)};
+    std::string field=Utf8(field_hex);const std::string uri=Utf8(wanted_uri);
+    assert(raw.size()>32768&&metadata);
+    Media media;media.source=MediaSource::Spotify;std::string line;
+    while(std::getline(metadata,line))if(line.find("\"kind\":\"metadata\"")!=std::string::npos&&
+        JsonString(line,"uri")==uri&&line.find("\"state\":\"ready\"")!=std::string::npos&&
+        line.find("\"playing\":true")!=std::string::npos) {
+        media.spotify_uri=uri;media.playback_instance=JsonString(line,"instance");
+        media.title=L"Captured episode";media.duration=double(JsonUnsigned(line,"duration"));media.playing=true;
+    }
+    assert(!media.playback_instance.empty());
+    if(field=="auto") {
+        metadata.clear();metadata.seekg(0);field.clear();
+        while(std::getline(metadata,line))if(line.find("\"kind\":\"playback\"")!=std::string::npos&&
+            line.find("\"native_field\":")!=std::string::npos&&JsonString(line,"instance")==media.playback_instance)
+            field=JsonString(line,"native_field");
+    }
+    assert(field.size()==64);
+    queue=new Slot[capacity];event=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(event);
+    head=tail=count=0;ResetMp3Probes();ResetCaptureQueueLosses();ResetPlaybackIdentityBridge();ResetDecodedActivityQueue();
+    constexpr uintptr_t decoder=0x9870;const auto epoch=CaptureEpoch();
+    ownership::DecoderOwnershipTracker tracker;tracker.Reset(epoch);
+    CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+    decoded_sink_target=reinterpret_cast<void*>(0x1000);playback_pump_target=reinterpret_cast<void*>(0x2000);
+    original_playback_pump=[](void*,void*,void*)->int{return 17;};playback_pump_decoder_offset=0x70;
+    std::array<unsigned char,0x100> owner{};std::array<unsigned char,0x200> provider{};
+    std::array<unsigned char,0xa00> state{};
+    const auto provider_ptr=reinterpret_cast<uintptr_t>(provider.data()),state_ptr=reinterpret_cast<uintptr_t>(state.data());
+    memcpy(owner.data()+0x70,&decoder,sizeof(decoder));memcpy(owner.data()+0x78,&provider_ptr,sizeof(provider_ptr));
+    memcpy(provider.data()+0x1e8,&state_ptr,sizeof(state_ptr));
+    for(unsigned index=0;index<32;++index)state[0x9b8+index]=static_cast<unsigned char>(
+        (HexNibble(field[index*2])<<4)|HexNibble(field[index*2+1]));
+    assert(PlaybackPumpHook(owner.data(),nullptr,nullptr)==17);
+    for(size_t offset=0;offset<32768;offset+=16384) {
+        QueueMp3Encoded(decoder,raw.data()+offset,16384,100+.01*offset/16384,epoch);
+        Slot slot{};while(Pop(slot))ProcessMp3Capture(slot,buffers);
+    }
+    ownership::DecodedActivity activity{};activity.owner=decoder;activity.epoch=epoch;
+    activity.calls=1;activity.produced_floats=80;activity.first=100.01;activity.last=100.02;tracker.ObserveDecoded(activity);
+    Listen listen;Media current;std::vector<Heard> heard;
+    AssociateListen(media,listen,current,heard,buffers,100.1);
+    std::array<playback_identity::Match,playback_identity::kObservationCapacity> matches{};
+    const auto match_count=SetExpectedPlaybackIdentity(current,listen.generation,matches);
+    assert(match_count&&"full native playback field must match metadata without treating its pointer prefix as ID bytes");
+    assert(BindDirectReadyCapture(buffers,current,listen.generation,100.1,matches,match_count));
+    assert(PlaybackPumpHook(owner.data(),nullptr,nullptr)==17);
+    assert(playback_id_payload_offset.load()>=0&&"captured prefix must be resolved from metadata rather than hardcoded");
+    PlaybackQualityTracker quality;quality.Media(current.PlaybackKey(),current.title,0,current.duration,100.1);
+    const auto snapshot=BoundPlaybackQuality(buffers,current,listen.generation,quality.Snapshot());
+    assert(snapshot.decoder_bound&&snapshot.format==PlaybackFormat::Mp3&&snapshot.rate==44100&&snapshot.channels==2);
+    PublishPlaybackQuality(snapshot);PlaybackQualitySnapshot client;client.identity=PlaybackIdentity(current.PlaybackKey());
+    client.title=snapshot.title;PublishClientPlaybackQuality(client);
+    const auto labels=PlaybackQualityLabels(ReadPlaybackQuality());
+    assert(labels[2]==L"Format: MP3"&&labels[3]==L"Sample rate: 44,100 Hz");
+    CloseHandle(event);event=nullptr;delete[] queue;queue=nullptr;
+    std::puts("PASS: real dump bytes + captured native field + recorded metadata resolve ownership and publish MP3/44,100 Hz menu details");
+}
 void PodcastCaptureEvents() {
     const auto source=PodcastMp3();const double duration=3456.0/44100.0;
     decoded_sink_target=reinterpret_cast<void*>(0x1000);
@@ -2449,6 +2510,10 @@ void EnrichTags(const Media&,Tags&){}
 int wmain(int argc,wchar_t** argv) {
     // Use in-memory preferences only. Never read or write the user's INI/music.
     InterlockedExchange(&history::log_level_value,4);
+    if(argc==6&&!wcscmp(argv[1],L"--dump-quality-replay")) {ReplayCapturedQuality(argv[2],argv[3],argv[4],argv[5]);return 0;}
+    // Existing boundary fixtures model a previously confirmed inline-ID layout.
+    // The real dump replay above exercises cold layout discovery instead.
+    playback_id_payload_offset=0;
     if(argc==2&&!wcscmp(argv[1],L"--queue-epoch")) {ProductionCaptureQueueLossEpochs();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--stream-dump")) {DumpStreamHooks();return 0;}
     if(argc==4&&!wcscmp(argv[1],L"--dump-replay")) {ReplayCapturedMp3(argv[2],argv[3]);return 0;}

@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
-# Replays one DumpStreams decoder file through the production MP3 boundary path.
+# Replays local DumpStreams bytes through MP3 boundaries or ownership/quality.
 # The raw capture remains local and is never copied into the repository.
 set -euo pipefail
 cd -- "$(dirname -- "$0")"
-if [[ $# != 2 || ! -f $1 || ! -f $2 ]]; then
-    echo 'Usage: bash test-dump-replay.sh STREAM.bin STREAM.jsonl' >&2
+replay_mode=--dump-replay
+replay_args=2
+if [[ ${1:-} == --quality && $# == 5 ]]; then
+    replay_mode=--dump-quality-replay
+    replay_args=4
+    shift
+fi
+if [[ $# != "$replay_args" ]] || [[ ! -f $1 || ! -f $2 ]]; then
+    echo 'Usage: bash test-dump-replay.sh [--quality] STREAM.bin STREAM.jsonl [NATIVE_FIELD_HEX_OR_auto SPOTIFY_URI]' >&2
     exit 2
 fi
 
@@ -37,4 +44,8 @@ x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include \
     "$floggfy_replay_build"/*.o -lole32 -luuid -lshell32 -lruntimeobject \
     -o "$floggfy_replay_root/test.exe"
 
-"$floggfy_replay_root/test.exe" --dump-replay "$(wslpath -w "$1")" "$(wslpath -w "$2")"
+if [[ $replay_mode == --dump-quality-replay ]]; then
+    "$floggfy_replay_root/test.exe" "$replay_mode" "$(wslpath -w "$1")" "$(wslpath -w "$2")" "$3" "$4"
+else
+    "$floggfy_replay_root/test.exe" "$replay_mode" "$(wslpath -w "$1")" "$(wslpath -w "$2")"
+fi

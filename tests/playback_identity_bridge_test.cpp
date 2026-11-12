@@ -64,6 +64,25 @@ int main() {
     std::memset(state.data()+0x9b8,0,first.bytes.size());
     assert(!ReadPlaybackInstance(owner.data(),current_client_path,CopyMemory,through_player));
 
+    // Captured field layout: an eight-byte native prefix before the 16-byte ID.
+    // Confirm both this layout and the older inline payload against metadata.
+    for(const size_t payload_offset:{size_t{0},size_t{8}}) {
+        std::fill(state.begin()+0x9b8,state.begin()+0x9b8+kPlayerFieldBytes,0);
+        if(payload_offset) {
+            const unsigned char prefix[]={0x50,0x58,0xad,0x18,0x07,0x02,0,0};
+            std::copy(std::begin(prefix),std::end(prefix),state.begin()+0x9b8);
+        }
+        std::memcpy(state.data()+0x9b8+payload_offset,first.bytes.data(),first.bytes.size());
+        std::array<unsigned char,kPlayerFieldBytes> field{};
+        assert(ReadPlaybackInstance(owner.data(),current_client_path,CopyMemory,through_player,&field));
+        DiagnosticBridge layout;assert(layout.SetExpected(kFirst,1));
+        assert(layout.Observe(0x1000,0x2000,0,1,field.data(),field.size(),SnapshotRole::PlayerPlaybackId));
+        const auto match=layout.TakeMatch();assert(match&&match->offset==payload_offset);
+        assert(ReadPlaybackInstance(owner.data(),current_client_path,CopyMemory,through_player,&field,match->offset));
+        assert(through_player.bytes==first.bytes);
+        assert(!ReadPlaybackInstance(owner.data(),current_client_path,CopyMemory,through_player,&field,kPlayerFieldBytes));
+    }
+
     DiagnosticBridge bridge;
     assert(bridge.SetExpected(kFirst, 7));
     assert(bridge.NeedsObservation(0x1000, 0x2000, 3));

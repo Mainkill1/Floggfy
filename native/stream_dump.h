@@ -58,9 +58,9 @@ inline std::string InstanceKey(std::string value) {
     for(auto& c:value)if(c>='A'&&c<='F')c=char(c-'A'+'a');
     return value;
 }
-inline std::string Hex(const unsigned char* bytes) {
+inline std::string Hex(const unsigned char* bytes,size_t length=16) {
     constexpr char digits[]="0123456789abcdef";std::string out;
-    for(unsigned i=0;i<16;++i){out+=digits[bytes[i]>>4];out+=digits[bytes[i]&15];}return out;
+    for(size_t i=0;i<length;++i){out+=digits[bytes[i]>>4];out+=digits[bytes[i]&15];}return out;
 }
 inline bool Enabled() noexcept {return enabled.load(std::memory_order_acquire);}
 inline void Omitted(State& s,size_t count,size_t bytes,Kind kind=Kind::Metadata,uintptr_t context=0,unsigned epoch=0,double mono=0) noexcept {
@@ -100,7 +100,8 @@ inline void Input(uintptr_t context,unsigned epoch,const unsigned char* bytes,si
     }
     SetEvent(s->signal);ReleaseSRWLockExclusive(&lock);
 }
-inline void Playback(uintptr_t context,unsigned epoch,const std::array<unsigned char,16>& value,double time) noexcept {
+inline void Playback(uintptr_t context,unsigned epoch,const std::array<unsigned char,16>& value,double time,
+                     const std::array<unsigned char,32>* field=nullptr) noexcept {
     if(!Enabled())return;
     AcquireSRWLockExclusive(&lock);auto* s=state;
     if(!s||s->stopping||!Enabled()){ReleaseSRWLockExclusive(&lock);return;}
@@ -111,6 +112,7 @@ inline void Playback(uintptr_t context,unsigned epoch,const std::array<unsigned 
     if(!identity)identity=&s->identities[s->identity_next++%s->identities.size()];
     *identity={context,epoch,true,value};auto& r=Next(*s,Kind::Playback,context,epoch,time,time);
     memcpy(r.bytes.data(),value.data(),value.size());r.length=value.size();
+    if(field){memcpy(r.bytes.data()+r.length,field->data(),field->size());r.length+=field->size();}
     SetEvent(s->signal);ReleaseSRWLockExclusive(&lock);
 }
 inline void Metadata(const std::string& instance,const std::string& uri,const std::string& title,
@@ -204,7 +206,8 @@ inline DWORD WINAPI Writer(void* parameter) {
                         line+=",\"bytes\":"+std::to_string(record.length)+",\"group\":"+std::to_string(record.group)+",\"part\":"+std::to_string(record.part)+",\"parts\":"+std::to_string(record.parts)+",\"decoder_valid\":"+(record.decoder_valid?"true":"false");
                         if(!Write(stream.input,record.bytes.data(),record.length))throw 1;
                         stream.offset+=record.length;stream.logical+=record.length;
-                    } else {const auto observed=Hex(record.bytes.data());const bool confirmed=record.sequence>stream.identity_unknown_through;stream.instance=confirmed?observed:std::string{};line+=",\"instance\":"+Json(observed)+",\"identity_confirmed\":"+(confirmed?"true":"false");}
+                    } else {const auto observed=Hex(record.bytes.data());const bool confirmed=record.sequence>stream.identity_unknown_through;stream.instance=confirmed?observed:std::string{};line+=",\"instance\":"+Json(observed)+",\"identity_confirmed\":"+(confirmed?"true":"false");
+                        if(record.length==48)line+=",\"native_field\":"+Json(Hex(record.bytes.data()+16,32));}
                     if(!Line(session,line)||!Line(stream.log,line))throw 1;
                     if(record.kind==Kind::Playback&&!stream.instance.empty()) {
                         const auto cached=metadata.find(stream.instance);

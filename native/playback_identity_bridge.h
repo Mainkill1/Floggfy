@@ -10,6 +10,7 @@ namespace playback_identity {
 
 constexpr std::size_t kInstanceBytes = 16;
 constexpr std::size_t kInstanceHexCharacters = 32;
+constexpr std::size_t kPlayerFieldBytes = 32;
 constexpr std::size_t kMaximumSnapshotBytes = 0x600;
 constexpr std::size_t kObservationCapacity = 128;
 
@@ -32,7 +33,9 @@ struct PlayerPath {
 using ReadMemory=bool(*)(const void* source,void* destination,std::size_t size) noexcept;
 
 bool ReadPlaybackInstance(const void* owner,const PlayerPath& path,
-                          ReadMemory read,Instance& out) noexcept;
+                          ReadMemory read,Instance& out,
+                          std::array<unsigned char,kPlayerFieldBytes>* field=nullptr,
+                          std::size_t payload_offset=0) noexcept;
 
 struct Match {
     std::uintptr_t owner=0;

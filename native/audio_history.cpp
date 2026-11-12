@@ -83,6 +83,9 @@ playback_identity::DiagnosticBridge playback_identity_bridge;
 SRWLOCK playback_identity_lock=SRWLOCK_INIT;
 std::atomic<std::uint64_t> playback_identity_sequence{0};
 std::uint64_t playback_identity_metadata_generation=0;
+// Learn the payload position by an exact full-ID match against app metadata.
+// A field prefix is not a playback ID, and must never become a dump association.
+std::atomic<int> playback_id_payload_offset{-1};
 decoded_output::Accelerator decoded_accelerator;
 std::atomic<bool> decoded_fallback_requested{false};
 enum class DecodedFallbackReason : unsigned {
@@ -728,18 +731,23 @@ static int PlaybackPumpHook(void* owner,void* second,void* third) {
             return ReadProcessMemory(GetCurrentProcess(),source,destination,size,&copied)&&copied==size;
         };
         playback_identity::Instance instance{};
-        if(decoder&&playback_identity::ReadPlaybackInstance(owner,path,read,instance)) {
+        std::array<unsigned char,playback_identity::kPlayerFieldBytes> field{};
+        const auto payload_offset=playback_id_payload_offset.load(std::memory_order_acquire);
+        if(decoder&&playback_identity::ReadPlaybackInstance(owner,path,read,instance,&field,
+                payload_offset<0?0:size_t(payload_offset))) {
             const auto epoch=CaptureEpoch();
-            stream_dump::Playback(decoder,epoch,instance.bytes,Now());
-            if(DownloadsEnabled())QueueMp3Playback(decoder,epoch,instance.bytes,Now());
+            if(payload_offset>=0) {
+                stream_dump::Playback(decoder,epoch,instance.bytes,Now(),&field);
+                if(DownloadsEnabled())QueueMp3Playback(decoder,epoch,instance.bytes,Now());
+            }
             if(!TryAcquireSRWLockExclusive(&playback_identity_lock))return call_original();
             if(playback_identity_bridge.NeedsObservation(
                    reinterpret_cast<uintptr_t>(owner),decoder,epoch,
                    playback_identity::SnapshotRole::PlayerPlaybackId,
-                   instance.bytes.data(),instance.bytes.size())) {
+                   field.data(),field.size())) {
                 const auto sequence=playback_identity_sequence.fetch_add(1,std::memory_order_relaxed)+1;
                 playback_identity_bridge.Observe(reinterpret_cast<uintptr_t>(owner),decoder,epoch,
-                    sequence,instance.bytes.data(),instance.bytes.size(),
+                    sequence,field.data(),field.size(),
                     playback_identity::SnapshotRole::PlayerPlaybackId);
                 if(event)SetEvent(event);
             }
@@ -781,6 +789,16 @@ static size_t SetExpectedPlaybackIdentity(
     const bool accepted=!changed||playback_identity_bridge.SetExpected(media.playback_instance,generation);
     const auto count=accepted?playback_identity_bridge.QueryMatches(
         media.playback_instance,generation,CaptureEpoch(),matches.data(),matches.size()):0;
+    int offset=-1;bool conflicting_offsets=false;
+    for(size_t index=0;index<count;++index) {
+        const auto& match=matches[index];
+        if(match.role!=playback_identity::SnapshotRole::PlayerPlaybackId||
+           match.representation!=playback_identity::Representation::RawBytes||
+           match.offset>playback_identity::kPlayerFieldBytes-playback_identity::kInstanceBytes)continue;
+        if(offset>=0&&size_t(offset)!=match.offset)conflicting_offsets=true;
+        offset=int(match.offset);
+    }
+    if(offset>=0)playback_id_payload_offset.store(conflicting_offsets?-1:offset,std::memory_order_release);
     while(playback_identity_bridge.TakeMatch()) {} // Diagnostics are derived from the retained query below.
     ReleaseSRWLockExclusive(&playback_identity_lock);
     if(!accepted)return 0;

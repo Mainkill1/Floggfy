@@ -18,7 +18,8 @@ int wmain(int argc,wchar_t** argv) {
     const auto folder=std::filesystem::path(SessionFolder());
     std::array<unsigned char,16> first{},second{},third{};first.back()=1;second.back()=2;third.back()=0xab;
     const unsigned char a[]={0,1,2},b[]={3,4,5},c[]={9,8};
-    Playback(0x1000,7,first,1);Playback(0x1000,7,first,1.1);
+    std::array<unsigned char,32> native_field{};native_field[0]=0x50;native_field[23]=1;
+    Playback(0x1000,7,first,1,&native_field);Playback(0x1000,7,first,1.1,&native_field);
     Metadata("00000000000000000000000000000001","spotify:episode:0000000000000000000001","First poem","Poet","Book",30,0,true,1.1);
     Input(0x1000,7,a,sizeof(a),1.2,1.3);
     Playback(0x1000,7,second,2);
@@ -42,6 +43,7 @@ int wmain(int argc,wchar_t** argv) {
     }
     assert(paired&&third_paired);
     const auto session=Read(folder/L"session.jsonl");assert(session.find("session_end")!=std::string::npos&&session.find("gap")==std::string::npos);
+    assert(session.find("\"native_field\":\"5000000000000000000000000000000000000000000000010000000000000000\"")!=std::string::npos);
     assert(Start(root.wstring()));const auto overflow_folder=std::filesystem::path(SessionFolder());
     Input(1,0,reinterpret_cast<const unsigned char*>(1),5*1024*1024,0,1);
     Input(1,0,a,sizeof(a),1,2);

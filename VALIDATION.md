@@ -1826,3 +1826,58 @@ Final test DLL SHA-256:
 Live v2.2 menu confirmation and a fresh complete recording remain test gates.
 The reported Vol. 27 issue does not establish a true Ogg display failure on this
 build; a live actual-Ogg replay remains separate validation.
+
+## 2026-11-12 native playback field / dump replay regression
+
+The user's next Vol. 27 replay still showed only its title. Read-only inspection
+of the exact installed binary's worker/client snapshots confirmed equal URI
+identities but no bound technical fields. The native field at the existing player
+path contained an eight-byte prefix, then the complete 16-byte app playback ID.
+The hook had treated the prefix plus the first half of that ID as a complete ID.
+Those values could neither bind directly nor join DumpStreams metadata.
+
+Earlier parser checks and pre-bound quality fixtures did not test this native
+field-to-metadata edge. Added `test-dump-replay.sh --quality`: it reads the actual
+local raw source, recorded `session.jsonl`, and a captured 32-byte native field,
+then exercises the production pump reader, bridge matching, MP3 queue/parser,
+ownership binding, quality publication and menu label generation. It first
+failed at the native ID match, then passed with MP3 / 44,100 Hz labels. It uses
+the first 32 KiB to prove early display readiness, not complete recording validity.
+The raw source remains outside the repository. Old per-stream logs contain only
+the initial unresolved prior metadata because this bug prevented their join;
+the replay therefore uses the session log for the independent app identity.
+
+The hook now observes the bounded 32-byte field and learns a unique payload
+position by matching the full app ID. It does not publish a native ID until that
+layout has been corroborated. Tests preserve both inline and prefixed layouts;
+unknown/ambiguous matches do not establish a layout. New opt-in DumpStreams
+playback records include `native_field`, allowing replay with `auto` instead of a
+separate live memory read. This stays out of normal logging.
+
+Full native tests, real-dump quality replay, Windows playback diagnostics and
+stream-dump JSON/byte/association tests passed. No new hour-long playback was
+required to reproduce and verify this path. Live host validation remains distinct.
+
+Installed the replay-verified build, SHA-256
+`43a8d523d5517c65fb6e20aae94a0b8e364280b62bf3b74328ed10565282f39d`,
+and restarted Spotify as PID 47632. The INI was restored byte-for-byte to its
+original hash; native diagnostic logging is temporarily enabled for this process
+so a fresh native-ID match and decoder binding can be verified during replay.
+Example for new dumps (no source audio is copied into the repository):
+
+```sh
+bash test-dump-replay.sh --quality STREAM.bin SESSION.jsonl auto SPOTIFY_URI
+```
+
+For an older dump without `native_field`, replace `auto` with a separately captured
+32-byte native field encoded as 64 hex digits. A stream's native ID must match
+the independent recorded app metadata; the replay does not reconstruct the missing
+ID bytes from the app value to force a match.
+
+The user subsequently confirmed live playback/details work as expected. The
+native trace independently reported a full `player-id` match at offset `0x8` and
+an exact capture/playback/listen binding. New playback records contain full IDs
+and `native_field`; per-stream metadata now joins with `association=native-instance`.
+Replaying the new session with `auto` also passed and produced MP3 / 44,100 Hz
+labels without any separately supplied native-memory value. This verifies the
+display path; it does not claim a fresh complete long-podcast publication.
