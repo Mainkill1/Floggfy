@@ -50,7 +50,8 @@ Save the music you play in Spotify on Windows.
 - `TrackNumberInFilename=0` uses title-only filenames. Set `1` to add track numbers.
 - `ConvertNumberedFilenames=0`: set `1` to remove old track-number prefixes. Numbering disables conversion.
 - `AAC=1` enables AAC saving as M4A. It defaults to `0`.
-- **Podcasts** is enabled by default. Complete episodes retain their native MP3 audio under `Podcasts\Show`.
+- **Podcasts** is enabled by default. Complete episodes retain their native MP3,
+  Ogg, FLAC, or enabled AAC audio under `Podcasts\Show`.
 - `Menu=0` disables the menu; configured saving continues.
 - Playback tracking uses Spotify app state and track URIs. `Windows Playback Fallback=1` enables the Windows media-session compatibility fallback; it defaults to `0`.
 - `Metadata=0` disables enrichment while retaining app playback tracking.

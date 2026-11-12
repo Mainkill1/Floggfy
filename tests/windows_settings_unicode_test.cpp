@@ -31,7 +31,7 @@ int main(int argc,char** argv) {
   history::InitSettings(nullptr);const auto s=history::GetSettings();
   assert(s.root==destination && s.save_location==destination);
   assert(s.aac&&!history::AACEnabled()); // Explicit opt-in survives reload; Downloads=0 still gates capture.
-  assert(s.podcasts&&!history::PodcastsEnabled());
+  assert(s.podcasts&&!history::DownloadsEnabled());
   assert(s.windows_playback_fallback);
   assert(!s.downloads&&!s.ogg&&!s.flac&&!s.lyrics&&!s.menu&&!s.metadata&&!s.update_existing_metadata);
   wchar_t value[100];GetPrivateProfileStringW(L"Unknown",L"Keep",L"",value,100,file.c_str());assert(std::wstring(value)==L"original");return 0;

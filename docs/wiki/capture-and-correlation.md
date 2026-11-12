@@ -14,7 +14,7 @@ activated. See [`spotify_hook_discovery.cpp`](../../native/spotify_hook_discover
 | FLAC | Decoder initialize, compressed read, frame callback, and error callback | Original compressed FLAC bytes plus frame/sample coverage used to prove completeness |
 | AAC | Optional SPAC reader initialize, compressed packet input, and destroy | Original SPAC/AAC packets, later remuxed into M4A without transcoding |
 | Decoded output | Optional shared decoder dispatcher | Counts, span movement, decoder identity, and producer order; never saved PCM |
-| Podcast MP3 | Encoded input exposed by the decoded dispatcher | Original MPEG audio bytes for enabled podcast episodes |
+| MP3 | Encoded input exposed by the decoded dispatcher | Original MPEG audio bytes while downloads are enabled; media kind is assigned later |
 
 The callbacks do minimal work: call Spotify as required, validate bounds, copy a
 bounded observation, assign a shared producer sequence, and wake the worker. Codec
@@ -32,7 +32,7 @@ The hook implementations are grouped in
   and complete declared sample coverage are both required.
 - **AAC** is optional. SPAC input is parsed as bounded packets and completeness is
   checked before an M4A container is built.
-- **MP3** is reserved for podcast capture. MPEG frames and owned tags are inspected;
+- **MP3** is captured without assuming a media kind. MPEG frames and owned tags are inspected;
   the published sample count becomes later evidence that a file was not truncated.
 
 Each compressed and decoded observation shares one monotonic producer sequence.
@@ -49,7 +49,7 @@ from whichever stream finishes first.
    decoder owner.
 2. **Decoded output observed.** Output from that owner proves that the decoder was
    active for the capture lifetime.
-3. **Playback stage corroborated.** A Ready listen generation, media kind, and
+3. **Playback stage corroborated.** A Ready listen generation, ownership, and
    codec-declared duration select exactly one decoded capture. With the explicit
    Windows fallback enabled, the URI may come from the app transition while
    playback state and duration come from Windows.
@@ -63,9 +63,8 @@ from whichever stream finishes first.
 Spotify may preload one successor decoder before the outgoing decoder completes.
 The tracker therefore keeps a current capture and one pending successor. A
 transition registers the possible successor but does not bind it. The following
-Ready stage must corroborate media kind and duration before `audio_history.cpp`
-explicitly selects the capture. Multiple candidates, queue loss, or incompatible
-media kind prevent a guess. See
+Ready stage must corroborate ownership and duration before `audio_history.cpp`
+explicitly selects the capture. Multiple candidates or queue loss prevent a guess. See
 [`decoder_ownership.cpp`](../../native/decoder_ownership.cpp).
 
 ## Listen coverage

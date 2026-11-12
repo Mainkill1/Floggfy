@@ -73,7 +73,7 @@ components and selects the media-kind layout. Common results are:
 Music\Artists\<album artist>\<album>\<title>.<format>
 Music\Compilations\<album>\<title>.<format>
 Music\Soundtracks\<album>\<title>.<format>
-Podcasts\<show>\[<year>\]<episode>.mp3
+Podcasts\<show>\[<year>\]<episode>.<source format>
 ```
 
 Reserved Windows names, invalid characters, trailing dots/spaces, and excessive

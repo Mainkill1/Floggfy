@@ -2,7 +2,7 @@
 
 The native `version.dll` provides complete-listen history and an optional legacy
 connectivity repair for the Windows x64 Spotify client. It copies the compressed
-Vorbis, FLAC, optionally AAC, or explicitly enabled podcast MP3 bytes that Spotify already reads for playback. It
+Vorbis, FLAC, MP3, or optionally AAC bytes that Spotify already reads for playback. It
 does not request tracks, run FFmpeg, transcode audio, or require an external
 runtime helper.
 
@@ -88,8 +88,8 @@ MaxBufferedMiB=512
 - **AAC:** INI-only, default `0`. Set `AAC=1` and restart to capture supported
   low-quality SpAC/AAC streams as M4A. Downloads still controls all saving.
 - **Podcasts:** menu/INI toggle, default `1`. When enabled, fully listened
-  `spotify:episode:` items save their original MP3 frames under
-  `Podcasts\<Show>\<Episode>.mp3`. No PCM recording or transcoding is used.
+  `spotify:episode:` items retain their original MP3, Ogg, FLAC, or enabled AAC
+  stream under `Podcasts\<Show>`. No PCM recording or transcoding is used.
 - **Metadata:** enriches tracks using existing client state, cached metadata, and Spotify's authenticated track/album services. Set 0 and restart to disable its hooks.
 - **UpdateExistingMetadata:** default on. Set 0 to disable metadata-only changes
   to existing files, including lyrics and artwork upgrades. New audio saves and
@@ -183,7 +183,7 @@ Default music paths are:
 ```text
 <Windows Music>\Spotify\Artists\Artist\Album\Title.ogg
 <Windows Music>\Spotify\Artists\Artist\Album\Title.flac
-<Windows Music>\Spotify\Podcasts\Show\Episode.mp3
+<Windows Music>\Spotify\Podcasts\Show\Episode.{mp3,ogg,flac,m4a}
 ```
 
 Album folders have no year prefix. New filenames use the title alone by default.

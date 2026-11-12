@@ -18,7 +18,7 @@ int main(int argc,char** argv) {
       assert(target.dump_streams==fixture.second);
   }
   assert(!history::AACEnabled());
-  assert(history::PodcastsEnabled());
+  assert(history::DownloadsEnabled());
   const std::string scenario=argv[1];
   wchar_t module[2048];assert(GetModuleFileNameW(nullptr,module,2048));
   std::wstring path=module;path=path.substr(0,path.find_last_of(L'\\'))+L"\\SpotifyHistory.ini";
@@ -129,12 +129,14 @@ int main(int argc,char** argv) {
   assert(s.aac==(scenario=="aac-one"));
   assert(s.podcasts==(scenario!="podcasts-zero"));
   assert(history::AACEnabled()==(s.downloads&&s.aac));
-  assert(history::PodcastsEnabled()==(s.downloads&&s.podcasts));
   if(s.podcasts) {
     const auto podcast_epoch=history::CaptureEpoch();
-    assert(history::SetPodcasts(false)&&!history::PodcastsEnabled());
-    assert(history::CaptureEpoch()==podcast_epoch+1);
-    assert(history::SetPodcasts(true)&&history::PodcastsEnabled()==s.downloads);
+    assert(history::SetPodcasts(false)&&!history::GetSettings().podcasts);
+    // Podcast is a late publication policy. Changing it must not discard an
+    // otherwise valid in-flight codec capture before metadata classifies it.
+    assert(history::CaptureEpoch()==podcast_epoch);
+    assert(history::SetPodcasts(true)&&history::GetSettings().podcasts);
+    assert(history::CaptureEpoch()==podcast_epoch);
   }
   if(s.aac) {
     assert(history::SetDownloads(false)&&!history::AACEnabled());

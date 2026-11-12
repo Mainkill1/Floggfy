@@ -670,7 +670,7 @@ static void* DecodedSinkHook(void* context,void* result,decoded_output::Span* de
     const bool dumping=stream_dump::Enabled();const auto dump_epoch=dumping?CaptureEpoch():0;
     const auto dump_started=dumping?Now():0;
     const auto mp3_epoch=CaptureEpoch();
-    const auto mp3_generation=PodcastsEnabled()?Mp3Generation(reinterpret_cast<uintptr_t>(context),mp3_epoch,true):0;
+    const auto mp3_generation=DownloadsEnabled()?Mp3Generation(reinterpret_cast<uintptr_t>(context),mp3_epoch,true):0;
     auto* native_result=original_decoded_process(context,result,decoded,encoded,mode);
     const auto native_error=GetLastError();
     const bool was_enabled=decoded_accelerator.Enabled();
@@ -704,7 +704,7 @@ static void* DecodedSinkHook(void* context,void* result,decoded_output::Span* de
                 DecodedFallbackReason::OddSamples;
         }
         const auto time=Now();const auto epoch=CaptureEpoch();
-        if(PodcastsEnabled()&&consumed&&epoch==mp3_epoch)
+        if(DownloadsEnabled()&&consumed&&epoch==mp3_epoch)
             QueueMp3Encoded(reinterpret_cast<uintptr_t>(context),static_cast<const unsigned char*>(encoded_before.data),consumed,time,epoch,mp3_generation);
         if(epoch==mp3_epoch)QueueDecodedActivity(reinterpret_cast<uintptr_t>(context),produced,consumed,kept,time,epoch,mp3_generation);
     }
@@ -731,7 +731,7 @@ static int PlaybackPumpHook(void* owner,void* second,void* third) {
         if(decoder&&playback_identity::ReadPlaybackInstance(owner,path,read,instance)) {
             const auto epoch=CaptureEpoch();
             stream_dump::Playback(decoder,epoch,instance.bytes,Now());
-            if(PodcastsEnabled())QueueMp3Playback(decoder,epoch,instance.bytes,Now());
+            if(DownloadsEnabled())QueueMp3Playback(decoder,epoch,instance.bytes,Now());
             if(!TryAcquireSRWLockExclusive(&playback_identity_lock))return call_original();
             if(playback_identity_bridge.NeedsObservation(
                    reinterpret_cast<uintptr_t>(owner),decoder,epoch,
@@ -2946,7 +2946,7 @@ static DWORD WINAPI Worker(LPVOID) {
                 generation=preferences.generation;
                 reader.SetWindowsFallback(preferences.windows_playback_fallback);
                 output=preferences.root; memory_limit=size_t(preferences.max_buffered_mib)*1024*1024;
-                bool capture=preferences.downloads && (preferences.ogg || preferences.flac || preferences.aac || preferences.podcasts);
+                const bool capture=preferences.downloads;
                 if(capture!=enabled || initial || preferences.capture_epoch!=epoch) {
                     for(auto& c:buffers.active)buffers.RecordLostActive(c.second.get(),ownership::CaptureAbortReason::SettingsChange,
                         ReleaseExpectation::DiscardedEvidence,true);

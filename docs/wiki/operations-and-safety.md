@@ -24,7 +24,7 @@ Capabilities are activated independently where possible:
 1. Required Ogg/FLAC discovery and hooks provide ordinary capture.
 2. AAC discovery/hooks add optional AAC capture.
 3. Decoded-output discovery and successful hook activation add ownership evidence,
-   podcast MP3 input, and acceleration.
+   MP3 input, and acceleration.
 4. Client metadata injection provides the preferred timeline and enrichment.
 5. Windows media sessions provide fallback playback observations only when the
    default-off `Windows Playback Fallback=1` INI option explicitly enables them.
@@ -48,7 +48,7 @@ Important controls include:
 | Downloads | Master capture/publication switch |
 | Save Location | Root of the managed library |
 | FLAC / Ogg / AAC | Enable publication of each music format; AAC is INI-only by default |
-| Podcasts | Enable native MP3 episode capture and the Podcasts layout |
+| Podcasts | Allow associated episodes to publish in their native format under the Podcasts layout |
 | Lyrics / Metadata | Control enrichment and later metadata filling |
 | Capture Speed | Select 1x or any supported accelerated mode when the native capability is available |
 | CaptureSpeedLimit | INI-only, restart-only visibility switch; defaults to 0, missing/0 hides the menu and disables acceleration, any valid nonzero value enables it |

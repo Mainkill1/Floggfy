@@ -19,15 +19,17 @@ Ogg Vorbis, AAC, or FLAC.
 - Route every episode to `Podcasts\<show>\...` through the existing podcast
   catalog layout.
 - Require `Podcasts=1` for every episode. Also require the matching source-format
-  switch for Ogg, FLAC, and AAC; MP3 remains controlled by `Podcasts` because no
-  separate MP3 switch exists.
+  switch for Ogg, FLAC, and AAC. MP3 capture follows the master `Downloads`
+  switch because media kind is not known in the decoder hook; episode publication
+  still requires `Podcasts=1`.
 - Preserve current music behavior and the same capture-integrity, complete-listen,
   ownership, metadata, and publication checks.
 
 ## Pipeline
 
 1. Decoder hooks capture enabled source formats and validate their native
-   containers without consulting track/episode metadata.
+   containers without consulting track/episode metadata. MP3 input is captured
+   whenever downloads are enabled, then classified later like every other codec.
 2. Playback observation records a generic completed listen.
 3. Reconciliation associates capture and listen from exact decoder/playback
    ownership where available, with the existing fail-closed timing and duration

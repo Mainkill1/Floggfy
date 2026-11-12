@@ -33,7 +33,7 @@ bool SetSaveLocation(const std::wstring& root);
 bool OggEnabled();
 bool FlacEnabled();
 bool AACEnabled();
-bool PodcastsEnabled();
+bool DownloadsEnabled();
 unsigned CaptureEpoch();
 unsigned CaptureSpeed();
 unsigned CaptureSpeedLimit();
