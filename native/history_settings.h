@@ -9,6 +9,7 @@ struct Settings {
     bool metadata=true,lyrics=true,update_existing_metadata=true,auto_skip_downloaded=false;
     int never_pause=-1; // -1 hides/disables the menu item; 0=off, 1=on.
     bool track_number_in_filename=false,convert_numbered_filenames=false;
+    bool dump_streams=false; // Continuous raw input and metadata files; restart-only.
     bool debug_hook_diagnostics=false; // Extra bounded activity/stall diagnostics, restart-only.
     bool debug_networking=false; // Master deep-diagnostics hook + separate log; restart-only.
     bool debug_connect=true; // Requires DebugLog; observes cached Connect state/local actions.

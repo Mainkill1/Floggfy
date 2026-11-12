@@ -48,6 +48,7 @@ Metadata=1
 Lyrics=1
 UpdateExistingMetadata=1
 LogLevel=1
+DumpStreams=0
 DebugConnect=1
 DebugNetworking=0
 DebugHookDiagnostics=0
@@ -67,7 +68,7 @@ MaxBufferedMiB=512
   loaded once at startup; no live detachment of COM hooks is attempted. Missing
   keys are added through the existing atomic settings writer, preserving other
   INI content. Ordinary menu saves preserve existing restart-only entries
-  (`NetworkPatch`, `DebugConnect`, `DebugNetworking`, `DebugHookDiagnostics`),
+  (`NetworkPatch`, `DumpStreams`, `DebugConnect`, `DebugNetworking`, `DebugHookDiagnostics`),
   including edits made after startup; only missing keys receive defaults.
 - **Save Location:** empty defaults to the Windows Music known folder's `Spotify`
   subfolder, including redirected Music folders. A custom directory is accepted.
@@ -108,6 +109,18 @@ MaxBufferedMiB=512
   `Bound` listen generation can resolve overlapping metadata candidates. Missing,
   conflicting, or lost evidence fails closed; unverified AAC retains the legacy
   association path.
+- **DumpStreams:** default `0`; set `1` and restart for forensic capture,
+  independently of LogLevel, download switches and format filters. It writes
+  continuous consumed decoder input to `Save Location\DumpStreams\<UTC start
+  timestamp>\`, with timestamped `.bin` files and matching `.jsonl` metadata
+  logs. Decoder reuse and media changes keep appending to the same decoder/epoch
+  file. `session.jsonl` links input groups, byte offsets, callback start/end times,
+  native playback IDs and app metadata/state observations. Metadata without a
+  matching native ID is marked `association: unresolved`. Missing ranges are
+  explicit gap records; physical offsets describe the saved file, while logical
+  offsets include known omitted input. Unknown loss makes logical offsets null.
+  Dumps survive ordinary recording rejection and are retained until deleted.
+  A clean stop adds `session_end`; its absence indicates an interrupted session.
 - **DebugConnect:** default `1`; requires `LogLevel=4`. Enables cached
   Connect target observations and passive local action requests. `0` opts out of
   those observations even with deep networking enabled. No discovery, playback

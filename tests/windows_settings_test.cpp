@@ -9,7 +9,14 @@ void QueueDiagnostic(const char*) {}
 int main(int argc,char** argv) {
   assert(argc==2);
   assert(history::Settings{}.downloads&&history::Settings{}.update_existing_metadata&&!history::Settings{}.auto_skip_downloaded&&!history::Settings{}.aac&&history::Settings{}.podcasts&&!history::Settings{}.windows_playback_fallback&&history::Settings{}.capture_speed==1&&history::Settings{}.capture_speed_limit==0&&history::Settings{}.log_level==1);
-  assert(history::Settings{}.never_pause==-1);
+  assert(history::Settings{}.never_pause==-1&&!history::Settings{}.dump_streams);
+  for(const auto& fixture:std::array<std::pair<std::wstring,bool>,6>{{
+      {L"",false},{L"DumpStreams=0\r\n",false},{L"DumpStreams=1\r\n",true},
+      {L"DumpStreams=01\r\n",false},{L"DumpStreams=2\r\n",false},
+      {L"DumpStreams=1\r\nDumpStreams=1\r\n",false}}}) {
+      history::Settings target;history::ReadRestartOptionsText(target,L"[To Disk]\r\n"+fixture.first);
+      assert(target.dump_streams==fixture.second);
+  }
   assert(!history::AACEnabled());
   assert(history::PodcastsEnabled());
   const std::string scenario=argv[1];

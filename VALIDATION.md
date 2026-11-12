@@ -2,6 +2,50 @@ The current consolidated diagnostics regression entry point is
 `bash test-diagnostics.sh [SPOTIFY_DLL]`. Earlier dated sections below preserve
 historical evidence and may name wrappers that this entry point has replaced.
 
+## 2026-11-11: forensic stream dumps (release still held)
+
+`DumpStreams=0` is a restart-only opt-in, independent of LogLevel and normal
+recording/format switches. When enabled, a bounded background writer preserves
+continuous consumed input for each decoder/epoch under a UTC start timestamp.
+Timestamped raw files have matching JSONL metadata logs and a session index.
+Native IDs, URI/title/artist/album, duration/position/state, callback timestamps,
+input groups and physical/logical byte offsets support manual reconciliation.
+Rejected recordings retain their raw input. Gaps identify affected streams,
+sequence/time ranges and missing bytes; uncertain metadata associations remain
+explicitly unresolved. No disk I/O occurs in the decoder callback.
+
+The initial functional test failed before implementation. The standalone Windows
+dump and JSON suites now pass, including decoder reuse, exact bytes, rejected
+output, metadata-before-ID ordering, mixed-case IDs, located gaps, lost identity
+and shutdown drain. Production-hook tests pass with unchanged native return and
+LastError values, epoch changes during decoding and LogLevel=1 identity-hook
+enablement. Strict INI opt-in/default tests, the portable suite, production build
+and generated/bundled INI equality pass. The full Windows wrapper reached every
+final PASS line but returned termination status 143; a focused consolidated
+current-client diagnostics rerun passed with exit 0, including discovery against
+the installed Spotify DLL. The final saturated-gap confidence regression also
+passed after guarding identity restoration through the end of an unknown range.
+
+The final installed diagnostic build matches the production DLL, SHA-256
+`7dd626a42faf2b1a1d36e5f961e3c4d7b46ad410e228db07a12b60c9b14e300b`.
+The preceding live replay used
+`a162471889f61a56a1d4d962d0fe3e33f16e5548ecd2b6e93f0112d8f1fe35d3`;
+the final revision only tightens metadata confidence during saturated loss.
+Live capture at LogLevel=1 produced confirmed per-stream metadata with zero dump
+gaps. A complete 247.432-second podcast saved normally and independently decoded
+to 10,911,744 samples at 44.1 kHz. After decoder reuse, an 80.457-second podcast
+was not saved normally, but its full input remained in the dump. Manual splitting
+at the recorded source header/marker offset 4,761,856 recovered all 3,548,160
+samples (80.457143 seconds). This proves the diagnostic preservation and cut
+point; it does not claim the production stitching issue is fixed.
+
+The pending prefix/suffix reconciliation experiment is preserved separately and
+has unresolved review findings. It is not part of this diagnostic build or PR
+head. PR #25 remains draft; no 1.3 tag or release has been published. DumpStreams
+and the isolated temporary output path remain enabled for investigation. The
+temporary Never Pause test setting was restored to -1; LogLevel is 1 and hook
+timing diagnostics are off.
+
 ## 2026-11-11: release 1.3 integration and live release gate (in progress)
 
 PR #25 includes both the RC6 fixes and its five later safety commits. Integration

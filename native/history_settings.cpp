@@ -74,6 +74,9 @@ static constexpr char default_ini[]=
     "; Logs use Save Location; each is capped at 5 MiB.\r\n"
     "LogLevel=1\r\n"
     "\r\n"
+    "; Raw streams and metadata for testing; restart required.\r\n"
+    "DumpStreams=0\r\n"
+    "\r\n"
     "; These diagnostic switches require LogLevel=4.\r\n"
     "DebugConnect=1\r\n"
     "\r\n"
@@ -195,8 +198,9 @@ struct RestartFlag {
     bool Settings::* member;
     bool default_value;
 };
-static constexpr std::array<RestartFlag,4> restart_flags{{
+static constexpr std::array<RestartFlag,5> restart_flags{{
     {L"NetworkPatch",&Settings::network_patch,false},
+    {L"DumpStreams",&Settings::dump_streams,false},
     {L"DebugConnect",&Settings::debug_connect,true},
     {L"DebugNetworking",&Settings::debug_networking,false},
     {L"DebugHookDiagnostics",&Settings::debug_hook_diagnostics,false}

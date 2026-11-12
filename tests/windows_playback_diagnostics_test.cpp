@@ -11,6 +11,8 @@ namespace history {void CaptureLogEvent(LogKind,const char*,const std::string&);
 #include <cassert>
 #include <iostream>
 #include <random>
+#include <filesystem>
+#include <fstream>
 
 namespace {
 std::vector<std::string> diagnostic_lines;
@@ -21,7 +23,7 @@ bool Contains(const char* text) {
 unsigned init_calls=0,read_calls=0,frame_calls=0,error_calls=0;
 int read_status=0,frame_status=0;
 bool oversized_read=false,empty_read=false;
-bool invalid_decoded_span=false;
+bool invalid_decoded_span=false,advance_dump_epoch=false;
 unsigned decode_calls=0;
 size_t decode_consumed=100;
 const void* expected_frame=nullptr;
@@ -49,7 +51,8 @@ void* Decode(void*,void* result,decoded_output::Span* decoded,decoded_output::Sp
     ++decode_calls;assert(mode&&decoded&&encoded);decoded->size-=80;
     decoded->data=static_cast<float*>(decoded->data)+(invalid_decoded_span?79:80);
     encoded->data=reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(encoded->data)+decode_consumed);
-    encoded->size-=decode_consumed;SetLastError(1234);return result;
+    encoded->size-=decode_consumed;if(advance_dump_epoch)InterlockedIncrement(&history::capture_epoch);
+    SetLastError(1234);return result;
 }
 std::vector<uint8_t> PodcastMp3() {
     std::vector<uint8_t> out={'I','D','3',4,0,0,0,0,0,0};
@@ -57,6 +60,37 @@ std::vector<uint8_t> PodcastMp3() {
         const auto at=out.size();out.resize(at+length);out[at]=0xff;out[at+1]=0xfb;out[at+2]=third;out[at+3]=0;
     };
     add(417,0x90);add(523,0xa2);add(417,0x90);return out;
+}
+void DumpStreamHooks() {
+    const auto prior_level=InterlockedExchange(&history::log_level_value,1);
+    Settings preferences;preferences.dump_streams=true;
+    assert(NeedPlaybackIdentity(spotify::DiscoveryResult::Found,preferences));
+    assert(!NeedPlaybackIdentity(spotify::DiscoveryResult::MissingTarget,preferences));
+    preferences.dump_streams=false;assert(!NeedPlaybackIdentity(spotify::DiscoveryResult::Found,preferences));
+    InterlockedExchange(&history::log_level_value,prior_level);
+    wchar_t temp[MAX_PATH]{};assert(GetTempPathW(MAX_PATH,temp));
+    const auto root=std::filesystem::path(temp)/(L"Floggfy-dump-hooks-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64()));
+    assert(stream_dump::Start(root.wstring()));const auto folder=stream_dump::SessionFolder();
+    const auto prior_decode=original_decoded_process;const auto prior_calls=decode_calls;
+    const auto prior_consumed=decode_consumed;const auto prior_invalid=invalid_decoded_span;const auto prior_epoch=CaptureEpoch();
+    original_decoded_process=Decode;decode_consumed=100;
+    unsigned char input[256]{};for(unsigned i=0;i<256;++i)input[i]=static_cast<unsigned char>(i);
+    float samples[160]{};
+    for(const bool invalid:{false,true}) {
+        invalid_decoded_span=invalid;advance_dump_epoch=invalid;
+        decoded_output::Span decoded{samples,160},encoded{input,256};void* result=reinterpret_cast<void*>(0x89);
+        assert(DecodedSinkHook(reinterpret_cast<void*>(0x7000),result,&decoded,&encoded,true)==result&&GetLastError()==1234);
+    }
+    assert(stream_dump::Stop());unsigned files=0;
+    for(const auto& entry:std::filesystem::directory_iterator(folder))if(entry.path().extension()==L".bin") {
+        std::ifstream file(entry.path(),std::ios::binary);const std::string bytes{std::istreambuf_iterator<char>(file),{}};
+        assert(bytes.size()==200&&std::equal(bytes.begin(),bytes.begin()+100,reinterpret_cast<const char*>(input))&&
+               std::equal(bytes.begin()+100,bytes.end(),reinterpret_cast<const char*>(input)));++files;
+    }
+    assert(files==1);
+    original_decoded_process=prior_decode;decode_calls=prior_calls;decode_consumed=prior_consumed;invalid_decoded_span=prior_invalid;advance_dump_epoch=false;InterlockedExchange(&history::capture_epoch,LONG(prior_epoch));
+    ResetDecodedActivityQueue();
+    puts("PASS: real decoder hook dumps exact consumed bytes even when decoded output is rejected, preserving original returns and LastError");
 }
 void PodcastCaptureEvents() {
     const auto source=PodcastMp3();const double duration=3456.0/44100.0;
@@ -2061,6 +2095,7 @@ int wmain(int argc,wchar_t** argv) {
     // Use in-memory preferences only. Never read or write the user's INI/music.
     InterlockedExchange(&history::log_level_value,4);
     if(argc==2&&!wcscmp(argv[1],L"--queue-epoch")) {ProductionCaptureQueueLossEpochs();return 0;}
+    if(argc==2&&!wcscmp(argv[1],L"--stream-dump")) {DumpStreamHooks();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--podcast-end")) {PodcastEndWithoutReadySuccessor();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--pending-prior-control-stdin")) {
         const std::string payload(std::istreambuf_iterator<char>(std::cin),{});
@@ -2083,7 +2118,7 @@ int wmain(int argc,wchar_t** argv) {
         return 0;
     }
     assert(argc==1);
-    Connectivity();PodcastCatalog();PublicationLogging();PodcastCaptureEvents();PodcastEndWithoutReadySuccessor();DirectIdentityRetriesAndIgnoresLogVerbosity();ReadyUpgradesPreboundPlaybackGeneration();EmptyPlaybackIdNaturalTransitionIsRetried();UnclassifiedMonitoredTransitionWaitsForReady();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();BoundNaturalTransitionUsesFinalCaptureEvidence();DjVoiceDoesNotBlockMusicStart();CurrentItemChangeReconcilesDjSuccessor();CurrentItemChangeBeforeStreamOutputReconcilesDjSuccessor();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();ProductionCaptureQueueLossEpochs();ContextSpecificCaptureQueueLoss();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailLifecycle();ReadyDurationCorroboratesDecoder();WindowsReadyNaturalAppTransitionPublishes();TransitionPublicationMatrixStress();BoundWindowsIdentitySurvivesMetadataRefinement();MissingPlaybackWarning();AdvertisementStageIsNotDownloadFailure();ObservePlayback();CoverageAndFailures();SameContextFlacRestartBeginsFreshCapture();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();
+    Connectivity();PodcastCatalog();PublicationLogging();PodcastCaptureEvents();PodcastEndWithoutReadySuccessor();DirectIdentityRetriesAndIgnoresLogVerbosity();ReadyUpgradesPreboundPlaybackGeneration();EmptyPlaybackIdNaturalTransitionIsRetried();UnclassifiedMonitoredTransitionWaitsForReady();ConcurrentOggLogicalStreams();FinalCaptureRevalidation();CrossfadeQuarantineRecovery();BoundNaturalTransitionUsesFinalCaptureEvidence();DjVoiceDoesNotBlockMusicStart();CurrentItemChangeReconcilesDjSuccessor();CurrentItemChangeBeforeStreamOutputReconcilesDjSuccessor();AcceleratedUiClockRecovery();DecoderOwnershipFinalReconciliation();UnverifiedAacFinalReconciliation();KnownDurationAlternativeIsNotAmbiguous();AppIdentityAndSourceChanges();NaturalAppBufferingTransition();RecentPlaybackMatching();FinalReleaseReconciliation();CompactFailureIdentity();ProductionCaptureQueueLossEpochs();ContextSpecificCaptureQueueLoss();DurableAssociationEvidence();OwnershipCapabilityFallbacks();AppTailLifecycle();ReadyDurationCorroboratesDecoder();WindowsReadyNaturalAppTransitionPublishes();TransitionPublicationMatrixStress();BoundWindowsIdentitySurvivesMetadataRefinement();MissingPlaybackWarning();AdvertisementStageIsNotDownloadFailure();ObservePlayback();CoverageAndFailures();SameContextFlacRestartBeginsFreshCapture();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();DumpStreamHooks();
     puts("PASS: observed transitions, one FLAC failure context/outcome, original callback semantics, profiling-only intervals, basic-mode zero profiling and changed-only NLM observations");
     return 0;
 }

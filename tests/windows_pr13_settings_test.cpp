@@ -10,10 +10,10 @@ static void StrictOptIn() {
         std::wstring text=L"[To Disk]\r\n";
         for(const auto& flag:restart_flags)text+=std::wstring(flag.key)+L"="+value+L"\r\n";
         Settings parsed;assert(!ReadRestartOptionsText(parsed,text));
-        assert(!parsed.network_patch&&!parsed.debug_connect&&!parsed.debug_networking&&!parsed.debug_hook_diagnostics);
+        assert(!parsed.network_patch&&!parsed.debug_connect&&!parsed.debug_networking&&!parsed.debug_hook_diagnostics&&!parsed.dump_streams);
     }
     Settings parsed;
-    assert(!ReadRestartOptionsText(parsed,L"[tO dIsK]\nNetworkPatch= 1 \nDebugConnect=1\nDebugNetworking=\t1\t\nDebugHookDiagnostics=1\n"));
+    assert(!ReadRestartOptionsText(parsed,L"[tO dIsK]\nNetworkPatch= 1 \nDebugConnect=1\nDebugNetworking=\t1\t\nDebugHookDiagnostics=1\nDumpStreams=1\n"));
     assert(parsed.network_patch&&parsed.debug_connect&&parsed.debug_networking&&parsed.debug_hook_diagnostics);
     assert(ReadRestartOptionsText(parsed,L"[Other]\nNetworkPatch=1\n"));
     assert(!parsed.network_patch&&parsed.debug_connect&&!parsed.debug_networking&&!parsed.debug_hook_diagnostics);

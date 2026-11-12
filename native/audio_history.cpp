@@ -10,6 +10,7 @@
 #include "playback_quality.h"
 #include "auto_skip.h"
 #include "async_log.h"
+#include "stream_dump.h"
 #include "hook_diagnostics.h"
 #include <array>
 #include "bounded_queue.h"
@@ -617,6 +618,8 @@ static void* DecodedSinkHook(void* context,void* result,decoded_output::Span* de
     auto callback=audio_callbacks.Enter();
     const auto decoded_before=decoded?*decoded:decoded_output::Span{};
     const auto encoded_before=encoded?*encoded:decoded_output::Span{};
+    const bool dumping=stream_dump::Enabled();const auto dump_epoch=dumping?CaptureEpoch():0;
+    const auto dump_started=dumping?Now():0;
     auto* native_result=original_decoded_process(context,result,decoded,encoded,mode);
     const auto native_error=GetLastError();
     const bool was_enabled=decoded_accelerator.Enabled();
@@ -631,6 +634,8 @@ static void* DecodedSinkHook(void* context,void* result,decoded_output::Span* de
         else if(!encoded_valid||consumed>max_decoded_callback_bytes)failure=DecodedFallbackReason::EncodedSpan;
     }
     const bool valid=failure==DecodedFallbackReason::None;
+    if(dumping&&encoded_valid&&consumed)
+        stream_dump::Input(reinterpret_cast<uintptr_t>(context),dump_epoch,static_cast<const unsigned char*>(encoded_before.data),consumed,dump_started,Now(),valid);
     if(!valid) {
         decoded_accelerator.Disable();InterlockedIncrement(&decoded_activity_dropped);
         if(event)SetEvent(event);
@@ -667,9 +672,10 @@ static int PlaybackPumpHook(void* owner,void* second,void* third) {
             return ReadProcessMemory(GetCurrentProcess(),source,destination,size,&copied)&&copied==size;
         };
         playback_identity::Instance instance{};
-        if(decoder&&playback_identity::ReadPlaybackInstance(owner,path,read,instance)&&
-           TryAcquireSRWLockExclusive(&playback_identity_lock)) {
+        if(decoder&&playback_identity::ReadPlaybackInstance(owner,path,read,instance)) {
             const auto epoch=CaptureEpoch();
+            stream_dump::Playback(decoder,epoch,instance.bytes,Now());
+            if(!TryAcquireSRWLockExclusive(&playback_identity_lock))return original_playback_pump(owner,second,third);
             if(playback_identity_bridge.NeedsObservation(
                    reinterpret_cast<uintptr_t>(owner),decoder,epoch,
                    playback_identity::SnapshotRole::PlayerPlaybackId,
@@ -2736,6 +2742,7 @@ static void ReportMediaUnavailable(const CaptureBuffers& buffers,bool unavailabl
     Log(LogKind::Warning,message.c_str());
 }
 static DWORD WINAPI Worker(LPVOID) {
+    struct DumpLifetime {bool started=false;~DumpLifetime(){if(started)stream_dump::Stop();}} dump;
     ownership::DecoderOwnershipTracker ownership_tracker;
     CaptureBuffers buffers;buffers.ownership_tracker=&ownership_tracker;
     auto& active=buffers.active;auto& ready=buffers.ready;
@@ -2750,6 +2757,12 @@ static DWORD WINAPI Worker(LPVOID) {
     uint64_t ownership_playback_token=0,ownership_listen_generation=0;
     unsigned generation=~0u,epoch=~0u; bool enabled=false;
     try {
+        const auto dump_preferences=GetSettings();
+        if(dump_preferences.dump_streams) {
+            dump.started=stream_dump::Start(dump_preferences.root);
+            if(dump.started)LogEvent(LogKind::Activity,"dump","DumpStreams started: "+Utf8(stream_dump::SessionFolder()));
+            else LogEvent(LogKind::Warning,"warning","DumpStreams could not start");
+        }
         while(workers_running.load(std::memory_order_acquire)) {
             NoteCaptureProgress();
             double now=Now();
@@ -2804,7 +2817,7 @@ static DWORD WINAPI Worker(LPVOID) {
                 }
                 epoch=preferences.capture_epoch;
             }
-            if(!enabled && !quality_enabled.load(std::memory_order_relaxed)) {
+            if(!enabled && !quality_enabled.load(std::memory_order_relaxed)&&!stream_dump::Enabled()) {
                 reader.Stop();observer_started=false;
                 PublishPlaybackQuality({});
                 PublishSongDestination(0,L"",{},false,0);
@@ -2840,6 +2853,7 @@ static DWORD WINAPI Worker(LPVOID) {
             }
             if(DebugLoggingEnabled() && media_reporter.Due(media_diagnostic,Now()))Log(LogKind::Diagnostic,DescribeMediaDiagnostic(media_diagnostic).c_str());
             if(observation==MediaRead::Ready) {
+                if(stream_dump::Enabled())stream_dump::Metadata(media.playback_instance,media.spotify_uri,Utf8(media.title),Utf8(media.artist),Utf8(media.album),media.duration,media.position,media.playing,observed_at);
                 last_media=observed_at;media_unavailable=false;
                 diagnostics.Observe(media,observed_at,media_sequence);
                 PublishCurrentDestination(media,preferences);
@@ -2883,6 +2897,7 @@ static DWORD WINAPI Worker(LPVOID) {
                 ownership_playback_uri=playback_uri;ownership_playback_token=playback_token;
                 ownership_listen_generation=listen.generation;
             } else if(observation==MediaRead::Transition) {
+                if(stream_dump::Enabled())stream_dump::Metadata(media.playback_instance,media.spotify_uri,Utf8(media.title),Utf8(media.artist),Utf8(media.album),media.duration,media.position,media.playing,observed_at,"buffering");
                 ownership_tracker.ObserveTransition(media.playback_instance,media.spotify_uri,
                     observed_at,media.explicit_skip||media.explicit_control,media.natural_transition);
                 const auto next_token=ownership_tracker.PlaybackToken(media.playback_instance);
@@ -2902,6 +2917,7 @@ static DWORD WINAPI Worker(LPVOID) {
                 if(!pending_repeat)listen.eligible=false;
                 media_unavailable=true;diagnostics.known=false;
             } else if(observation==MediaRead::Failed || Now()-last_media>3) {
+                if(!media_unavailable&&stream_dump::Enabled())stream_dump::Metadata(current.playback_instance,current.spotify_uri,Utf8(current.title),Utf8(current.artist),Utf8(current.album),current.duration,current.position,false,Now(),"unavailable");
                 if(ActiveInterstitialReason(media_diagnostic.reason))
                     MarkUnidentifiedInterstitial(buffers,media_diagnostic.reason);
                 // Absence of a fresh observation is not evidence of a skip,
@@ -2967,6 +2983,9 @@ static DWORD WINAPI Worker(LPVOID) {
     SetCaptureAccelerationAvailable(false);
     return 0;
 }
+static bool NeedPlaybackIdentity(spotify::DiscoveryResult discovery,const Settings& preferences) {
+    return discovery==spotify::DiscoveryResult::Found&&(DebugLoggingEnabled()||preferences.dump_streams);
+}
 }
 
 void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
@@ -3015,7 +3034,7 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
                 DiscoveryFailure(ownership_discovery));Log(LogKind::Diagnostic,line);
             if(decoded_discovery==spotify::DiscoveryResult::Found)decoded_sink_target=base+decoded.rva;
         }
-        if(decoded_discovery==spotify::DiscoveryResult::Found&&DebugLoggingEnabled()) {
+        if(NeedPlaybackIdentity(decoded_discovery,preferences)) {
             playback_pump_target=base+decoded.caller_rva;
             playback_pump_decoder_offset=decoded.decoder_offset;
             char line[180];snprintf(line,sizeof(line),
