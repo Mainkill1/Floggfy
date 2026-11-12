@@ -232,3 +232,32 @@ console.log('PASS: resume preserves unacknowledged skip and seek evidence');
  assert(reads>=6);
  console.log('PASS: stock Spotify registry polling without Spicetify/events, URI disambiguation, progress, pause and recovery');
 }
+
+// A fresh explicit context clear closes the last episode, even if Spotify never
+// creates a successor playback ID. Buffering alone is not terminal evidence.
+for(const mode of ['ended','early','stale','missing-item','missing-id','missing-context','context-present','remote','unknown-local','control','consumed-control','player-change','unmonitored','track']) {
+ let clock=1793300000000,local=true;
+ let current={timestamp:clock,positionAsOfTimestamp:mode==='early'?10000:269599,duration:270942,isPaused:false,isBuffering:false,
+  playbackId:'episode-one',item:{uri:'spotify:'+(mode==='track'?'track':'episode')+':0000000000000000000001',metadata:{title:'Episode',artist_name:'Artist',album_title:'Album'}}};
+ const handlers=new Map(),messages=[];
+ const api={getState:()=>current,getEvents:()=>({addListener(type,fn){if(mode==='unmonitored'&&type==='action')throw Error('unavailable');handlers.set(type,fn);},removeListener:type=>handlers.delete(type)})};
+ const sandbox={window:{__floggfyConfig:{metadata:false},Spicetify:{Platform:{PlayerAPI:api,ConnectDevicesAPI:{getConnectState:()=>({activeDevice:{isLocal:local}})}}}},
+  document:{querySelector:()=>null},console:{info:line=>messages.push(line)},performance:{now:()=>clock},Date:{now:()=>clock},encodeURIComponent};
+ vm.runInNewContext(script,sandbox);sandbox.window.__floggfyPoll();
+ clock+=373;current={...current,timestamp:clock,positionAsOfTimestamp:mode==='early'?10373:269964,isBuffering:true};sandbox.window.__floggfyPoll();
+ if(mode==='control'||mode==='consumed-control'){
+  handlers.get('action')({data:{action:'seekTo'}});
+  if(mode==='consumed-control')sandbox.window.__floggfyPoll();
+ }
+ if(mode==='player-change')sandbox.window.Spicetify.Platform.PlayerAPI={...api};
+ if(mode==='remote')local=false;if(mode==='unknown-local')local=undefined;
+ clock+=mode==='stale'?4000:1000;
+ current={item:mode==='missing-item'?undefined:null,playbackId:mode==='missing-id'?undefined:null,
+  context:mode==='missing-context'?undefined:{uri:mode==='context-present'?'spotify:show:0000000000000000000001':''},
+  timestamp:clock-156,positionAsOfTimestamp:0,isPaused:false,isBuffering:true};
+ sandbox.window.__floggfyPoll();sandbox.window.__floggfyPoll();
+ const terminals=messages.filter(line=>line.startsWith('FLOGGFY_TIMELINE_V1:')).map(line=>new URLSearchParams(line.slice('FLOGGFY_TIMELINE_V1:'.length))).filter(fields=>fields.get('terminal')==='1');
+ assert.equal(terminals.length,mode==='ended'||mode==='early'?1:0,mode);
+ if(terminals.length){assert.equal(terminals[0].get('instance'),'episode-one');assert.equal(terminals[0].get('transition_ms'),String(clock-156));assert.equal(terminals[0].get('monitoring'),'1');}
+}
+console.log('PASS: explicit episode context clear is fresh, anchored, monitored and disqualified by controls or uncertainty');

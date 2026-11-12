@@ -2431,7 +2431,14 @@ static bool FinishAppTransition(const Media& next,Listen& listen,const Media& cu
     // that reached the end; prefetched bytes alone cannot complete a listen.
     auto ending=listen;
     std::string done;
-    if(observed_successor_stage&&!current.playback_instance.empty()&&
+    // Explicit SDK context clearance refers to the old episode, not a new
+    // playback instance. Never let an invalid terminal assertion reach the
+    // broader successor/provisional publication paths below.
+    const bool terminal_context=next.terminal_context&&
+        next.ListenKey()==listen.identity&&current.spotify_uri.rfind("spotify:episode:",0)==0&&
+        buffers.ownership_hold_generation==listen.generation;
+    if(next.terminal_context&&!terminal_context)return true;
+    if((observed_successor_stage||terminal_context)&&!current.playback_instance.empty()&&
        current.source==MediaSource::Spotify&&next.control_monitoring&&!next.prior_control&&
        listen.eligible&&listen.playing) {
         ownership::OwnershipBinding binding{};
@@ -2440,6 +2447,7 @@ static bool FinishAppTransition(const Media& next,Listen& listen,const Media& cu
             done=ending.Observe(listen.identity,current.duration,current.duration,false,
                                 time,ending.capture_speed);
     }
+    if(next.terminal_context&&done.empty())return true;
     if(awaiting_ready&&done.empty()&&next.control_monitoring&&listen.eligible&&listen.playing) {
         buffers.pending_natural_generation=listen.generation;
         buffers.pending_natural_time=time;
@@ -2477,7 +2485,7 @@ static bool FinishAppTransition(const Media& next,Listen& listen,const Media& cu
     // listen until a positively different instance arrives; the complete file
     // and decoder binding remain cached during this short metadata gap.
     const bool continuous_position=next.position<0||std::fabs(next.position-listen.last_position)<=1.5;
-    if(same&&(same_owned_instance||unowned_aac)&&next.control_monitoring&&continuous_position&&
+    if(done.empty()&&same&&(same_owned_instance||unowned_aac)&&next.control_monitoring&&continuous_position&&
        listen.eligible&&listen.playing) {
         if(owned_complete&&owned_complete->mp3&&buffers.ownership_hold_generation!=listen.generation&&DebugLoggingEnabled()) {
             char line[240];snprintf(line,sizeof(line),

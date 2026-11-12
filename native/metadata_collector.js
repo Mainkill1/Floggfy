@@ -7,7 +7,7 @@
  const serviceCache=new Map();
  let builder,activeRequests=0,connectDevices;
  let player,root,queue=[],seen=new Set(),walked=0,lastPlayback='',playbackTime=-Infinity;
- let timelineBinding,lastReadyTimeline;
+ let timelineBinding,lastReadyTimeline,episodeEndAnchor;
  let timelineSeen=false,lastTimeline='',timelineTime=-Infinity,timelineBlocked='',timelineLocal='unknown',pendingControl;
  function playback(data){
   const payload=Object.entries(data).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&');
@@ -28,17 +28,35 @@
    'advertisement':'interstitial';
  }
  function unavailableTimeline(reason,state,kind){
-  lastReadyTimeline=undefined;
-  const active=reason==='track-unavailable'&&timelineLocal===1&&own(state,'isPaused')===false&&own(state,'isBuffering')===false;
+  lastReadyTimeline=undefined;episodeEndAnchor=undefined;
+  const active=reason==='track-unavailable'&&object(own(state,'item'))&&timelineLocal===1&&own(state,'isPaused')===false&&own(state,'isBuffering')===false;
   if(active){timelineSeen=true;timeline({v:1,unavailable:reason,active:1,kind});return;}
   if(!timelineSeen||timelineBlocked)return;
   timeline({v:1,unavailable:reason});
+ }
+ function terminalTimeline(state){
+  const prior=episodeEndAnchor,stamp=own(state,'timestamp'),sampled=Date.now();
+  if(!prior)return false;
+  if(prior.player!==player||timelineLocal!==1||pendingControl||
+     !controlBinding?.active||!controlBinding.observing||controlBinding.player!==player||
+     sampled-prior.sampled<0||sampled-prior.sampled>3000){episodeEndAnchor=undefined;return false;}
+  if(own(state,'item')!==null||own(state,'playbackId')!==null||
+     own(own(state,'context'),'uri')!==''||own(state,'isBuffering')!==true||
+     typeof own(state,'isPaused')!=='boolean')return false;
+  episodeEndAnchor=undefined;
+  if(typeof stamp!=='number'||!Number.isFinite(stamp)||stamp<prior.stateStamp||
+     sampled-stamp< -250||sampled-stamp>3000)return false;
+  timeline({v:1,blocked:'buffering',uri:prior.uri,instance:prior.instance,
+   sampled_ms:sampled,transition_ms:stamp,monitoring:1,terminal:1});
+  lastReadyTimeline=undefined;return true;
  }
  function guardTimeline(state){
   timelineLocal='unknown';
   try{const get=method(connectDevices,'getConnectState');const active=own(get&&get.call(connectDevices),'activeDevice');
    const flag=own(active,'isLocal');if(typeof flag==='boolean')timelineLocal=Number(flag);}catch{}
   timelineBlocked=timelineLocal===0?'remote-playback':own(state,'isBuffering')===true?'buffering':'';
+  if(terminalTimeline(state))return true;
+  if(episodeEndAnchor&&(timelineBlocked!=='buffering'||own(own(state,'item'),'uri')!==episodeEndAnchor.uri||own(state,'playbackId')!==episodeEndAnchor.instance))episodeEndAnchor=undefined;
   if(timelineBlocked){
    timelineSeen=true;const blocked={v:1,blocked:timelineBlocked};
    const uri=own(own(state,'item'),'uri'),stamp=own(state,'timestamp'),instance=own(state,'playbackId');
@@ -94,6 +112,8 @@
    readyControlled=true;pendingControl=undefined;
   }
   lastReadyTimeline={player,sampled,stateStamp:stamp,instance,uri:data.uri,playing:!paused&&timelineLocal===1};
+  episodeEndAnchor=data.uri.startsWith('spotify:episode:')&&instance&&lastReadyTimeline.playing&&
+   controlBinding?.active&&controlBinding.observing&&controlBinding.player===player?lastReadyTimeline:undefined;
   timeline({v:1,title:data.title,artist:data.artist||'',album:data.album||'',uri:data.uri,
    duration:duration/1000,position:seconds,sampled_ms:sampled,instance,paused:Number(paused),buffering:Number(buffering),local:timelineLocal,speed:rate,
    controlled:readyControlled?1:undefined,prior_control:readyPriorControlled?1:undefined});
@@ -101,7 +121,7 @@
  function emitTimelineState(state){
   timelineBlocked='';
   const item=own(state,'item'),m=own(item,'metadata')||{},uri=text(own(item,'uri'));
-  guardTimeline(state);
+  if(guardTimeline(state))return;
   if(!/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')){
    unavailableTimeline('track-unavailable',state,unsupportedPlaybackKind(item,m,uri));return;
   }
@@ -242,7 +262,7 @@
      const action=own(own(event,'data'),'action');
      // Any observed control action (including changed/unknown seek names)
      // breaks the evidence chain used for natural-transition recovery.
-     const ready=lastReadyTimeline;lastReadyTimeline=undefined;
+     const ready=lastReadyTimeline;lastReadyTimeline=undefined;episodeEndAnchor=undefined;
      if(action==='play'||action==='resume'){
       if(pendingControl?.action==='pause')pendingControl=undefined;
      }else pendingControl={action,instance:ready?.player===player?ready.instance:''};

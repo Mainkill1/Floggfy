@@ -118,10 +118,17 @@ void PodcastEndWithoutReadySuccessor() {
     for(unsigned i=0;i<1566;++i)source.insert(source.end(),fragment.begin()+10,fragment.end());
     Mp3Info info;std::string error;assert(InspectMp3Source(source.data(),source.size(),info,error));
     const auto previous_target=decoded_sink_target;decoded_sink_target=reinterpret_cast<void*>(0x1000);
-    enum class EndCase { Natural, LiveTrace, BufferingTail, BufferingEarly, Early, Stale,
+    enum class EndCase { Natural, LiveTrace, ClearedContext, ClearedEarly, ClearedStale, ClearedControl, ClearedMissing, ClearedAmbiguous, ClearedWrongInstance, BufferingTail, BufferingEarly, Early, Stale,
                          Skip, Control, PriorControl, SameInstance, MissingCapture, Ambiguous, UnrelatedLoss, MatchingLoss, GlobalLoss };
     struct End { EndCase kind; double tail,elapsed; bool completes; };
     const End cases[]={
+        {EndCase::ClearedContext,1.343,1.359,true},
+        {EndCase::ClearedEarly,10,1.359,false},
+        {EndCase::ClearedStale,1.343,4,false},
+        {EndCase::ClearedControl,1.343,1.359,false},
+        {EndCase::ClearedMissing,1.343,1.359,false},
+        {EndCase::ClearedAmbiguous,1.343,1.359,false},
+        {EndCase::ClearedWrongInstance,1.343,1.359,false},
         {EndCase::Natural,.6,.65,true},
         {EndCase::LiveTrace,1.222,1.232509,true},
         {EndCase::BufferingTail,1.6,1.65,true},
@@ -175,13 +182,18 @@ void PodcastEndWithoutReadySuccessor() {
         assert(heard.empty()&&buffers.ready.size()==1&&buffers.ownership_hold_generation==81);
         // Spotify resets playbackId and pauses in buffering after the episode ends.
         // No successor Ready arrives. Full bound audio + natural end must close it.
-        if(scenario!=EndCase::SameInstance)buffering.playback_instance="episode-two";
+        const bool cleared=scenario==EndCase::ClearedContext||scenario==EndCase::ClearedEarly||
+            scenario==EndCase::ClearedStale||scenario==EndCase::ClearedControl||
+            scenario==EndCase::ClearedMissing||scenario==EndCase::ClearedAmbiguous||scenario==EndCase::ClearedWrongInstance;
+        buffering.terminal_context=cleared;
+        if(scenario!=EndCase::SameInstance&&!cleared)buffering.playback_instance="episode-two";
+        if(scenario==EndCase::ClearedWrongInstance)buffering.playback_instance="wrong-instance";
         buffering.position=0;buffering.playing=false;
         buffering.explicit_skip=scenario==EndCase::Skip;
-        buffering.explicit_control=scenario==EndCase::Control;
+        buffering.explicit_control=scenario==EndCase::Control||scenario==EndCase::ClearedControl;
         buffering.prior_control=scenario==EndCase::PriorControl;
-        if(scenario==EndCase::MissingCapture)buffers.ready.clear();
-        if(scenario==EndCase::Ambiguous)buffers.ready.front()->ambiguous=true;
+        if(scenario==EndCase::MissingCapture||scenario==EndCase::ClearedMissing)buffers.ready.clear();
+        if(scenario==EndCase::Ambiguous||scenario==EndCase::ClearedAmbiguous)buffers.ready.front()->ambiguous=true;
         if(scenario==EndCase::GlobalLoss) {
             CaptureQueueLossBatch loss;loss.global=true;
             assert(ApplyCaptureQueueLosses(buffers,loss,listen.last_time)&&buffers.ready.front()->ambiguous);
@@ -198,7 +210,7 @@ void PodcastEndWithoutReadySuccessor() {
             publishing_reserved.fetch_sub(job.reserved);
         } else {
             assert(heard.empty()&&"prefetch, controls, stale timing or uncertain ownership cannot prove completion");
-            if(scenario!=EndCase::Skip&&scenario!=EndCase::Control&&scenario!=EndCase::SameInstance)
+            if(!cleared&&scenario!=EndCase::Skip&&scenario!=EndCase::Control&&scenario!=EndCase::SameInstance)
                 assert(buffers.pending_natural_generation==81);
         }
     }

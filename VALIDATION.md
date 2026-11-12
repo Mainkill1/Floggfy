@@ -2,6 +2,57 @@ The current consolidated diagnostics regression entry point is
 `bash test-diagnostics.sh [SPOTIFY_DLL]`. Earlier dated sections below preserve
 historical evidence and may name wrappers that this entry point has replaced.
 
+## 2026-11-11: release 1.3 integration and live release gate (in progress)
+
+PR #25 includes both the RC6 fixes and its five later safety commits. Integration
+review found that FLAC, Ogg and AAC captures did not initialize their capture
+epoch before scoped queue-loss checks. Capture ownership now sets the context
+and epoch for every codec. A production-path regression failed before the fix
+and passed afterward, including stale-epoch isolation.
+
+The integrated source at `104484929a7e141507f761b85b821e9dd7f19fc2` passed the
+full portable suite, deterministic 50,000-mutation sanitizer campaign, complete
+Windows suite, focused playback diagnostics and duplicate directory tests.
+Two independent production builds and the installed DLL had SHA-256
+`c187400eeedcb4b82b18b88eb6649ccb9de37f0e7e572d5958502dc10928920d`.
+
+Live validation used an isolated temporary output directory. Never Pause
+recovered from a public Windows media-session Pause command. A full 96-second,
+24-bit, 44.1-kHz stereo FLAC decoded independently to 4,233,600 samples. A second
+full replay included another controlled Pause and automatic recovery; its
+independently decoded PCM hash and sample count matched the uninterrupted take.
+
+A subsequent podcast captured complete MP3 data but remained pending when
+Spotify repeated its existing playback instance in buffering and never emitted
+a successor Ready or a different instance. This terminal pattern is not covered
+by the earlier changed-instance fix. Publication has not passed this live gate.
+PR #25 remains draft; no 1.3 tag or release has been published.
+
+Bounded debug-only terminal presence/clock diagnostics were added to investigate
+that failure. Their collector privacy/deduplication and native renderer gateway
+tests passed. The installed tracing DLL matches the production build at
+`37ccc90993da8f26e7207610c338e14283e42d9e`, SHA-256
+`bb9416c2af76775043aa66144dee8f401efc521edf7c28a09a925aa55fd92498`.
+A second replay captured the explicit terminal state: after buffering 0.978
+seconds before the reported end, Spotify set item and playbackId to null and
+context.uri to an empty string. No successor ID arrived. The collector now emits
+a dedicated terminal-context assertion only for that explicit, fresh clearance,
+anchored to the preceding local monitored episode. Controls, missing fields,
+stale observations and player/locality/identity changes discard the anchor.
+Native completion requires the matching active listen, prior ownership hold,
+one validated bound MP3 and the existing at-most-three-second projected end
+check. Invalid terminal assertions cannot reach provisional successor handling.
+
+The collector and native podcast regressions failed before their respective
+fixes and passed afterward. The real collector-to-native parser boundary,
+complete portable suite and full Windows playback diagnostics passed. Independent
+review found no material issue. The candidate DLL is installed, SHA-256
+`3262e7bd1dae5a9f852f5548a6647f8299cfd732caff7eefc2ebce6042e91b1e`.
+The complete Windows rerun and live podcast publication replay remain pending.
+Temporary test output and diagnostic settings are still active during replay.
+Earlier dated sections below describe previous revisions, not final release
+qualification.
+
 ## 2026-11-11: Never Pause
 
 The requested `NeverPause` setting defaults to -1 (hidden and inactive).

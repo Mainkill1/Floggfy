@@ -85,4 +85,5 @@ node tests/collector_native_boundary_test.js | build/client-playback-test --stdi
 node tests/collector_native_boundary_test.js --active-without-uri | build/client-playback-test --active-without-uri-stdin
 node tests/collector_native_boundary_test.js --transition | build/client-playback-test --transition-stdin
 node tests/collector_native_boundary_test.js --reused-transition | build/client-playback-test --reused-transition-stdin
+node tests/collector_native_boundary_test.js --terminal | build/client-playback-test --terminal-stdin
 node tests/collector_playback_test.js
