@@ -1603,3 +1603,82 @@ performed for these two association corrections, and the existing installation
 and preferences were left as previously restored. The earlier live evidence is
 historical coverage of the preceding revision, not a claim that these fixes
 were reproduced live.
+
+## Native-format podcast capture and media-neutral cleanup (2026-11-12)
+
+The three missing long podcast episodes were delivered as Ogg Vorbis, not MP3.
+Their dump streams were structurally complete; publication failed because capture
+association, terminal completion, MP3 collection, and saved-file discovery each
+contained a separate `podcast == MP3` assumption. Media kind is now assigned from
+the associated Spotify URI/metadata after codec capture. Codec parsing and final
+validation remain format-specific.
+
+Behavioral corrections on final source commit `e9edc31`:
+
+- Ogg, FLAC, AAC and MP3 captures can associate with episode metadata without
+  weakening ownership, duration, uniqueness, complete-listen, or final-container
+  validation.
+- `Podcasts` is a late publication policy. MP3 input follows the master
+  `Downloads` switch, and toggling `Podcasts` no longer increments the capture
+  epoch or discards an in-flight stream.
+- MP3 music uses the same fallback/direct ownership and guarded finalization as
+  MP3 episodes; codec no longer decides media kind.
+- The current-song destination worker checks all four native formats for music
+  and podcasts using one directory listing. The obsolete media flag and
+  `SupportsMedia` filter were removed.
+- An explicit terminal episode context may complete any uniquely bound, fully
+  validated native codec; the changed-instance boundary remains MP3-specific
+  because MPEG has no container EOS marker.
+
+Red/green evidence:
+
+- The initial policy test failed to compile before `download_policy.h` existed.
+- Ogg/FLAC episode association failed before the codec/media predicates were
+  removed.
+- A complete Ogg terminal episode remained incomplete before terminal handling
+  was generalized.
+- MP3 music failed fallback binding/finalization before the remaining episode-only
+  checks were removed.
+- The Song destination test could not find Ogg/FLAC/AAC episodes before the
+  codec-only recording format table replaced the old podcast/media split.
+- Real MP3/Ogg/FLAC/AAC compressed fixtures now call `Publish`, re-open through
+  `ReadRecording`, and verify codec, ownership, Spotify identity, extension and
+  `Podcasts\Native Show` placement. `Podcasts=0` rejects every episode, and each
+  non-MP3 source-format switch independently rejects its codec.
+
+Captured Ogg audit used the first complete logical stream in each decoder dump:
+
+- Stream 9 / Vol. 3: 11,515 pages, zero sequence gaps, zero CRC failures, EOS;
+  metadata 4044.591000 s vs decoded 4044.591020 s (20 microseconds).
+- Stream 10 / Vol. 2: 11,544 pages, zero sequence gaps, zero CRC failures, EOS;
+  metadata 4048.849000 s vs decoded 4048.848980 s (20 microseconds).
+- Stream 11 / Vol. 1: 12,510 pages, zero sequence gaps, zero CRC failures, EOS;
+  metadata 4348.343000 s vs decoded 4348.342857 s (143 microseconds). The same
+  decoder dump then contains 1,523,712 bytes from its successor stream; bytes
+  after the first valid EOS are not part of Vol. 1.
+
+Final verification:
+
+- `bash test-native.sh`: exit 0.
+- `bash test-capture-association.sh`: exit 0.
+- `bash test-diagnostics.sh`: exit 0, including MP3-music fallback/direct
+  ownership, reused decoders, pauses/gaps and non-MP3 terminal completion.
+- `bash test-song-shortcut.sh`: exit 0 for MP3 music and every native podcast
+  destination, plus existing menu behavior.
+- `bash test-directory-lookup.sh`: exit 0, including real four-codec podcast
+  publication and policy rejection.
+- `bash test-native-windows.sh`: one complete start-to-finish run at `e9edc31`,
+  exit 0. Optional current-client static discovery checks were skipped because no
+  Spotify DLL argument was supplied. Existing minimp4/stb C warnings remain.
+- Fresh `bash build-native.sh`: exit 0. `build/version.dll` is PE x86-64 with
+  SHA-256 `c8d3746858b9bb042c26f8e627fea0953430b5d113411ec6ef1312611a1b4805`;
+  `build/Floggfy.exe` is PE x86-64 with SHA-256
+  `c16f49ebee32edcf2376fec108a3cded54cc96d46d8edd52b6cb5694d373b896`.
+- `git diff --check`: clean.
+- Independent whole-branch review found three Important stale assumptions; all
+  were reproduced and fixed. Follow-up review found no Critical, Important, or
+  Minor issues and marked the branch ready to merge.
+
+No final DLL was installed and no release or live-save claim is made here. A
+fresh native-format podcast must still publish under the real Spotify host from
+this exact build before the PR/release gate is cleared.
