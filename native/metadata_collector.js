@@ -170,6 +170,22 @@
   try{const result=next.call(target);const reject=method(result,'catch');if(reject)reject.call(result,()=>{});}catch{}
  }
  // Debug observations are raw local flags, never a diagnosis of their cause.
+ let terminalDebugPrevious;
+ function debugTerminalState(state,item){
+  if(own(options(),'debug')!==true||!object(state)||(own(state,'isBuffering')!==true&&object(item))){terminalDebugPrevious=undefined;return;}
+  const kind=value=>value===null?'null':value===undefined?'missing':object(value)?'object':'other';
+  const flag=value=>typeof value==='boolean'?Number(value):'?';
+  const presence=value=>typeof value==='string'?Number(value.length>0):value===undefined||value===null?0:'?';
+  const number=value=>Number.isSafeInteger(value)&&value>=0&&value<=4294967295?value:'?';
+  const message='FLOGGFY_STATUS:terminal obs item='+kind(item)+' context='+kind(own(state,'context'))+
+   ' uri='+presence(own(item,'uri'))+' instance='+presence(own(state,'playbackId'))+
+   ' paused='+flag(own(state,'isPaused'))+' buf='+flag(own(state,'isBuffering'))+
+   ' pos_ms='+number(own(state,'positionAsOfTimestamp'))+' length_ms='+number(own(state,'duration'))+
+   ' local='+timelineLocal+' monitoring='+Number(!!(controlBinding?.active&&controlBinding.observing&&controlBinding.player===player));
+  if(message===terminalDebugPrevious)return;terminalDebugPrevious=message;
+  const stamp=own(state,'timestamp'),age=typeof stamp==='number'?Math.max(0,Math.floor(Date.now()-stamp)):undefined;
+  console.info(message+' age_ms='+number(age));
+ }
  let debugPrevious;
  function debugObservation(state,item){
   if(own(options(),'debug')!==true||!object(state)||!object(item)){debugPrevious=undefined;return;}
@@ -448,6 +464,7 @@
    automatic();scan();bindTimeline();if(!player){debugObservation();connectDiagnostics();playback({v:1});unavailableTimeline('player-unavailable');return;}
    const state=method(player,'getState').call(player),item=own(state,'item'),m=own(item,'metadata')||{},uri=text(own(item,'uri'));
    debugObservation(state,item);connectDiagnostics(state);emitTimelineState(state);
+   debugTerminalState(state,item);
    resumePausedPlayback(state);
    if(!/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')){
     playback({v:1});unavailableTimeline('track-unavailable',state,unsupportedPlaybackKind(item,m,uri));return;

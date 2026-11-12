@@ -30,6 +30,10 @@ static void ClientPrivacy() {
     assert(summary.find("request=pause")!=std::string::npos);
     assert(SummarizeClientNetworking("FLOGGFY_STATUS:connect state=connected target=local device_changed=1 controller=unknown",summary));
     assert(SummarizeClientNetworking("FLOGGFY_STATUS:client obs paused=1 buf=0 active=? code=-7 status=503 inst=0 dev=?",summary));
+    assert(SummarizeClientNetworking("FLOGGFY_STATUS:terminal obs item=null context=missing uri=0 instance=0 paused=1 buf=1 pos_ms=122000 length_ms=122000 local=1 monitoring=1 age_ms=100",summary));
+    assert(summary.find("source=terminal-state")!=std::string::npos);
+    assert(!SummarizeClientNetworking("FLOGGFY_STATUS:terminal obs item=PRIVATE_URI context=missing uri=0 instance=0 paused=1 buf=1 pos_ms=122000 length_ms=122000 local=1 monitoring=1 age_ms=100",summary));
+    assert(!SummarizeClientNetworking("FLOGGFY_STATUS:terminal obs item=null context=missing uri=0 instance=0 paused=1 buf=1 pos_ms=122000 length_ms=122000 local=1 monitoring=1 age_ms=100 SECRET",summary));
     assert(SummarizeClientNetworking("FLOGGFY_NETWORK_V1:request op=7 kind=lyrics phase=response code=200 elapsed_ms=12",summary));
     assert(summary.find("service=lyrics")!=std::string::npos&&summary.find("direction=in")!=std::string::npos);
     for(const char* message:{

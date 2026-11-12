@@ -2479,6 +2479,12 @@ static bool FinishAppTransition(const Media& next,Listen& listen,const Media& cu
     const bool continuous_position=next.position<0||std::fabs(next.position-listen.last_position)<=1.5;
     if(same&&(same_owned_instance||unowned_aac)&&next.control_monitoring&&continuous_position&&
        listen.eligible&&listen.playing) {
+        if(owned_complete&&owned_complete->mp3&&buffers.ownership_hold_generation!=listen.generation&&DebugLoggingEnabled()) {
+            char line[240];snprintf(line,sizeof(line),
+                "MP3 end hold position=%.6f duration=%.6f last=%.6f elapsed=%.6f observation_age=%.6f",
+                next.position,current.duration,listen.last_position,time-listen.last_time,Now()-time);
+            Log(LogKind::Diagnostic,line);
+        }
         buffers.ownership_hold_generation=listen.generation;return true;
     }
     const bool ownership_hold_proven=buffers.ownership_hold_generation==listen.generation;

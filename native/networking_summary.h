@@ -79,6 +79,14 @@ inline bool SummarizeClientNetworking(std::string_view text,std::string& summary
             summary="direction=local source=client-control "+std::string(text);return true;
         }
         text=original;
+        if(Prefix(text,"FLOGGFY_STATUS:terminal obs ")) {
+            if(!Fields(text,{{"item=","null|missing|object|other"},{"context=","null|missing|object|other"},
+                {"uri=","0|1|?"},{"instance=","0|1|?"},{"paused=","0|1|?"},{"buf=","0|1|?"},
+                {"pos_ms=","number"},{"length_ms=","number"},{"local=","0|1|unknown"},
+                {"monitoring=","0|1"},{"age_ms=","number"}}))return false;
+            summary="direction=local source=terminal-state "+std::string(text);return true;
+        }
+        text=original;
         if(Prefix(text,"FLOGGFY_STATUS:client obs ")) {
             if(!Fields(text,{{"paused=","0|1|?"},{"buf=","0|1|?"},{"active=","0|1|?"},
                 {"code=","signed"},{"status=","signed"},{"inst=","0|1|?"},{"dev=","0|1|?"}}))return false;
