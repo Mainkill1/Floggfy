@@ -12,6 +12,7 @@ struct Identity {
 constexpr Identity kSupportedIdentities[] = {
     {146, 0, 10, 3504},
     {151, 3, 18, 3578},
+    {156, 0, 15, 3660},
 };
 
 constexpr bool IsSupported(Identity identity) noexcept {

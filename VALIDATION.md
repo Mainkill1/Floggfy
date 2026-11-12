@@ -1690,3 +1690,41 @@ The installed INI hash remained
 `2e681179739ae60e1f349c6968e051ec084e328a104a97962d591b46aaa49530`.
 This is installation/startup evidence only. A fresh native-format podcast must
 still publish under the real Spotify host before the PR/release gate is cleared.
+
+## 2026-11-12 CEF 156 playback observer repair
+
+The installed Spotify `libcef.dll` exports identity `156.0.15.3660`
+(`cf671c072925b27823a61181152f4f288e8e4306`). The metadata observer's exact
+identity table stopped at CEF 151, so it rejected startup before attaching its
+callbacks. Added this audited identity; unknown revisions remain rejected.
+The regression first failed at the CEF 156 acceptance assertion, then passed.
+The full Linux/native suite passed. Windows callback interception, object
+identity/ownership, menu capability, metadata heartbeat and startup tests passed.
+
+Audited the exact upstream revision using its CEF C API translator. The client,
+display, load, browser, frame, menu and menu delegate tables retain their method
+counts and relevant indices/signatures; browser factories and task posting also
+retain the ABI used by this bridge. See `native/vendor/cef/UPSTREAM.md`.
+
+The first local rebuild accidentally used POSIX MinGW and required
+`libwinpthread-1.dll`. Restored the prior DLL, rebuilt with Win32 MinGW, and
+verified the corrected DLL imports Windows system libraries only. The launcher
+hash is unchanged. Corrected build and installed DLL SHA-256:
+`703c32f995ea5670a6633679ecdef04447200a52d99609cac3496c7adb22f4cc`.
+
+Live Spotify PID 35412 reported `Spotify app observer ready`, then
+`client-timeline-ready` with a title and advancing position. FLAC STREAMINFO and
+decoded-output callbacks bound to the current playback instance. DumpStreams
+recorded Spotify URI, title `911`, artist `Parker Jack`, duration 206.523 seconds
+and advancing playback. The user confirmed the To Disk Song row shows the title.
+
+The read-only current-client discovery probe passed: capture, Ogg, FLAC, AAC,
+decoded output, ownership and Connect were found; decoded RVA `0x1063c80`, caller
+RVA `0x10648c0`, decoder offset 112. AAC capture discovery does not imply verified
+AAC ownership (`aac_verified=0`). Menu discovery remains runtime capability based.
+
+The user's INI was restored byte-for-byte to SHA-256
+`2e681179739ae60e1f349c6968e051ec084e328a104a97962d591b46aaa49530`.
+The current process retains diagnostic logging until its next restart. This
+repairs the observer and verifies hook operation; complete native-format podcast
+publication remains a separate release validation gate.
