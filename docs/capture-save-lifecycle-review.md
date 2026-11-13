@@ -86,3 +86,70 @@ These paths are verified in source; the triggering scenarios below have **not** 
 6. Add regressions proving pre-filter inventory includes assigned/unusable/out-of-window candidates, a late-arriving candidate appears in a newer snapshot, and pruning/output caps visibly reduce coverage without changing matcher decisions. Preserve the opt-in, byte/record budgets and privacy controls above.
 
 This collects all currently retained metadata candidates before exclusion **within the stated diagnostic limits**; “all possible matches” is not a promise to recover missing history or force a match.
+
+### Proposed record layout: media first, then each metadata possibility
+
+Illustrative output only, not an existing log schema or a reproduced incident. Emit the unmatched media summary first, followed by one bounded entry for **each retained metadata possibility**, including excluded entries.
+
+```json
+{
+  "snapshot_id": "s42",
+  "unmatched_media": {
+    "capture_id": 81,
+    "capture_epoch": 3,
+    "codec": "ogg",
+    "duration_seconds": 180.0,
+    "source_bytes": 4200000,
+    "complete": true,
+    "native_identity_ref": null,
+    "native_identity_status": "unavailable",
+    "capture_start_monotonic_seconds": 1000.0,
+    "outcome": "unmatched_retired",
+    "subsequent_observed_playback_starts": 5,
+    "retirement_threshold": 5
+  },
+  "coverage": {
+    "retained_metadata_total": 2,
+    "emitted": 2,
+    "omitted": 0,
+    "known_pruned_metadata_count": 3,
+    "prior_history": "not_retained",
+    "unobserved_metadata": "unknown"
+  },
+  "metadata_candidates": [
+    {
+      "metadata_generation": 17,
+      "identity_ref": "m17",
+      "duration_seconds": 175.0,
+      "estimated_start_monotonic_seconds": 1001.0,
+      "assigned": false,
+      "path": "weak",
+      "comparisons": [
+        {"check": "start_window", "absolute_delta_ms": 1000, "limit_ms": 10000, "result": "pass"},
+        {"check": "duration", "absolute_delta_ms": 5000, "limit_ms": 250, "result": "reject"}
+      ],
+      "decision": "excluded",
+      "reason": "duration_mismatch",
+      "later_checks": "not_evaluated"
+    },
+    {
+      "metadata_generation": 18,
+      "identity_ref": "m18",
+      "duration_seconds": 180.0,
+      "estimated_start_monotonic_seconds": 1000.0,
+      "assigned": true,
+      "comparisons": [
+        {"check": "already_assigned", "result": "reject"},
+        {"check": "start_window", "result": "not_evaluated"},
+        {"check": "duration", "result": "not_evaluated"}
+      ],
+      "decision": "excluded",
+      "reason": "metadata_already_assigned"
+    }
+  ]
+}
+```
+
+Identity references are session-local diagnostic labels; optional local title/artist labels may help inspection under the privacy controls above. Comparisons must reflect checks actually executed, with observed values and tolerances; matching-looking fields are not proof of an overlooked match when an earlier gate prevented evaluation. Populate prune/loss counters only if instrumentation knows them; otherwise use unknown, never a fabricated zero.
+
+**Five is not a candidate count:** default `MaxMatchQueue=5` is the retirement threshold measured in subsequent observed playback starts. It does not promise five metadata candidates, five seconds, or five Next-button clicks. Enumerate the actual retained collection, explicitly marking pruned/missing history and any diagnostic truncation.
