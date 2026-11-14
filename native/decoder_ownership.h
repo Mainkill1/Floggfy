@@ -67,6 +67,8 @@ struct DecodedActivity {
     double last=0;
     unsigned epoch=0;
     std::uint64_t sequence=0;
+    // Inclusive end of a coalesced callback range; zero means sequence.
+    std::uint64_t last_sequence=0;
 };
 
 struct OwnershipBinding {
@@ -76,6 +78,12 @@ struct OwnershipBinding {
     std::uint64_t listen_generation=0;
     OwnershipState state=OwnershipState::AwaitingOutput;
     OwnershipReason reason=OwnershipReason::CaptureBegan;
+};
+
+struct DecoderConflictEvidence {
+    DecodedActivity activity{};
+    std::array<std::uint64_t,32> captures{};
+    unsigned count=0;
 };
 
 class DecoderOwnershipTracker {
@@ -92,7 +100,8 @@ public:
                      double observed);
     bool BindCaptureExact(std::uint64_t capture_token,const std::string& playback_id,
                           const std::string& uri,std::uint64_t listen_generation,
-                          double observed);
+                          double observed,bool source_complete=false,
+                          const char** rejection_reason=nullptr);
     void ObservePlayback(const std::string& playback_id,const std::string& uri,
                          std::uint64_t listen_generation,double observed);
     void ObserveTransition(const std::string& playback_id,const std::string& uri,
@@ -102,6 +111,7 @@ public:
     void ObservationLost(ObservationLoss source,double time);
     void Reset(unsigned epoch);
     OwnershipBinding Binding(std::uint64_t capture_token) const;
+    const DecoderConflictEvidence* ConflictEvidence(std::uint64_t capture_token) const noexcept;
     std::uint64_t OwnerToken(std::uintptr_t owner) const noexcept;
     std::uint64_t PlaybackToken(const std::string& playback_id) const noexcept;
 
@@ -131,6 +141,8 @@ private:
         std::uint64_t ambiguity_group=0;
         bool active=false;
         bool complete=false;
+        bool clean_restart_abort=false;
+        DecoderConflictEvidence conflict_evidence{};
     };
     struct OwnerRecord {
         std::uintptr_t owner=0;

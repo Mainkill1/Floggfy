@@ -17,6 +17,8 @@ public:
     // Compact [suffix,size) directly after [0,prefix) without allocating.
     // Used when a decoder restarts a logical stream on the same context.
     bool RetainPrefixAndSuffix(size_t prefix,size_t suffix) noexcept;
+    // Move a retained forward range toward the beginning, without allocation.
+    bool CopyRange(size_t destination,size_t source,size_t count) noexcept;
     // Only compile a contiguous source after a complete listen; release blocks
     // before creating the tagged output. At most one additional full buffer.
     bool SplitSuffix(size_t offset,CompressedBuffer& suffix,size_t available);

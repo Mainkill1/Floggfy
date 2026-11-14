@@ -13,22 +13,34 @@
 #include <vector>
 namespace history::stream_dump {
 constexpr size_t kChunk=65536,kCapacity=64;
-enum class Kind { Input,Playback,Metadata };
+constexpr size_t kDecisionCapacity=32,kDecisionBytes=4096;
+enum class Kind { Input,Playback,Metadata,Decision,Capture };
 struct Record {
     Kind kind=Kind::Input;uintptr_t context=0;unsigned epoch=0;
     uint64_t sequence=0,utc=0,group=0;double started=0,finished=0;
     size_t length=0;unsigned part=0,parts=0;bool decoder_valid=true;
+    uint64_t producer_sequence=0,requested=0,returned=0,input_length=0;
+    unsigned format=0,error_source=0;char event[32]{};
     char instance[129]{};std::array<unsigned char,kChunk> bytes{};
 };
 struct Identity {uintptr_t context=0;unsigned epoch=0;bool used=false;std::array<unsigned char,16> value{};};
 struct Gap {
     Kind kind=Kind::Input;uintptr_t context=0;unsigned epoch=0;bool global=false,identity_unknown=false;
     uint64_t sequence=0,last_sequence=0,utc=0,last_utc=0,records=0,bytes=0;double mono=0;
+    uint64_t producer_sequence=0,last_producer_sequence=0;
+};
+struct DecisionRecord {
+    uint64_t sequence=0,utc=0;double mono=0;size_t length=0;
+    std::array<unsigned char,kDecisionBytes> bytes{};
 };
 struct State {
     std::wstring folder;std::unique_ptr<Record[]> records;
     HANDLE signal=nullptr,thread=nullptr;size_t head=0,tail=0,count=0,identity_next=0;
     uint64_t sequence=0,total_omitted=0;std::array<Gap,64> gaps{};size_t gap_head=0,gap_tail=0,gap_count=0;
+    std::array<Gap,64> capture_gaps{};size_t capture_gap_head=0,capture_gap_tail=0,capture_gap_count=0;
+    uint64_t capture_omitted=0;
+    std::array<DecisionRecord,kDecisionCapacity> decisions{};
+    size_t decision_head=0,decision_tail=0,decision_count=0;Gap decision_gap{};
     bool stopping=false;std::array<Identity,64> identities{};
 };
 inline SRWLOCK lock=SRWLOCK_INIT;
@@ -63,10 +75,32 @@ inline std::string Hex(const unsigned char* bytes,size_t length=16) {
     for(size_t i=0;i<length;++i){out+=digits[bytes[i]>>4];out+=digits[bytes[i]&15];}return out;
 }
 inline bool Enabled() noexcept {return enabled.load(std::memory_order_acquire);}
-inline void Omitted(State& s,size_t count,size_t bytes,Kind kind=Kind::Metadata,uintptr_t context=0,unsigned epoch=0,double mono=0) noexcept {
+inline void Omitted(State& s,size_t count,size_t bytes,Kind kind=Kind::Metadata,uintptr_t context=0,unsigned epoch=0,double mono=0,uint64_t producer_sequence=0) noexcept {
     Gap gap;gap.kind=kind;gap.context=context;gap.epoch=epoch;gap.global=kind==Kind::Metadata;gap.identity_unknown=kind==Kind::Playback;
     gap.sequence=++s.sequence;gap.last_sequence=s.sequence+(count?count-1:0);s.sequence=gap.last_sequence;
     gap.utc=gap.last_utc=Utc();gap.records=count;gap.bytes=bytes;gap.mono=mono;s.total_omitted+=count;
+    if(kind==Kind::Capture) {
+        gap.producer_sequence=gap.last_producer_sequence=producer_sequence;s.capture_omitted+=count;
+        if(s.capture_gap_count) {
+            auto& last=s.capture_gaps[(s.capture_gap_tail+s.capture_gaps.size()-1)%s.capture_gaps.size()];
+            if(last.last_sequence+1==gap.sequence&&last.context==context&&last.epoch==epoch) {
+                last.last_sequence=gap.last_sequence;last.last_utc=gap.last_utc;last.last_producer_sequence=producer_sequence;
+                last.records+=count;last.bytes+=bytes;SetEvent(s.signal);return;
+            }
+        }
+        if(s.capture_gap_count==s.capture_gaps.size()) {
+            auto& last=s.capture_gaps[(s.capture_gap_tail+s.capture_gaps.size()-1)%s.capture_gaps.size()];
+            last.global=true;last.last_sequence=gap.last_sequence;last.last_utc=gap.last_utc;
+            last.last_producer_sequence=producer_sequence;last.records+=count;last.bytes+=bytes;
+        } else {s.capture_gaps[s.capture_gap_tail]=gap;s.capture_gap_tail=(s.capture_gap_tail+1)%s.capture_gaps.size();++s.capture_gap_count;}
+        SetEvent(s.signal);return;
+    }
+    // Decision loss never consumes raw gap slots or invalidates native identity.
+    if(kind==Kind::Decision) {
+        if(!s.decision_gap.records)s.decision_gap=gap;
+        else {s.decision_gap.last_sequence=gap.last_sequence;s.decision_gap.last_utc=gap.last_utc;s.decision_gap.records+=count;}
+        SetEvent(s.signal);return;
+    }
     if(s.gap_count) {
         auto& last=s.gaps[(s.gap_tail+s.gaps.size()-1)%s.gaps.size()];
         if(last.last_sequence+1==gap.sequence&&last.kind==kind&&last.context==context&&last.epoch==epoch) {
@@ -86,6 +120,21 @@ inline Record& Next(State& s,Kind kind,uintptr_t context,unsigned epoch,double s
     record.length=0;record.group=record.sequence;record.part=record.parts=1;record.decoder_valid=true;record.instance[0]=0;
     s.tail=(s.tail+1)%kCapacity;++s.count;return record;
 }
+// Keep capture decisions beside the original bytes, independent of rotating logs.
+inline void Decision(const char* text) noexcept {
+    if(!Enabled()||!text)return;
+    size_t length=0;while(length<=kDecisionBytes&&text[length])++length;
+    AcquireSRWLockExclusive(&lock);auto* s=state;
+    if(!s||s->stopping||!Enabled()){ReleaseSRWLockExclusive(&lock);return;}
+    const auto now=double(GetTickCount64())/1000.0;
+    if(length>kDecisionBytes||s->decision_count==kDecisionCapacity)Omitted(*s,1,0,Kind::Decision,0,0,now);
+    else {
+        auto& r=s->decisions[s->decision_tail];r.sequence=++s->sequence;r.utc=Utc();r.mono=now;r.length=length;
+        s->decision_tail=(s->decision_tail+1)%kDecisionCapacity;++s->decision_count;
+        memcpy(r.bytes.data(),text,length);SetEvent(s->signal);
+    }
+    ReleaseSRWLockExclusive(&lock);
+}
 inline void Input(uintptr_t context,unsigned epoch,const unsigned char* bytes,size_t length,double started,double finished,bool valid=true) noexcept {
     if(!Enabled()||!length)return;
     AcquireSRWLockExclusive(&lock);auto* s=state;
@@ -99,6 +148,26 @@ inline void Input(uintptr_t context,unsigned epoch,const unsigned char* bytes,si
         memcpy(r.bytes.data(),bytes,amount);bytes+=amount;length-=amount;
     }
     SetEvent(s->signal);ReleaseSRWLockExclusive(&lock);
+}
+// Record exactly one worker-accepted event, including empty lifecycle events.
+// Payloads are never split or rewritten; loss invalidates capture replay only.
+inline void CaptureEvent(uintptr_t context,unsigned epoch,uint64_t producer_sequence,const char* event,
+                         const unsigned char* bytes,size_t length,double time,unsigned format=0,
+                         unsigned error_source=0,uint64_t requested=0,uint64_t returned=0,uint64_t input_length=0) noexcept {
+    if(!Enabled())return;
+    size_t event_length=0;if(event)while(event_length<32&&event[event_length])++event_length;
+    AcquireSRWLockExclusive(&lock);auto* s=state;
+    if(!s||s->stopping||!Enabled()){ReleaseSRWLockExclusive(&lock);return;}
+    if(!event_length||event_length==32||length>kChunk||(length&&!bytes)||s->count==kCapacity)
+        Omitted(*s,1,length,Kind::Capture,context,epoch,time,producer_sequence);
+    else {
+        auto& r=Next(*s,Kind::Capture,context,epoch,time,time);r.producer_sequence=producer_sequence;
+        r.format=format;r.error_source=error_source;r.requested=requested;r.returned=returned;r.input_length=input_length;
+        memcpy(r.event,event,event_length);r.event[event_length]=0;r.length=length;
+        if(length)memcpy(r.bytes.data(),bytes,length);
+        SetEvent(s->signal);
+    }
+    ReleaseSRWLockExclusive(&lock);
 }
 inline void Playback(uintptr_t context,unsigned epoch,const std::array<unsigned char,16>& value,double time,
                      const std::array<unsigned char,32>* field=nullptr) noexcept {
@@ -146,24 +215,25 @@ inline std::string Common(const Record& r,const char* kind) {
 }
 inline DWORD WINAPI Writer(void* parameter) {
     auto& s=*static_cast<State*>(parameter);HANDLE session=INVALID_HANDLE_VALUE;
-    std::map<std::pair<uintptr_t,unsigned>,Stream> streams;std::map<std::string,std::string> metadata;
+    std::map<std::pair<uintptr_t,unsigned>,Stream> streams,captures;std::map<std::string,std::string> metadata;
     bool ok=true;
     try {
         const auto result=SHCreateDirectoryExW(nullptr,s.folder.c_str(),nullptr);
         if(result!=ERROR_SUCCESS&&result!=ERROR_ALREADY_EXISTS&&result!=ERROR_FILE_EXISTS)throw 1;
         session=CreateFileW((s.folder+L"\\session.jsonl").c_str(),GENERIC_WRITE,FILE_SHARE_READ,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
         if(session==INVALID_HANDLE_VALUE)throw 1;
-        if(!Line(session,"{\"kind\":\"session_start\",\"utc_ms\":"+std::to_string(Utc())+",\"schema\":1,\"input_order\":\"callback-completion\",\"queue_bytes\":"+std::to_string(kCapacity*kChunk)))throw 1;
-        bool global_incomplete=false,global_unknown_data=false;uint64_t global_identity_unknown_through=0;std::string latest_metadata;
-        const auto obtain=[&](uintptr_t context,unsigned epoch,uint64_t utc)->Stream& {
-            const auto key=std::make_pair(context,epoch);auto it=streams.find(key);
-            if(it!=streams.end())return it->second;
-            Stream stream;stream.id=unsigned(streams.size()+1);stream.epoch=epoch;stream.incomplete=global_incomplete;stream.logical_known=!global_unknown_data;stream.identity_unknown_through=global_identity_unknown_through;
-            const auto stem=Stamp(utc)+L"-stream-"+std::to_wstring(stream.id);
+        if(!Line(session,"{\"kind\":\"session_start\",\"utc_ms\":"+std::to_string(Utc())+",\"schema\":1,\"input_order\":\"callback-completion\",\"capture_source\":\"flac-read-worker\",\"capture_order\":\"worker-accepted\",\"queue_bytes\":"+std::to_string(kCapacity*kChunk)))throw 1;
+        bool global_incomplete=false,global_unknown_data=false,capture_incomplete=false;uint64_t global_identity_unknown_through=0;std::string latest_metadata;
+        const auto obtain=[&](uintptr_t context,unsigned epoch,uint64_t utc,bool capture=false)->Stream& {
+            auto& collection=capture?captures:streams;
+            const auto key=std::make_pair(context,epoch);auto it=collection.find(key);
+            if(it!=collection.end())return it->second;
+            Stream stream;stream.id=unsigned(collection.size()+1);stream.epoch=epoch;stream.incomplete=capture?capture_incomplete:global_incomplete;stream.logical_known=capture||!global_unknown_data;stream.identity_unknown_through=capture?0:global_identity_unknown_through;
+            const auto stem=Stamp(utc)+(capture?L"-capture-":L"-stream-")+std::to_wstring(stream.id);
             stream.name=std::string(stem.begin(),stem.end())+".bin";
             stream.input=CreateFileW((s.folder+L"\\"+stem+L".bin").c_str(),GENERIC_WRITE,FILE_SHARE_READ,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
             stream.log=CreateFileW((s.folder+L"\\"+stem+L".jsonl").c_str(),GENERIC_WRITE,FILE_SHARE_READ,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
-            it=streams.emplace(key,std::move(stream)).first;
+            it=collection.emplace(key,std::move(stream)).first;
             if(it->second.input==INVALID_HANDLE_VALUE||it->second.log==INVALID_HANDLE_VALUE)throw 1;
             if(!latest_metadata.empty()&&!Line(it->second.log,latest_metadata+",\"offset\":0,\"association\":\"unresolved\""))throw 1;
             return it->second;
@@ -172,12 +242,48 @@ inline DWORD WINAPI Writer(void* parameter) {
         for(;;) {
             Gap gap;bool got=false,lost=false,stop=false;
             AcquireSRWLockExclusive(&lock);
-            if(s.gap_count&&(!s.count||s.gaps[s.gap_head].sequence<s.records[s.head].sequence)) {
+            const auto next_sequence=std::min({s.count?s.records[s.head].sequence:UINT64_MAX,
+                s.gap_count?s.gaps[s.gap_head].sequence:UINT64_MAX,
+                s.capture_gap_count?s.capture_gaps[s.capture_gap_head].sequence:UINT64_MAX,
+                s.decision_count?s.decisions[s.decision_head].sequence:UINT64_MAX,
+                s.decision_gap.records?s.decision_gap.sequence:UINT64_MAX});
+            if(s.decision_gap.records&&s.decision_gap.sequence==next_sequence) {
+                gap=s.decision_gap;s.decision_gap={};lost=true;
+            } else if(s.decision_count&&s.decisions[s.decision_head].sequence==next_sequence) {
+                const auto& decision=s.decisions[s.decision_head];record.kind=Kind::Decision;
+                record.sequence=decision.sequence;record.utc=decision.utc;record.started=record.finished=decision.mono;
+                record.length=decision.length;memcpy(record.bytes.data(),decision.bytes.data(),decision.length);
+                s.decision_head=(s.decision_head+1)%kDecisionCapacity;--s.decision_count;got=true;
+            } else if(s.capture_gap_count&&s.capture_gaps[s.capture_gap_head].sequence==next_sequence) {
+                gap=s.capture_gaps[s.capture_gap_head];s.capture_gap_head=(s.capture_gap_head+1)%s.capture_gaps.size();--s.capture_gap_count;lost=true;
+            } else if(s.gap_count&&s.gaps[s.gap_head].sequence==next_sequence) {
                 gap=s.gaps[s.gap_head];s.gap_head=(s.gap_head+1)%s.gaps.size();--s.gap_count;lost=true;
             } else if(s.count){record=s.records[s.head];s.head=(s.head+1)%kCapacity;--s.count;got=true;}
-            stop=s.stopping&&!s.count&&!s.gap_count;
+            stop=s.stopping&&!s.count&&!s.gap_count&&!s.capture_gap_count&&!s.decision_count&&!s.decision_gap.records;
             ReleaseSRWLockExclusive(&lock);
-            if(lost) {
+            if(lost&&gap.kind==Kind::Capture) {
+                const auto line=std::string("{\"kind\":\"capture_gap\",\"source\":\"flac-read-worker\",\"sequence\":")+std::to_string(gap.sequence)+
+                    ",\"last_sequence\":"+std::to_string(gap.last_sequence)+",\"producer_sequence\":"+std::to_string(gap.producer_sequence)+
+                    ",\"last_producer_sequence\":"+std::to_string(gap.last_producer_sequence)+",\"utc_ms\":"+std::to_string(gap.utc)+
+                    ",\"last_utc_ms\":"+std::to_string(gap.last_utc)+",\"mono\":"+std::to_string(gap.mono)+
+                    ",\"records\":"+std::to_string(gap.records)+",\"bytes\":"+std::to_string(gap.bytes)+",\"complete\":false";
+                if(gap.global) {
+                    capture_incomplete=true;
+                    if(!Line(session,line+",\"scope\":\"all-capture-streams\""))throw 1;
+                    for(auto& item:captures) {item.second.incomplete=true;
+                        if(!Line(item.second.log,line+",\"scope\":\"all-capture-streams\""))throw 1;}
+                } else {
+                    auto& stream=obtain(gap.context,gap.epoch,gap.utc,true);stream.incomplete=true;
+                    const auto located=line+",\"scope\":\"capture-stream\",\"stream\":"+std::to_string(stream.id)+
+                        ",\"context\":"+std::to_string(gap.context)+",\"epoch\":"+std::to_string(gap.epoch)+
+                        ",\"offset\":"+std::to_string(stream.offset)+",\"file\":"+Json(stream.name);
+                    if(!Line(session,located)||!Line(stream.log,located))throw 1;
+                }
+            } else if(lost&&gap.kind==Kind::Decision&&!gap.global) {
+                if(!Line(session,"{\"kind\":\"decision_gap\",\"sequence\":"+std::to_string(gap.sequence)+
+                    ",\"last_sequence\":"+std::to_string(gap.last_sequence)+",\"records\":"+std::to_string(gap.records)+
+                    ",\"utc_ms\":"+std::to_string(gap.utc)+",\"last_utc_ms\":"+std::to_string(gap.last_utc)))throw 1;
+            } else if(lost) {
                 const auto line=std::string("{\"kind\":\"gap\",\"sequence\":")+std::to_string(gap.sequence)+",\"last_sequence\":"+std::to_string(gap.last_sequence)+
                     ",\"utc_ms\":"+std::to_string(gap.utc)+",\"last_utc_ms\":"+std::to_string(gap.last_utc)+",\"mono\":"+std::to_string(gap.mono)+
                     ",\"records\":"+std::to_string(gap.records)+",\"bytes\":"+std::to_string(gap.bytes)+",\"source\":"+Json(gap.kind==Kind::Input?"input":gap.kind==Kind::Playback?"playback":"metadata")+",\"native_identity_unknown\":"+(gap.identity_unknown?"true":"false")+",\"complete\":false";
@@ -192,12 +298,29 @@ inline DWORD WINAPI Writer(void* parameter) {
                 }
             }
             if(got) {
-                if(record.kind==Kind::Metadata) {
+                if(record.kind==Kind::Capture) {
+                    auto& stream=obtain(record.context,record.epoch,record.utc,true);
+                    const auto line=Common(record,"capture_event")+",\"source\":\"flac-read-worker\",\"event\":"+Json(record.event)+
+                        ",\"producer_sequence\":"+std::to_string(record.producer_sequence)+",\"context\":"+std::to_string(record.context)+
+                        ",\"epoch\":"+std::to_string(record.epoch)+",\"stream\":"+std::to_string(stream.id)+",\"file\":"+Json(stream.name)+
+                        ",\"offset\":"+std::to_string(stream.offset)+",\"bytes\":"+std::to_string(record.length)+
+                        ",\"format\":"+std::to_string(record.format)+",\"error_source\":"+std::to_string(record.error_source)+
+                        ",\"requested\":"+std::to_string(record.requested)+",\"returned\":"+std::to_string(record.returned)+
+                        ",\"input_length\":"+std::to_string(record.input_length)+",\"complete\":"+(stream.incomplete?"false":"true");
+                    if(!Write(stream.input,record.bytes.data(),record.length))throw 1;
+                    stream.offset+=record.length;
+                    if(!Line(session,line)||!Line(stream.log,line))throw 1;
+                } else if(record.kind==Kind::Decision) {
+                    if(!Line(session,Common(record,"decision")+",\"message\":"+
+                        Json(std::string(reinterpret_cast<const char*>(record.bytes.data()),record.length))))throw 1;
+                } else if(record.kind==Kind::Metadata) {
                     const auto line=Common(record,"metadata")+","+std::string(reinterpret_cast<const char*>(record.bytes.data()),record.length);
                     if(!Line(session,line))throw 1;
                     latest_metadata=line;metadata[InstanceKey(record.instance)]=line;if(metadata.size()>128)metadata.erase(metadata.begin());
                     for(auto& item:streams)if(item.second.instance.empty()||item.second.instance==InstanceKey(record.instance))
                         if(!Line(item.second.log,line+",\"offset\":"+std::to_string(item.second.offset)+",\"association\":"+Json(item.second.instance.empty()?"unresolved":"native-instance")))throw 1;
+                    for(auto& item:captures)
+                        if(!Line(item.second.log,line+",\"offset\":"+std::to_string(item.second.offset)+",\"association\":\"unresolved\""))throw 1;
                 } else {
                     auto& stream=obtain(record.context,record.epoch,record.utc);
                     auto line=Common(record,record.kind==Kind::Input?"input":"playback")+",\"stream\":"+std::to_string(stream.id)+
@@ -218,9 +341,16 @@ inline DWORD WINAPI Writer(void* parameter) {
             if(stop)break;
             if(!got&&!lost)WaitForSingleObject(s.signal,200);
         }
-        if(!Line(session,"{\"kind\":\"session_end\",\"utc_ms\":"+std::to_string(Utc())+",\"omitted_records\":"+std::to_string(s.total_omitted)+",\"complete\":"+(s.total_omitted?"false":"true")))throw 1;
-    }catch(...){ok=false;enabled.store(false,std::memory_order_release);}
+        if(!Line(session,"{\"kind\":\"session_end\",\"utc_ms\":"+std::to_string(Utc())+",\"omitted_records\":"+std::to_string(s.total_omitted)+",\"complete\":"+(s.total_omitted?"false":"true")+
+            ",\"capture_omitted_records\":"+std::to_string(s.capture_omitted)+",\"capture_complete\":"+(s.capture_omitted?"false":"true")))throw 1;
+    }catch(...){ok=false;enabled.store(false,std::memory_order_release);
+        // Best effort only: a failed or missing terminal row must also cause
+        // replay to reject the session, even if this marker cannot be written.
+        try {Line(session,"{\"kind\":\"write_error\",\"complete\":false,\"capture_complete\":false");
+            for(auto& item:captures)Line(item.second.log,"{\"kind\":\"write_error\",\"complete\":false");}catch(...){}
+    }
     for(auto& item:streams){if(item.second.input!=INVALID_HANDLE_VALUE)CloseHandle(item.second.input);if(item.second.log!=INVALID_HANDLE_VALUE)CloseHandle(item.second.log);}
+    for(auto& item:captures){if(item.second.input!=INVALID_HANDLE_VALUE)CloseHandle(item.second.input);if(item.second.log!=INVALID_HANDLE_VALUE)CloseHandle(item.second.log);}
     if(session!=INVALID_HANDLE_VALUE)CloseHandle(session);
     if(!ok)LogEvent(LogKind::Warning,"warning","DumpStreams write failed; diagnostic files may be incomplete");
     return ok?0:1;

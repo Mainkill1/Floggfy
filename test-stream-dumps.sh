@@ -17,7 +17,7 @@ for path in logs:
     if path.name!='session.jsonl':
         offset=0
         for row in rows:
-            if row['kind']=='input':assert row['offset']==offset;offset+=row['bytes']
+            if row['kind'] in ('input','capture_event'):assert row['offset']==offset;offset+=row['bytes']
             if row['kind']=='metadata' and row['title']=='Second "poem"\n':quoted=True
         assert path.with_suffix('.bin').stat().st_size==offset
 assert quoted,'metadata text must round-trip through valid JSON'

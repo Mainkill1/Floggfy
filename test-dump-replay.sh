@@ -5,6 +5,10 @@ set -euo pipefail
 cd -- "$(dirname -- "$0")"
 replay_mode=--dump-replay
 replay_args=2
+if [[ ${1:-} == --capture-buffer && $# == 3 ]]; then
+    replay_mode=--capture-buffer-replay
+    shift
+fi
 if [[ ${1:-} == --ogg-listen && $# == 3 ]]; then
     replay_mode=--dump-ogg-listen-replay
     shift
@@ -14,8 +18,8 @@ if [[ ${1:-} == --quality && $# == 5 ]]; then
     replay_args=4
     shift
 fi
-if [[ $# != "$replay_args" ]] || [[ ! -f $1 ]] || [[ $replay_mode != --dump-ogg-listen-replay && ! -f $2 ]]; then
-    echo 'Usage: bash test-dump-replay.sh [--quality] STREAM.bin STREAM.jsonl [NATIVE_FIELD_HEX_OR_auto SPOTIFY_URI]; or --ogg-listen SESSION.jsonl SPOTIFY_URI' >&2
+if [[ $# != "$replay_args" ]] || [[ ! -f $1 ]] || [[ $replay_mode != --dump-ogg-listen-replay && $replay_mode != --capture-buffer-replay && ! -f $2 ]]; then
+    echo 'Usage: bash test-dump-replay.sh [--quality] STREAM.bin STREAM.jsonl [NATIVE_FIELD_HEX_OR_auto SPOTIFY_URI]; or --ogg-listen SESSION.jsonl SPOTIFY_URI; or --capture-buffer SESSION.jsonl OUTPUT_DIRECTORY' >&2
     exit 2
 fi
 
@@ -48,7 +52,9 @@ x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include \
     "$floggfy_replay_build"/*.o -lole32 -luuid -lshell32 -lruntimeobject \
     -o "$floggfy_replay_root/test.exe"
 
-if [[ $replay_mode == --dump-ogg-listen-replay ]]; then
+if [[ $replay_mode == --capture-buffer-replay ]]; then
+    "$floggfy_replay_root/test.exe" "$replay_mode" "$(wslpath -w "$1")" "$(wslpath -w "$2")"
+elif [[ $replay_mode == --dump-ogg-listen-replay ]]; then
     "$floggfy_replay_root/test.exe" "$replay_mode" "$(wslpath -w "$1")" "$2"
 elif [[ $replay_mode == --dump-quality-replay ]]; then
     "$floggfy_replay_root/test.exe" "$replay_mode" "$(wslpath -w "$1")" "$(wslpath -w "$2")" "$3" "$4"

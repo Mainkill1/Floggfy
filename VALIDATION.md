@@ -1,3 +1,41 @@
+## Floggfy 1.3: final live recording validation
+
+Tested with Spotify 1.3.9.2055 on Windows x64, including repeated songs,
+rapid skips, backtracks, forward seeks, and a free account with advertisements.
+The release notes compare 1.3 with 1.2.4.
+
+- All 35 saved FLAC recordings in the frozen lossless run decoded successfully,
+  matched their source checksums/audio, and carried the correct native playback
+  identity and metadata. No weak match or unmatched publication occurred in that run.
+- All nine complete Ogg sources in the frozen free-account run were saved.
+  All 861 output pages passed CRC/sequence/start/end checks; all 15,195 compressed
+  audio packets matched the captured source. Full decoding produced 8,801,788
+  samples per channel without decoder warnings. All nine publications used native
+  playback identity, with no incorrect song pairing found.
+- The remaining free-account song occurrences were incomplete (22) or pending
+  at the cutoff (four). No new capture queue loss occurred. A complete 30-second
+  MP3 from the advertisement interval was preserved in Unmatched after five
+  subsequent media starts, without assigning a song identity. This is intended
+  fallback behavior.
+- The lossless seek/skip run also exposed missing input. Dirty Dog had incomplete
+  or absent frames covering 464 ms; Coffee Mug encountered a full capture queue.
+  These incomplete recordings were not published as complete songs. This
+  validation does not claim that every seek or interrupted source can be recovered.
+
+The live-tested DLL SHA-256 was
+`669a251d751bffbc6f0d5dc04e20cead091a307a99ca9c80152f3f1f3410da0d`.
+The final candidate adds diagnostic-only queue-loss counts, reader explanations,
+and playback-position observations through buffering; capture/matching policy is
+unchanged. Its SHA-256 is
+`ed266841d953f5962cdce76ac48b013295160be4ec65aaf4dffdef928165e403`.
+Local audio and account data remain outside the repository and release assets.
+
+Release checks passed: `bash test-native.sh`, `bash test-diagnostics.sh` against
+Spotify 1.3.9.2055's DLL, `bash test-stream-dumps.sh`, and `bash build-native.sh`.
+The rebuilt release DLL matches the final candidate hash above. The launcher ZIP
+contains the same DLL, verified checksums and default configuration. PE imports
+require no external MinGW runtime DLLs, including `libwinpthread-1.dll`.
+
 The current consolidated diagnostics regression entry point is
 `bash test-diagnostics.sh [SPOTIFY_DLL]`. Earlier dated sections below preserve
 historical evidence and may name wrappers that this entry point has replaced.

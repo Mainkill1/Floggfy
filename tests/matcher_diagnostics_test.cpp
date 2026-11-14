@@ -4,8 +4,63 @@
 #include <string>
 #include <limits>
 
+void SnapshotDeltas() {
+    using namespace history;
+    MatcherSnapshot snapshot;snapshot.snapshot_id=1;snapshot.capture_id=7;snapshot.inventory_evaluated=true;
+    for(uint64_t id=1;id<=6;++id) {
+        auto* candidate=snapshot.AddCandidate(id);candidate->usable=true;
+        candidate->decision=MatcherReason::OutsideStartWindow;candidate->start_delta_ms=20000;
+    }
+    snapshot.AddCompetitor(8);
+    MatcherSnapshotEmissionState emission;
+    auto full=SerializeMatcherSnapshot(snapshot,emission);
+    assert(full.records.size()==9&&!full.truncated&&emission.snapshot_id==1);
+    assert(full.records.front().find("mode=full")!=std::string::npos);
+    snapshot.snapshot_id=2;snapshot.competitors[0].complete=true;
+    auto delta=SerializeMatcherSnapshot(snapshot,emission);
+    assert(delta.records.size()==2&&delta.bytes<full.bytes/2&&
+        "one competitor change must not repeat the unchanged six candidate explanations");
+    assert(delta.records[0].find("mode=delta base_snapshot=1")!=std::string::npos);
+    assert(delta.records[1].find("matcher_competitor")!=std::string::npos&&
+        delta.records[1].find("complete=1")!=std::string::npos);
+    snapshot.snapshot_id=3;snapshot.metadata[5].decision=MatcherReason::DurationMismatch;
+    delta=SerializeMatcherSnapshot(snapshot,emission);
+    assert(delta.records.size()==2&&delta.records[1].find("metadata=6 decision=duration-mismatch")!=std::string::npos);
+    snapshot.snapshot_id=4;--snapshot.metadata_count;--snapshot.metadata_total;
+    snapshot.competitor_count=0;snapshot.competitor_total=0;
+    delta=SerializeMatcherSnapshot(snapshot,emission);
+    assert(delta.records.size()==3&&delta.records[1].find("matcher_candidate_removed")!=std::string::npos&&
+        delta.records[1].find("metadata=6")!=std::string::npos&&delta.records[2].find("matcher_competitor_removed")!=std::string::npos);
+    snapshot.snapshot_id=5;snapshot.FinalizeSnapshot(MatcherReason::RetiredInvalid);
+    auto terminal=SerializeMatcherSnapshot(snapshot,emission);
+    assert(terminal.records.size()==8&&terminal.records[0].find("mode=full")!=std::string::npos&&
+        terminal.records[1].find("matcher_terminal reason=retired-invalid")!=std::string::npos);
+    for(std::size_t i=3;i<terminal.records.size();++i)
+        assert(terminal.records[i].find("decision=outside-start-window")!=std::string::npos);
+    snapshot.snapshot_id=6;snapshot.FinalizeSnapshot(MatcherReason::NotEvaluated);
+    snapshot.duration_tolerance_ms=100;
+    delta=SerializeMatcherSnapshot(snapshot,emission);
+    assert(delta.records.size()==2&&delta.records[1].find("duration_tolerance_ms=100")!=std::string::npos);
+    // A caller stages cache changes until budget admission. A rejected delta
+    // must not become the base of the next admitted snapshot.
+    auto proposed=emission;snapshot.snapshot_id=7;snapshot.duration_tolerance_ms=200;
+    const auto rejected=SerializeMatcherSnapshot(snapshot,proposed);
+    MatcherDiagnosticBudget empty_budget(0);
+    assert(!empty_budget.Admit(rejected.bytes,rejected.records.size()).admitted);
+    snapshot.snapshot_id=8;snapshot.duration_tolerance_ms=300;
+    delta=SerializeMatcherSnapshot(snapshot,emission);
+    assert(delta.records[0].find("base_snapshot=6")!=std::string::npos);
+    snapshot.snapshot_id=9;snapshot.FinalizeSnapshot(MatcherReason::RetiredInvalid);
+    const auto truncated=SerializeMatcherSnapshot(snapshot,emission,1024);
+    assert(truncated.truncated&&emission.snapshot_id==0);
+    snapshot.snapshot_id=10;snapshot.FinalizeSnapshot(MatcherReason::NotEvaluated);
+    const auto recovery=SerializeMatcherSnapshot(snapshot,emission);
+    assert(recovery.records[0].find("mode=full")!=std::string::npos&&recovery.records.size()==7);
+}
+
 int main() {
     using namespace history;
+    SnapshotDeltas();
     MatcherSnapshot snapshot;snapshot.inventory_evaluated=true;snapshot.snapshot_id=1;snapshot.capture_id=7;
     auto* candidate=snapshot.AddCandidate(12);assert(candidate);
     candidate->usable=true;candidate->source_duration_ms=0;
@@ -22,6 +77,13 @@ int main() {
     assert(joined.find("timing_evaluated=1 duration_evaluated=0")!=std::string::npos);
     assert(joined.find("decision=outside-start-window")!=std::string::npos);
     const auto signature=MatcherSnapshotSignature(snapshot);
+    snapshot.end_ms=100000;
+    assert(MatcherSnapshotSignature(snapshot)==signature&&
+        "absolute observation time alone must not repeat unchanged matching evidence");
+    snapshot.metadata[0].end_delta_ms=250;
+    assert(MatcherSnapshotSignature(snapshot)!=signature&&
+        "changed relative timing evidence must still emit a snapshot");
+    snapshot.metadata[0].end_delta_ms.reset();
     snapshot.source_bytes=65536;
     assert(MatcherSnapshotSignature(snapshot)==signature&&"byte arrival alone is not a changed matching decision");
     snapshot.snapshot_id=999;snapshot.FinalizeSnapshot(MatcherReason::SavedUnmatched);

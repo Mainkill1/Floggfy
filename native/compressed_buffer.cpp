@@ -34,6 +34,16 @@ bool CompressedBuffer::RetainPrefixAndSuffix(size_t prefix,size_t suffix) noexce
     while(blocks.size()>required)blocks.pop_back();
     return true;
 }
+bool CompressedBuffer::CopyRange(size_t destination,size_t source,size_t count) noexcept {
+    if(destination>source||source>length||count>length-source)return false;
+    while(count) {
+        const auto n=std::min({count,block_size-source%block_size,block_size-destination%block_size});
+        std::memmove(blocks[destination/block_size].get()+destination%block_size,
+                     blocks[source/block_size].get()+source%block_size,n);
+        source+=n;destination+=n;count-=n;
+    }
+    return true;
+}
 bool CompressedBuffer::SplitSuffix(size_t offset,CompressedBuffer& suffix,size_t available) {
     if(offset>length||&suffix==this||suffix.size())return false;
     CompressedBuffer result;

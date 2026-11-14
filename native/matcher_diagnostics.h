@@ -111,6 +111,15 @@ struct SerializedMatcherSnapshot {
     std::size_t bytes=0,omitted_records=0;
     bool truncated=false;
 };
+// Per-capture cache of bounded row fingerprints, never serialized log strings.
+// Only advance this state after admitting the snapshot to the diagnostic budget.
+struct MatcherSnapshotEmissionState {
+    enum class Kind {Settings,Association,Candidate,Competitor};
+    struct Row {Kind kind=Kind::Settings;uint64_t id=0,signature=0;};
+    uint64_t snapshot_id=0;
+    std::size_t count=0;
+    std::array<Row,50> rows{};
+};
 namespace matcher_diagnostic_detail {
 inline std::string Number(std::optional<double> value) {
     if(!value||!std::isfinite(*value))return "unknown";
@@ -123,17 +132,36 @@ inline std::string Common(const MatcherSnapshot& snapshot) {
     return " snapshot="+std::to_string(snapshot.snapshot_id)+
         " capture="+std::to_string(snapshot.capture_id)+" epoch="+std::to_string(snapshot.epoch);
 }
-inline SerializedMatcherSnapshot Serialize(const MatcherSnapshot& snapshot,std::size_t limit) {
+inline SerializedMatcherSnapshot Serialize(const MatcherSnapshot& snapshot,std::size_t limit,
+                                           MatcherSnapshotEmissionState* emission=nullptr) {
     SerializedMatcherSnapshot result;limit=std::min(limit,kMatcherSnapshotBytes);
     std::vector<std::string> bodies;
     const auto common=Common(snapshot);
+    using Kind=MatcherSnapshotEmissionState::Kind;
+    MatcherSnapshotEmissionState next;next.snapshot_id=snapshot.snapshot_id;
+    const bool delta=emission&&emission->snapshot_id&&snapshot.terminal==MatcherReason::NotEvaluated;
+    const auto add=[&](Kind kind,uint64_t id,std::string body) {
+        uint64_t signature=14695981039346656037ull;
+        // The common sequence/capture prefix is correlation, not row evidence.
+        const auto at=body.find(common);
+        for(std::size_t i=0;i<body.size();++i) {
+            if(i==at){i+=common.size()-1;continue;}
+            signature^=static_cast<unsigned char>(body[i]);signature*=1099511628211ull;
+        }
+        next.rows[next.count++]={kind,id,signature};
+        if(delta)for(std::size_t i=0;i<emission->count;++i) {
+            const auto& prior=emission->rows[i];
+            if(prior.kind==kind&&prior.id==id&&prior.signature==signature)return;
+        }
+        bodies.push_back(std::move(body));
+    };
     // Terminal evidence has priority over a long candidate inventory.
     if(snapshot.terminal!=MatcherReason::NotEvaluated)
         bodies.push_back(std::string("matcher_terminal reason=")+MatcherReasonName(snapshot.terminal)+common);
     if(snapshot.association_metadata_id)
-        bodies.push_back("matcher_association"+common+" metadata="+std::to_string(*snapshot.association_metadata_id)+
+        add(Kind::Association,0,"matcher_association"+common+" metadata="+std::to_string(*snapshot.association_metadata_id)+
             " retained="+std::to_string(snapshot.association_retained)+" path="+MatcherPathName(snapshot.path));
-    bodies.push_back("matcher_settings"+common+" complete="+std::to_string(snapshot.complete)+
+    add(Kind::Settings,0,"matcher_settings"+common+" complete="+std::to_string(snapshot.complete)+
         " source_bytes="+std::to_string(snapshot.source_bytes)+" subsequent_starts="+std::to_string(snapshot.subsequent_starts)+
         " retirement_threshold="+std::to_string(snapshot.retirement_threshold)+
         " timing_tolerance_ms="+std::to_string(snapshot.time_offset_tolerance_ms)+
@@ -143,7 +171,7 @@ inline SerializedMatcherSnapshot Serialize(const MatcherSnapshot& snapshot,std::
                                snapshot.prior_history==MatcherPriorHistory::Retained?"retained":"unknown"));
     for(std::size_t i=0;i<snapshot.metadata_count;++i) {
         const auto& item=snapshot.metadata[i];
-        bodies.push_back("matcher_candidate"+common+" metadata="+std::to_string(item.metadata_id)+
+        add(Kind::Candidate,item.metadata_id,"matcher_candidate"+common+" metadata="+std::to_string(item.metadata_id)+
             " decision="+MatcherReasonName(item.decision)+" path="+MatcherPathName(item.path)+
             " assigned="+std::to_string(item.assigned)+" usable="+std::to_string(item.usable)+
             " timing_evaluated="+std::to_string(item.timing_evaluated)+
@@ -155,9 +183,19 @@ inline SerializedMatcherSnapshot Serialize(const MatcherSnapshot& snapshot,std::
     }
     for(std::size_t i=0;i<snapshot.competitor_count;++i) {
         const auto& item=snapshot.competitors[i];
-        bodies.push_back("matcher_competitor"+common+" competitor="+std::to_string(item.capture_id)+
+        add(Kind::Competitor,item.capture_id,"matcher_competitor"+common+" competitor="+std::to_string(item.capture_id)+
             " complete="+std::to_string(item.complete)+" associated="+std::to_string(item.associated)+
             " duration_ms="+Number(item.duration_ms));
+    }
+    if(delta)for(std::size_t i=0;i<emission->count;++i) {
+        const auto& prior=emission->rows[i];
+        const auto found=std::find_if(next.rows.begin(),next.rows.begin()+next.count,[&](const auto& row) {
+            return row.kind==prior.kind&&row.id==prior.id;
+        });
+        if(found!=next.rows.begin()+next.count)continue;
+        if(prior.kind==Kind::Candidate)bodies.push_back("matcher_candidate_removed"+common+" metadata="+std::to_string(prior.id));
+        else if(prior.kind==Kind::Competitor)bodies.push_back("matcher_competitor_removed"+common+" competitor="+std::to_string(prior.id));
+        else if(prior.kind==Kind::Association)bodies.push_back("matcher_association_removed"+common);
     }
     // Reserve a bounded summary before accepting candidate parts. All strings
     // come from fixed tokens/numbers; one logical candidate always fits a line.
@@ -169,11 +207,12 @@ inline SerializedMatcherSnapshot Serialize(const MatcherSnapshot& snapshot,std::
     }
     result.omitted_records=bodies.size()-selected;
     result.truncated=result.omitted_records!=0;
-    if(limit<summary_reserve){result.omitted_records=bodies.size()+1;result.truncated=true;return result;}
+    if(limit<summary_reserve){result.omitted_records=bodies.size()+1;result.truncated=true;if(emission)*emission={};return result;}
     const auto parts=selected+1;
     std::string summary="matcher_snapshot metadata_total="+(snapshot.inventory_evaluated?std::to_string(snapshot.metadata_total):"unknown")+
         " codec="+(!snapshot.codec?"unknown":*snapshot.codec==Codec::Vorbis?"ogg":*snapshot.codec==Codec::Flac?"flac":*snapshot.codec==Codec::Mp3?"mp3":"aac")+
-        " kind=summary metadata_kept="+std::to_string(snapshot.metadata_count)+
+        " kind=summary mode="+(delta?std::string("delta base_snapshot=")+std::to_string(emission->snapshot_id):std::string("full"))+
+        " metadata_kept="+std::to_string(snapshot.metadata_count)+
         " metadata_omitted="+(snapshot.inventory_evaluated?std::to_string(snapshot.metadata_total-snapshot.metadata_count):"unknown")+
         " competitors_total="+(snapshot.inventory_evaluated?std::to_string(snapshot.competitor_total):"unknown")+
         " competitors_kept="+std::to_string(snapshot.competitor_count)+
@@ -189,11 +228,17 @@ inline SerializedMatcherSnapshot Serialize(const MatcherSnapshot& snapshot,std::
         bodies[i]+=" part="+std::to_string(i+2)+"/"+std::to_string(parts);
         result.bytes+=bodies[i].size();result.records.push_back(std::move(bodies[i]));
     }
+    // A truncated inventory cannot serve as a reconstructable delta base.
+    if(emission)*emission=result.truncated?MatcherSnapshotEmissionState{}:next;
     return result;
 }
 }
 inline SerializedMatcherSnapshot SerializeMatcherSnapshot(const MatcherSnapshot& snapshot,
     std::size_t limit=kMatcherSnapshotBytes) {return matcher_diagnostic_detail::Serialize(snapshot,limit);}
+inline SerializedMatcherSnapshot SerializeMatcherSnapshot(const MatcherSnapshot& snapshot,
+    MatcherSnapshotEmissionState& emission,std::size_t limit=kMatcherSnapshotBytes) {
+    return matcher_diagnostic_detail::Serialize(snapshot,limit,&emission);
+}
 namespace matcher_diagnostic_detail {
 class Fingerprint {
     uint64_t hash_=14695981039346656037ull;
@@ -219,7 +264,9 @@ inline uint64_t MatcherSnapshotSignature(const MatcherSnapshot& snapshot) noexce
     hash.Add(snapshot.capture_id);hash.Add(snapshot.epoch);hash.Add(snapshot.path);
     hash.Add(snapshot.ownership_state);hash.Add(snapshot.ownership_reason);hash.Add(snapshot.queue_dropped);
     hash.Add(snapshot.association_metadata_id);hash.Add(snapshot.association_retained);
-    hash.Add(snapshot.source_duration_ms);hash.Add(snapshot.end_ms);hash.Add(snapshot.complete);
+    // Absolute observation time does not change eligibility. Relative timing
+    // evidence below remains part of the signature, including end deltas.
+    hash.Add(snapshot.source_duration_ms);hash.Add(snapshot.complete);
     hash.Add(snapshot.inventory_evaluated);hash.Add(snapshot.abort_reason);
     if(snapshot.codec){hash.Add(true);hash.Add(unsigned(*snapshot.codec));}else hash.Add(false);
     // Raw byte progress does not change eligibility. It remains in emitted

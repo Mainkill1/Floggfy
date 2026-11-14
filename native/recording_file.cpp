@@ -5,6 +5,7 @@
 #include "vorbis_headers.h"
 #include "aac_stream.h"
 #include "compressed_buffer.h"
+#include "flac_history_core.h"
 #include "recording_limits.h"
 #include <algorithm>
 #include <cmath>
@@ -198,10 +199,16 @@ template<class Source> bool Subframe(Bits<Source>& bits,unsigned block,unsigned 
     }
     return Residual(bits,block,order);
 }
+struct FlacFrameHeader {bool valid=false,variable=false;uint64_t number=0;unsigned block=0;};
 // RFC 9639 sections 9.1-9.3: walk each subframe, not a sync-byte scan.
 template<class Source> bool FlacFrame(const Source& b,size_t size,const Quality& quality,unsigned max_block,
-               uint64_t expected_sample,uint64_t frame_number,size_t& consumed,unsigned& block) {
+               uint64_t expected_sample,uint64_t frame_number,size_t& consumed,unsigned& block,
+               FlacFrameHeader* header=nullptr,bool check_number=true,bool* need_more=nullptr) {
     Bits<Source> bits{b,size};
+    struct IncompleteResult {
+        const Bits<Source>& bits;bool* result;
+        ~IncompleteResult(){if(result)*result=!bits.ok;}
+    } incomplete{bits,need_more};
     if(bits.Read(14)!=0x3ffe || bits.Read(1)) return false;
     bool variable=bits.Read(1)!=0;
     unsigned block_code=unsigned(bits.Read(4)),rate_code=unsigned(bits.Read(4));
@@ -221,7 +228,7 @@ template<class Source> bool FlacFrame(const Source& b,size_t size,const Quality&
         static const uint64_t minimum[]={0,0,0x80,0x800,0x10000,0x200000,0x4000000,0x80000000};
         if(number<minimum[continuations]) return false;
     }
-    if(number!=(variable?expected_sample:frame_number)) return false;
+    if(check_number && number!=(variable?expected_sample:frame_number)) return false;
     if(block_code==1) block=192;
     else if(block_code<=5) block=576u<<(block_code-2);
     else if(block_code==6) block=unsigned(bits.Read(8))+1;
@@ -238,6 +245,7 @@ template<class Source> bool FlacFrame(const Source& b,size_t size,const Quality&
     if(rate!=quality.rate || depth!=quality.bits || (channels<8?channels+1:2)!=quality.channels || block>max_block) return false;
     bits.Read(8);
     if(!bits.ok || Crc8(b,bits.position/8)) return false;
+    if(header)*header={true,variable,number,block};
     for(unsigned c=0;c<quality.channels;c++) {
         unsigned channel_depth=depth+((channels==8&&c==1)||(channels==9&&c==0)||(channels==10&&c==1));
         if(!Subframe(bits,block,channel_depth)) return false;
@@ -336,6 +344,202 @@ std::string Utf8(const std::wstring& value) {
     }
     return result;
 }
+}
+void FlacBufferCoverage::Scan(const CompressedBuffer& bytes,const FlacInfo& info,size_t audio_offset) {
+    complete=false;
+    if(!next_offset)next_offset=audio_offset;
+    if(next_offset>bytes.size() || !info.total_samples || samples>info.total_samples)return;
+    const Quality quality{Codec::Flac,info.rate,info.channels,info.bits,0};
+    // Bound an unfinished/corrupt frame independently of the growing track.
+    // STREAMINFO's frame-size fields have 24 bits; streams exceeding this
+    // conservative inspection limit never acquire proof of completion.
+    constexpr size_t maximum_frame_bytes=0xffffff;
+    while(next_offset<bytes.size() && samples<info.total_samples) {
+        const BufferedBytes frame{bytes,next_offset};
+        size_t consumed=0;unsigned block=0;
+        if(!FlacFrame(frame,std::min(bytes.size()-next_offset,maximum_frame_bytes),
+                      quality,info.max_block,samples,frames,consumed,block))return;
+        if(block>info.total_samples-samples ||
+           (samples+block<info.total_samples && block!=info.max_block && !(frame[1]&1)))return;
+        samples+=block;++frames;next_offset+=consumed;
+    }
+    complete=frames && samples==info.total_samples && next_offset==bytes.size();
+}
+size_t FlacCaptureReader::MemoryUsage() const noexcept {
+    return index.capacity()*sizeof(Frame)+pending.capacity()*sizeof(Fragment)+
+           resync_pending.capacity()*sizeof(size_t);
+}
+void FlacCaptureReader::Scan(CompressedBuffer& bytes,const FlacInfo& info,size_t audio_offset,size_t available) {
+    complete=false;
+    if(failed)return;
+    if(bytes.size()<audio_offset){reason="waiting_metadata";return;}
+    if(!next_offset)next_offset=audio_offset;
+    if(next_offset>bytes.size() || !info.total_samples || samples>info.total_samples) {
+        reason="invalid_capture_bounds";failed=true;return;
+    }
+    incoming_sample_known=false;
+    constexpr size_t frame_limit=0xffffff,resync_limit=1024*1024,index_limit=8*1024*1024;
+    const Quality quality{Codec::Flac,info.rate,info.channels,info.bits,0};
+    auto parse=[&](size_t at,FlacFrameHeader& header,size_t& length,bool* need_more=nullptr) {
+        unsigned block=0;
+        return FlacFrame(BufferedBytes{bytes,at},std::min(bytes.size()-at,frame_limit),
+                         quality,info.max_block,0,0,length,block,&header,false,need_more);
+    };
+    auto observe=[&](const FlacFrameHeader& header) {
+        incoming_sample_known=header.valid;
+        if(header.valid)incoming_sample=header.variable?header.number:header.number*info.max_block;
+    };
+    auto equal=[&](size_t left,size_t right,size_t length) {
+        for(size_t i=0;i<length;++i)if(bytes[left+i]!=bytes[right+i])return false;
+        return true;
+    };
+    auto grow=[&](auto& values,bool required=true) {
+        if(values.size()<values.capacity())return true;
+        const auto old=values.capacity()*sizeof(values[0]);
+        const auto count=std::max(size_t(16),values.capacity()*2);
+        const auto needed=count*sizeof(values[0]);
+        // Include the temporary old+new allocation during vector growth.
+        if(needed>available || needed-old>index_limit-MemoryUsage()) {
+            if(required){reason="index_memory_limit";failed=true;}
+            return false;
+        }
+        try {values.reserve(count);} catch(const std::bad_alloc&) {
+            if(required){reason="index_allocation_failed";failed=true;}
+            return false;
+        }
+        available-=needed-old;return true;
+    };
+    auto is_before=[&](const FlacFrameHeader& h) {
+        return h.valid && (h.variable?h.number<samples:h.number<frames);
+    };
+    auto is_next=[&](const FlacFrameHeader& h) {
+        return h.valid && h.number==(h.variable?samples:frames);
+    };
+    auto find_resync=[&](const auto& accepted)->size_t {
+        if(resync_origin!=next_offset) {
+            resync_origin=next_offset;resync_next=next_offset+1;resync_pending.clear();
+        }
+        // A split header/frame can become valid after an append. Complete
+        // rejected candidates cannot, so retain only the unfinished ones.
+        size_t kept=0;
+        for(const auto at:resync_pending) {
+            FlacFrameHeader candidate;size_t n=0;bool need_more=false;
+            ++resync_candidate_parses;
+            if(parse(at,candidate,n,&need_more)&&accepted(candidate))return at;
+            if(need_more)resync_pending[kept++]=at;
+        }
+        resync_pending.resize(kept);
+        const auto end=next_offset+std::min(resync_limit,bytes.size()-next_offset);
+        for(;resync_next+2<=end;++resync_next) {
+            const auto at=resync_next;++resync_bytes_examined;
+            if(bytes[at]!=0xff||(bytes[at+1]&0xfe)!=0xf8)continue;
+            FlacFrameHeader candidate;size_t n=0;bool need_more=false;
+            ++resync_candidate_parses;
+            if(parse(at,candidate,n,&need_more)&&accepted(candidate))return at;
+            if(need_more) {
+                // Speculation must not invalidate an ordinary partial frame
+                // when no recovery memory is available. Keep this cursor for
+                // the next append; the strict frame parser can still finish.
+                if(!grow(resync_pending,false))return 0;
+                resync_pending.push_back(at);
+            }
+        }
+        return 0;
+    };
+    // A fallback is activated only by a checksum-valid backward frame.
+    // Normal partial callbacks retain the strict cursor; speculative recovery
+    // candidates are optional and never prevent that frame from completing.
+    if(!recovering) {
+        FlacBufferCoverage strict{next_offset,samples,frames,false};
+        strict.Scan(bytes,info,audio_offset);
+        next_offset=strict.next_offset;samples=strict.samples;frames=strict.frames;
+        if(strict.complete){
+            std::vector<size_t>().swap(resync_pending);resync_origin=~size_t(0);
+            complete=true;reason="complete";return;
+        }
+        if(next_offset==bytes.size()){reason="waiting_frame";return;}
+        FlacFrameHeader header;size_t length=0;
+        const bool valid=parse(next_offset,header,length);observe(header);
+        if(valid && !is_before(header)) {reason="sample_gap_or_invalid_block";failed=true;return;}
+        bool backward=valid && is_before(header);
+        if(!backward)backward=find_resync(is_before)!=0;
+        if(failed)return;
+        if(!backward) {reason=bytes.size()-next_offset>resync_limit?"resync_limit":"waiting_frame";return;}
+        uint64_t sample=0;
+        for(size_t at=audio_offset;at<next_offset;) {
+            FlacFrameHeader h;size_t n=0;
+            if(!parse(at,h,n)||!grow(index)){if(!failed){reason="invalid_validated_prefix";failed=true;}return;}
+            index.push_back({at,n,sample,h.block});sample+=h.block;at+=n;
+        }
+        recovering=true;resync_origin=~size_t(0);resync_pending.clear();
+    }
+    auto frame_index=[&](const FlacFrameHeader& h)->size_t {
+        if(!h.variable)return h.number<=index.size()?size_t(h.number):index.size()+1;
+        const auto it=std::lower_bound(index.begin(),index.end(),h.number,
+                                     [](const Frame& f,uint64_t sample){return f.sample<sample;});
+        if(it!=index.end() && it->sample==h.number)return size_t(it-index.begin());
+        return h.number==samples?index.size():index.size()+1;
+    };
+    while(next_offset<bytes.size()) {
+        FlacFrameHeader header;size_t length=0;
+        const bool valid=parse(next_offset,header,length);observe(header);
+        if(valid) {
+            const auto i=frame_index(header);
+            if(i<index.size()) {
+                const auto& known=index[i];
+                if(length!=known.length || !equal(next_offset,known.offset,length)) {
+                    reason="conflicting_duplicate";failed=true;return;
+                }
+                ++duplicate_frames;duplicate_bytes+=length;next_offset+=length;continue;
+            }
+            if(i!=index.size() || !is_next(header) || header.block>info.total_samples-samples ||
+               (samples+header.block<info.total_samples && header.block!=info.max_block && !header.variable)) {
+                reason="sample_gap_or_invalid_block";failed=true;return;
+            }
+            for(const auto& fragment:pending) {
+                if(fragment.index!=i || fragment.length>=length ||
+                   !equal(fragment.offset,next_offset,fragment.length)) {
+                    reason="conflicting_interrupted_frame";failed=true;return;
+                }
+            }
+            if(!grow(index))return;
+            index.push_back({next_offset,length,samples,header.block});pending.clear();
+            samples+=header.block;++frames;next_offset+=length;continue;
+        }
+        // The interrupted range must have a valid header for an already
+        // known frame or exactly the next frame. Its bytes must later match
+        // that frame's prefix; arbitrary corrupt bytes are never discarded.
+        if(!header.valid){reason="waiting_or_invalid_frame_header";return;}
+        const auto interrupted_index=frame_index(header);
+        if(interrupted_index>index.size()) {reason="sample_gap";failed=true;return;}
+        const auto resumed=find_resync([&](const FlacFrameHeader& h){return frame_index(h)<index.size();});
+        if(failed)return;
+        if(!resumed){reason=bytes.size()-next_offset>resync_limit?"resync_limit":"waiting_interrupted_frame";return;}
+        const auto fragment_size=resumed-next_offset;
+        if(interrupted_index<index.size()) {
+            const auto& known=index[interrupted_index];
+            if(fragment_size>=known.length || !equal(next_offset,known.offset,fragment_size)) {
+                reason="conflicting_interrupted_frame";failed=true;return;
+            }
+        } else {
+            if(pending.size()>=4096) {reason="fragment_index_limit";failed=true;return;}
+            if(!grow(pending))return;
+            pending.push_back({next_offset,fragment_size,interrupted_index});
+        }
+        interrupted_bytes+=fragment_size;next_offset=resumed;
+    }
+    if(samples!=info.total_samples || !pending.empty()){reason="waiting_frame";return;}
+    // Every source range is forward ordered; copying toward the beginning
+    // cannot overwrite a later range. Release tail blocks after all copies.
+    size_t destination=audio_offset;
+    for(const auto& frame:index) {
+        if(!bytes.CopyRange(destination,frame.offset,frame.length)) {reason="invalid_compaction_range";failed=true;return;}
+        destination+=frame.length;
+    }
+    bytes.RetainPrefixAndSuffix(destination,bytes.size());next_offset=destination;
+    std::vector<Frame>().swap(index);std::vector<Fragment>().swap(pending);recovering=false;
+    std::vector<size_t>().swap(resync_pending);resync_origin=~size_t(0);
+    complete=true;reason="complete_recovered";
 }
 bool FindValidatedFlacFrame(const CompressedBuffer& bytes,const Quality& quality,
                             unsigned max_block,uint64_t expected_sample,
