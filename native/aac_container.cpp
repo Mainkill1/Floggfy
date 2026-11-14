@@ -41,20 +41,47 @@ uint64_t MetadataBound(uint64_t bytes,uint64_t fields){
     uint64_t bound=4096;AddCharge(bound,bytes);AddCharge(bound,fields,128);return bound;
 }
 struct TagMemory {uint64_t retained=sizeof(Tags),bytes=0,fields=0;};
-TagMemory MeasureTags(const Tags& tags){
-    TagMemory out;out.fields=tags.fields.size();
-    Resource(out.fields<=65536&&tags.cover.size()<=4u*1024u*1024u,"AAC resource limit: metadata exceeds supported budget");
-    AddCharge(out.retained,tags.fields.capacity(),sizeof(tags.fields[0]));
-    AddCharge(out.retained,tags.cover.capacity());AddCharge(out.retained,tags.mime.capacity());
-    AddCharge(out.retained,2,allocation_overhead);AddCharge(out.bytes,tags.cover.size());
+AacWriteFailure MeasureTagMemory(const Tags& tags,TagMemory& out) noexcept {
+    out={};out.fields=tags.fields.size();
+    if(out.fields>65536||tags.cover.size()>4u*1024u*1024u)return AacWriteFailure::ResourceLimit;
+    if(!Charge(out.retained,tags.fields.capacity(),sizeof(tags.fields[0]))||
+       !Charge(out.retained,tags.cover.capacity())||!Charge(out.retained,tags.mime.capacity())||
+       !Charge(out.retained,2,allocation_overhead)||!Charge(out.bytes,tags.cover.size()))
+        return AacWriteFailure::ResourceLimit;
     for(const auto& field:tags.fields){
-        Need(field.first.size()<=255);
-        AddCharge(out.bytes,field.first.size());AddCharge(out.bytes,field.second.size());
-        AddCharge(out.retained,field.first.capacity());AddCharge(out.retained,field.second.capacity());
-        AddCharge(out.retained,2,allocation_overhead);
+        if(field.first.size()>255)return AacWriteFailure::InvalidOrUnsupported;
+        if(!Charge(out.bytes,field.first.size())||!Charge(out.bytes,field.second.size())||
+           !Charge(out.retained,field.first.capacity())||!Charge(out.retained,field.second.capacity())||
+           !Charge(out.retained,2,allocation_overhead))return AacWriteFailure::ResourceLimit;
     }
-    Resource(out.bytes<=metadata_limit,"AAC resource limit: metadata exceeds supported budget");
+    return out.bytes<=metadata_limit?AacWriteFailure::None:AacWriteFailure::ResourceLimit;
+}
+TagMemory MeasureTags(const Tags& tags){
+    TagMemory out;const auto status=MeasureTagMemory(tags,out);
+    Need(status!=AacWriteFailure::InvalidOrUnsupported);
+    Resource(status==AacWriteFailure::None,"AAC resource limit: metadata exceeds supported budget");
     return out;
+}
+struct MuxMemory {AacMemoryPlan plan;uint64_t packet_bytes=0;};
+AacWriteFailure PlanMux(const AacInfo& info,const std::vector<Bytes>& packets,const Tags& tags,
+                       uint64_t external_retained_source_capacity,MuxMemory& result) noexcept {
+    result={};
+    if(packets.empty()||info.config.size()>64)return AacWriteFailure::InvalidOrUnsupported;
+    if(packets.size()>packet_limit)return AacWriteFailure::ResourceLimit;
+    TagMemory metadata;const auto status=MeasureTagMemory(tags,metadata);
+    if(status!=AacWriteFailure::None)return status;
+    uint64_t retained=metadata.retained,bytes=0;
+    if(!Charge(retained,sizeof(info)+sizeof(packets)+allocation_overhead)||
+       !Charge(retained,info.config.capacity())||!Charge(retained,packets.capacity(),sizeof(Bytes))||
+       !Charge(retained,packets.size(),allocation_overhead))return AacWriteFailure::ResourceLimit;
+    for(const auto& packet:packets){
+        if(packet.empty()||packet.size()>65536)return AacWriteFailure::InvalidOrUnsupported;
+        if(!Charge(bytes,packet.size())||!Charge(retained,packet.capacity()))return AacWriteFailure::ResourceLimit;
+    }
+    AacMemoryPlan plan;
+    if(!EstimateAacConstructionMemory(packets.size(),bytes,retained,metadata.bytes,metadata.fields,
+                                      plan,external_retained_source_capacity))return AacWriteFailure::ResourceLimit;
+    result={plan,bytes};return AacWriteFailure::None;
 }
 uint16_t U16(const uint8_t* p){return uint16_t((uint16_t(p[0])<<8)|p[1]);}
 uint32_t U32(const uint8_t* p){return (uint32_t(p[0])<<24)|(uint32_t(p[1])<<16)|(uint32_t(p[2])<<8)|p[3];}
@@ -351,7 +378,7 @@ void Failure(AacWriteFailure* out,AacWriteFailure value){if(out)*out=value;}
 }
 bool EstimateAacConstructionMemory(uint64_t packet_count,uint64_t packet_bytes,
     uint64_t retained_input_bytes,uint64_t metadata_bytes,uint64_t metadata_fields,
-    AacMemoryPlan& plan) noexcept {
+    AacMemoryPlan& plan,uint64_t external_retained_source_capacity) noexcept {
     plan={};
     if(!packet_count||packet_count>packet_limit||packet_bytes<packet_count||
        packet_bytes>file_limit||retained_input_bytes<packet_bytes||
@@ -368,9 +395,16 @@ bool EstimateAacConstructionMemory(uint64_t packet_count,uint64_t packet_bytes,
     // inspection fields/art. Extra per-field space covers string/set objects.
     // Keep the full vendor allowance even though it is freed before rewriting.
     uint64_t peak=retained_input_bytes;
-    if(!Charge(peak,vendor_memory)||!Charge(peak,output)||!Charge(peak,scratch_base)||
+    if(!Charge(peak,external_retained_source_capacity)||!Charge(peak,vendor_memory)||!Charge(peak,output)||!Charge(peak,scratch_base)||
        !Charge(peak,movie,32)||!Charge(peak,metadata_fields,512))return false;
-    plan={peak,output};return true;
+    const auto retained=retained_input_bytes+external_retained_source_capacity;
+    plan={peak,output,retained,peak-retained};return true;
+}
+bool PlanAacM4a(const AacInfo& info,const std::vector<Bytes>& packets,const Tags& tags,
+               AacMemoryPlan& plan,uint64_t external_retained_source_capacity) noexcept {
+    plan={};MuxMemory construction;
+    if(PlanMux(info,packets,tags,external_retained_source_capacity,construction)!=AacWriteFailure::None)return false;
+    plan=construction.plan;return true;
 }
 bool InspectAacM4a(const uint8_t* source,size_t size,AacFile& out){
     out={};
@@ -414,7 +448,7 @@ bool TagAacM4a(const Bytes& source,const Tags& tags,Bytes& output,std::string& e
     Bytes().swap(output);return false;
 }
 bool MakeAacM4a(const AacInfo& info,const std::vector<Bytes>& packets,const Tags& tags,
-               Bytes& output,std::string& error,AacWriteFailure* failure){
+               Bytes& output,std::string& error,AacWriteFailure* failure,uint64_t external_retained_source_capacity){
     Failure(failure,AacWriteFailure::None);error.clear();
     bool alias=&output==&info.config||&output==&tags.cover;
     for(const auto& packet:packets)if(&packet==&output)alias=true;
@@ -424,22 +458,11 @@ bool MakeAacM4a(const AacInfo& info,const std::vector<Bytes>& packets,const Tags
     }
     Bytes().swap(output);
     try{
-        Need(!packets.empty());
-        Resource(packets.size()<=packet_limit,"AAC resource limit: too many access units");
-        Need(info.config.size()<=64);
-        const auto metadata=MeasureTags(tags);
-        uint64_t retained=metadata.retained,bytes=0;
-        AddCharge(retained,sizeof(info)+sizeof(packets)+allocation_overhead);
-        AddCharge(retained,info.config.capacity());
-        AddCharge(retained,packets.capacity(),sizeof(Bytes));
-        AddCharge(retained,packets.size(),allocation_overhead);
-        for(const auto& packet:packets){
-            Need(!packet.empty()&&packet.size()<=65536);
-            AddCharge(bytes,packet.size());AddCharge(retained,packet.capacity());
-        }
-        AacMemoryPlan plan;
-        Resource(EstimateAacConstructionMemory(packets.size(),bytes,retained,metadata.bytes,metadata.fields,plan),
-                 "AAC resource limit: planned construction peak exceeds 512 MiB");
+        MuxMemory construction;
+        const auto status=PlanMux(info,packets,tags,external_retained_source_capacity,construction);
+        Need(status!=AacWriteFailure::InvalidOrUnsupported);
+        Resource(status==AacWriteFailure::None,"AAC resource limit: planned construction peak exceeds 512 MiB");
+        const auto& plan=construction.plan;const auto bytes=construction.packet_bytes;
         // All potentially large input/output/scratch capacities were checked
         // above; only the <=64-byte decoder configuration is copied here.
         AacInfo parsed;parsed.config=info.config;Configuration(parsed);

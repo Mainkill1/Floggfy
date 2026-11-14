@@ -41,6 +41,17 @@ int RunAacContainerTests(){
     assert(!EstimateAacConstructionMemory(4,1024,4096,std::numeric_limits<uint64_t>::max(),4,plan));
     assert(!EstimateAacConstructionMemory(4,1024,4096,512,65537,plan));
     assert(!EstimateAacConstructionMemory(4,uint64_t{512}<<20,uint64_t{512}<<20,0,0,plan));
+    // A flattened caller source lives alongside extracted access units. Omitting
+    // this capacity accepts a peak that actually exceeds the operation budget.
+    assert(EstimateAacConstructionMemory(4,1024,4096,512,4,plan));
+    const auto base_peak=plan.peak_bytes;
+    assert(EstimateAacConstructionMemory(4,1024,4096,512,4,plan,8192));
+    assert(plan.peak_bytes==base_peak+8192);
+    assert(EstimateAacConstructionMemory(4,1024,4096,512,4,plan,AacConstructionMemoryLimit-base_peak));
+    assert(plan.peak_bytes==AacConstructionMemoryLimit);
+    assert(!EstimateAacConstructionMemory(4,1024,4096,512,4,plan,AacConstructionMemoryLimit-base_peak+1));
+    assert(plan.peak_bytes==0&&plan.output_capacity==0);
+    assert(!EstimateAacConstructionMemory(4,1024,4096,512,4,plan,std::numeric_limits<uint64_t>::max()));
     // Actual native SpAC header configuration. Payload sentinels exercise exact
     // remuxing only; this test never claims to decode synthetic AAC access units.
     AacInfo info;info.rate=44100;info.channels=2;info.samples_per_packet=2048;
@@ -50,9 +61,24 @@ int RunAacContainerTests(){
     for(uint32_t i=0;i<count;++i){packets.push_back({uint8_t(i),uint8_t(i>>8),0xa5,0});expected.insert(expected.end(),packets.back().begin(),packets.back().end());}
     Tags tags;tags.fields={{"TITLE","Song \xE2\x99\xAB"},{"ARTIST","Artist"},{"ALBUM","Album"},{"ALBUMARTIST","Album Artist"},{"DATE","2025-12-31"},{"YEAR","2025"},{"LYRICS","[00:00.00] Words\n"},{"TRACKNUMBER","2"},{"TRACKTOTAL","10"},{"DISCNUMBER","1"},{"DISCTOTAL","2"},{"SPOTIFY_URI","spotify:track:fixture"},{"HISTORY_COMPLETE_LISTEN","1"},{"HISTORY_CAPTURE","native compressed AAC input"},{"CUSTOM_REPEAT","one"},{"CUSTOM_REPEAT","two"}};
     tags.cover=artwork_fixture::png();tags.mime="image/png";std::string error;Bytes original;
+    assert(PlanAacM4a(info,packets,tags,plan));
+    const auto mux_peak=plan.peak_bytes,mux_output=plan.output_capacity;
+    assert(mux_output>expected.size()&&plan.retained_bytes>=expected.size());
+    assert(plan.incremental_peak_bytes>0&&plan.retained_bytes+plan.incremental_peak_bytes==mux_peak);
+    assert(PlanAacM4a(info,packets,tags,plan,8192));
+    assert(plan.peak_bytes==mux_peak+8192&&plan.output_capacity==mux_output);
+    assert(!PlanAacM4a(info,packets,tags,plan,std::numeric_limits<uint64_t>::max()));
+    assert(plan.peak_bytes==0&&plan.output_capacity==0&&plan.retained_bytes==0&&plan.incremental_peak_bytes==0);
     AacWriteFailure failure=AacWriteFailure::ResourceLimit;
     original.reserve(1024u*1024u); // An old caller buffer must not inflate the peak.
-    assert(MakeAacM4a(info,packets,tags,original,error,&failure));
+    const auto saved_packets=packets;const auto saved_config=info.config;
+    assert(!MakeAacM4a(info,packets,tags,original,error,&failure,AacConstructionMemoryLimit));
+    assert(failure==AacWriteFailure::ResourceLimit&&original.empty());
+    assert(packets==saved_packets&&info.config==saved_config);
+    // A denied/failed mux leaves the sole recovery source usable by a retry.
+    Bytes retained_source(8192,0x5a);const auto saved_source=retained_source;
+    assert(MakeAacM4a(info,packets,tags,original,error,&failure,retained_source.capacity()));
+    assert(retained_source==saved_source&&packets==saved_packets&&info.config==saved_config);
     assert(failure==AacWriteFailure::None&&original.capacity()<1024u*1024u);
     const auto inspected=Inspect(original);
     assert(inspected.info.config==info.config&&inspected.info.rate==44100&&inspected.info.channels==2&&inspected.info.samples_per_packet==2048&&inspected.info.priming==5119&&inspected.info.total_samples==8314226);
