@@ -10,6 +10,7 @@ void operator delete(void* p,std::size_t) noexcept {if(p)HeapFree(GetProcessHeap
 namespace {
 HANDLE blocked=nullptr,release_enrichment=nullptr,refresh_blocked=nullptr,release_refresh=nullptr;
 std::atomic<unsigned> polls{0},enrichments{0};
+std::atomic<std::uint64_t> artwork_revision{0};
 bool exact_uri_test=false;
 HANDLE second_enrichment_started=nullptr;
 int Post(int,history::Task* task){
@@ -36,6 +37,7 @@ void EnrichStoredMetadata(RichMetadata& metadata){
  if(pass==2){SetEvent(refresh_blocked);WaitForSingleObject(release_refresh,10000);}
  metadata.fields["COMMENT"]="slow enrichment";
 }
+std::uint64_t AlbumArtworkRevision() noexcept {return artwork_revision.load();}
 bool CacheAlbumArtwork(const std::string&,const std::string&){return false;}
 bool GetAlbumArtwork(const std::string&,std::vector<uint8_t>&,std::string&){return false;}
 }
@@ -102,7 +104,14 @@ void DelayedUriEnrichmentKeepsNewerLiveFields(){
 }
 int main(int argc,char** argv){
  if(argc>1){
-  if(!strcmp(argv[1],"--ambiguous-refresh"))SparseUriRefreshKeepsOwnFields();
+  if(!strcmp(argv[1],"--artwork-revision")){
+   const auto before=history::MetadataRevision();
+   // The artwork cache publishes its revision before the metadata worker can
+   // reacquire cache_lock and report the enrichment completion.
+   artwork_revision.fetch_add(1);
+   assert(history::MetadataRevision()>before&&"publication freshness must observe artwork immediately");
+  }
+  else if(!strcmp(argv[1],"--ambiguous-refresh"))SparseUriRefreshKeepsOwnFields();
   else if(!strcmp(argv[1],"--ambiguous-delayed"))DelayedUriEnrichmentKeepsNewerLiveFields();
   else assert(false);
   puts("PASS: exact-URI worker enrichment preserves sparse and newer live metadata");return 0;

@@ -28,16 +28,24 @@ bool AlbumArtworkCache::Cache(const std::string& uri,const std::string& url){
             auto victim=entries_.end();
             for(auto p=entries_.begin();p!=entries_.end();++p)if(!p->second.pending&&(victim==entries_.end()||p->second.order<victim->second.order))victim=p;
             if(victim==entries_.end())return false;
+            const bool visible=!victim->second.bytes.empty();
             entries_.erase(victim);
+            if(visible)revision_.fetch_add(1,std::memory_order_release);
         }
         auto& e=entries_[uri];e.url=url;e.attempted=now;e.pending=true;e.order=order=++order_;
     }
-    std::vector<uint8_t> bytes;ImageInfo info;bool ok=false;
-    try{ok=fetch_(url,bytes)&&ReadImageInfo(bytes,info);}catch(...){ok=false;}
+    std::vector<uint8_t> bytes;ImageInfo info;std::string ready_url;bool ok=false;
+    // Prepare all allocating replacement state before changing visible content.
+    try{ok=fetch_(url,bytes)&&ReadImageInfo(bytes,info);if(ok)ready_url=url;}catch(...){ok=false;}
     std::lock_guard<std::mutex> lock(mutex_);auto it=entries_.find(uri);
     if(it==entries_.end()||it->second.order!=order)return false;
     auto& e=it->second;e.pending=false;
-    if(ok){e.bytes=std::move(bytes);e.mime=info.mime;e.ready_url=url;return true;}
+    if(ok){
+        const bool changed=e.bytes!=bytes||e.mime!=info.mime;
+        e.bytes=std::move(bytes);e.mime=std::move(info.mime);e.ready_url=std::move(ready_url);
+        if(changed)revision_.fetch_add(1,std::memory_order_release);
+        return true;
+    }
     return false;
 }
 bool AlbumArtworkCache::Get(const std::string& uri,std::vector<uint8_t>& bytes,std::string& mime){
@@ -118,6 +126,7 @@ static bool Fetch(const std::string& url,std::vector<uint8_t>& bytes){
 #endif
 }
 static AlbumArtworkCache& Cache(){static AlbumArtworkCache cache(Fetch);return cache;}
+std::uint64_t AlbumArtworkRevision() noexcept {return Cache().Revision();}
 bool CacheAlbumArtwork(const std::string& uri,const std::string& url){return Cache().Cache(uri,url);}
 bool GetAlbumArtwork(const std::string& uri,std::vector<uint8_t>& bytes,std::string& mime){return Cache().Get(uri,bytes,mime);}
 }

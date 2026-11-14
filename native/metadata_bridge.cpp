@@ -344,7 +344,11 @@ static int CreateHook(const void* win,Client* client,const String* url,const voi
 static Browser* SyncHook(const void* win,Client* client,const String* url,const void* settings,void* extra,void* context){auto callback=metadata_callbacks.Enter();return original_sync(win,ObserveClient(client),url,settings,extra,context);}
 static void* ViewHook(Client* client,const String* url,const void* settings,void* extra,void* context,void* delegate){auto callback=metadata_callbacks.Enter();return original_view(ObserveClient(client),url,settings,extra,context,delegate);}
 }
-std::uint64_t MetadataRevision() {return metadata_revision.load(std::memory_order_acquire);}
+std::uint64_t MetadataRevision() {
+ // Both counters are monotonic. Artwork freshness becomes visible while its
+ // bytes are committed, before this worker reacquires the metadata cache lock.
+ return metadata_revision.load(std::memory_order_acquire)+AlbumArtworkRevision();
+}
 static bool ReadCachedMetadata(const Media& media,RichMetadata& metadata) {
  const auto title=Utf8(media.title),artist=Utf8(media.artist),album=Utf8(media.album);
  SharedSrw guard(cache_lock);

@@ -12,6 +12,7 @@ void FinalizeMetadataCollector(bool applied);
 // RAM-only identity enrichment; never reads storage or fetches artwork.
 void EnrichCatalog(const Media&,Catalog&);
 void EnrichTags(const Media&,Tags&);
+// Includes immediately visible artwork content and cache availability changes.
 std::uint64_t MetadataRevision();
 std::string ReadClientPlaybackQuality(const Media&);
 }
