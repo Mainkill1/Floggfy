@@ -156,7 +156,7 @@ static DWORD WINAPI EnrichmentWorker(LPVOID) {
    if(!preferences.metadata || preferences.generation!=job.generation)continue;
    if(!preferences.lyrics)metadata.fields.erase("LYRICS");
    {ExclusiveSrw guard(cache_lock);
-    const auto current=cache.Find(metadata.title,metadata.artist,metadata.album,metadata.duration);
+    const auto current=metadata.uri.empty()?cache.Find(metadata.title,metadata.artist,metadata.album,metadata.duration):cache.FindUri(metadata.uri);
     if(current && current->uri==metadata.uri) {
      auto merged=*current;MergeAvailableFields(metadata,merged);
      if(!preferences.lyrics)merged.fields.erase("LYRICS");
@@ -208,7 +208,7 @@ static DWORD WINAPI MetadataWorker(LPVOID) {
    if(!ParseRichMetadata(std::string(message.data,message.length),metadata,error))continue;
    metadata.quality_time=message.time;
    {ExclusiveSrw guard(cache_lock);
-    const auto previous=cache.Find(metadata.title,metadata.artist,metadata.album,metadata.duration);
+    const auto previous=metadata.uri.empty()?cache.Find(metadata.title,metadata.artist,metadata.album,metadata.duration):cache.FindUri(metadata.uri);
     if(previous && previous->uri==metadata.uri)MergeAvailableFields(*previous,metadata);
     if(!preferences.lyrics)metadata.fields.erase("LYRICS");
     const bool changed=!previous||!SameRecordingMetadata(*previous,metadata);
