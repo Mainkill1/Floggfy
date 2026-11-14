@@ -1,6 +1,8 @@
 # Capture/save correctness and recovery design
 
-Status: proposed design; no runtime changes authorized by this planning document.
+Status: correctness and diagnostics implemented following user approval; durable
+storage remains a separate follow-up at the user's request. Live playback timing
+validation remains necessary before changing the existing tolerances.
 
 Reviewed source: main `4b559adb03328ed3db02f485b9c7a5fbd18d2968` (RC7).
 Input: [PR #29](https://github.com/Mainkill1/Floggfy/pull/29), including its

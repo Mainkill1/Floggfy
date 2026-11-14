@@ -1,6 +1,8 @@
 // Exercise real hook event handling with downloads off: no complete compressed
 // buffers are retained, and original parser return values remain unchanged.
+#ifndef FLOGGFY_PUBLICATION_TEST
 #define FLOGGFY_PUBLICATION_TEST
+#endif
 #define UpdateRecordingMetadata CountedMetadataUpdate
 #define PublishBytes ControlledPublishBytes
 #define TagFlac ControlledTagFlac
@@ -23,6 +25,9 @@ static std::wstring change_root_during_enrich;
 static std::wstring unmatched_change_root;
 static std::wstring unmatched_change_phase;
 static bool unmatched_throw_once=false;
+static std::wstring format_failure_phase,format_new_root;
+static HANDLE format_destination_lock=INVALID_HANDLE_VALUE;
+static bool attack_archive_stage=false,attack_recovered_pair=false;
 static bool change_lyrics_during_enrich=false;
 static bool change_lyrics_aba_during_enrich=false;
 static bool disable_during_enrich=false;
@@ -32,7 +37,27 @@ static bool advance_revision_during_enrich=false;
 static bool force_metadata_failure=false;
 static std::uint64_t enrichment_revision=1;
 namespace history {
-void PublicationTestPhase(const wchar_t* phase,const std::wstring&) {
+void PublicationTestPhase(const wchar_t* phase,const std::wstring& path) {
+ if(attack_archive_stage&&std::wstring(phase)==L"archive-stage-held"&&path.find(L".commit.partial")!=std::wstring::npos) {
+  attack_archive_stage=false;HANDLE raced=CreateFileW(path.c_str(),GENERIC_WRITE,FILE_SHARE_READ,nullptr,CREATE_ALWAYS,0,nullptr);
+  assert(raced==INVALID_HANDLE_VALUE&&"verified marker stage must deny foreign writes until exact-object promotion");
+  assert(!DeleteFileW(path.c_str()));
+ }
+ if(attack_recovered_pair&&std::wstring(phase)==L"unmatched-recovered-pair") {
+  attack_recovered_pair=false;
+  for(const wchar_t* extension:{L".flac",L".json",L".commit"}) {
+   HANDLE raced=CreateFileW((path+extension).c_str(),GENERIC_WRITE,FILE_SHARE_READ,nullptr,CREATE_ALWAYS,0,nullptr);
+   assert(raced==INVALID_HANDLE_VALUE&&"recovered pair members remain held together through acknowledgement");
+   assert(!DeleteFileW((path+extension).c_str()));
+  }
+ }
+ if(format_failure_phase==phase){
+  format_failure_phase.clear();assert(SetSaveLocation(format_new_root));
+  if(std::wstring(phase)==L"format-final-read") {
+   format_destination_lock=CreateFileW(path.c_str(),GENERIC_READ,0,nullptr,OPEN_EXISTING,0,nullptr);assert(format_destination_lock!=INVALID_HANDLE_VALUE);return;
+  }
+  throw 2;
+ }
  if(unmatched_change_phase==phase){unmatched_change_phase.clear();assert(SetSaveLocation(unmatched_change_root));if(unmatched_throw_once){unmatched_throw_once=false;throw 1;}}
 }
 bool TagFlac(const std::vector<uint8_t>&,const Tags&,std::vector<uint8_t>&,std::string&);
@@ -40,11 +65,11 @@ bool ControlledTagFlac(const std::vector<uint8_t>& source,const Tags& tags,std::
  if(fail_tag_once){fail_tag_once=false;error="injected failed rebuild";return false;}
  return TagFlac(source,tags,output,error);
 }
-FilePublication PublishBytes(const std::wstring&,const Quality&,const void*,size_t,const Catalog&,size_t*,PublicationPermit,void*);
-FilePublication ControlledPublishBytes(const std::wstring& path,const Quality& quality,const void* bytes,size_t size,const Catalog& catalog,size_t* published,PublicationPermit permit,void* context) {
+FilePublication PublishBytes(const std::wstring&,const Quality&,const void*,size_t,const Catalog&,size_t*,PublicationPermit,void*,PublicationMemoryPermit,void*);
+FilePublication ControlledPublishBytes(const std::wstring& path,const Quality& quality,const void* bytes,size_t size,const Catalog& catalog,size_t* published,PublicationPermit permit,void* context,PublicationMemoryPermit memory_permit,void* memory_context) {
  if(fail_publication_once){fail_publication_once=false;return FilePublication::Failed;}
  if(race_unknown_once){race_unknown_once=false;HANDLE file=CreateFileW(path.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,0,nullptr);DWORD written=0;assert(file!=INVALID_HANDLE_VALUE&&WriteFile(file,"foreign",7,&written,nullptr)&&written==7);CloseHandle(file);}
- return PublishBytes(path,quality,bytes,size,catalog,published,permit,context);
+ return PublishBytes(path,quality,bytes,size,catalog,published,permit,context,memory_permit,memory_context);
 }
 std::uint64_t MetadataRevision() {return enrichment_revision;}
 FileMetadataUpdate UpdateRecordingMetadata(const std::wstring&,const Tags&,const Catalog&,unsigned);
@@ -413,6 +438,7 @@ static void TestPublicationLogging() {
   f=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr);char preserved[7]{};
   assert(f!=INVALID_HANDLE_VALUE && ReadFile(f,preserved,7,&n,nullptr) && n==7 && !memcmp(preserved,"unknown",7));CloseHandle(f);
   assert(DeleteFileW(path.c_str()) && DeleteFileW(alternate.c_str()));
+  capture=make(44100,24);
   assert(SetDownloads(false));assert(Publish(*capture,heard,CaptureEpoch())==Publication::Cancelled);
   WaitLog("skipped capture settings changed or downloads/format disabled", "Log Artist - Log Track");
   assert(SetDownloads(true));capture=make(44100,24);capture->data.Flatten();
@@ -453,7 +479,7 @@ static void TestUnmatchedRootRecovery() {
   const bool return_root=std::wstring(phase)==L"unmatched-json-return";
   unmatched_change_root=root+L"-new";unmatched_change_phase=return_root?L"unmatched-json":phase;
   const bool after_commit=std::wstring(phase)==L"unmatched-committed";
-  unmatched_throw_once=after_commit;
+  unmatched_throw_once=after_commit;attack_archive_stage=true;
   auto first=Publication::RetryIO;bool interrupted=false;
   try {first=PublishUnmatched(job);}catch(int){interrupted=true;}
   assert(interrupted==after_commit);
@@ -461,7 +487,9 @@ static void TestUnmatchedRootRecovery() {
   const auto old=job.capture->unmatched_attempts[0].base;
   if(std::wstring(phase)==L"unmatched-committed") {
    assert(!job.capture->publication_source.empty()&&"commit-before-ack exception retains source ownership");
+   attack_recovered_pair=true;
    assert(PublishUnmatched(job)==Publication::Saved&&job.capture->unmatched_attempts.size()==1);
+   assert(!attack_recovered_pair);
    assert(GetFileAttributesW((old+L".commit").c_str())!=INVALID_FILE_ATTRIBUTES);
   } else {
    assert(first==Publication::Replan);
@@ -480,10 +508,58 @@ static void TestUnmatchedRootRecovery() {
    assert(GetFileAttributesW((old+L".json").c_str())==INVALID_FILE_ATTRIBUTES);
    assert(GetFileAttributesW((old+L".flac").c_str())==INVALID_FILE_ATTRIBUTES);
   }
+  assert(!attack_archive_stage);
   for(const auto& attempt:job.capture->unmatched_attempts)
    for(const wchar_t* extension:{L".json",L".flac",L".commit"})DeleteFileW((attempt.base+extension).c_str());
  }
  std::puts("PASS: unmatched root replans retain partial pairs and recover committed pairs before acknowledgement");
+}
+static void TestOrdinaryCommitBeforeAcknowledgement() {
+ wchar_t temp[2048];GetTempPathW(2048,temp);
+ const auto root=std::wstring(temp)+L"Floggfy-ordinary-receipt-"+std::to_wstring(GetCurrentProcessId());
+ assert(SetSaveLocation(root+L"-old")&&SetDownloads(true)&&SetFlac(true));
+ Heard heard;heard.media.title=L"Committed recording";heard.media.artist=L"Artist";heard.media.album=L"Album";heard.media.duration=16.0/44100;
+ const auto catalog=CatalogFor(heard.media);const auto settings=GetSettings();
+ const auto committed=OutputPath(settings.root,catalog,L".flac",settings.music_folder);
+ auto capture=RecoveryCapture();format_failure_phase=L"publication-committed";format_new_root=root+L"-new";
+ bool interrupted=false;try {Publish(*capture,heard,CaptureEpoch());}catch(int){interrupted=true;}
+ assert(interrupted&&capture->publication_committed);
+ assert(Publish(*capture,heard,CaptureEpoch())==Publication::Saved);
+ assert(GetFileAttributesW(OutputPath(GetSettings().root,catalog,L".flac",GetSettings().music_folder).c_str())==INVALID_FILE_ATTRIBUTES);
+ RecordingFile file;assert(ReadRecording(committed,file)&&file.complete&&MatchesRecording(file,catalog));assert(DeleteFileW(committed.c_str()));
+ std::puts("PASS: ordinary commit receipts survive optional acknowledgement exceptions across root changes");
+}
+static void TestFormatCommitBeforeAcknowledgement() {
+ wchar_t temp[2048];GetTempPathW(2048,temp);
+ for(const wchar_t* phase:{L"format-final-read",L"format-old-delete",L"format-old-delete-edited"}) {
+  const auto root=std::wstring(temp)+L"Floggfy-format-receipt-"+std::to_wstring(GetCurrentProcessId())+phase;
+  assert(SetSaveLocation(root+L"-old")&&SetDownloads(true)&&SetFlac(true)&&SetOgg(true));
+  Heard heard;heard.media.title=L"Committed format";heard.media.artist=L"Artist";heard.media.album=L"Album";
+  heard.media.spotify_uri="spotify:track:0000000000000000000008";heard.media.duration=16.0/44100;
+  const auto catalog=CatalogFor(heard.media);const auto old_settings=GetSettings();
+  const auto ogg_path=OutputPath(old_settings.root,catalog,L".ogg",old_settings.music_folder);
+  const auto flac_path=OutputPath(old_settings.root,catalog,L".flac",old_settings.music_folder);
+  Tags tags;ApplyCatalogIdentity(tags,catalog);tags.fields.push_back({"ARTIST","Artist"});tags.fields.push_back({"HISTORY_COMPLETE_LISTEN","1"});tags.fields.push_back({"HISTORY_CAPTURE","native compressed Ogg pages"});
+  auto ogg=recording_fixture::ogg();std::vector<uint8_t> tagged;std::string error;assert(TagOgg(ogg,tags,tagged,error));
+  assert(EnsureDirectory(ogg_path.substr(0,ogg_path.find_last_of(L'\\'))));
+  HANDLE file=CreateFileW(ogg_path.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,0,nullptr);DWORD written=0;
+  assert(file!=INVALID_HANDLE_VALUE&&WriteFile(file,tagged.data(),DWORD(tagged.size()),&written,nullptr)&&written==tagged.size());CloseHandle(file);
+  const bool edited=std::wstring(phase)==L"format-old-delete-edited";
+  auto capture=RecoveryCapture();format_failure_phase=edited?L"format-old-delete":phase;format_new_root=root+L"-new";
+  const auto interrupted=Publish(*capture,heard,CaptureEpoch());
+  if(format_destination_lock!=INVALID_HANDLE_VALUE){CloseHandle(format_destination_lock);format_destination_lock=INVALID_HANDLE_VALUE;}
+  if(interrupted!=Publication::RetryIO)std::fprintf(stderr,"format result=%u error=%s phase=%s\n",unsigned(interrupted),capture->publication_error.c_str(),Utf8(format_failure_phase).c_str());
+  assert(interrupted==Publication::RetryIO);
+  RecordingFile committed;assert(ReadRecording(flac_path,committed)&&committed.complete&&MatchesRecording(committed,catalog));
+  if(edited) {HANDLE changed=CreateFileW(ogg_path.c_str(),GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,0,nullptr);DWORD n=0;assert(changed!=INVALID_HANDLE_VALUE&&WriteFile(changed,"foreign",7,&n,nullptr)&&n==7);CloseHandle(changed);}
+  assert(Publish(*capture,heard,CaptureEpoch())==Publication::Saved);
+  const auto new_settings=GetSettings();const auto duplicate=OutputPath(new_settings.root,catalog,L".flac",new_settings.music_folder);
+  assert(GetFileAttributesW(duplicate.c_str())==INVALID_FILE_ATTRIBUTES&&"committed destination is acknowledged without publishing in the changed root");
+  if(edited)assert(GetFileAttributesW(ogg_path.c_str())!=INVALID_FILE_ATTRIBUTES&&DeleteFileW(ogg_path.c_str()));
+  else assert(GetFileAttributesW(ogg_path.c_str())==INVALID_FILE_ATTRIBUTES);
+  assert(DeleteFileW(flac_path.c_str()));
+ }
+ std::puts("PASS: format-upgrade commit receipts survive final-read and old-file cleanup failures across root changes");
 }
 static void TestRacedExistingAcknowledgement() {
  wchar_t temp[2048];GetTempPathW(2048,temp);
@@ -552,6 +628,23 @@ static void TestPublicationRecovery(bool benign,bool stable=false) {
  assert(DeleteFileW(path.c_str()));extra_lyrics.clear();extra_cover.clear();extra_disc=0;
  std::puts("PASS: completed publication preserves source and coherent retry artifacts");
 }
+static void TestUnchangedArtifactAfterMetadataRevision() {
+ wchar_t temp[2048];GetTempPathW(2048,temp);
+ assert(SetSaveLocation(std::wstring(temp)+L"Floggfy-unchanged-artifact-"+std::to_wstring(GetCurrentProcessId())));
+ assert(SetDownloads(true)&&SetFlac(true)&&SetLyrics(false));
+ Heard heard;heard.media.title=L"Unchanged recording";heard.media.artist=L"Artist";heard.media.album=L"Album";
+ heard.media.spotify_uri="spotify:track:0000000000000000000009";heard.media.duration=16.0/44100;
+ auto capture=RecoveryCapture();fail_publication_once=true;
+ assert(Publish(*capture,heard,CaptureEpoch())==Publication::RetryIO);
+ const auto prepared=capture->publication_artifact.bytes;assert(!prepared.empty());
+ ++enrichment_revision;fail_tag_once=true;
+ assert(Publish(*capture,heard,CaptureEpoch())==Publication::Saved&&"unrelated metadata changes must reuse unchanged prepared bytes");
+ assert(fail_tag_once&&capture->publication_artifact.bytes==prepared);fail_tag_once=false;
+ const auto settings=GetSettings();const auto path=OutputPath(settings.root,CatalogFor(heard.media),L".flac",settings.music_folder);
+ RecordingFile file;assert(ReadRecording(path,file)&&file.complete&&MatchesRecording(file,CatalogFor(heard.media)));
+ assert(DeleteFileW(path.c_str()));
+ std::puts("PASS: unchanged publication artifact survives unrelated metadata revisions without retagging");
+}
 int main(int argc,char** argv) {
   if(argc==2&&std::string(argv[1])=="--association"){TestLateAssociation();return 0;}
   TestLateAssociation();
@@ -560,6 +653,9 @@ int main(int argc,char** argv) {
   assert(WritePrivateProfileStringW(L"To Disk",L"NeverPause",L"0",ini.c_str()));
   InitSettings(nullptr);
   StartSongDestinationWorker(true);
+  if(argc==2&&std::string(argv[1])=="--unchanged-artifact"){TestUnchangedArtifactAfterMetadataRevision();return 0;}
+  if(argc==2&&std::string(argv[1])=="--ordinary-receipt"){TestOrdinaryCommitBeforeAcknowledgement();return 0;}
+  if(argc==2&&std::string(argv[1])=="--format-receipt"){TestFormatCommitBeforeAcknowledgement();return 0;}
   if(argc==2&&std::string(argv[1])=="--recovery-race"){TestRacedExistingAcknowledgement();return 0;}
   if(argc==2&&std::string(argv[1])=="--recovery-unmatched"){TestUnmatchedRootRecovery();return 0;}
   if(argc==2&&std::string(argv[1])=="--recovery-plan"){TestPublicationReplan();return 0;}
@@ -572,8 +668,8 @@ int main(int argc,char** argv) {
   TestLyricsPublication();
   assert(ReadRecentDownloads(recent)&&recent.empty()); // Lyrics-only updates and skips are not downloads.
   TestPublicationLogging();
-  TestPublicationRecovery(true);TestPublicationRecovery(false);TestPublicationRecovery(false,true);
-  TestPublicationReplan();TestUnmatchedRootRecovery();TestRacedExistingAcknowledgement();
+  TestPublicationRecovery(true);TestPublicationRecovery(false);TestPublicationRecovery(false,true);TestUnchangedArtifactAfterMetadataRevision();
+  TestPublicationReplan();TestUnmatchedRootRecovery();TestRacedExistingAcknowledgement();TestFormatCommitBeforeAcknowledgement();TestOrdinaryCommitBeforeAcknowledgement();
   assert(SetDownloads(false)); // Explicit fixture preference, independent of install defaults.
   assert(!GetSettings().downloads);
   queue =

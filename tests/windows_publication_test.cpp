@@ -6,6 +6,15 @@
 #include "../native/mp3_stream.h"
 #include <cstdio>
 #include <cstdlib>
+#include <new>
+static size_t watched_allocation_bytes=0,watched_allocations=0;
+void* operator new(std::size_t size) {
+    if(watched_allocation_bytes&&size==watched_allocation_bytes)++watched_allocations;
+    if(void* memory=std::malloc(size?size:1))return memory;
+    throw std::bad_alloc();
+}
+__attribute__((noinline)) void operator delete(void* memory) noexcept {std::free(memory);}
+__attribute__((noinline)) void operator delete(void* memory,std::size_t) noexcept {std::free(memory);}
 using namespace history;
 namespace history { std::wstring WindowsPath(const std::wstring& value) {
     if(value.rfind(L"\\\\?\\",0)==0) return value;
@@ -42,6 +51,9 @@ static std::vector<uint8_t> podcast(const Catalog& catalog) {
 static std::wstring test_mode;
 static bool permit_current=true;
 static bool current_permit(void*) {return permit_current;}
+static size_t memory_requests=0;
+static bool deny_memory(void*,size_t peak) {++memory_requests;check(peak>0,"nonempty memory request");return false;}
+
 namespace history {
 void PublicationTestPhase(const wchar_t* phase,const std::wstring& path) {
     if((test_mode==L"invalidate-staged"&&std::wstring(phase)==L"staged")||
@@ -89,6 +101,30 @@ int wmain(int argc,wchar_t** argv) {
           "acquired permit completes despite later destination changes");
     check(!permit_current&&ExistingRecording(denied_upgrade,catalog,actual)&&actual.bits==24,"permit linearizes before promotion");
     DeleteFileW(denied_upgrade.c_str());test_mode.clear();permit_current=true;
+    auto memory_path=root+L"\\memory-denied.flac";write(memory_path,bytes);
+    const auto source_before=high;memory_requests=0;
+    {
+        RecordingReadMemoryScope memory(deny_memory);
+        RecordingFile read_recording;watched_allocation_bytes=bytes.size();watched_allocations=0;
+        check(!ReadRecording(memory_path,read_recording)&&memory.Denied(),"read admission denial happens before whole-file allocation");
+        watched_allocation_bytes=0;check(watched_allocations==0,"denied read never allocates its full-file vector");
+    }
+    check(memory_requests==1,"one denied read request");
+    check(PublishBytes(memory_path,better,high.data(),high.size(),catalog,nullptr,nullptr,nullptr,deny_memory)==FilePublication::ResourceWait,
+          "publication memory denial defers without becoming skip");
+    check(high==source_before&&ExistingRecording(memory_path,catalog,actual)&&actual.bits==16,
+          "denied publication preserves caller artifact and exact old recording");
+    FormatUpgradeReceipt receipt;receipt.source=root+L"\\missing.ogg";receipt.destination=path;
+    receipt.catalog=catalog;receipt.quality=better;receipt.source_quality={Codec::Vorbis,44100,2,0,128000};
+    receipt.committed=true;receipt.metadata_preserved=true;
+    check(CompleteFormatUpgrade(receipt,nullptr,deny_memory)==FilePublication::ResourceWait&&receipt.committed,
+          "committed format receipt survives denied final verification allocation");
+    watched_allocation_bytes=high.size();watched_allocations=0;
+    check(PublishFormatUpgrade(memory_path,root+L"\\memory-format.flac",better,high.data(),high.size(),catalog,
+              nullptr,nullptr,nullptr,nullptr,deny_memory)==FilePublication::ResourceWait,
+          "format upgrade requests admission before incoming whole-file copy");
+    watched_allocation_bytes=0;check(watched_allocations==0,"denied format attempt never copies the artifact");
+    DeleteFileW(memory_path.c_str());
     auto other=catalog;other.spotify_uri="spotify:track:two";
     check(PublishBytes(path,better,high.data(),high.size(),other)==FilePublication::Failed,"mismatched incoming recording rejected");
     auto collision=ResolveRecordingDestination(path,other).path;

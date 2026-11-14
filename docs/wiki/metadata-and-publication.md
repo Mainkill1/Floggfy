@@ -37,6 +37,23 @@ listen, sample count/rate, source units/bytes, duration, elapsed coverage, captu
 format, and save time. Tag construction begins in
 [`audio_history.cpp`](../../native/audio_history.cpp).
 
+## Match diagnostics
+
+At `LogLevel=4`, matcher snapshots show the retained candidates, native or weak
+association, rejection/waiting reason, and measured offsets in milliseconds.
+Unknown values and checks that did not run are marked explicitly. Unchanged
+decisions are suppressed; inventory and session limits produce omission markers.
+
+Use the local log to compare successful matches with rejected candidates:
+
+```bash
+python3 tools/analyze_match_timings.py "path/to/Floggfy-diagnostics.log"
+```
+
+The report separates exact and weak matches, waiting/rejection reasons, and known
+coverage loss. It reports observations without changing INI settings. Keep the
+current tolerances until representative playback logs support a change.
+
 ## Tagging and metadata merge
 
 Codec-specific writers add tags without changing the captured audio:

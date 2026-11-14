@@ -15,8 +15,7 @@ struct PublicationPreferences {
 };
 struct ArtifactKey {
     std::string identity;
-    std::uint64_t revision=0;
-    bool operator==(const ArtifactKey& other) const {return revision==other.revision&&identity==other.identity;}
+    bool operator==(const ArtifactKey& other) const {return identity==other.identity;}
 };
 struct PreparedArtifact {
     ArtifactKey key;

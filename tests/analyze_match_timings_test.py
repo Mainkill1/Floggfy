@@ -12,6 +12,14 @@ SPEC.loader.exec_module(ANALYZER)
 
 
 class MatcherTimingTests(unittest.TestCase):
+    def test_missing_diagnostic_coverage_is_visible(self):
+        report=ANALYZER.analyze_lines([
+            "matcher_snapshot metadata_total=40 metadata_omitted=8 truncated=1 snapshot=1\n",
+            "matcher_snapshot budget-exhausted coverage=omitted\n",
+            "logger diagnostic records omitted=7; evidence incomplete\n",
+        ])
+        self.assertEqual(report["coverage"].get("incomplete_evidence_markers"),3)
+
     def test_old_and_new_records_split_exact_and_weak_and_deduplicate(self):
         report = ANALYZER.analyze_lines([
             "12:00 matcher capture=1 metadata=2 decision=matched-native-id first_seen_delta_ms=-100 start_delta_ms=0 duration_delta_ms=-5\n",

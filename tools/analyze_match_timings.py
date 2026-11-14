@@ -55,10 +55,16 @@ def _summarize(samples, count_name):
 def analyze_sources(sources):
     observations = {}
     coverage = {"input_sessions": 0, "duplicate_matches": 0, "duplicate_observations": 0,
-                "oversize_lines": 0, "invalid_identity": 0, "unrecognized_decisions": 0}
+                "oversize_lines": 0, "invalid_identity": 0, "unrecognized_decisions": 0,
+                "incomplete_evidence_markers": 0}
     for session, lines in enumerate(sources):
         coverage["input_sessions"] += 1
         for raw in lines:
+            if ("matcher_snapshot" in raw and (
+                "coverage=omitted" in raw or "truncated=1" in raw or
+                re.search(r"(?:metadata_omitted|competitors_omitted|serialized_omitted)=[1-9]\d*",raw))) or (
+                "logger diagnostic records omitted=" in raw):
+                coverage["incomplete_evidence_markers"]+=1
             marker = RECORD.search(raw)
             if marker is None:
                 continue

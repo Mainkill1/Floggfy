@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include "library_layout.h"
 namespace history {
 inline constexpr std::size_t kMatcherSnapshotBytes=16*1024;
 inline constexpr std::size_t kMatcherSessionBytes=2*1024*1024;
@@ -67,6 +68,7 @@ struct MatcherCompetitor {
 // never looks up identities, reruns eligibility checks or owns matching state.
 // IDs must be session-local counters. No user strings are accepted or emitted.
 struct MatcherSnapshot {
+    std::optional<Codec> codec;
     uint64_t snapshot_id=0,capture_id=0,epoch=0;
     MatcherPath path=MatcherPath::Unknown;
     std::optional<unsigned> ownership_state,ownership_reason;
@@ -170,6 +172,7 @@ inline SerializedMatcherSnapshot Serialize(const MatcherSnapshot& snapshot,std::
     if(limit<summary_reserve){result.omitted_records=bodies.size()+1;result.truncated=true;return result;}
     const auto parts=selected+1;
     std::string summary="matcher_snapshot metadata_total="+(snapshot.inventory_evaluated?std::to_string(snapshot.metadata_total):"unknown")+
+        " codec="+(!snapshot.codec?"unknown":*snapshot.codec==Codec::Vorbis?"ogg":*snapshot.codec==Codec::Flac?"flac":*snapshot.codec==Codec::Mp3?"mp3":"aac")+
         " kind=summary metadata_kept="+std::to_string(snapshot.metadata_count)+
         " metadata_omitted="+(snapshot.inventory_evaluated?std::to_string(snapshot.metadata_total-snapshot.metadata_count):"unknown")+
         " competitors_total="+(snapshot.inventory_evaluated?std::to_string(snapshot.competitor_total):"unknown")+
@@ -218,7 +221,10 @@ inline uint64_t MatcherSnapshotSignature(const MatcherSnapshot& snapshot) noexce
     hash.Add(snapshot.association_metadata_id);hash.Add(snapshot.association_retained);
     hash.Add(snapshot.source_duration_ms);hash.Add(snapshot.end_ms);hash.Add(snapshot.complete);
     hash.Add(snapshot.inventory_evaluated);hash.Add(snapshot.abort_reason);
-    hash.Add(snapshot.source_bytes);hash.Add(snapshot.subsequent_starts);hash.Add(snapshot.retirement_threshold);
+    if(snapshot.codec){hash.Add(true);hash.Add(unsigned(*snapshot.codec));}else hash.Add(false);
+    // Raw byte progress does not change eligibility. It remains in emitted
+    // snapshots and the forced terminal snapshot without logging every page.
+    hash.Add(snapshot.subsequent_starts);hash.Add(snapshot.retirement_threshold);
     hash.Add(snapshot.time_offset_tolerance_ms);hash.Add(snapshot.duration_tolerance_ms);
     hash.Add(snapshot.known_pruned_metadata);hash.Add(snapshot.prior_history);
     hash.Add(snapshot.metadata_total);hash.Add(snapshot.competitor_total);

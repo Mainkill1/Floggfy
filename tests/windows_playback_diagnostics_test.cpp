@@ -1412,6 +1412,23 @@ void MatcherCandidateInventory() {
         assert(line.size()<768&&line.find("spotify:track:")==std::string::npos&&line.find("far-away")==std::string::npos);
     history::settings=prior;playback_pump_target=pump;
 }
+void LateDurationContradictionStaysRejected() {
+    const auto prior=history::settings;const auto pump=playback_pump_target;playback_pump_target=nullptr;
+    history::settings.matcher_duration_ms=250;history::settings.matcher_max_queue=5;
+    CaptureBuffers buffers;Media current;auto media=RecordingMedia("late-duration",1.2);
+    ObserveRecordingMetadata(media,buffers,current,100);
+    auto capture=CompleteOggCapture(100,101);capture->capture_token=701;capture->retention_start=1;
+    buffers.ready.push_back(std::move(capture));AssociateRetainedRecordings(buffers);
+    assert(buffers.ready[0]->association);
+    media.duration=2;ObserveRecordingMetadata(media,buffers,current,101);
+    diagnostic_lines.clear();ScheduleStreamPublications(buffers,0,102);SaveJob job;
+    assert(!saves.Pop(job)&&buffers.ready.size()==1&&buffers.ready[0]->fallback_ambiguous&&
+        "late duration evidence must invalidate a weak association before publication");
+    assert(Contains("decision=duration-mismatch")&&Contains("duration_delta_ms=-1000"));
+    const auto first=diagnostic_lines.size();ScheduleStreamPublications(buffers,0,103);
+    assert(diagnostic_lines.size()==first&&"a rejected weak association cannot oscillate back to matched in diagnostics");
+    history::settings=prior;playback_pump_target=pump;
+}
 void NativeIdentityUsesRecordingLifetime() {
     const auto prior_sink=decoded_sink_target,prior_pump=playback_pump_target;
     const auto prior_layout=decoder_ownership_layout;const auto prior_available=decoder_ownership_layout_available;
@@ -1582,6 +1599,7 @@ int wmain(int argc,wchar_t** argv) {
     if(argc==2&&!wcscmp(argv[1],L"--review-prefetch")){PrefetchCannotSupplyCurrentIdentity();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--review-retirement")){RetirementCannotManufactureMatch();RetiredMetadataCannotManufactureMatch();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--review-matcher-inventory")){MatcherCandidateInventory();return 0;}
+    if(argc==2&&!wcscmp(argv[1],L"--review-late-duration")){LateDurationContradictionStaysRejected();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--review-audit-budget")){ReleaseAuditHonorsBudget();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--review-retry-allocation")){UnmatchedArchiveRetry(true);return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--review-mp3-prefix")){Mp3BoundaryDoesNotProveCompleteness();return 0;}
@@ -1602,7 +1620,7 @@ int wmain(int argc,wchar_t** argv) {
     if(argc==2&&(!wcscmp(argv[1],L"--podcast-reuse")||!wcscmp(argv[1],L"--pause-continuity")||
         !wcscmp(argv[1],L"--podcast-end"))) {StreamOwnedCompletion();UnmatchedRetention();return 0;}
     assert(argc==1);
-    NativeIdentityUsesRecordingLifetime();PrefetchCannotSupplyCurrentIdentity();MatcherToleranceAndLogs();RetirementCannotManufactureMatch();RetiredMetadataCannotManufactureMatch();MatcherCandidateInventory();ReleaseAuditHonorsBudget();
+    NativeIdentityUsesRecordingLifetime();PrefetchCannotSupplyCurrentIdentity();MatcherToleranceAndLogs();RetirementCannotManufactureMatch();RetiredMetadataCannotManufactureMatch();MatcherCandidateInventory();LateDurationContradictionStaysRejected();ReleaseAuditHonorsBudget();
     Mp3BoundaryDoesNotProveCompleteness();IndependentSaveProgress();
     RecordingQueueCounters();StreamOwnedCompletion();UnmatchedRetention();UnmatchedWriterRejectsPartial();UnmatchedArchiveRetry();UnmatchedArchiveRetry(true);
     Connectivity();PodcastCatalog();PublicationLogging();ReadyUpgradesPreboundPlaybackGeneration();

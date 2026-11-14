@@ -223,7 +223,9 @@ void PreferredPublication(const std::wstring& root) {
         const auto path=OutputPath(root,c,extension);
         Write(path,Audio(c,16,std::wstring(extension)==L".ogg"));
         ResetCounts();assert(Publish(incoming,heard,CaptureEpoch())==Publication::AlreadyPresent);
-        assert(listings==1&&attribute_checks==0&&recording_opens==1);
+        // One planning read and one held revalidation before acknowledging the
+        // completed source; a raced removal must never count as AlreadyPresent.
+        assert(listings==1&&attribute_checks==0&&recording_opens==2);
         assert(DeleteFileW(WindowsPath(path).c_str()));
     }
 }

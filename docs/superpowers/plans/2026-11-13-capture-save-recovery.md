@@ -201,5 +201,17 @@ second matcher, second scheduler, second file-commit implementation or blanket
 refactor. Delete replaced fields/helpers/tests only when their replacement's
 production-path regressions pass.
 
-Planning artifacts only: no runtime fix, live reproduction, new test pass, installed
-DLL, GitHub update or release is claimed by this document.
+## Execution status
+
+Stage A is implemented. Focused regressions reproduced the reported conditional
+paths before their fixes. Portable, Windows publication/matcher, large-file and
+sanitizer checks validate the implementation; live playback is the next gate for
+timing analysis. Timing defaults are unchanged.
+
+Implementation uses the existing enrichment APIs with revision checks and an
+exact content key, avoiding another metadata service. The existing file transaction
+and codec readers remain in place. A failed optional diagnostic cannot unwind a
+successful queue handoff.
+
+The user deferred Tasks 10–11 (durable storage and its controls). No merge or
+release is part of this correctness/logging pass.

@@ -22,6 +22,8 @@ int main() {
     assert(joined.find("timing_evaluated=1 duration_evaluated=0")!=std::string::npos);
     assert(joined.find("decision=outside-start-window")!=std::string::npos);
     const auto signature=MatcherSnapshotSignature(snapshot);
+    snapshot.source_bytes=65536;
+    assert(MatcherSnapshotSignature(snapshot)==signature&&"byte arrival alone is not a changed matching decision");
     snapshot.snapshot_id=999;snapshot.FinalizeSnapshot(MatcherReason::SavedUnmatched);
     assert(MatcherSnapshotSignature(snapshot)==signature);
     snapshot.RecordDecision(12,MatcherReason::DurationMismatch,true,true);
