@@ -174,7 +174,7 @@ FilenameConversion ConvertRecordingFilename(const std::wstring& source,const std
     }catch(...){return FilenameConversion::Failed;}
 }
 FilePublication PublishBytes(const std::wstring& path,const Quality& quality,const void* bytes,size_t size,const Catalog& catalog,
-                             size_t* published_bytes) {
+                             size_t* published_bytes,PublicationPermit permit,void* context) {
     if(published_bytes)*published_bytes=0;
     RecordingFile incoming;
     if(path.empty() || !InspectRecording(static_cast<const uint8_t*>(bytes),size,incoming) ||
@@ -183,7 +183,7 @@ FilePublication PublishBytes(const std::wstring& path,const Quality& quality,con
        incoming.quality.channels!=quality.channels || incoming.quality.bits!=quality.bits || incoming.quality.bitrate!=quality.bitrate) return FilePublication::Failed;
     RecoverRecording(path,catalog);
     auto decision=DecideSave(path,quality,catalog);
-    if(decision==SaveDecision::Skip) return FilePublication::Skipped;
+    if(decision==SaveDecision::Skip) return permit&&!permit(context)?FilePublication::Replan:FilePublication::Skipped;
     Handle old;
     std::vector<uint8_t> preserved;
     if(decision==SaveDecision::Upgrade) {
@@ -210,6 +210,7 @@ FilePublication PublishBytes(const std::wstring& path,const Quality& quality,con
     StagingFile cleanup{WindowsPath(staging)};
     if(!WriteNew(staging,bytes,size)) return FilePublication::Failed;
     TestPhase(L"staged",path);
+    if(permit&&!permit(context))return FilePublication::Replan;
     if(decision==SaveDecision::NewFile) {
         // No replace flag: a destination created during staging belongs to the
         // other writer, even when its quality happens to be lower.
@@ -224,7 +225,7 @@ FilePublication PublishBytes(const std::wstring& path,const Quality& quality,con
     return result;
 }
 FilePublication PublishFormatUpgrade(const std::wstring& source,const std::wstring& destination,
-    const Quality& quality,const void* bytes,size_t size,const Catalog& catalog,size_t* published_bytes) {
+    const Quality& quality,const void* bytes,size_t size,const Catalog& catalog,size_t* published_bytes,PublicationPermit permit,void* context) {
     if(published_bytes)*published_bytes=0;
     try {
         if(source.empty() || destination.empty() || !bytes || !size ||
@@ -252,8 +253,8 @@ FilePublication PublishFormatUpgrade(const std::wstring& source,const std::wstri
         std::vector<uint8_t> preserved;std::string error;
         if(!PreserveUpgradeMetadata(old_bytes,incoming,catalog,preserved,error))return FilePublication::Failed;
         size_t saved=0;
-        auto result=PublishBytes(destination,quality,preserved.data(),preserved.size(),catalog,&saved);
-        if(result==FilePublication::Failed)return result;
+        auto result=PublishBytes(destination,quality,preserved.data(),preserved.size(),catalog,&saved,permit,context);
+        if(result==FilePublication::Failed||result==FilePublication::Replan)return result;
 
         // A prior buggy run may already have left a good FLAC beside the Ogg.
         // Merge the Ogg metadata into that exact FLAC before cleaning up.

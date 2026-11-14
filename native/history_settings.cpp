@@ -444,6 +444,7 @@ static bool Set(const wchar_t* key,bool value,bool& field,volatile LONG* fast,bo
     (void)key;
     if(ok) {
         if(affects_capture && field!=value) { ++settings.capture_epoch; InterlockedExchange(&capture_epoch,LONG(settings.capture_epoch)); }
+        if(&field==&settings.lyrics&&field!=value)++settings.artifact_revision;
         field=value; if(fast) InterlockedExchange(fast,value); ++settings.generation;
     }
     }
@@ -493,7 +494,10 @@ bool SetSaveLocation(const std::wstring& root) {
     auto next_root=root,next_location=root;const bool music=IsMusic(root);
     bool ok=false;
     {ExclusiveSrw guard(lock);ok=settings_signal!=nullptr;
-     if(ok) {settings.root.swap(next_root);settings.save_location.swap(next_location);settings.music_folder=music;++settings.generation;}}
+     if(ok) {
+         if(settings.root!=next_root||settings.music_folder!=music)++settings.destination_revision;
+         settings.root.swap(next_root);settings.save_location.swap(next_location);settings.music_folder=music;++settings.generation;
+     }}
     if(ok)SetEvent(settings_signal);
     return ok;
 }

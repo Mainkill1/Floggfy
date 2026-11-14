@@ -166,9 +166,9 @@ void PublicationModes(const std::wstring& root) {
     };
     SetNaming(true,false);assert(publish()==Publication::Saved&&MissingFile(title)&&!MissingFile(numbered));
     const auto bytes=ReadBytes(numbered);
-    SetNaming(false,false);assert(publish()==Publication::Skipped&&ReadBytes(numbered)==bytes&&MissingFile(title));
-    SetNaming(false,true);assert(publish()==Publication::Skipped&&ReadBytes(title)==bytes&&MissingFile(numbered));
-    SetNaming(true,false);assert(publish()==Publication::Skipped&&ReadBytes(title)==bytes&&MissingFile(numbered)); // No duplicate on mode switch.
+    SetNaming(false,false);assert(publish()==Publication::AlreadyPresent&&ReadBytes(numbered)==bytes&&MissingFile(title));
+    SetNaming(false,true);assert(publish()==Publication::AlreadyPresent&&ReadBytes(title)==bytes&&MissingFile(numbered));
+    SetNaming(true,false);assert(publish()==Publication::AlreadyPresent&&ReadBytes(title)==bytes&&MissingFile(numbered)); // No duplicate on mode switch.
     StartSongDestinationWorker(true);PublishSongDestination(777,root,c,false,GetSettings().generation,true);
     std::wstring menu_path;const auto end=GetTickCount64()+5000;
     while(!ReadSongDestination(777,GetSettings().generation,menu_path)){assert(GetTickCount64()<end);Sleep(1);}

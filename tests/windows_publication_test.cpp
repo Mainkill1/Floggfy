@@ -40,8 +40,12 @@ static std::vector<uint8_t> podcast(const Catalog& catalog) {
     check(MakeOwnedMp3(source.data(),source.size(),tags,result,error),"tag podcast fixture");return result;
 }
 static std::wstring test_mode;
+static bool permit_current=true;
+static bool current_permit(void*) {return permit_current;}
 namespace history {
 void PublicationTestPhase(const wchar_t* phase,const std::wstring& path) {
+    if((test_mode==L"invalidate-staged"&&std::wstring(phase)==L"staged")||
+       (test_mode==L"invalidate-reserved"&&std::wstring(phase)==L"reserved"))permit_current=false;
     if((test_mode==L"crash" && std::wstring(phase)==L"reserved") ||
        (test_mode==L"crash-new" && std::wstring(phase)==L"staged")) TerminateProcess(GetCurrentProcess(),77);
     if((test_mode==L"race-new" && std::wstring(phase)==L"staged") ||
@@ -67,6 +71,24 @@ int wmain(int argc,wchar_t** argv) {
     check(PublishBytes(path,quality,bytes.data(),bytes.size(),catalog)==FilePublication::Skipped,"same recording and quality skipped");
     check(PublishBytes(path,better,high.data(),high.size(),catalog)==FilePublication::Upgraded,"quality upgrade safely promoted");
     check(ExistingRecording(path,catalog,actual)&&actual.bits==24,"upgrade published complete recording");
+    auto denied=root+L"\\denied.flac";
+    test_mode=L"invalidate-staged";permit_current=true;
+    check(PublishBytes(denied,quality,bytes.data(),bytes.size(),catalog,nullptr,current_permit)==FilePublication::Replan,
+          "destination changed after staging replans without promoting");
+    check(GetFileAttributesW(denied.c_str())==INVALID_FILE_ATTRIBUTES,"denied permit exposes no destination");
+    permit_current=true;
+    check(PublishBytes(path,better,high.data(),high.size(),catalog,nullptr,current_permit)==FilePublication::Skipped,"verified existing file acknowledges current permit");
+    permit_current=false;
+    check(PublishBytes(path,better,high.data(),high.size(),catalog,nullptr,current_permit)==FilePublication::Replan,"existing-file acknowledgement checks current permit");
+    auto denied_upgrade=root+L"\\denied-upgrade.flac";write(denied_upgrade,bytes);permit_current=true;
+    check(PublishBytes(denied_upgrade,better,high.data(),high.size(),catalog,nullptr,current_permit)==FilePublication::Replan,
+          "stale upgrade permit retains exact old object");
+    check(ExistingRecording(denied_upgrade,catalog,actual)&&actual.bits==16,"stale permit preserves previous quality");
+    test_mode=L"invalidate-reserved";permit_current=true;
+    check(PublishBytes(denied_upgrade,better,high.data(),high.size(),catalog,nullptr,current_permit)==FilePublication::Upgraded,
+          "acquired permit completes despite later destination changes");
+    check(!permit_current&&ExistingRecording(denied_upgrade,catalog,actual)&&actual.bits==24,"permit linearizes before promotion");
+    DeleteFileW(denied_upgrade.c_str());test_mode.clear();permit_current=true;
     auto other=catalog;other.spotify_uri="spotify:track:two";
     check(PublishBytes(path,better,high.data(),high.size(),other)==FilePublication::Failed,"mismatched incoming recording rejected");
     auto collision=ResolveRecordingDestination(path,other).path;

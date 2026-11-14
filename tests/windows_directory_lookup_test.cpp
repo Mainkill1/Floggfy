@@ -222,7 +222,7 @@ void PreferredPublication(const std::wstring& root) {
     for(const auto* extension:{L".flac",L".ogg"}) {
         const auto path=OutputPath(root,c,extension);
         Write(path,Audio(c,16,std::wstring(extension)==L".ogg"));
-        ResetCounts();assert(Publish(incoming,heard,CaptureEpoch())==Publication::Skipped);
+        ResetCounts();assert(Publish(incoming,heard,CaptureEpoch())==Publication::AlreadyPresent);
         assert(listings==1&&attribute_checks==0&&recording_opens==1);
         assert(DeleteFileW(WindowsPath(path).c_str()));
     }
@@ -279,14 +279,14 @@ void NativePodcastPublication(const std::wstring& root) {
         Heard heard{episode,1,2,unsigned(index+1)};const auto catalog=CatalogFor(episode);
         const auto path=OutputPath(root,catalog,format.extension,false);
         {ExclusiveSrw guard(history::lock);history::settings.podcasts=false;++history::settings.generation;}
-        assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped&&
+        assert(Publish(*capture,heard,CaptureEpoch())==Publication::Cancelled&&
                GetFileAttributesW(WindowsPath(path).c_str())==INVALID_FILE_ATTRIBUTES);
         {ExclusiveSrw guard(history::lock);history::settings.podcasts=true;++history::settings.generation;
          if(format.codec==Codec::Flac)history::settings.flac=false;
          else if(format.codec==Codec::Vorbis)history::settings.ogg=false;
          else if(format.codec==Codec::Aac)history::settings.aac=false;}
         if(format.codec!=Codec::Mp3) {
-            assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped);
+            assert(Publish(*capture,heard,CaptureEpoch())==Publication::Cancelled);
             ExclusiveSrw guard(history::lock);
             if(format.codec==Codec::Flac)history::settings.flac=true;
             else if(format.codec==Codec::Vorbis)history::settings.ogg=true;
@@ -331,7 +331,7 @@ void UnresolvedDuplicates(const std::wstring& root) {
             return Publish(capture,heard,CaptureEpoch());
         };
         HANDLE held=CreateFileW(WindowsPath(base).c_str(),GENERIC_READ,0,nullptr,OPEN_EXISTING,0,nullptr);
-        assert(held!=INVALID_HANDLE_VALUE&&publish()==Publication::Failed);CloseHandle(held);
+        assert(held!=INVALID_HANDLE_VALUE&&publish()==Publication::RetryIO);CloseHandle(held);
         assert(publish()==Publication::Saved);
         std::vector<RecentDownload> recent;assert(ReadRecentDownloads(recent)&&!recent.empty());
         const auto saved=recent.front().path;
@@ -340,7 +340,7 @@ void UnresolvedDuplicates(const std::wstring& root) {
         assert(GetFileAttributesW(WindowsPath(old_hash).c_str())==INVALID_FILE_ATTRIBUTES);
         RecordingFile recording;assert(ReadRecording(base,recording)&&MatchesRecording(recording,prior));
         assert(ReadRecording(saved,recording)&&recording.complete&&MatchesRecording(recording,c));
-        assert(publish()==Publication::Skipped&&publish(24)==Publication::Saved);
+        assert(publish()==Publication::AlreadyPresent&&publish(24)==Publication::Saved);
         assert(ReadRecording(saved,recording)&&recording.quality.bits==24&&MatchesRecording(recording,c));
 
         DestinationRequest request;request.catalog=c;request.serial=51;request.flac=base;
@@ -367,7 +367,7 @@ void UnresolvedDuplicates(const std::wstring& root) {
             // A later metadata heartbeat must find the old no-ID home rather
             // than publish a second file under the newly available track ID.
             media.spotify_uri="spotify:track:AAAAAAAAAAAAAAAAAAAAAA";
-            assert(publish()==Publication::Skipped);
+            assert(publish()==Publication::AlreadyPresent);
             assert(ReadRecording(saved,recording)&&recording.quality.bits==24);
             auto enriched=c;enriched.spotify_uri=media.spotify_uri;
             request.catalog=enriched;
@@ -385,7 +385,7 @@ void UnresolvedDuplicates(const std::wstring& root) {
             {ExclusiveSrw guard(history::lock);history::settings.convert_numbered_filenames=false;}
         }
         assert(DeleteFileW(WindowsPath(base).c_str()));
-        assert(publish()==Publication::Skipped);
+        assert(publish()==Publication::AlreadyPresent);
         destination_enabled=true;request_serial=51;cache={};
         assert(ProbeSavedSong(request,cache)==saved);destination_enabled=false;
         assert(MoveFileW(WindowsPath(saved).c_str(),WindowsPath(numbered).c_str()));
@@ -401,7 +401,7 @@ void UnresolvedDuplicates(const std::wstring& root) {
             auto unrelated=c;unrelated.spotify_uri="spotify:track:BBBBBBBBBBBBBBBBBBBBBB";
             Write(base,Audio(unrelated));const auto occupied=DuplicateOutputPaths(root,c,L".flac");
             for(const auto& path:occupied)Write(path,Audio(unrelated));
-            assert(publish()==Publication::Failed);
+            assert(publish()==Publication::RetryIO);
             auto unidentified=c;unidentified.spotify_uri.clear();
             assert(GetFileAttributesW(WindowsPath(DuplicateOutputPath(root,unidentified,L".flac")).c_str())==INVALID_FILE_ATTRIBUTES);
             for(const auto& path:occupied)assert(DeleteFileW(WindowsPath(path).c_str()));
@@ -434,7 +434,7 @@ void StableArtistFolder(const std::wstring& root) {
     assert(std::find(identity.fields.begin(),identity.fields.end(),std::make_pair(std::string("SPOTIFY_ALBUM_URI"),tagged_catalog.spotify_album_uri))!=identity.fields.end());
     Capture incoming;incoming.lossless=true;incoming.flac.rate=44100;incoming.flac.channels=2;incoming.flac.bits=16;
     Heard heard;heard.media=media;heard.start=1;heard.finish=2;
-    assert(Publish(incoming,heard,CaptureEpoch())==Publication::Skipped);
+    assert(Publish(incoming,heard,CaptureEpoch())==Publication::AlreadyPresent);
     assert(GetFileAttributesW(WindowsPath(wrong_folder).c_str())==INVALID_FILE_ATTRIBUTES);
     // A recording already saved under enriched artist names is still found;
     // existing higher quality wins across both known folders without copying.
@@ -444,7 +444,7 @@ void StableArtistFolder(const std::wstring& root) {
     assert(GetFileAttributesW(WindowsPath(alternate_old).c_str())==INVALID_FILE_ATTRIBUTES);
     assert(ReadRecording(wrong_folder,saved)&&saved.quality.bits==24);
     assert(DeleteFileW(WindowsPath(title).c_str()));
-    assert(Publish(incoming,heard,CaptureEpoch())==Publication::Skipped);
+    assert(Publish(incoming,heard,CaptureEpoch())==Publication::AlreadyPresent);
     assert(GetFileAttributesW(WindowsPath(title).c_str())==INVALID_FILE_ATTRIBUTES);
     assert(ReadRecording(wrong_folder,saved)&&saved.quality.bits==24);
     assert(DeleteFileW(WindowsPath(wrong_folder).c_str()));

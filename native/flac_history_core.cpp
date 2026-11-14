@@ -1,4 +1,5 @@
 #include "flac_history_core.h"
+#include "tag_memory_plan.h"
 #include <cstring>
 namespace history {
 static bool StreamInfo(const uint8_t* b,FlacInfo& info) {
@@ -123,7 +124,8 @@ bool TagFlac(const std::vector<uint8_t>& source,const Tags& tags,std::vector<uin
     for(const auto& field:fields) { Number(comments,uint32_t(field.size())); comments.insert(comments.end(),field.begin(),field.end()); }
     blocks.push_back({4,std::move(comments)});
     if(has_picture) blocks.push_back({6,std::move(picture)});
-    output.reserve(source.size()+tags.cover.size()+65536); output={'f','L','a','C'};
+    TagMemoryPlan plan;if(!PlanTagConstructionMemory(Codec::Flac,source.size(),audio,0,tags,plan))return fail("FLAC tag allocation overflow");
+    output.reserve(plan.output_capacity); output={'f','L','a','C'};
     for(size_t i=0;i<blocks.size();i++) {
         const auto& block=blocks[i]; size_t n=block.second.size(); if(n>0xffffff) return fail("FLAC metadata block too large");
         output.push_back(uint8_t(block.first|(i+1==blocks.size()?128:0)));

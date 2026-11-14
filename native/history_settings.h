@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include <string>
+#include <cstdint>
 #include "recording_limits.h"
 namespace history {
 struct Settings {
@@ -17,6 +18,8 @@ struct Settings {
     bool debug_connect=true; // Requires DebugLog; observes cached Connect state/local actions.
     bool network_patch=false; // INI-only startup opt-in; requires a full restart.
     unsigned max_buffered_mib=kDefaultBufferedMiB,capture_speed=1,capture_speed_limit=0,log_level=1,generation=0,capture_epoch=0;
+    // Scoped publication revisions exclude pacing and other playback preferences.
+    uint64_t artifact_revision=0,destination_revision=0;
     std::wstring root,save_location;
 };
 void InitSettings(HMODULE proxy);
