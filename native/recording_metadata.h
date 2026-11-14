@@ -22,16 +22,35 @@ public:
 private:
     std::deque<Record> records_;
     std::uint64_t generation_=0,starts_=0,current_=0;
-    double last_start_time_=-1;
+    double last_start_time_=-1,last_observation_time_=-1;
 public:
     std::uint64_t Starts() const noexcept{return starts_;}
     const std::deque<Record>& Records() const noexcept{return records_;}
     Record& Observe(const Media& media,double time) {
-        const auto key=media.playback_instance.empty()?media.ListenKey():media.playback_instance;
-        auto found=std::find_if(records_.begin(),records_.end(),[&](const auto& record) {
-            const auto& prior=record.metadata.media;
-            return (prior.playback_instance.empty()?prior.ListenKey():prior.playback_instance)==key;
+        auto current=std::find_if(records_.begin(),records_.end(),[&](const auto& record) {
+            return record.metadata.generation==current_;
         });
+        // Delayed provider replies cannot replay an old transition or spend a
+        // start. Keep the current generation as the caller's association input.
+        if(time<last_observation_time_&&current!=records_.end())return *current;
+        last_observation_time_=std::max(last_observation_time_,time);
+        auto found=records_.end();
+        if(!media.playback_instance.empty()) {
+            found=std::find_if(records_.begin(),records_.end(),[&](const auto& record) {
+                return record.metadata.media.playback_instance==media.playback_instance;
+            });
+        }
+        // A catalog key proves continuity only with the current occurrence.
+        // A -> B -> A therefore gets a fresh generation, while a late native
+        // identity enriches the same uninterrupted fallback occurrence.
+        if(found==records_.end()&&current!=records_.end()) {
+            const auto& prior=current->metadata.media;
+            const auto key=[](const Media& item) {
+                return item.spotify_uri.empty()?item.Key():item.spotify_uri;
+            };
+            if((media.playback_instance.empty()||prior.playback_instance.empty())&&key(prior)==key(media))
+                found=current;
+        }
         if(found==records_.end()) {
             records_.push_back({{media,time,time,++generation_},starts_,false});
             found=std::prev(records_.end());
@@ -39,6 +58,7 @@ public:
         } else {
             auto& target=found->metadata.media;
             if(!media.spotify_uri.empty())target.spotify_uri=media.spotify_uri;
+            if(!media.playback_instance.empty())target.playback_instance=media.playback_instance;
             // Empty/delayed properties never erase labels already observed.
             if(!media.title.empty())target.title=media.title;
             if(!media.artist.empty())target.artist=media.artist;
