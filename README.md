@@ -37,7 +37,8 @@ Tested with the Spotify 1.3.9.2055 desktop update on Windows x64.
 - Click **Song** to open a saved song's folder. Unsaved songs stay greyed out.
 - **Latest Downloads** lists the last ten songs saved during the current run.
 
-<img width="338" height="362" alt="To Disk menu" src="https://github.com/user-attachments/assets/b6294a3d-c09d-4dba-926a-72a1529d1db7" />
+<img width="379" height="442" alt="image" src="https://github.com/user-attachments/assets/cd8bcd48-35fb-4991-8cf3-8614f076ad44" />
+
 
 ## Settings
 
