@@ -25,15 +25,23 @@ int main(){
     for(const auto& u:{"http://i.scdn.co/image/abc","https://i.scdn.co.example.invalid/image/abc","https://@i.scdn.co/image/abc","https://i.scdn.co/image/abc?variant=example","https://example.invalid/image/abc"})check(!history::IsAlbumArtworkUrl(u),"non-public or unexpected CDN URL rejected");
     int calls=0;bool fail=false;history::AlbumArtworkCache cache([&](const std::string&,std::vector<uint8_t>& out){++calls;out=fail?std::vector<uint8_t>{1,2,3}:png;return true;});
     std::vector<uint8_t> bytes;std::string mime;
+    check(cache.Revision()==0,"empty artwork cache starts at revision zero");
     check(cache.Cache("spotify:track:a",url),"new validated art reports a cache revision");
+    const auto initial_revision=cache.Revision();
+    check(initial_revision>0,"validated content publication advances revision immediately");
     check(cache.Get("spotify:track:a",bytes,mime)&&bytes==png&&mime=="image/png","validated art cached by track");
     check(!cache.Cache("spotify:track:a",url)&&calls==1,"repeated metadata avoids repeated network or revision");
+    check(cache.Revision()==initial_revision,"unchanged image does not advance content revision");
     fail=true;check(!cache.Cache("spotify:track:b",url),"invalid response reports no cache revision");
+    check(cache.Revision()==initial_revision,"invalid fetch does not advance content revision");
     check(!cache.Get("spotify:track:b",bytes,mime),"invalid response never cached");
     check(!cache.Cache("spotify:track:b",url)&&calls==2,"failed fetch rate limited");
     cache.Cache("spotify:track:a","https://i.scdn.co/image/ab67616d0000b2730123456789abcdef01234568");
     check(cache.Get("spotify:track:a",bytes,mime)&&bytes==png,"failed URL refresh preserves valid art");
+    check(cache.Revision()==initial_revision,"failed refresh keeps the content revision");
     fail=false;
+    check(cache.Cache("spotify:track:a","https://i.scdn.co/image/ab67616d0000b2730123456789abcdef01234569"),"same image may arrive from a refreshed URL");
+    check(cache.Revision()==initial_revision,"identical bytes under a new URL retain content revision");
     for(int k=0;k<12;++k)cache.Cache("spotify:track:"+std::to_string(k),url);
     check(!cache.Get("spotify:track:0",bytes,mime)&&cache.Get("spotify:track:11",bytes,mime),"bounded cache evicts oldest track");
     std::atomic<bool> entered{false},release{false};
@@ -42,5 +50,35 @@ int main(){
     while(!entered)std::this_thread::yield();
     check(!slow.Get("spotify:track:a",bytes,mime),"cached reads do not wait for in-flight fetch");
     release=true;worker.join();check(slow.Get("spotify:track:a",bytes,mime),"worker publishes completed image");
-    std::puts("PASS: Spotify artwork validation and bounded cache");
+    check(slow.Revision()>0,"ready bytes and their revision are published together");
+    // Hold the fetch for a replacement, then publish it and keep its caller
+    // blocked. Freshness must advance before the metadata caller can resume.
+    entered=false;release=false;std::atomic<bool> cache_returned{false},finish_caller{false};unsigned pass=0;
+    history::AlbumArtworkCache changing([&](const std::string&,std::vector<uint8_t>& out){
+        if(pass++){entered=true;while(!release)std::this_thread::yield();out=artwork_fixture::jpeg();}
+        else out=png;
+        return true;
+    });
+    check(changing.Cache("spotify:track:a",url),"initial content for replacement barrier");
+    const auto before=changing.Revision();
+    std::thread refresh([&]{
+        changing.Cache("spotify:track:a","https://i.scdn.co/image/ab67616d0000b2730123456789abcdef01234568");
+        cache_returned=true;while(!finish_caller)std::this_thread::yield();
+    });
+    while(!entered)std::this_thread::yield();
+    check(changing.Revision()==before&&changing.Get("spotify:track:a",bytes,mime)&&bytes==png,
+          "pending replacement preserves the old image and revision");
+    release=true;while(!cache_returned)std::this_thread::yield();
+    check(changing.Get("spotify:track:a",bytes,mime)&&bytes==artwork_fixture::jpeg()&&changing.Revision()>before,
+          "new content invalidates freshness before enrichment caller resumes");
+    finish_caller=true;refresh.join();
+    // Even a failed new fetch can evict visible content from the bounded cache.
+    pass=0;history::AlbumArtworkCache evicting([&](const std::string&,std::vector<uint8_t>& out){
+        out=png;return pass++<8;
+    });
+    for(unsigned i=0;i<8;++i)check(evicting.Cache("spotify:track:"+std::to_string(i),url),"fill bounded artwork cache");
+    const auto before_eviction=evicting.Revision();
+    check(!evicting.Cache("spotify:track:next",url)&&!evicting.Get("spotify:track:0",bytes,mime)&&
+          evicting.Revision()>before_eviction,"eviction invalidates freshness even if replacement fetch fails");
+    std::puts("PASS: Spotify artwork validation, bounded cache and coherent content revisions");
 }

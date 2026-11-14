@@ -27,6 +27,9 @@ for source in buffer hook trampoline hde/hde64; do
 done
 x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/windows-tests/history-ogg.o
 common=(-std=c++17 -O2 -Wall -Wextra -Werror -static-libgcc -static-libstdc++)
+x86_64-w64-mingw32-g++ "${common[@]}" -ffunction-sections -fdata-sections tests/recording_metadata_test.cpp \
+ native/media_session.cpp -Wl,--gc-sections -lole32 -luuid -lruntimeobject -o "$floggfy_test_root/recording-metadata-test.exe"
+"$floggfy_test_root/recording-metadata-test.exe"
 x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_history_test.cpp \
  native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp native/mp3_stream.cpp build/windows-tests/minimp4.o native/vorbis_headers.cpp build/windows-tests/vorbis-headers-stb.o native/existing_quality.cpp native/file_publication.cpp native/metadata_update_core.cpp native/history_settings.cpp \
  native/async_log.cpp native/library_layout.cpp native/ogg_history_core.cpp native/image_info.cpp \
@@ -57,7 +60,7 @@ x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/wind
 "$floggfy_test_root/windows-menu-quality-test.exe" --never-pause-hidden
 "$floggfy_test_root/windows-menu-quality-test.exe"
 
-x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_quality_observer_test.cpp native/auto_skip.cpp native/decoder_ownership.cpp native/playback_identity_bridge.cpp native/playback_quality_windows.cpp "${quality_sources[@]}" native/media_session.cpp native/library_layout.cpp native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp native/mp3_stream.cpp build/windows-tests/minimp4.o native/vorbis_headers.cpp build/windows-tests/vorbis-headers-stb.o native/existing_quality.cpp native/file_publication.cpp native/metadata_update_core.cpp native/metadata_update_windows.cpp native/recent_downloads.cpp native/song_destination.cpp native/spotify_hook_discovery.cpp native/history_settings.cpp native/async_log.cpp build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_test_root/windows-quality-observer-test.exe"
+x86_64-w64-mingw32-g++ "${common[@]}" -DFLOGGFY_PUBLICATION_TEST -I native/vendor/libogg/include tests/windows_quality_observer_test.cpp native/auto_skip.cpp native/decoder_ownership.cpp native/playback_identity_bridge.cpp native/playback_quality_windows.cpp "${quality_sources[@]}" native/media_session.cpp native/library_layout.cpp native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp native/mp3_stream.cpp build/windows-tests/minimp4.o native/vorbis_headers.cpp build/windows-tests/vorbis-headers-stb.o native/existing_quality.cpp native/file_publication.cpp native/metadata_update_core.cpp native/metadata_update_windows.cpp native/recent_downloads.cpp native/song_destination.cpp native/spotify_hook_discovery.cpp native/history_settings.cpp native/async_log.cpp build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_test_root/windows-quality-observer-test.exe"
 "$floggfy_test_root/windows-quality-observer-test.exe"
 
 # Synthetic host preloads System32 VERSION.dll before its entry point.
@@ -108,6 +111,9 @@ x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/wind
  native/media_session.cpp native/image_info.cpp native/playback_quality_windows.cpp native/playback_quality.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/windows-tests/metadata-ogg.o build/windows-tests/minhook-*.o \
  -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_test_root/windows-metadata-liveness-test.exe"
 "$floggfy_test_root/windows-metadata-liveness-test.exe"
+"$floggfy_test_root/windows-metadata-liveness-test.exe" --ambiguous-refresh
+"$floggfy_test_root/windows-metadata-liveness-test.exe" --ambiguous-delayed
+"$floggfy_test_root/windows-metadata-liveness-test.exe" --artwork-revision
 
 # Publication tests include real process termination and conflicting path races.
 x86_64-w64-mingw32-g++ "${common[@]}" -municode -DFLOGGFY_PUBLICATION_TEST -I native/vendor/libogg/include \

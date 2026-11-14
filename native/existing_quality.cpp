@@ -136,6 +136,16 @@ bool ListRecordingDirectory(const std::wstring& file,RecordingDirectory& out,con
         return true;
     }catch(...) {return false;}
 }
+bool PlanLockedRecordingMemory(void* locked_file,RecordingMemoryPlan& plan) {
+    plan={};const auto file=static_cast<HANDLE>(locked_file);LARGE_INTEGER size{};
+    if(!file||file==INVALID_HANDLE_VALUE||!GetFileSizeEx(file,&size)||size.QuadPart<4||
+       size.QuadPart>static_cast<LONGLONG>(kMaximumRecordingBytes))return false;
+    const bool result=ProbeRecordingMemory(size_t(size.QuadPart),[&](size_t offset,uint8_t* bytes,size_t count) {
+        LARGE_INTEGER at{};at.QuadPart=static_cast<LONGLONG>(offset);DWORD copied=0;
+        return SetFilePointerEx(file,at,nullptr,FILE_BEGIN)&&ReadFile(file,bytes,DWORD(count),&copied,nullptr)&&copied==count;
+    },plan);
+    LARGE_INTEGER zero{};return SetFilePointerEx(file,zero,nullptr,FILE_BEGIN)&&result;
+}
 RecordingRead InspectRecordingFile(const std::wstring& path,RecordingFile& out) {
     out={};
     try {
@@ -148,6 +158,11 @@ RecordingRead InspectRecordingFile(const std::wstring& path,RecordingFile& out) 
         LARGE_INTEGER size={};
         if(!GetFileSizeEx(file.value,&size))return RecordingRead::ReadError;
         if(size.QuadPart<4||size.QuadPart>static_cast<LONGLONG>(kMaximumRecordingBytes))return RecordingRead::InvalidContainer;
+        if(RecordingReadMemoryScope::HasPermit()) {
+            RecordingMemoryPlan memory;
+            if(!PlanLockedRecordingMemory(file.value,memory))return RecordingRead::InvalidContainer;
+            if(!RecordingReadMemoryScope::AdmitCurrent(memory.inspection_peak))return RecordingRead::ReadError;
+        }
         std::vector<uint8_t> bytes(size_t(size.QuadPart));
         constexpr size_t chunk=1024*1024;
         for(size_t offset=0;offset<bytes.size();) {
@@ -230,6 +245,7 @@ std::vector<std::wstring> RecordingPathCandidates(const std::wstring& base,const
 }
 RecordingDestination ResolveRecordingDestination(const std::wstring& base,const Catalog& catalog,bool track_numbers,
     const RecordingDirectory* directory) {
+    RecordingReadMemoryScope memory;
     const auto candidates=RecordingPathCandidates(base,catalog,true,track_numbers);
     if(candidates.empty())return {};
     const auto writable=RecordingPathCandidates(base,catalog,false,track_numbers);
@@ -254,6 +270,7 @@ RecordingDestination ResolveRecordingDestination(const std::wstring& base,const 
             if(vacant.empty() && std::find(writable.begin(),writable.end(),path)!=writable.end()) vacant=path;
             continue;
         }
+        memory.SetRetainedBytes(RecordingMetadataMemoryUsage(best_recording)+RecordingMetadataMemoryUsage(repairable_recording));
         RecordingFile existing;
         const auto result=InspectRecordingFile(path,existing);
         if(result==RecordingRead::ReadError) {
@@ -300,6 +317,7 @@ RecordingDestination ResolveRecordingDestination(const std::wstring& base,const 
     for(const auto& path:candidates) {
         const auto backup=path+L".previous";
         if(!directory->Contains(backup))continue;
+        memory.SetRetainedBytes(RecordingMetadataMemoryUsage(best_recording)+RecordingMetadataMemoryUsage(repairable_recording));
         RecordingFile retained;
         const auto result=InspectRecordingFile(backup,retained);
         if(result==RecordingRead::ReadError) {
@@ -312,6 +330,7 @@ RecordingDestination ResolveRecordingDestination(const std::wstring& base,const 
             else return {}; // Retained suffix backup needs recovery, not a duplicate.
             continue;
         }
+        memory.SetRetainedBytes(RecordingMetadataMemoryUsage(best_recording)+RecordingMetadataMemoryUsage(repairable_recording)+RecordingMetadataMemoryUsage(retained));
         if(!RestoreBackup(backup,path,catalog))return {};
         RecordingFile restored;
         if(ReadRecording(path,restored) && restored.owned && MatchesRecording(restored,catalog)) {

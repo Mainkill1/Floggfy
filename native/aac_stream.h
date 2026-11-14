@@ -45,21 +45,32 @@ inline constexpr uint64_t AacConstructionMemoryLimit=uint64_t{512}<<20;
 bool AacExtractionFitsBudget(size_t source_capacity,size_t source_size,size_t packet_count);
 struct AacMemoryPlan {
     uint64_t peak_bytes=0,output_capacity=0;
+    uint64_t retained_bytes=0,incremental_peak_bytes=0;
 };
 // Allocation-free estimate. retained_input_bytes includes all caller-owned AU,
 // vector/string capacities and object/allocation overhead; metadata_bytes is
 // the raw key/value/cover byte total. The result also reserves the entire
 // 128 MiB vendor budget and conservative metadata/table reconstruction scratch.
+// external_retained_source_capacity adds the separately retained flattened source
+// (and any prior artifact kept for recovery); it must exclude the inputs above.
 // False leaves plan empty. These are memory limits, not codec-validity checks.
 bool EstimateAacConstructionMemory(uint64_t packet_count,uint64_t packet_bytes,
     uint64_t retained_input_bytes,uint64_t metadata_bytes,uint64_t metadata_fields,
-    AacMemoryPlan& plan) noexcept;
+    AacMemoryPlan& plan,uint64_t external_retained_source_capacity=0) noexcept;
+// Allocation-free preflight using actual live input capacities. The incremental
+// peak excludes all retained_bytes. A pool that currently charges only external
+// source/artifact memory must instead reserve peak_bytes minus those capacities.
+// Failure leaves plan empty and all caller inputs intact.
+bool PlanAacM4a(const AacInfo&,const std::vector<std::vector<uint8_t>>& packets,
+               const Tags&,AacMemoryPlan& plan,
+               uint64_t external_retained_source_capacity=0) noexcept;
 enum class AacWriteFailure { None,InvalidOrUnsupported,ResourceLimit };
 // Remux original access units into M4A, including known source priming/trimming.
 // Clears/releases an old output before construction; output cannot alias input.
+// Callers retaining source/prior artifact bytes must supply their live capacities.
 bool MakeAacM4a(const AacInfo&,const std::vector<std::vector<uint8_t>>& packets,
                const Tags&,std::vector<uint8_t>& output,std::string& error,
-               AacWriteFailure* failure=nullptr);
+               AacWriteFailure* failure=nullptr,uint64_t external_retained_source_capacity=0);
 // Strict bounded container/header inspection, not an independent AAC decode.
 bool InspectAacM4a(const uint8_t* source,size_t size,AacFile& out);
 // Preserve compressed media and unknown metadata; apply only supplied tag deltas.

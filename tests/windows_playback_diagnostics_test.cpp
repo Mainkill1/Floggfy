@@ -1,9 +1,29 @@
 // Exercise real hooks/worker diagnostics without patching or controlling Spotify.
 #include "../native/async_log.h"
 #include "../native/client_playback.h"
+#include "../native/retry_schedule.h"
+#include <atomic>
+namespace {
+std::atomic<bool> fail_retry_node{false};
+std::atomic<unsigned> retry_node_failures{0};
+}
+namespace history {
+template<class Job> class FaultableRetrySchedule {
+    RetrySchedule<Job> schedule_;
+public:
+    void Push(Job&& job,uint64_t deadline) {
+        if(fail_retry_node.exchange(false)) {++retry_node_failures;throw std::bad_alloc();}
+        schedule_.Push(std::move(job),deadline);
+    }
+    std::optional<Job> PopDue(uint64_t now){return schedule_.PopDue(now);}
+    std::optional<uint64_t> NextDeadline() const{return schedule_.NextDeadline();}
+};
+}
 namespace history {void CaptureLogEvent(LogKind,const char*,const std::string&);}
 #define LogEvent CaptureLogEvent
+#define RetrySchedule FaultableRetrySchedule
 #include "../native/audio_history.cpp"
+#undef RetrySchedule
 #undef LogEvent
 #include "../native/history_settings.cpp"
 #include "recording_fixture.h"
@@ -362,9 +382,219 @@ void ObservePlayback() {
     media.playing=true;media.playback_status=4;state.Observe(media,26,20);
     media.position=0;state.Observe(media,26.5,21);assert(Contains("timeline-jump"));
     media.title=L"Next";state.Observe(media,27,22);assert(Contains("track_changed=1"));
+    diagnostic_lines.clear();media.position=1.348;
+    state.Observe(media,27.258,23,"buffering");
+    assert(Contains("timeline-jump")&&Contains("snapshot=buffering")&&Contains("movement_ms=1348")&&
+        Contains("elapsed_ms=258")&&Contains("initiator=unknown"));
     InterlockedExchange(&history::log_level_value,1);const auto off=diagnostic_lines.size();
     state.Observe(media,27.5,23);assert(diagnostic_lines.size()==off);
     InterlockedExchange(&history::log_level_value,4);
+}
+void FlacInputCompletesWithoutDecodedCallbacks() {
+    const auto source=recording_fixture::fixture();
+    for(bool corrupt:{false,true}) {
+        auto bytes=source;if(corrupt)bytes.back()^=1;
+        CaptureBuffers buffers;Slot slot{};slot.context=0x7120;slot.epoch=7;
+        slot.kind=AudioEventKind::FlacBegin;slot.time=100;ProcessFlacCapture(slot,buffers);
+        // Read ahead can supply all compressed frames while playback is skipped
+        // before even its first decoded-frame callback.
+        slot.kind=AudioEventKind::FlacBytes;
+        for(size_t at=0;at<bytes.size();++at) {
+            slot.time+=.001;slot.length=1;slot.bytes[0]=bytes[at];ProcessFlacCapture(slot,buffers);
+            if(at+1<bytes.size())assert(buffers.ready.empty());
+        }
+        if(corrupt) {
+            assert(buffers.ready.empty()&&"CRC corruption must never become a complete recording");
+            continue;
+        }
+        assert(buffers.active.empty()&&buffers.ready.size()==1&&
+               "complete compressed FLAC must not depend on played/decoded samples");
+        assert(buffers.ready[0]->coverage.samples==0);
+        assert(ValidateFinalCapture(*buffers.ready[0])==FinalCaptureValidation::Valid);
+        assert(buffers.ready[0]->data.size()==source.size());
+        for(size_t i=0;i<source.size();++i)assert(buffers.ready[0]->data[i]==source[i]);
+        slot.kind=AudioEventKind::FlacError;ProcessFlacCapture(slot,buffers);
+        assert(buffers.ready.size()==1&&ValidateFinalCapture(*buffers.ready[0])==FinalCaptureValidation::Valid&&
+               "a later decoder error cannot revoke complete compressed audio");
+    }
+    std::puts("PASS: compressed FLAC completion independent of playback callbacks; truncated/CRC-invalid bytes rejected");
+}
+void FlacRepeatedInputCompletesWithoutDecodedCallbacks() {
+    const auto one=recording_fixture::fixture();
+    std::vector<uint8_t> source(one.begin(),one.begin()+42);source[25]=48;
+    std::array<std::vector<uint8_t>,3> frames;
+    for(unsigned i=0;i<frames.size();++i) {
+        auto& frame=frames[i];frame.assign(one.begin()+42,one.end());frame[4]=uint8_t(i);
+        frame[6]=uint8_t(recording_fixture::crc(std::vector<uint8_t>(frame.begin(),frame.begin()+6),8,7));
+        frame.resize(frame.size()-2);const auto crc=recording_fixture::crc(frame,16,0x8005);
+        frame.push_back(uint8_t(crc>>8));frame.push_back(uint8_t(crc));
+        source.insert(source.end(),frame.begin(),frame.end());
+    }
+    for(unsigned scenario=0;scenario<3;++scenario) {
+        std::vector<uint8_t> input(source.begin(),source.begin()+42);
+        for(unsigned index:{0u,1u,0u,1u,2u}) {
+            if(scenario==1&&index==1)continue; // Real hole: frame 1 never arrived.
+            auto frame=frames[index];
+            if(scenario==2&&index==0&&input.size()>42) {
+                frame[8]^=1;frame.resize(frame.size()-2);
+                const auto crc=recording_fixture::crc(frame,16,0x8005);
+                frame.push_back(uint8_t(crc>>8));frame.push_back(uint8_t(crc));
+            }
+            input.insert(input.end(),frame.begin(),frame.end());
+        }
+        CaptureBuffers buffers;Slot slot{};slot.context=0x7210+scenario;slot.epoch=7;slot.time=100;
+        slot.kind=AudioEventKind::FlacBegin;ProcessFlacCapture(slot,buffers);
+        diagnostic_lines.clear();
+        // Byte-by-byte input also exercises unfinished duplicate headers/CRCs.
+        for(const auto byte:input) {
+            slot.kind=AudioEventKind::FlacBytes;slot.bytes[0]=byte;slot.length=1;slot.time+=.001;
+            ProcessFlacCapture(slot,buffers);
+        }
+        if(scenario) {
+            assert(buffers.ready.empty()&&"gaps and conflicting repeat frames cannot become recordings");
+            continue;
+        }
+        assert(buffers.active.empty()&&buffers.ready.size()==1&&
+               "verified repeated compressed frames must recover without PCM callbacks");
+        auto& capture=*buffers.ready[0];
+        assert(capture.coverage.samples==0&&capture.Samples()==48&&capture.SourceUnits()==3);
+        assert(ValidateFinalCapture(capture)==FinalCaptureValidation::Valid);
+        assert(capture.data.Flatten()==source&&"recovery must preserve original unique compressed frames exactly");
+    }
+    std::puts("PASS: FLAC repeated input recovers; real holes and conflicting duplicates remain rejected");
+}
+void ReplayFlacSource(const wchar_t* path,bool expected_complete,const wchar_t* recovered_path=nullptr) {
+    std::ifstream input{std::filesystem::path(path),std::ios::binary};assert(input);
+    std::vector<uint8_t> bytes{std::istreambuf_iterator<char>(input),{}};assert(!bytes.empty());
+    CaptureBuffers buffers;Slot slot{};slot.context=0x7120;slot.epoch=7;slot.time=100;
+    slot.kind=AudioEventKind::FlacBegin;ProcessFlacCapture(slot,buffers);
+    for(size_t at=0;at<bytes.size();) {
+        slot.kind=AudioEventKind::FlacBytes;slot.length=unsigned(std::min(size_t(32768),bytes.size()-at));
+        memcpy(slot.bytes,bytes.data()+at,slot.length);slot.time+=.001;
+        ProcessFlacCapture(slot,buffers);at+=slot.length;
+    }
+    assert((buffers.ready.size()==1)==expected_complete);
+    if(expected_complete) {
+        auto& capture=*buffers.ready[0];
+        assert(capture.coverage.samples==0&&capture.flac_source.complete);
+        assert(ValidateFinalCapture(capture)==FinalCaptureValidation::Valid);
+        auto canonical=capture.data.Flatten();
+        if(recovered_path) {
+            std::ofstream output{std::filesystem::path(recovered_path),std::ios::binary};assert(output);
+            output.write(reinterpret_cast<const char*>(canonical.data()),std::streamsize(canonical.size()));assert(output);
+        } else assert(canonical==bytes);
+        std::printf("PASS: dump FLAC bytes=%zu samples=%llu compressed_frames=%llu no PCM callbacks\n",bytes.size(),
+            static_cast<unsigned long long>(capture.Samples()),static_cast<unsigned long long>(capture.SourceUnits()));
+    } else std::puts("PASS: incomplete dump FLAC not marked complete");
+}
+unsigned ReplayCaptureBuffer(const std::filesystem::path& session,const std::filesystem::path& destination) {
+    assert(!stream_dump::Enabled()&&"replay must not write back into its input journal");
+    std::ifstream log(session);assert(log);
+    std::vector<std::string> events;std::string line;bool closed=false;
+    while(std::getline(log,line)) {
+        const auto kind=JsonString(line,"kind");
+        assert(kind!="capture_gap"&&kind!="write_error"&&"incomplete event evidence cannot be an exact replay");
+        if(kind=="capture_event")events.push_back(line);
+        if(kind=="session_end") {
+            assert(line.find("\"capture_complete\":true")!=std::string::npos);
+            closed=true;
+        }
+    }
+    assert(closed&&!events.empty()&&"close Spotify before replaying its exact event journal");
+    CaptureBuffers buffers;std::map<std::string,uint64_t> offsets;unsigned complete=0;
+    std::filesystem::create_directories(destination);
+    const auto export_ready=[&]() {
+        for(auto& capture:buffers.ready) {
+            if(ValidateFinalCapture(*capture)!=FinalCaptureValidation::Valid)continue;
+            auto bytes=capture->data.Flatten();
+            std::ofstream output(destination/(L"capture-"+std::to_wstring(++complete)+L".flac"),std::ios::binary);assert(output);
+            output.write(reinterpret_cast<const char*>(bytes.data()),std::streamsize(bytes.size()));assert(output);
+        }
+    };
+    uint64_t previous=0;
+    for(const auto& row:events) {
+        const auto sequence=JsonUnsigned(row,"sequence");assert(sequence>previous);previous=sequence;
+        assert(JsonString(row,"source")=="flac-read-worker");
+        Slot slot{};slot.context=uintptr_t(JsonUnsigned(row,"context"));slot.epoch=unsigned(JsonUnsigned(row,"epoch"));
+        slot.sequence=JsonUnsigned(row,"producer_sequence");slot.format=unsigned(JsonUnsigned(row,"format"));
+        slot.error_source=FlacErrorSource(JsonUnsigned(row,"error_source"));
+        slot.requested=JsonUnsigned(row,"requested");slot.returned=JsonUnsigned(row,"returned");
+        slot.input_length=JsonUnsigned(row,"input_length");slot.capture=true;
+        const std::string time_key="\"started_mono\":";const auto time_at=row.find(time_key);assert(time_at!=std::string::npos);
+        slot.time=std::stod(row.substr(time_at+time_key.size()));
+        const auto size=JsonUnsigned(row,"bytes");assert(size<=sizeof(slot.bytes));slot.length=unsigned(size);
+        const auto file=JsonString(row,"file");const auto relative=std::filesystem::path(file);
+        assert(!relative.is_absolute()&&!relative.has_parent_path());
+        const auto offset=JsonUnsigned(row,"offset");assert(offset==offsets[file]);offsets[file]+=size;
+        if(size) {
+            std::ifstream bytes(session.parent_path()/relative,std::ios::binary);assert(bytes);
+            bytes.seekg(std::streamoff(offset));bytes.read(reinterpret_cast<char*>(slot.bytes),std::streamsize(size));
+            assert(uint64_t(bytes.gcount())==size&&"journal bytes must exist exactly as recorded");
+        }
+        const auto event=JsonString(row,"event");
+        if(event=="capture_reset") {
+            export_ready();ResetCaptureBuffers(buffers,nullptr,slot.epoch,slot.time);continue;
+        }
+        if(event=="capture_discard") {
+            const auto found=buffers.active.find(slot.context);
+            if(found!=buffers.active.end()&&found->second->capture_epoch==slot.epoch)buffers.active.erase(found);
+            continue;
+        }
+        if(event=="queue_loss"||event=="queue_loss_global") {
+            CaptureQueueLossBatch loss;loss.global=event=="queue_loss_global";
+            if(!loss.global){loss.count=1;loss.entries[0]={slot.context,slot.epoch,0};}
+            ApplyCaptureQueueLosses(buffers,loss,slot.time);continue;
+        }
+        if(event=="flac_begin")slot.kind=AudioEventKind::FlacBegin;
+        else if(event=="flac_bytes")slot.kind=AudioEventKind::FlacBytes;
+        else if(event=="flac_frame")slot.kind=AudioEventKind::FlacFrame;
+        else if(event=="flac_end")slot.kind=AudioEventKind::FlacEnd;
+        else {assert(event=="flac_error");slot.kind=AudioEventKind::FlacError;}
+        ProcessFlacCapture(slot,buffers);
+    }
+    for(const auto& item:offsets)assert(std::filesystem::file_size(session.parent_path()/item.first)==item.second);
+    const auto before_export=complete;export_ready();
+    std::printf("PASS: exact capture-event replay events=%zu complete=%u unresolved=%zu; no rechunking or synthetic frame callbacks\n",
+        events.size(),complete,buffers.active.size()+buffers.ready.size()-(complete-before_export));
+    return complete;
+}
+void CaptureJournalRoundTrip() {
+    wchar_t temp[MAX_PATH]{};assert(GetTempPathW(MAX_PATH,temp));
+    const auto root=std::filesystem::path(temp)/(L"Floggfy-capture-journal-"+std::to_wstring(GetTickCount64()));
+    assert(stream_dump::Start(root.wstring()));const auto folder=std::filesystem::path(stream_dump::SessionFolder());
+    const auto source=recording_fixture::fixture();CaptureBuffers buffers;Slot slot{};
+    slot.context=0x8180;slot.time=10;slot.kind=AudioEventKind::FlacBegin;slot.sequence=1;ProcessFlacCapture(slot,buffers);
+    size_t at=0;
+    for(size_t chunk:{size_t(1),size_t(8),source.size()-9}) {
+        slot.kind=AudioEventKind::FlacBytes;slot.length=unsigned(chunk);slot.input_length=chunk;
+        slot.time+=.1;++slot.sequence;memcpy(slot.bytes,source.data()+at,chunk);at+=chunk;ProcessFlacCapture(slot,buffers);
+    }
+    slot.kind=AudioEventKind::FlacEnd;slot.length=0;++slot.sequence;ProcessFlacCapture(slot,buffers);
+    assert(buffers.ready.size()==1);
+    slot.context=0x8181;slot.kind=AudioEventKind::FlacBegin;++slot.sequence;ProcessFlacCapture(slot,buffers);
+    slot.kind=AudioEventKind::FlacBytes;slot.length=unsigned(source.size()-1);++slot.sequence;
+    memcpy(slot.bytes,source.data(),slot.length);ProcessFlacCapture(slot,buffers);
+    CaptureQueueLossBatch loss;loss.count=1;loss.entries[0]={slot.context,slot.epoch,0};
+    ApplyCaptureQueueLosses(buffers,loss,slot.time);
+    // Retirement and settings resets happen outside the parser. A later suffix
+    // must not resurrect either discarded prefix during replay.
+    for(bool reset:{false,true}) {
+        slot.context=0x8182;slot.kind=AudioEventKind::FlacBegin;slot.length=0;++slot.sequence;
+        ProcessFlacCapture(slot,buffers);
+        slot.kind=AudioEventKind::FlacBytes;slot.length=unsigned(source.size()-1);++slot.sequence;
+        memcpy(slot.bytes,source.data(),slot.length);ProcessFlacCapture(slot,buffers);
+        if(reset)ResetCaptureBuffers(buffers,nullptr,++slot.epoch,slot.time);
+        else {TraceCaptureDiscard(*buffers.active.at(slot.context),slot.time);buffers.active.erase(slot.context);}
+        slot.kind=AudioEventKind::FlacBytes;slot.length=1;slot.bytes[0]=source.back();++slot.sequence;
+        ProcessFlacCapture(slot,buffers);
+    }
+    assert(stream_dump::Stop());const auto output=root/L"replay";
+    assert(ReplayCaptureBuffer(folder/L"session.jsonl",output)==1);
+    std::ifstream file(output/L"capture-1.flac",std::ios::binary);
+    const std::vector<uint8_t> replayed{std::istreambuf_iterator<char>(file),{}};
+    assert(replayed==source&&"exact worker chunks and queue-loss ordering must preserve the same final audio");
+    file.close();
+    std::filesystem::remove_all(root);
 }
 void CoverageAndFailures() {
     FlacInfo info{44100,2,16,16,16,32};const char* reason=nullptr;FlacCoverage coverage;
@@ -381,15 +611,14 @@ void CoverageAndFailures() {
     assert(!coverage.Frame(info,16,44100,2,16,1,32,&reason)&&std::string(reason)=="sample-count");
     CaptureBuffers buffers;Slot slot{};slot.context=0x1234;slot.kind=AudioEventKind::FlacBegin;slot.time=Now();slot.epoch=7;
     ProcessFlacCapture(slot,buffers);
-    const auto bytes=recording_fixture::fixture();slot.kind=AudioEventKind::FlacBytes;slot.length=unsigned(bytes.size());
-    memcpy(slot.bytes,bytes.data(),bytes.size());ProcessFlacCapture(slot,buffers);assert(buffers.active.at(slot.context)->metadata);
+    const auto bytes=recording_fixture::fixture();slot.kind=AudioEventKind::FlacBytes;slot.length=unsigned(bytes.size()-1);
+    memcpy(slot.bytes,bytes.data(),slot.length);ProcessFlacCapture(slot,buffers);assert(buffers.active.at(slot.context)->metadata);
     uint32_t frame[8]={16,48000,2,0,16,0,0,0};slot.kind=AudioEventKind::FlacFrame;slot.length=32;memcpy(slot.bytes,frame,32);
     diagnostic_lines.clear();const auto prior_failures=failure_events;ProcessFlacCapture(slot,buffers);
-    assert(buffers.active.empty()&&buffers.ready.empty());
-    assert(diagnostic_lines.size()==3&&failure_events==prior_failures+1); // Context, final audit, native failure outcome.
-    assert(Contains("final cache check:"));
+    assert(buffers.active.size()==1&&buffers.ready.empty());
+    assert(failure_events==prior_failures&&Contains("decoded-coverage-disagrees-with-source"));
     assert(Contains("origin=capture-coverage-guard")&&Contains("reason=format")&&Contains("native_frame_result=0"));
-    assert(Contains("expected_rate=44100 got_rate=48000")&&Contains("ctx=1234")&&Contains("queue_lag_ms="));
+    assert(Contains("expected_rate=44100 got_rate=48000")&&Contains("capture=")&&Contains("queue_lag_ms="));
     // Native errors remain visible even after our capture has already ended.
     slot.kind=AudioEventKind::FlacError;slot.error_source=FlacErrorSource::ReadCallback;slot.format=2;slot.requested=8192;
     diagnostic_lines.clear();ProcessFlacCapture(slot,buffers);assert(Contains("origin=native-read-return")&&Contains("code=2 requested=8192 returned=0"));
@@ -399,9 +628,21 @@ void CoverageAndFailures() {
     slot.kind=AudioEventKind::FlacBegin;ProcessFlacCapture(slot,buffers);
     InterlockedExchange(&history::log_level_value,1);diagnostic_lines.clear();
     slot.kind=AudioEventKind::FlacFrame;ProcessFlacCapture(slot,buffers);
-    assert(diagnostic_lines.size()==1&&Contains("stream discarded")&&!Contains("incomplete cache | unknown track")&&
-           "the final audit must not manufacture a second user-visible failure");
+    assert(diagnostic_lines.empty()&&buffers.active.size()==1&&
+           "native playback coverage does not discard compressed input or emit a default-level failure");
     InterlockedExchange(&history::log_level_value,4);
+}
+void CaptureReasonLogs() {
+    assert(std::strcmp(FlacReaderDetail("complete_recovered"),"all declared source samples verified")==0);
+    assert(std::strcmp(FlacReaderDetail("waiting_frame"),"complete frame or declared samples not verified")==0);
+    Capture capture;capture.lossless=true;capture.flac.rate=44100;capture.flac.total_samples=88200;
+    capture.flac_source.samples=44100;capture.flac_source.frames=1;
+    capture.flac_source.reason="resync_limit";capture.bound_identity="Known Artist - Known Track";
+    diagnostic_lines.clear();const auto failures=failure_events;
+    TraceCaptureDisposition(capture,"released","retention-expired-validation-rejected");
+    assert(Contains("Known Artist - Known Track")&&Contains("verified_prefix_ms=1000")&&Contains("expected_ms=2000"));
+    assert(Contains("no verified continuation within recovery window")&&failure_events==failures&&
+        "incomplete capture logging must explain observed reader failure without claiming user action or song corruption");
 }
 void SameContextFlacRestartBeginsFreshCapture() {
     auto complete=recording_fixture::fixture();
@@ -463,7 +704,8 @@ void SameContextFlacRestartBeginsFreshCapture() {
         number=reset_number;event.kind=AudioEventKind::FlacFrame;event.length=32;
         memcpy(event.bytes,frame,24);memcpy(event.bytes+24,&number,8);
         ProcessFlacCapture(event,rejected);
-        assert(rejected.active.empty()&&rejected.ready.empty());
+        assert(rejected.active.size()==1&&rejected.ready.empty()&&
+               !rejected.active.begin()->second->flac_source.complete);
     };
     reject_restart(true,0);reject_restart(false,8);
 }
@@ -778,7 +1020,8 @@ std::unique_ptr<Capture> CompleteFlacCapture(double born,double finished) {
     const auto bytes=recording_fixture::fixture(1,16);
     assert(capture->data.Append(bytes.data(),bytes.size(),bytes.size()+65536));capture->bytes=bytes.size();
     size_t audio=0;assert(ParseFlacMetadata(capture->data,capture->flac,audio)==FlacParse::Valid);
-    capture->metadata=true;capture->coverage.samples=16;capture->coverage.frames=1;return capture;
+    capture->metadata=true;capture->flac_audio_offset=audio;capture->flac_source.Scan(capture->data,capture->flac,audio);
+    capture->coverage.samples=16;capture->coverage.frames=1;return capture;
 }
 std::unique_ptr<Capture> CompleteOggCapture(double born,double finished) {
     auto capture=std::make_unique<Capture>();capture->born=born;capture->finished=finished;
@@ -812,7 +1055,11 @@ void FinalCaptureRevalidation() {
     assert(ValidateFinalCapture(*valid)==FinalCaptureValidation::Valid);
     auto corrupt=CompleteFlacCapture(100,111);corrupt->flac.total_samples=17;
     assert(ValidateFinalCapture(*corrupt)==FinalCaptureValidation::Invalid);
-    auto truncated=CompleteFlacCapture(100,111);truncated->coverage.samples=15;
+    auto decoded_short=CompleteFlacCapture(100,111);decoded_short->coverage.samples=15;
+    assert(ValidateFinalCapture(*decoded_short)==FinalCaptureValidation::Valid);
+    auto truncated=CompleteFlacCapture(100,111);
+    auto short_bytes=truncated->data.Flatten();short_bytes.pop_back();truncated->data={};
+    assert(truncated->data.Append(short_bytes.data(),short_bytes.size(),65536));truncated->bytes=short_bytes.size();
     assert(ValidateFinalCapture(*truncated)==FinalCaptureValidation::Incomplete);
     const auto ogg_bytes=recording_fixture::ogg();
     auto ogg=[](const std::vector<uint8_t>& bytes) {
@@ -824,6 +1071,30 @@ void FinalCaptureRevalidation() {
     auto valid_ogg=ogg(ogg_bytes);assert(ValidateFinalCapture(*valid_ogg)==FinalCaptureValidation::Valid);
     auto corrupt_ogg_bytes=ogg_bytes;corrupt_ogg_bytes.back()^=1;
     auto corrupt_ogg=ogg(corrupt_ogg_bytes);assert(ValidateFinalCapture(*corrupt_ogg)==FinalCaptureValidation::Invalid);
+}
+void CompletedSourceQueueLossCannotRelabel() {
+    for(bool lost_boundary:{false,true}) {
+        ownership::DecoderOwnershipTracker tracker;tracker.Reset(7);
+        CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+        auto capture=CompleteFlacCapture(100,101);capture->coverage={};
+        capture->capture_context=capture->decoder_owner=0x7120;capture->capture_epoch=7;
+        capture->capture_token=tracker.BeginCapture(ownership::DecoderCodec::Flac,0x7120,0,100,7,10);
+        tracker.CompleteCapture(capture->capture_token,101,11);
+        buffers.ready.push_back(std::move(capture));
+        if(lost_boundary) {
+            CaptureQueueLossBatch loss;loss.count=1;loss.entries[0].context=0x7120;loss.entries[0].epoch=7;
+            ApplyCaptureQueueLosses(buffers,loss,102);
+        }
+        Media media;media.spotify_uri="spotify:track:next";media.playback_instance="next-native-id";
+        media.duration=16;media.title=L"Next song";
+        std::array<playback_identity::Match,playback_identity::kObservationCapacity> matches{};
+        matches[0].metadata_generation=1;matches[0].decoder=0x7120;matches[0].observed_at=102.1;
+        matches[0].role=playback_identity::SnapshotRole::PlayerPlaybackId;
+        const auto bound=BindDirectReadyCapture(buffers,media,1,102.1,matches,1);
+        assert(bool(bound)==!lost_boundary&&"a lost decoder reuse boundary must prevent relabeling retained source bytes");
+        assert(buffers.ready.size()==1&&ValidateFinalCapture(*buffers.ready[0])==FinalCaptureValidation::Valid);
+    }
+    std::puts("PASS: complete source exact binding before PCM; scoped queue loss preserves bytes without relabeling");
 }
 void CompactFailureIdentity() {
     decoded_sink_target=reinterpret_cast<void*>(0x1000);
@@ -895,6 +1166,7 @@ void ContextSpecificCaptureQueueLoss() {
     buffers.ready.push_back(CompleteFlacCapture(90,99));
     diagnostic_lines.clear();const auto failures=failure_events;
     assert(!ApplyCaptureQueueLosses(buffers,loss,101));
+    assert(Contains("loss_reports=2")&&"queue-loss log must report the actual number of notifications, not just contexts");
     assert(!buffers.active.count(0xA)&&buffers.active.count(0xB)==1&&buffers.ready.size()==1&&
            failure_events==failures&&"one decoder's queue loss cannot invalidate unrelated or complete captures");
 
@@ -1205,7 +1477,7 @@ void UnmatchedWriterRejectsPartial() {
             auto bytes=recording_fixture::ogg();bytes.back()^=1;job.capture->data={};
             assert(job.capture->data.Append(bytes.data(),bytes.size(),1024*1024));
         } else job.capture->stream.complete=false;
-        assert(PublishUnmatched(job)==Publication::Skipped&&
+        assert(PublishUnmatched(job)==Publication::Blocked&&
             "the writer must independently refuse incomplete or invalid unmatched recordings");
         assert(!std::filesystem::exists(root)&&"rejected unmatched audio must not create audio or sidecar files");
     }
@@ -1237,7 +1509,7 @@ void RecordingQueueCounters() {
     assert(released.stream_push==before.stream_push+1&&released.stream_pop==before.stream_pop+1&&
         released.metadata_push==before.metadata_push+1&&released.metadata_pop==before.metadata_pop+1);
 }
-void UnmatchedArchiveRetry() {
+void UnmatchedArchiveRetry(bool fail_node=false) {
     const auto prior=history::settings;
     wchar_t temp[MAX_PATH]{};assert(GetTempPathW(MAX_PATH,temp));
     const auto root=std::filesystem::path(temp)/(L"Floggfy-unmatched-"+std::to_wstring(GetTickCount64()));
@@ -1245,29 +1517,36 @@ void UnmatchedArchiveRetry() {
     history::settings.root=root.wstring();history::settings.save_unmatched=true;
     history::settings.capture_epoch=0;history::settings.downloads=true;
     {std::ofstream blocked(root/L"Unmatched");blocked<<"block directory creation";}
-    auto capture=CompleteOggCapture(100,101);const auto reserved=capture->Capacity();
+    auto capture=CompleteOggCapture(100,101);
     assert(QueueRecording(capture,0,true,"{\"reason\":\"test unmatched\"}\n"));
+    const auto failures=retry_node_failures.load();fail_retry_node=fail_node;
     const auto prior_event=save_event;save_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(save_event);
     const auto prior_workers=workers_running.exchange(true);
     const auto worker=CreateThread(nullptr,0,SaveWorker,nullptr,0,nullptr);assert(worker);
-    Sleep(150);
-    assert(publishing_reserved.load()>=reserved&&"failed archive publication must keep the recording in RAM");
+    if(fail_node) {
+        const auto node_deadline=GetTickCount64()+5000;
+        while(retry_node_failures.load()==failures&&GetTickCount64()<node_deadline)Sleep(10);
+        assert(retry_node_failures.load()==failures+1);
+    } else Sleep(150);
+    assert(publishing_reserved.load()>=recording_fixture::ogg().size()&&"failed archive publication must keep the recording in RAM");
     std::filesystem::remove(root/L"Unmatched");
     const auto deadline=GetTickCount64()+5000;
     while(publishing_reserved.load()&&GetTickCount64()<deadline)Sleep(20);
     workers_running=false;SetEvent(save_event);assert(WaitForSingleObject(worker,5000)==WAIT_OBJECT_0);
     CloseHandle(worker);CloseHandle(save_event);save_event=prior_event;workers_running=prior_workers;
     assert(publishing_reserved.load()==0&&"successful disk publication releases its audio reservation");
-    unsigned audio=0,sidecars=0;
+    assert(retry_node_failures.load()==failures+(fail_node?1:0)&&!fail_retry_node.load());
+    unsigned audio=0,sidecars=0,commits=0;
     for(const auto& file:std::filesystem::directory_iterator(root/L"Unmatched")) {
         if(file.path().extension()==L".ogg") {
             ++audio;std::ifstream input(file.path(),std::ios::binary);
             const std::vector<uint8_t> bytes{std::istreambuf_iterator<char>(input),{}};
             assert(bytes==recording_fixture::ogg()&&"archival preserves the exact original Ogg pages");
         } else if(file.path().extension()==L".json")++sidecars;
+        else if(file.path().extension()==L".commit")++commits;
         else assert(false&&"no partial publication should remain after successful archive");
     }
-    assert(audio==1&&sidecars==1);
+    assert(audio==1&&sidecars==1&&commits==1);
     std::filesystem::remove_all(root);history::settings=prior;
 }
 void PrefetchCannotSupplyCurrentIdentity() {
@@ -1306,6 +1585,152 @@ void MatcherToleranceAndLogs() {
     }
     history::settings=prior;playback_pump_target=pump;
 }
+void RetirementCannotManufactureMatch() {
+    const auto prior=history::settings;const auto pump=playback_pump_target;playback_pump_target=nullptr;
+    history::settings.matcher_max_queue=5;
+    for(bool archive:{false,true})for(bool incomplete:{false,true})for(unsigned collection=0;collection<3;++collection) {
+        history::settings.save_unmatched=archive;
+        CaptureBuffers buffers;Media current;
+        ObserveRecordingMetadata(RecordingMedia("unrelated-first",10),buffers,current,100);
+        auto first=CompleteOggCapture(100,100.3);first->capture_token=101;first->retention_start=1;
+        if(incomplete)first->stream.complete=false;
+        auto* first_pointer=first.get();
+        if(collection==1)buffers.active[0x5500]=std::move(first);
+        else if(collection==2)buffers.ogg_active[{0x5500,42}]=std::move(first);
+        else buffers.ready.push_back(std::move(first));
+        const auto b=ObserveRecordingMetadata(RecordingMedia("candidate-b",1),buffers,current,100.2);
+        auto second=CompleteOggCapture(100.2,100.5);second->capture_token=102;second->retention_start=2;
+        buffers.ready.push_back(std::move(second));
+        AssociateRetainedRecordings(buffers);
+        assert(!first_pointer->association&&!buffers.ready.back()->association);
+        if(incomplete) {
+            first_pointer->ambiguous=true;AssociateRetainedRecordings(buffers);
+            assert(!buffers.ready.back()->association&&"decoder rejection cannot eliminate competing identity evidence");
+        }
+        for(unsigned start=3;start<=6;++start) {
+            ObserveRecordingMetadata(RecordingMedia(("later-"+std::to_string(start)).c_str(),20),buffers,current,200+start);
+            ScheduleStreamPublications(buffers,0,200+start);
+        }
+        SaveJob job;
+        while(saves.Pop(job)){assert(job.unmatched);job.capture.reset();publishing_reserved.fetch_sub(job.reserved);}
+        assert(buffers.ready.size()==1&&buffers.history.Find(b));
+        AssociateRetainedRecordings(buffers);
+        assert(!buffers.ready[0]->association&&"removing an ambiguous competitor cannot create matching evidence");
+    }
+    history::settings=prior;playback_pump_target=pump;
+}
+void RetiredMetadataCannotManufactureMatch() {
+    const auto prior=history::settings;const auto pump=playback_pump_target;playback_pump_target=nullptr;
+    history::settings.matcher_max_queue=5;history::settings.save_unmatched=false;
+    CaptureBuffers buffers;Media current;
+    ObserveRecordingMetadata(RecordingMedia("candidate-a",1),buffers,current,100);
+    const auto b=ObserveRecordingMetadata(RecordingMedia("candidate-b",1),buffers,current,100.2);
+    auto capture=CompleteOggCapture(100.1,101);capture->capture_token=601;capture->retention_start=2;
+    buffers.ready.push_back(std::move(capture));AssociateRetainedRecordings(buffers);
+    assert(!buffers.ready[0]->association);
+    for(unsigned start=3;start<=6;++start) {
+        ObserveRecordingMetadata(RecordingMedia(("later-meta-"+std::to_string(start)).c_str(),20),buffers,current,200+start);
+        ScheduleStreamPublications(buffers,0,200+start);
+    }
+    assert(buffers.ready.size()==1&&buffers.history.Find(b));AssociateRetainedRecordings(buffers);
+    assert(!buffers.ready[0]->association&&"retiring ambiguous metadata cannot establish identity");
+    RetiredMatchEvidence evidence;evidence.RememberCapture({1,100,1});
+    for(unsigned i=0;i<32;++i)evidence.RememberCapture({i+2,1000.0+i,2});
+    assert(evidence.BlocksMetadata(100,2,10000,250)&&"overflow must preserve unknown competitor coverage");
+    assert(!evidence.BlocksMetadata(120,2,10000,250)&&"overflow must not poison provably later windows");
+    history::settings=prior;playback_pump_target=pump;
+}
+void MatcherSnapshotDeltas() {
+    const auto pump=playback_pump_target;playback_pump_target=nullptr;
+    CaptureBuffers buffers;Media current;
+    ObserveRecordingMetadata(RecordingMedia("far-away",1),buffers,current,500);
+    auto capture=CompleteOggCapture(100,101);capture->capture_token=800;
+    buffers.ready.push_back(std::move(capture));diagnostic_lines.clear();
+    AssociateRetainedRecordings(buffers);
+    assert(Contains("matcher_candidate")&&Contains("outside-start-window"));
+    const auto full_lines=diagnostic_lines.size();
+    diagnostic_lines.clear();
+    auto competitor=CompleteOggCapture(100,101);competitor->capture_token=801;
+    buffers.ready.push_back(std::move(competitor));
+    AssociateRetainedRecordings(buffers);
+    std::vector<std::string> changed;
+    for(const auto& line:diagnostic_lines)if(line.find(" capture=800 ")!=std::string::npos)changed.push_back(line);
+    assert(changed.size()<full_lines&&"a competitor change must not resend unchanged candidate rows");
+    assert(std::none_of(changed.begin(),changed.end(),[](const auto& line){return line.find("matcher_candidate ")!=std::string::npos;}));
+    assert(Contains("mode=delta")&&Contains("base_snapshot=")&&Contains("competitor=801"));
+    diagnostic_lines.clear();buffers.ready.pop_back();AssociateRetainedRecordings(buffers);
+    assert(Contains("matcher_competitor_removed")&&Contains("competitor=801"));
+    diagnostic_lines.clear();EmitMatcherSnapshot(*buffers.ready[0],MatcherReason::RetiredInvalid);
+    assert(Contains("mode=full")&&Contains("matcher_terminal reason=retired-invalid")&&
+        Contains("matcher_candidate")&&Contains("outside-start-window"));
+    playback_pump_target=pump;
+}
+void MatcherCandidateInventory() {
+    MatcherSnapshotDeltas();
+    const auto prior=history::settings;const auto pump=playback_pump_target;playback_pump_target=nullptr;
+    CaptureBuffers buffers;Media current;
+    const auto assigned=ObserveRecordingMetadata(RecordingMedia("assigned",1),buffers,current,100);
+    buffers.history.MarkAssigned(assigned);
+    auto unusable=RecordingMedia("unusable",1);unusable.title.clear();
+    ObserveRecordingMetadata(unusable,buffers,current,101);
+    ObserveRecordingMetadata(RecordingMedia("far-away",1),buffers,current,500);
+    auto capture=CompleteOggCapture(100,101);capture->capture_token=501;capture->retention_start=3;
+    buffers.ready.push_back(std::move(capture));diagnostic_lines.clear();
+    AssociateRetainedRecordings(buffers);
+    assert(Contains("matcher_snapshot")&&Contains("metadata_total=3")&&Contains("metadata-assigned")&&
+        Contains("metadata-unusable")&&Contains("outside-start-window")&&
+        "inventory must include every retained candidate before production filters");
+    const auto once=diagnostic_lines.size();AssociateRetainedRecordings(buffers);
+    assert(diagnostic_lines.size()==once&&"unchanged polls must not repeat snapshots");
+    auto& retained=*buffers.ready[0];
+    retained.bytes+=16384;
+    ObserveRecordingMetadata(RecordingMedia("far-away",1),buffers,current,501);
+    AssociateRetainedRecordings(buffers);
+    assert(diagnostic_lines.size()==once&&"byte progress and later metadata observation alone must not repeat snapshots");
+    retained.matcher_snapshot.end_ms=102000;
+    EmitMatcherSnapshot(retained);
+    assert(diagnostic_lines.size()==once&&"absolute diagnostic timestamp alone must not repeat snapshots");
+    retained.matcher_snapshot.metadata[2].start_delta_ms=250;
+    EmitMatcherSnapshot(retained);
+    assert(diagnostic_lines.size()>once&&Contains("start_delta_ms=250")&&
+        "changed relative timing evidence must remain visible");
+    const auto changed_timing=diagnostic_lines.size();
+    retained.matcher_snapshot.metadata[2].decision=MatcherReason::DurationMismatch;
+    EmitMatcherSnapshot(retained);
+    assert(diagnostic_lines.size()>changed_timing&&Contains("decision=duration-mismatch"));
+    const auto changed_reason=diagnostic_lines.size();
+    retained.matcher_snapshot.duration_tolerance_ms+=1;
+    EmitMatcherSnapshot(retained);
+    assert(diagnostic_lines.size()>changed_reason&&"settings changes must remain visible");
+    const auto changed_settings=diagnostic_lines.size();
+    EmitMatcherSnapshot(retained,MatcherReason::CaptureAborted);
+    assert(diagnostic_lines.size()>changed_settings&&Contains("matcher_terminal reason=capture-aborted")&&
+        "terminal lifecycle evidence must bypass unchanged-snapshot suppression");
+    history::settings.save_unmatched=false;history::settings.matcher_max_queue=1;
+    ObserveRecordingMetadata(RecordingMedia("retire",20),buffers,current,600);
+    ScheduleStreamPublications(buffers,0,601);
+    assert(buffers.ready.empty()&&Contains("matcher_terminal")&&Contains("save-unmatched-disabled"));
+    for(const auto& line:diagnostic_lines)
+        assert(line.size()<768&&line.find("spotify:track:")==std::string::npos&&line.find("far-away")==std::string::npos);
+    history::settings=prior;playback_pump_target=pump;
+}
+void LateDurationContradictionStaysRejected() {
+    const auto prior=history::settings;const auto pump=playback_pump_target;playback_pump_target=nullptr;
+    history::settings.matcher_duration_ms=250;history::settings.matcher_max_queue=5;
+    CaptureBuffers buffers;Media current;auto media=RecordingMedia("late-duration",1.2);
+    ObserveRecordingMetadata(media,buffers,current,100);
+    auto capture=CompleteOggCapture(100,101);capture->capture_token=701;capture->retention_start=1;
+    buffers.ready.push_back(std::move(capture));AssociateRetainedRecordings(buffers);
+    assert(buffers.ready[0]->association);
+    media.duration=2;ObserveRecordingMetadata(media,buffers,current,101);
+    diagnostic_lines.clear();ScheduleStreamPublications(buffers,0,102);SaveJob job;
+    assert(!saves.Pop(job)&&buffers.ready.size()==1&&buffers.ready[0]->fallback_ambiguous&&
+        "late duration evidence must invalidate a weak association before publication");
+    assert(Contains("decision=duration-mismatch")&&Contains("duration_delta_ms=-1000"));
+    const auto first=diagnostic_lines.size();ScheduleStreamPublications(buffers,0,103);
+    assert(diagnostic_lines.size()==first&&"a rejected weak association cannot oscillate back to matched in diagnostics");
+    history::settings=prior;playback_pump_target=pump;
+}
 void NativeIdentityUsesRecordingLifetime() {
     const auto prior_sink=decoded_sink_target,prior_pump=playback_pump_target;
     const auto prior_layout=decoder_ownership_layout;const auto prior_available=decoder_ownership_layout_available;
@@ -1337,6 +1762,8 @@ void NativeIdentityUsesRecordingLifetime() {
         ownership::DecodedActivity output{};output.owner=0x8800;output.first=output.last=200.2;
         output.calls=1;output.produced_floats=2048;output.sequence=5;tracker.ObserveDecoded(output);
         tracker.CompleteCapture(newer->capture_token,200.3,6);buffers.ready.push_back(std::move(newer));
+        buffers.retired_evidence.RememberCapture({999,200,1});
+        buffers.retired_evidence.RememberMetadata({999,200,1});
         Media current;ObserveRecordingMetadata(RecordingMedia(a,1),buffers,current,300);
         AssociateRetainedRecordings(buffers);
         assert(!buffers.ready.back()->association&&"a stale decoder-address observation cannot label a later source");
@@ -1404,6 +1831,71 @@ void NativeIdentityUsesRecordingLifetime() {
     decoded_sink_target=prior_sink;playback_pump_target=prior_pump;
     decoder_ownership_layout=prior_layout;decoder_ownership_layout_available=prior_available;
 }
+void RestartedFlacKeepsMetadataClaim() {
+    const auto old_sink=decoded_sink_target;const auto old_layout=decoder_ownership_layout;
+    const auto old_available=decoder_ownership_layout_available;
+    decoded_sink_target=reinterpret_cast<void*>(0x1000);
+    decoder_ownership_layout={};decoder_ownership_layout_available=true;
+    auto source=recording_fixture::fixture();source[25]=32;
+    const std::vector<uint8_t> first(source.begin()+42,source.end());auto second=first;
+    second[4]=1;second[6]=uint8_t(recording_fixture::crc(std::vector<uint8_t>(second.begin(),second.begin()+6),8,7));
+    second.resize(second.size()-2);const auto crc=recording_fixture::crc(second,16,0x8005);
+    second.push_back(uint8_t(crc>>8));second.push_back(uint8_t(crc));
+    ownership::DecoderOwnershipTracker tracker;tracker.Reset(0);
+    CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+    Media current;auto media=RecordingMedia("restart-native-id",32.0/44100);
+    const auto generation=ObserveRecordingMetadata(media,buffers,current,100);
+    Slot slot{};slot.context=0x7650;slot.time=100.01;slot.sequence=1;slot.kind=AudioEventKind::FlacBegin;
+    ProcessFlacCapture(slot,buffers);
+    const auto send=[&](const std::vector<uint8_t>& bytes) {
+        slot.kind=AudioEventKind::FlacBytes;slot.time+=.01;++slot.sequence;slot.length=unsigned(bytes.size());
+        memcpy(slot.bytes,bytes.data(),bytes.size());ProcessFlacCapture(slot,buffers);
+    };
+    send(source);const auto original=buffers.active.at(slot.context)->capture_token;
+    ownership::DecodedActivity output{};output.owner=slot.context;output.calls=1;output.produced_floats=32;
+    output.first=output.last=slot.time;output.sequence=slot.sequence;tracker.ObserveDecoded(output);
+    std::array<playback_identity::Match,playback_identity::kObservationCapacity> matches{};
+    matches[0].metadata_generation=generation;matches[0].decoder=slot.context;
+    matches[0].role=playback_identity::SnapshotRole::PlayerPlaybackId;
+    auto bind=[&]() {
+        matches[0].observed_at=slot.time;
+        const auto token=BindDirectReadyCapture(buffers,current,generation,slot.time,matches,1);
+        if(token)RememberBoundCaptureIdentity(buffers,current,generation,token);
+        return token;
+    };
+    const auto playback=bind();
+    assert(playback&&tracker.Binding(original).playback_token==playback&&buffers.history.Find(generation)->assigned);
+    uint32_t frame[8]={16,44100,2,0,16,0,0,0};
+    slot.kind=AudioEventKind::FlacFrame;slot.length=32;memcpy(slot.bytes,frame,32);ProcessFlacCapture(slot,buffers);
+    for(unsigned retry=0;retry<9;++retry) {
+        send(first);slot.kind=AudioEventKind::FlacFrame;slot.length=32;++slot.sequence;
+        memcpy(slot.bytes,frame,32);ProcessFlacCapture(slot,buffers);
+    }
+    const auto replacement=buffers.active.at(slot.context)->capture_token;
+    assert(replacement!=original&&buffers.history.Find(generation)->assigned);
+    send(second);assert(buffers.ready.size()==1);
+    const auto rebound=bind();
+    if(!rebound)for(const auto& line:diagnostic_lines)
+        if(line.find("native_match")!=std::string::npos)std::fprintf(stderr,"%s\n",line.c_str());
+    assert(rebound==playback&&tracker.Binding(replacement).state==ownership::OwnershipState::Bound&&
+        tracker.Binding(replacement).playback_token==playback&&
+        "a verified same-source restart must replace its abandoned incomplete metadata owner");
+    assert(buffers.ready[0]->association&&buffers.ready[0]->association->generation==generation);
+    ScheduleStreamPublications(buffers,0,slot.time);SaveJob job;
+    assert(saves.Pop(job)&&!job.unmatched&&job.heard.generation==generation&&buffers.ready.empty());
+    job.capture.reset();job.metadata_counter.Reset();publishing_reserved.fetch_sub(job.reserved);
+    decoded_sink_target=old_sink;decoder_ownership_layout=old_layout;decoder_ownership_layout_available=old_available;
+    std::puts("PASS: repeated FLAC restarts retain the exact metadata claim and queue one named recording");
+}
+void ReleaseAuditHonorsBudget() {
+    const auto prior=history::settings;const auto prior_pending=publishing_reserved.load(),prior_active=capture_reserved.load();
+    history::settings.max_buffered_mib=8;publishing_reserved.store(8u*1024*1024);capture_reserved=0;
+    auto capture=CompleteOggCapture(100,101);const auto bytes=capture->data.size();diagnostic_lines.clear();
+    CheckBeforeRelease(*capture,"construction budget denied");
+    assert(capture->data.size()==bytes&&Contains("validation unavailable")&&
+        "an optional deep release audit must not allocate a whole-source copy over budget");
+    publishing_reserved.store(prior_pending);capture_reserved.store(prior_active);history::settings=prior;
+}
 void Mp3BoundaryDoesNotProveCompleteness() {
     CaptureBuffers buffers;auto capture=std::make_unique<Capture>();
     const auto prefix=PodcastFrames(383);capture->mp3=true;capture->born=100;capture->last_input=110;
@@ -1445,8 +1937,8 @@ void IndependentSaveProgress() {
 void PublicationLogging() {
     assert(PublicationLogKind(Publication::Saved,true)==LogKind::Finished);
     assert(PublicationLogKind(Publication::Saved,false)==LogKind::Activity);
-    assert(PublicationLogKind(Publication::Skipped,false)==LogKind::Activity);
-    assert(PublicationLogKind(Publication::Failed,false)==LogKind::Failure);
+    assert(PublicationLogKind(Publication::AlreadyPresent,false)==LogKind::Activity);
+    assert(PublicationLogKind(Publication::RetryIO,false)==LogKind::Failure);
 }
 }
 namespace history {
@@ -1461,11 +1953,24 @@ void EnrichTags(const Media&,Tags&){}
 }
 int wmain(int argc,wchar_t** argv) {
     InterlockedExchange(&history::log_level_value,4);
+    if(argc==2&&!wcscmp(argv[1],L"--flac-source-completion")){FlacInputCompletesWithoutDecodedCallbacks();return 0;}
+    if(argc==2&&!wcscmp(argv[1],L"--flac-repeat-recovery")){FlacRepeatedInputCompletesWithoutDecodedCallbacks();return 0;}
+    if(argc==2&&!wcscmp(argv[1],L"--flac-source-loss")){CompletedSourceQueueLossCannotRelabel();return 0;}
+    if(argc==4&&!wcscmp(argv[1],L"--flac-source-file")){ReplayFlacSource(argv[2],!wcscmp(argv[3],L"complete"));return 0;}
+    if(argc==4&&!wcscmp(argv[1],L"--flac-recover-file")){ReplayFlacSource(argv[2],true,argv[3]);return 0;}
+    if(argc==4&&!wcscmp(argv[1],L"--capture-buffer-replay")){ReplayCaptureBuffer(argv[2],argv[3]);return 0;}
+    if(argc==2&&!wcscmp(argv[1],L"--capture-journal")){CaptureJournalRoundTrip();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--unmatched-complete-only")){UnmatchedRetention();UnmatchedWriterRejectsPartial();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--review-prefetch")){PrefetchCannotSupplyCurrentIdentity();return 0;}
+    if(argc==2&&!wcscmp(argv[1],L"--review-retirement")){RetirementCannotManufactureMatch();RetiredMetadataCannotManufactureMatch();return 0;}
+    if(argc==2&&!wcscmp(argv[1],L"--review-matcher-inventory")){MatcherCandidateInventory();return 0;}
+    if(argc==2&&!wcscmp(argv[1],L"--review-late-duration")){LateDurationContradictionStaysRejected();return 0;}
+    if(argc==2&&!wcscmp(argv[1],L"--review-audit-budget")){ReleaseAuditHonorsBudget();return 0;}
+    if(argc==2&&!wcscmp(argv[1],L"--review-retry-allocation")){UnmatchedArchiveRetry(true);return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--review-mp3-prefix")){Mp3BoundaryDoesNotProveCompleteness();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--review-save-progress")){IndependentSaveProgress();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--review-native-identity")){NativeIdentityUsesRecordingLifetime();return 0;}
+    if(argc==2&&!wcscmp(argv[1],L"--flac-restart-metadata")){RestartedFlacKeepsMetadataClaim();return 0;}
     if(argc==4&&!wcscmp(argv[1],L"--dump-ogg-listen-replay")) {ReplayCapturedOggListen(argv[2],argv[3]);return 0;}
     if(argc==6&&!wcscmp(argv[1],L"--dump-quality-replay")) {ReplayCapturedQuality(argv[2],argv[3],argv[4],argv[5]);return 0;}
     playback_id_payload_offset=0;
@@ -1481,13 +1986,13 @@ int wmain(int argc,wchar_t** argv) {
     if(argc==2&&(!wcscmp(argv[1],L"--podcast-reuse")||!wcscmp(argv[1],L"--pause-continuity")||
         !wcscmp(argv[1],L"--podcast-end"))) {StreamOwnedCompletion();UnmatchedRetention();return 0;}
     assert(argc==1);
-    NativeIdentityUsesRecordingLifetime();PrefetchCannotSupplyCurrentIdentity();MatcherToleranceAndLogs();
-    Mp3BoundaryDoesNotProveCompleteness();IndependentSaveProgress();
-    RecordingQueueCounters();StreamOwnedCompletion();UnmatchedRetention();UnmatchedWriterRejectsPartial();UnmatchedArchiveRetry();
+    FlacInputCompletesWithoutDecodedCallbacks();FlacRepeatedInputCompletesWithoutDecodedCallbacks();CompletedSourceQueueLossCannotRelabel();NativeIdentityUsesRecordingLifetime();PrefetchCannotSupplyCurrentIdentity();MatcherToleranceAndLogs();RetirementCannotManufactureMatch();RetiredMetadataCannotManufactureMatch();MatcherCandidateInventory();LateDurationContradictionStaysRejected();ReleaseAuditHonorsBudget();
+    CaptureJournalRoundTrip();RestartedFlacKeepsMetadataClaim();Mp3BoundaryDoesNotProveCompleteness();IndependentSaveProgress();
+    RecordingQueueCounters();StreamOwnedCompletion();UnmatchedRetention();UnmatchedWriterRejectsPartial();UnmatchedArchiveRetry();UnmatchedArchiveRetry(true);
     Connectivity();PodcastCatalog();PublicationLogging();ReadyUpgradesPreboundPlaybackGeneration();
     FinalCaptureRevalidation();CompactFailureIdentity();ProductionCaptureQueueLossEpochs();
     ContextSpecificCaptureQueueLoss();ReadyDurationCorroboratesDecoder();MissingPlaybackWarning();
-    AdvertisementStageIsNotDownloadFailure();ObservePlayback();CoverageAndFailures();
+    AdvertisementStageIsNotDownloadFailure();ObservePlayback();CoverageAndFailures();CaptureReasonLogs();
     SameContextFlacRestartBeginsFreshCapture();CaptureOwnershipLifecycle();OwnershipDiagnosticPrivacy();
     HookBoundaries();DecodedActivityQueue();TimingVerbosity();BasicModeProfiling();LoggingDisabled();DumpStreamHooks();
     puts("PASS: stream-owned recording lifecycle, unmatched retention/retry, codec validation and original hook semantics");

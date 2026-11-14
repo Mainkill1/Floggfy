@@ -156,7 +156,7 @@ static DWORD WINAPI EnrichmentWorker(LPVOID) {
    if(!preferences.metadata || preferences.generation!=job.generation)continue;
    if(!preferences.lyrics)metadata.fields.erase("LYRICS");
    {ExclusiveSrw guard(cache_lock);
-    const auto current=cache.Find(metadata.title,metadata.artist,metadata.album,metadata.duration);
+    const auto current=metadata.uri.empty()?cache.Find(metadata.title,metadata.artist,metadata.album,metadata.duration):cache.FindUri(metadata.uri);
     if(current && current->uri==metadata.uri) {
      auto merged=*current;MergeAvailableFields(metadata,merged);
      if(!preferences.lyrics)merged.fields.erase("LYRICS");
@@ -208,7 +208,7 @@ static DWORD WINAPI MetadataWorker(LPVOID) {
    if(!ParseRichMetadata(std::string(message.data,message.length),metadata,error))continue;
    metadata.quality_time=message.time;
    {ExclusiveSrw guard(cache_lock);
-    const auto previous=cache.Find(metadata.title,metadata.artist,metadata.album,metadata.duration);
+    const auto previous=metadata.uri.empty()?cache.Find(metadata.title,metadata.artist,metadata.album,metadata.duration):cache.FindUri(metadata.uri);
     if(previous && previous->uri==metadata.uri)MergeAvailableFields(*previous,metadata);
     if(!preferences.lyrics)metadata.fields.erase("LYRICS");
     const bool changed=!previous||!SameRecordingMetadata(*previous,metadata);
@@ -344,7 +344,11 @@ static int CreateHook(const void* win,Client* client,const String* url,const voi
 static Browser* SyncHook(const void* win,Client* client,const String* url,const void* settings,void* extra,void* context){auto callback=metadata_callbacks.Enter();return original_sync(win,ObserveClient(client),url,settings,extra,context);}
 static void* ViewHook(Client* client,const String* url,const void* settings,void* extra,void* context,void* delegate){auto callback=metadata_callbacks.Enter();return original_view(ObserveClient(client),url,settings,extra,context,delegate);}
 }
-std::uint64_t MetadataRevision() {return metadata_revision.load(std::memory_order_acquire);}
+std::uint64_t MetadataRevision() {
+ // Both counters are monotonic. Artwork freshness becomes visible while its
+ // bytes are committed, before this worker reacquires the metadata cache lock.
+ return metadata_revision.load(std::memory_order_acquire)+AlbumArtworkRevision();
+}
 static bool ReadCachedMetadata(const Media& media,RichMetadata& metadata) {
  const auto title=Utf8(media.title),artist=Utf8(media.artist),album=Utf8(media.album);
  SharedSrw guard(cache_lock);

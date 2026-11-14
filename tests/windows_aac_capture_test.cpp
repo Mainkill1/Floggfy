@@ -67,15 +67,15 @@ void TestPipeline(const std::wstring& root) {
     assert(inspected.quality.codec==Codec::Aac&&!inspected.has_artwork&&Field(inspected.tags,"TITLE")=="Native AAC");
     auto before=Read(path);const auto old=capture->Encoding();
     assert(!HigherQuality(old,old));
-    capture=Captured(source);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped&&Read(path)==before);
+    capture=Captured(source);assert(Publish(*capture,heard,CaptureEpoch())==Publication::AlreadyPresent&&Read(path)==before);
     std::vector<RecentDownload> recent;assert(ReadRecentDownloads(recent)&&recent.size()==1&&recent[0].path==path);
     extra_metadata=true;assert(SetUpdateExistingMetadata(false));
-    assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped&&Read(path)==before);
+    assert(Publish(*capture,heard,CaptureEpoch())==Publication::AlreadyPresent&&Read(path)==before);
     assert(SetUpdateExistingMetadata(true));
-    assert(Publish(*capture,heard,CaptureEpoch())==Publication::Saved);
+    assert(Publish(*capture,heard,CaptureEpoch())==Publication::AlreadyPresent);
     assert(ReadRecording(path,inspected)&&inspected.complete&&Field(inspected.tags,"LYRICS")=="[00:01.000]Synthetic words"&&inspected.has_artwork);
     assert(Field(inspected.tags,"GENRE")=="Rock");before=Read(path);
-    assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped&&Read(path)==before);
+    assert(Publish(*capture,heard,CaptureEpoch())==Publication::AlreadyPresent&&Read(path)==before);
     assert(ReadRecentDownloads(recent)&&recent.size()==1); // Enrichment adds no download row.
     extra_metadata=false;
     // Prefer the same recording already saved as lossless; never create a low
@@ -93,20 +93,20 @@ void TestPipeline(const std::wstring& root) {
     HANDLE locked=CreateFileW(flac.c_str(),GENERIC_READ,0,nullptr,OPEN_EXISTING,0,nullptr);
     assert(locked!=INVALID_HANDLE_VALUE);
     assert(ResolveRecordingDestination(flac,catalog).state==RecordingDestinationState::Blocked);
-    assert(Publish(*capture,heard,CaptureEpoch())==Publication::Failed &&
+    assert(Publish(*capture,heard,CaptureEpoch())==Publication::RetryIO &&
         GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES);
     CloseHandle(locked);
-    assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped&&Read(flac)==high&&GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES);
+    assert(Publish(*capture,heard,CaptureEpoch())==Publication::AlreadyPresent&&Read(flac)==high&&GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES);
     // Interrupted-upgrade backups retain the same uncertainty guarantee. Check
     // both ordinary and deterministic suffixed backup names.
     const auto backup=flac+L".previous";
     assert(MoveFileW(flac.c_str(),backup.c_str()));
     locked=CreateFileW(backup.c_str(),GENERIC_READ,0,nullptr,OPEN_EXISTING,0,nullptr);
     assert(locked!=INVALID_HANDLE_VALUE);
-    assert(Publish(*capture,heard,CaptureEpoch())==Publication::Failed &&
+    assert(Publish(*capture,heard,CaptureEpoch())==Publication::RetryIO &&
         GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES);
     CloseHandle(locked);
-    assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped && Read(flac)==high &&
+    assert(Publish(*capture,heard,CaptureEpoch())==Publication::AlreadyPresent && Read(flac)==high &&
         GetFileAttributesW(backup.c_str())==INVALID_FILE_ATTRIBUTES);
     assert(DeleteFileW(flac.c_str()));
     auto unrelated_tags=tags;
@@ -118,19 +118,19 @@ void TestPipeline(const std::wstring& root) {
     Write(flac_suffix.path,high);assert(DeleteFileW(flac.c_str()));
     locked=CreateFileW(flac_suffix.path.c_str(),GENERIC_READ,0,nullptr,OPEN_EXISTING,0,nullptr);
     assert(locked!=INVALID_HANDLE_VALUE);
-    assert(Publish(*capture,heard,CaptureEpoch())==Publication::Failed &&
+    assert(Publish(*capture,heard,CaptureEpoch())==Publication::RetryIO &&
         GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES);
     CloseHandle(locked);
     const auto suffix_backup=flac_suffix.path+L".previous";
     assert(MoveFileW(flac_suffix.path.c_str(),suffix_backup.c_str()));
     locked=CreateFileW(suffix_backup.c_str(),GENERIC_READ,0,nullptr,OPEN_EXISTING,0,nullptr);
     assert(locked!=INVALID_HANDLE_VALUE);
-    assert(Publish(*capture,heard,CaptureEpoch())==Publication::Failed &&
+    assert(Publish(*capture,heard,CaptureEpoch())==Publication::RetryIO &&
         GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES);
     CloseHandle(locked);
     const auto reused=ResolveRecordingDestination(flac,catalog);
     assert(reused.state==RecordingDestinationState::Existing && reused.path==flac_suffix.path && reused.recording.complete);
-    assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped && Read(flac_suffix.path)==high &&
+    assert(Publish(*capture,heard,CaptureEpoch())==Publication::AlreadyPresent && Read(flac_suffix.path)==high &&
         GetFileAttributesW(flac.c_str())==INVALID_FILE_ATTRIBUTES && GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES);
     assert(DeleteFileW(flac_suffix.path.c_str()));
     // Apply the same fail-closed rule to a locked Vorbis candidate even when
@@ -141,10 +141,10 @@ void TestPipeline(const std::wstring& root) {
     assert(TagOgg(recording_fixture::ogg(),tags,vorbis,error));Write(ogg,vorbis);
     locked=CreateFileW(ogg.c_str(),GENERIC_READ,0,nullptr,OPEN_EXISTING,0,nullptr);
     assert(locked!=INVALID_HANDLE_VALUE);
-    assert(Publish(*capture,heard,CaptureEpoch())==Publication::Failed &&
+    assert(Publish(*capture,heard,CaptureEpoch())==Publication::RetryIO &&
         GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES);
     CloseHandle(locked);
-    assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped && Read(ogg)==vorbis);
+    assert(Publish(*capture,heard,CaptureEpoch())==Publication::AlreadyPresent && Read(ogg)==vorbis);
     assert(DeleteFileW(ogg.c_str())&&SetUpdateExistingMetadata(true));
     // A different explicit UID in another codec redirects publication only
     // after the ordinary resolver finishes; the canonical files stay intact.
@@ -156,7 +156,7 @@ void TestPipeline(const std::wstring& root) {
     assert(GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES&&Read(duplicate).size()>0&&Read(flac)==other_flac);
     assert(DeleteFileW(flac.c_str()));
     capture=Captured(source);
-    assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped&&
+    assert(Publish(*capture,heard,CaptureEpoch())==Publication::AlreadyPresent&&
            GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES&&Read(duplicate).size()>0&&
            "deleting the canonical conflict cannot strand an established exact-URI duplicate");
     Write(flac,other_flac);
@@ -171,9 +171,9 @@ void TestPipeline(const std::wstring& root) {
     const auto duplicate22=root+L"\\Duplicates\\Music\\Artists\\Artist\\Album\\Native AAC [t-AAAAAAAAAAAAAAAAAAAAAA].m4a";
     capture=Captured(source);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Saved);
     assert(Read(duplicate22).size()>0&&Read(duplicate)==other_flac&&Read(duplicate14)==other_flac&&Read(flac)==other_flac);
-    capture=Captured(source);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped&&Read(duplicate22).size()>0);
+    capture=Captured(source);assert(Publish(*capture,heard,CaptureEpoch())==Publication::AlreadyPresent&&Read(duplicate22).size()>0);
     assert(DeleteFileW(duplicate.c_str())&&DeleteFileW(duplicate14.c_str()));
-    capture=Captured(source);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped&&Read(duplicate22).size()>0);
+    capture=Captured(source);assert(Publish(*capture,heard,CaptureEpoch())==Publication::AlreadyPresent&&Read(duplicate22).size()>0);
     assert(DeleteFileW(flac.c_str())&&DeleteFileW(duplicate22.c_str()));
     // The same final-UID fallback applies within one codec and is stable on a
     // repeat: no canonical collision suffix is allocated.
@@ -186,7 +186,7 @@ void TestPipeline(const std::wstring& root) {
     capture=Captured(source);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Saved&&Read(path)==unrelated);
     assert(GetFileAttributesW(canonical_alternate.c_str())==INVALID_FILE_ATTRIBUTES);
     assert(ReadRecording(duplicate,inspected)&&MatchesRecording(inspected,catalog));
-    capture=Captured(source);assert(Publish(*capture,heard,CaptureEpoch())==Publication::Skipped&&Read(path)==unrelated);
+    capture=Captured(source);assert(Publish(*capture,heard,CaptureEpoch())==Publication::AlreadyPresent&&Read(path)==unrelated);
     assert(DeleteFileW(path.c_str())&&DeleteFileW(duplicate.c_str()));
 }
 void RealSample(const std::wstring& input,const std::wstring& output) {

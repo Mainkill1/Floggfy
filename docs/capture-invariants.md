@@ -9,8 +9,9 @@ and are never written to disk.
 - A capture owns one codec stream lifetime. Decoder-address reuse starts a new
   lifetime. Compressed and decoded producers share a monotonic sequence, and
   decoded batches cannot coalesce across a lifecycle event.
-- Correlation advances through observed stages: capture created, decoded output
-  seen, playback identity bound, compressed stream complete, then publishable.
+- Compressed completeness and playback identity are independent observations.
+  A validated complete FLAC source can bind to a unique native playback ID before
+  PCM callbacks arrive. Duration-only fallback still requires decoded ownership.
   A Ready snapshot's listen generation is a valid local stage identity when the
   client omits its playback ID, but only after media kind and codec-declared
   duration select exactly one decoder capture. Wall clocks never establish or
@@ -20,7 +21,30 @@ and are never written to disk.
   ambiguity evidence. A later nonoverlapping capture can establish fresh ownership.
 - Compressed completion may be processed before decoded observations. Producer
   sequence assigns delayed output to the exact completed lifetime, even when a
-  decoder address is later reused.
+  decoder address is later reused. A newer begin sequence supersedes an older
+  still-active reader for output attribution. Tied begins or a callback batch
+  spanning a new begin remain ambiguous.
+- FLAC completeness comes from contiguous compressed frames, header/frame CRCs,
+  declared sample count, and exact buffer end. Native PCM coverage is diagnostic;
+  a skip or missing callback cannot revoke complete compressed audio.
+- A FLAC capture may contain decoder rereads. Capture-only normalization accepts
+  repeated frames only when their bytes match an already verified frame at that
+  sample position. Interrupted frames require a valid header and an exact prefix
+  match against the corresponding complete frame. Missing samples, conflicting
+  bytes, and unrelated containers cannot establish completion. Recovery stays
+  within one capture, uses a bounded index charged to the shared RAM budget, and
+  compacts in place only after full coverage. A fresh strict parse then validates
+  the result before ownership completion. Short interrupted prefixes without a
+  complete valid header remain conservatively unresolved.
+- Recovery resynchronization retains its search position and retries only frame
+  candidates that still need bytes. Exhausting the search window does not force
+  rejection of a larger valid frame. Work counters distinguish repeated parsing
+  from missing input. Exact native identity may transfer a metadata claim from a
+  cleanly abandoned, incomplete FLAC restart chain to its verified complete
+  replacement; completed, conflicting, lost, or unrelated lifetimes cannot transfer.
+- A lost capture boundary prevents new identity binding for affected unresolved
+  buffers. Complete bytes remain available for unmatched handling; a later ID on
+  the same decoder cannot silently relabel them.
 - Controls are consumed by the first Ready or buffering stage they can explain.
   Pause is acknowledged by paused Ready; play/resume cancels an unacknowledged
   pause. Seek/skip controls reject their transition without a clock window.
@@ -62,6 +86,7 @@ and are never written to disk.
   owned-but-incomplete so a later complete recording repairs the same path.
 - Existing files are never replaced by filename alone. Identity, completeness,
   quality policy, exact-object locking, staging, and collision handling all apply.
+
 - The ordinary destination resolver always runs first. If it finds no matching
   recording and a parsed candidate contains a different complete Spotify track
   URI, the same resolver is rerun below the library-root `Duplicates` folder.
@@ -104,6 +129,38 @@ uses `Floggfy-hook-diagnostics.log`. `DebugNetworking` and
 `DebugConnect` further controls sanitized Connect/control records in the main
 diagnostic file. Log queues remain bounded and no lane records raw payloads,
 credentials, URLs, media, device names, or device identifiers.
+
+Capture IDs connect matcher decisions, conflicting decoder lifetimes, source and
+decoded sample counts, validation reasons, retries, and final dispositions.
+Unchanged native identity decisions are suppressed. With `DumpStreams=1`, decision
+records also go to the session's `session.jsonl`, independent of rotating logs.
+Matcher snapshots begin with a full inventory; subsequent `mode=delta` snapshots
+name their `base_snapshot` and contain changed rows and explicit removals. Final
+decisions always include a full snapshot. A missing base or part means incomplete
+evidence: admission to a bounded log queue is not proof of delivery. FLAC reader
+records include coverage, input/retained bytes, repeat counts, interruption bytes,
+and specific rejection reasons; interruption counts are provisional until complete.
+Their separate bounded queue cannot consume raw-input capacity; explicit decision
+gap records report omissions. Both capture and publication workers finish their
+diagnostic records before a graceful dump shutdown. Forced process termination
+can still interrupt memory capture and logging.
+
+With `DumpStreams=1`, `*-capture-N.bin` and `capture_event` rows separately record
+the exact FLAC events accepted by the capture worker: original payload chunks,
+frame callbacks, begin/end/error events, producer sequences, clocks, and applied
+queue-loss, settings-reset, and outside-parser discard controls. They are not
+the `*-stream-N.bin` consumed-decoder input.
+Both use the existing bounded dump writer. `capture_gap` and write errors make
+exact replay unavailable; diagnostic-only omissions do not invalidate capture
+bytes. Capture-file metadata is explicitly unresolved, never an identity claim.
+
+After Spotify closes the session, replay its buffer inputs with
+`bash test-dump-replay.sh --capture-buffer SESSION.jsonl OUTPUT_DIRECTORY`.
+The harness runs the same `ProcessFlacCapture` and queue-loss code, without
+rechunking bytes or inventing frame callbacks. It validates and exports complete
+buffers for comparison. This replays buffer behavior, not concurrent hook timing,
+metadata matching, or disk publication; those have separate regressions. A replay
+refuses missing capture events, incomplete journals, or absent payload bytes.
 
 ## Tests
 

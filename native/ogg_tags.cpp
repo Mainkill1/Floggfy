@@ -1,4 +1,5 @@
 #include "ogg_tags.h"
+#include "tag_memory_plan.h"
 #include "image_info.h"
 #include "ogg_history_core.h"
 #include <ogg/ogg.h>
@@ -103,7 +104,8 @@ bool TagOgg(const std::vector<uint8_t>& source,const Tags& tags,
                 ogg_stream_clear(&streams.input); return fail("output Ogg allocation failed");
             }
             streams.initialized=true;
-            output.reserve(source.size()+tags.cover.size()*4/3+65536);
+            TagMemoryPlan plan;if(!PlanTagConstructionMemory(Codec::Vorbis,source.size(),0,0,tags,plan))return fail("Ogg tag allocation overflow");
+            output.reserve(plan.output_capacity);
         }
         ogg_page page={const_cast<unsigned char*>(b),long(header),const_cast<unsigned char*>(b+header),long(body)};
         if(ogg_stream_pagein(&streams.input,&page)) return fail("Ogg page rejected");

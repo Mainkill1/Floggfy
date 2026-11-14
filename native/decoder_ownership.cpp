@@ -167,8 +167,13 @@ void DecoderOwnershipTracker::CompleteCapture(std::uint64_t capture_token,double
     capture->completed_sequence=producer_sequence;
 }
 
-void DecoderOwnershipTracker::AbortCapture(std::uint64_t capture_token,CaptureAbortReason) {
+void DecoderOwnershipTracker::AbortCapture(std::uint64_t capture_token,CaptureAbortReason reason) {
     auto* capture=FindCapture(capture_token);if(!capture)return;
+    capture->clean_restart_abort=reason==CaptureAbortReason::Reinitialized&&
+        capture->active&&!capture->complete&&
+        (capture->state==OwnershipState::AwaitingOutput||
+         capture->state==OwnershipState::AwaitingPlaybackInstance||
+         capture->state==OwnershipState::Bound);
     capture->active=false;capture->complete=false;capture->state=OwnershipState::Invalidated;
     capture->reason=OwnershipReason::CaptureAborted;
     if(current_capture_==capture_token)current_capture_=current_playback_=0;
@@ -201,24 +206,31 @@ void DecoderOwnershipTracker::ObserveDecoded(const DecodedActivity& activity) {
     if(!owner||activity.epoch!=epoch_||owner->epoch!=activity.epoch) {
         InvalidateOwner(activity.owner,OwnershipReason::OwnerUnavailable);return;
     }
-    if(!ValidTime(activity.first)||!ValidTime(activity.last)||activity.last<activity.first) {
+    if(!ValidTime(activity.first)||!ValidTime(activity.last)||activity.last<activity.first||
+       (activity.last_sequence&&activity.last_sequence<activity.sequence)) {
         for(auto& capture:captures_)if(capture.token&&capture.owner==activity.owner&&capture.active)
             Conflict(capture,OwnershipReason::InvalidDecodedRange);
         return;
     }
-    CaptureRecord* candidate=nullptr;unsigned candidates=0;
-    CaptureRecord* latest_lifetime=nullptr;
+    std::array<CaptureRecord*,kCaptureCapacity> candidates{};
+    unsigned candidate_count=0;
     if(activity.sequence) {
-        for(auto& capture:captures_) {
-            if(!capture.token||capture.owner!=activity.owner||!capture.begun_sequence||
-               capture.begun_sequence>activity.sequence)continue;
-            if(!latest_lifetime||capture.begun_sequence>latest_lifetime->begun_sequence)
-                latest_lifetime=&capture;
-            if(capture.active&&capture.state!=OwnershipState::Invalidated&&
-               capture.state!=OwnershipState::Conflict) {candidate=&capture;++candidates;}
+        std::uint64_t latest_begin=0;
+        for(const auto& capture:captures_) {
+            if(capture.token&&capture.owner==activity.owner&&capture.begun_sequence<=activity.sequence)
+                latest_begin=std::max(latest_begin,capture.begun_sequence);
         }
-        if(!candidates&&latest_lifetime&&latest_lifetime->state!=OwnershipState::Invalidated&&
-           latest_lifetime->state!=OwnershipState::Conflict) {candidate=latest_lifetime;candidates=1;}
+        if(!latest_begin)return;
+        const auto last_sequence=activity.last_sequence?activity.last_sequence:activity.sequence;
+        // A new stream begins a new decoder lifetime even while the old
+        // compressed reader remains active. Include terminal lifetimes as
+        // barriers: their output must never fall back to an older reader.
+        // A batch spanning another begin (or tied begins) is still ambiguous.
+        for(auto& capture:captures_) {
+            if(capture.token&&capture.owner==activity.owner&&
+               capture.begun_sequence>=latest_begin&&capture.begun_sequence<=last_sequence)
+                candidates[candidate_count++]=&capture;
+        }
     } else {
         for(auto& capture:captures_) {
             if(!capture.token||capture.owner!=activity.owner||
@@ -226,10 +238,13 @@ void DecoderOwnershipTracker::ObserveDecoded(const DecodedActivity& activity) {
                 continue;
             const bool contains=capture.active ? activity.first>=capture.begun :
                 capture.complete&&activity.first>=capture.begun&&activity.last<=capture.completed_at;
-            if(contains){candidate=&capture;++candidates;}
+            if(contains)candidates[candidate_count++]=&capture;
         }
     }
-    if(!candidates)return;
+    if(!candidate_count)return;
+    auto* candidate=candidates[0];
+    if(candidate_count==1&&(candidate->state==OwnershipState::Invalidated||
+       candidate->state==OwnershipState::Conflict))return;
     // Distinct decoder owners routinely overlap during preload. Ordering is
     // meaningful only within one normalized owner; playback identity and the
     // capture lifecycle disambiguate owners from each other.
@@ -239,16 +254,16 @@ void DecoderOwnershipTracker::ObserveDecoded(const DecodedActivity& activity) {
         return;
     }
     owner->first=owner->first?owner->first:activity.first;owner->last=activity.last;
-    if(candidates!=1) {
-        for(auto& capture:captures_) {
-            if(!capture.token||capture.owner!=activity.owner||
-               capture.state==OwnershipState::Invalidated||capture.state==OwnershipState::Conflict)
-                continue;
-            const bool contains=activity.sequence&&capture.begun_sequence?
-                capture.active&&capture.begun_sequence<=activity.sequence:
-                (capture.active ? activity.first>=capture.begun :
-                 capture.complete&&activity.first>=capture.begun&&activity.last<=capture.completed_at);
-            if(contains)Conflict(capture,OwnershipReason::AmbiguousDecoderLifetime);
+    if(candidate_count!=1) {
+        DecoderConflictEvidence evidence;evidence.activity=activity;
+        // Preserve the actual competing lifetimes before Conflict changes eligibility.
+        for(unsigned index=0;index<candidate_count;++index)
+            evidence.captures[evidence.count++]=candidates[index]->token;
+        for(unsigned index=0;index<candidate_count;++index) {
+            auto& capture=*candidates[index];
+            if(capture.state==OwnershipState::Invalidated||capture.state==OwnershipState::Conflict)continue;
+            capture.conflict_evidence=evidence;
+            Conflict(capture,OwnershipReason::AmbiguousDecoderLifetime);
         }
         return;
     }
@@ -382,10 +397,61 @@ bool DecoderOwnershipTracker::BindCapture(std::uint64_t capture_token,
 
 bool DecoderOwnershipTracker::BindCaptureExact(std::uint64_t capture_token,
     const std::string& playback_id,const std::string& uri,
-    std::uint64_t listen_generation,double observed) {
-    if(playback_id.empty()||!listen_generation||!ValidTime(observed))return false;
+    std::uint64_t listen_generation,double observed,bool source_complete,const char** rejection_reason) {
+    if(rejection_reason)*rejection_reason=nullptr;
+    const auto reject=[&](const char* reason) {
+        if(rejection_reason)*rejection_reason=reason;
+        return false;
+    };
+    if(playback_id.empty())return reject("missing-playback-id");
+    if(!listen_generation)return reject("missing-listen-generation");
+    if(!ValidTime(observed))return reject("invalid-observation-time");
     auto* capture=FindCapture(capture_token);
-    if(!capture||!capture->first_output||(!capture->active&&!capture->complete))return false;
+    if(!capture)return reject("missing-capture");
+    if(!capture->active&&!capture->complete)return reject("inactive-incomplete-capture");
+    // A validated complete source and its unique exact native identity can be
+    // available before PCM output. The caller supplies source validation; the
+    // tracker independently requires a completed, non-conflicting lifecycle.
+    const bool complete_without_output=source_complete&&capture->complete&&
+        (capture->state==OwnershipState::AwaitingOutput||capture->state==OwnershipState::Bound);
+    if(!capture->first_output&&!complete_without_output) {
+        if(capture->state==OwnershipState::Conflict)return reject("ownership-conflict");
+        if(capture->state==OwnershipState::Invalidated)return reject("ownership-invalidated");
+        if(source_complete&&!capture->complete)return reject("source-lifecycle-not-complete");
+        return reject("no-output-or-complete-source");
+    }
+    // A sample-zero restart may replace an incomplete capture after exact
+    // native identity and complete compressed coverage have been revalidated.
+    // Retain the old claim until that proof arrives; weak matching cannot reuse it.
+    auto* prior_playback=FindPlayback(playback_id);
+    bool replace_restart=false;
+    if(prior_playback&&prior_playback->bound_capture&&
+       prior_playback->bound_capture!=capture->token) {
+        const auto* prior=FindCapture(prior_playback->bound_capture);
+        if(!source_complete||!capture->complete)return reject("restart-source-not-complete");
+        if(capture->codec!=DecoderCodec::Flac)return reject("restart-codec-not-flac");
+        if(!prior)return reject("restart-predecessor-unavailable");
+        if(!prior->clean_restart_abort||prior->active||prior->complete||
+           prior->state!=OwnershipState::Invalidated||prior->reason!=OwnershipReason::CaptureAborted)
+            return reject("restart-predecessor-not-eligible");
+        if(prior->codec!=capture->codec||prior->owner!=capture->owner||
+           prior->owner_token!=capture->owner_token||prior->epoch!=capture->epoch)
+            return reject("restart-owner-or-epoch-mismatch");
+        if(prior->sequence>=capture->sequence||prior->begun>capture->begun)
+            return reject("restart-order-invalid");
+        if(prior->listen_generation!=listen_generation||prior_playback->listen_generation!=listen_generation||
+           uri.empty()||prior_playback->uri!=uri)return reject("restart-playback-identity-mismatch");
+        for(const auto& between:captures_) {
+            if(between.owner!=capture->owner||between.sequence<=prior->sequence||
+               between.sequence>=capture->sequence)continue;
+            if(!between.clean_restart_abort||between.active||between.complete||
+               between.state!=OwnershipState::Invalidated||
+               between.reason!=OwnershipReason::CaptureAborted||
+               between.owner_token!=capture->owner_token||between.epoch!=capture->epoch||
+               between.codec!=capture->codec)return reject("restart-chain-not-eligible");
+        }
+        replace_restart=true;
+    }
     auto& playback=EnsurePlayback(playback_id,uri,listen_generation,observed);
     if(!uri.empty())playback.uri=uri;
     playback.listen_generation=listen_generation;
@@ -393,13 +459,15 @@ bool DecoderOwnershipTracker::BindCaptureExact(std::uint64_t capture_token,
     latest_playback_=playback.token;
 
     if(capture->state==OwnershipState::Bound) {
-        if(capture->playback_token!=playback.token)return false;
+        if(capture->playback_token!=playback.token)return reject("capture-bound-to-other-playback");
         capture->listen_generation=listen_generation;return true;
     }
     const bool exact_conflict=capture->state==OwnershipState::Conflict&&
         capture->reason==OwnershipReason::AmbiguousSuccessor;
-    if((capture->state!=OwnershipState::AwaitingPlaybackInstance&&!exact_conflict)||
-       (playback.bound_capture&&playback.bound_capture!=capture->token))return false;
+    if(capture->state!=OwnershipState::AwaitingPlaybackInstance&&!exact_conflict&&!complete_without_output)
+        return reject(capture->state==OwnershipState::Conflict?"ownership-conflict":"ownership-state-excluded");
+    if(playback.bound_capture&&playback.bound_capture!=capture->token&&!replace_restart)
+        return reject("playback-already-claimed");
     capture->playback_token=playback.token;
     capture->listen_generation=listen_generation;
     capture->ambiguity_group=0;
@@ -484,6 +552,7 @@ void DecoderOwnershipTracker::ObserveTransition(const std::string& playback_id,
 void DecoderOwnershipTracker::ObservationLost(ObservationLoss,double time) {
     (void)time;
     for(auto& capture:captures_) {
+        capture.clean_restart_abort=false;
         if(capture.token&&(capture.active||capture.complete)) {
             capture.state=OwnershipState::Invalidated;
             capture.reason=OwnershipReason::ObservationLost;
@@ -510,6 +579,11 @@ OwnershipBinding DecoderOwnershipTracker::Binding(std::uint64_t capture_token) c
     binding.state=capture->state;
     binding.reason=capture->reason;
     return binding;
+}
+
+const DecoderConflictEvidence* DecoderOwnershipTracker::ConflictEvidence(std::uint64_t token) const noexcept {
+    const auto* capture=FindCapture(token);
+    return capture&&capture->conflict_evidence.count?&capture->conflict_evidence:nullptr;
 }
 
 std::uint64_t DecoderOwnershipTracker::OwnerToken(std::uintptr_t owner) const noexcept {

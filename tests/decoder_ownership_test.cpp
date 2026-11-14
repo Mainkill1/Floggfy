@@ -318,6 +318,78 @@ void TestProducerSequenceOwnsCompletionBoundaryAndAddressReuse() {
     State(tracker,reused,OwnershipState::AwaitingPlaybackInstance);
 }
 
+void TestProducerSequenceSeparatesStillActiveReusedDecoder() {
+    DecoderOwnershipTracker tracker;tracker.Reset(1);
+    const auto first=tracker.BeginCapture(DecoderCodec::Ogg,0x1000,41,1.0,1,10);
+    tracker.ObserveDecoded(Activity(0x1000,1.1,1.2,1,11));
+    assert(tracker.BindCaptureExact(first,"old","uri:old",1,1.3));
+
+    // The compressed reader can retain the old stream while the same decoder
+    // starts its successor. A delayed callback still belongs before that begin.
+    const auto reused=tracker.BeginCapture(DecoderCodec::Ogg,0x1000,42,2.0,1,20);
+    tracker.ObserveDecoded(Activity(0x1000,1.9,1.9,1,19));
+    State(tracker,first,OwnershipState::Bound);
+    State(tracker,reused,OwnershipState::AwaitingOutput);
+    tracker.ObserveDecoded(Activity(0x1000,2.0,2.0,1,21));
+    State(tracker,first,OwnershipState::Bound);
+    State(tracker,reused,OwnershipState::AwaitingPlaybackInstance);
+    assert(tracker.BindCaptureExact(reused,"new","uri:new",2,2.1));
+    assert(tracker.Binding(reused).playback_token!=tracker.Binding(first).playback_token);
+    assert(!tracker.ConflictEvidence(first)&&!tracker.ConflictEvidence(reused));
+
+    // Completion can precede the outer decoded callback. The active older
+    // reader must not steal output from the latest completed decoder lifetime.
+    const auto completed=tracker.BeginCapture(DecoderCodec::Ogg,0x1000,43,3.0,1,30);
+    tracker.CompleteCapture(completed,3.1,31);
+    tracker.ObserveDecoded(Activity(0x1000,3.1,3.101,1,32));
+    State(tracker,completed,OwnershipState::AwaitingPlaybackInstance);
+    assert(tracker.BindCaptureExact(completed,"last","uri:last",3,3.2));
+    State(tracker,first,OwnershipState::Bound);
+    State(tracker,reused,OwnershipState::Bound);
+}
+
+void TestInvalidatedLatestLifetimeDoesNotFallBackToOlderReader() {
+    DecoderOwnershipTracker tracker;tracker.Reset(1);
+    const auto first=tracker.BeginCapture(DecoderCodec::Ogg,0x1000,41,1.0,1,10);
+    const auto reused=tracker.BeginCapture(DecoderCodec::Ogg,0x1000,42,2.0,1,20);
+    tracker.AbortCapture(reused,CaptureAbortReason::DecoderError);
+    tracker.ObserveDecoded(Activity(0x1000,2.1,2.2,1,21));
+    State(tracker,first,OwnershipState::AwaitingOutput);
+    State(tracker,reused,OwnershipState::Invalidated);
+    assert(!tracker.BindCaptureExact(first,"new","uri:new",1,2.3));
+}
+
+void TestDecodedRangeAcrossReusedDecoderRemainsAmbiguous() {
+    for(const bool sequenced:{false,true}) {
+        DecoderOwnershipTracker tracker;tracker.Reset(1);
+        const auto first=tracker.BeginCapture(DecoderCodec::Ogg,0x1000,41,1.0,1,sequenced?10:0);
+        tracker.ObserveDecoded(Activity(0x1000,1.1,1.2,1,sequenced?11:0));
+        const auto second=tracker.BeginCapture(DecoderCodec::Ogg,0x1000,42,2.0,1,sequenced?20:0);
+        auto crossing=Activity(0x1000,2.0,2.1,1,sequenced?19:0);
+        crossing.last_sequence=sequenced?21:0;
+        tracker.ObserveDecoded(crossing);
+        for(const auto token:{first,second}) {
+            assert(State(tracker,token,OwnershipState::Conflict).reason==
+                   OwnershipReason::AmbiguousDecoderLifetime);
+            const auto* evidence=tracker.ConflictEvidence(token);
+            assert(evidence&&evidence->count==2);
+            assert(evidence->captures[0]==first&&evidence->captures[1]==second);
+            assert(evidence->activity.last_sequence==crossing.last_sequence);
+            assert(!tracker.BindCaptureExact(token,"exact","uri:new",2,2.2)&&
+                   "an exact decoder address cannot disambiguate overlapping streams");
+        }
+    }
+}
+
+void TestEqualProducerBeginsRemainAmbiguous() {
+    DecoderOwnershipTracker tracker;tracker.Reset(1);
+    const auto first=tracker.BeginCapture(DecoderCodec::Ogg,0x1000,41,1.0,1,10);
+    const auto second=tracker.BeginCapture(DecoderCodec::Ogg,0x1000,42,1.0,1,10);
+    tracker.ObserveDecoded(Activity(0x1000,1.1,1.2,1,11));
+    State(tracker,first,OwnershipState::Conflict);
+    State(tracker,second,OwnershipState::Conflict);
+}
+
 void TestAbortLossEpochAndTime() {
     DecoderOwnershipTracker tracker;tracker.Reset(1);
     const auto aborted=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,1.0,1);
@@ -497,6 +569,92 @@ void TestExactDecoderIdentityResolvesSameCodecConflict() {
     State(tracker,first,OwnershipState::Conflict);
 }
 
+void TestExactCompletedSourceDoesNotRequireDecodedOutput() {
+    DecoderOwnershipTracker tracker;tracker.Reset(1);
+    const auto source=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,1.0,1,10);
+    assert(!tracker.BindCaptureExact(source,"exact","uri:source",1,1.1,true)&&
+           "caller proof cannot replace tracker lifecycle completion");
+    tracker.CompleteCapture(source,2.0,20);
+    assert(!tracker.BindCaptureExact(source,"exact","uri:source",1,2.1)&&
+           "complete lifecycle alone does not prove a validated source");
+    assert(tracker.BindCaptureExact(source,"exact","uri:source",1,2.1,true));
+    const auto binding=State(tracker,source,OwnershipState::Bound);
+    assert(binding.listen_generation==1&&binding.playback_token==tracker.PlaybackToken("exact"));
+    assert(!tracker.BindCaptureExact(source,"wrong","uri:wrong",2,2.2,true));
+    assert(tracker.Binding(source).playback_token==binding.playback_token);
+    assert(tracker.BindCaptureExact(source,"exact","uri:source",1,2.3,true));
+
+    const auto other=tracker.BeginCapture(DecoderCodec::Flac,0x2000,0,3.0,1,30);
+    tracker.CompleteCapture(other,4.0,40);
+    assert(!tracker.BindCaptureExact(other,"exact","uri:source",1,4.1,true)&&
+           "validated completion must preserve unique playback ownership");
+    tracker.ObservationLost(ObservationLoss::DecodedQueue,4.2);
+    assert(!tracker.BindCaptureExact(other,"fresh","uri:fresh",3,4.3,true)&&
+           "completion proof must not revive lost ownership evidence");
+}
+
+void TestExactCompleteFlacCanReplaceCleanRestartChain() {
+    DecoderOwnershipTracker tracker;tracker.Reset(1);
+    auto capture=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,1.0,1,10);
+    tracker.ObserveDecoded(Activity(0x1000,1.1,1.2,1,11));
+    assert(tracker.BindCaptureExact(capture,"same","spotify:track:one",4,1.3));
+    const auto playback=tracker.Binding(capture).playback_token;
+    for(unsigned restart=0;restart<9;++restart) {
+        tracker.AbortCapture(capture,CaptureAbortReason::Reinitialized);
+        const double now=2.0+restart;
+        capture=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,now,1,20+restart*10);
+        tracker.ObserveDecoded(Activity(0x1000,now+.1,now+.2,1,21+restart*10));
+        assert(!tracker.BindCaptureExact(capture,"same","spotify:track:one",4,now+.3));
+    }
+    tracker.CompleteCapture(capture,11.0,120);
+    const char* rejection=nullptr;
+    assert(!tracker.BindCaptureExact(capture,"same","spotify:track:one",4,11.1,false,&rejection));
+    assert(rejection&&std::string(rejection)=="restart-source-not-complete");
+    assert(!tracker.BindCapture(capture,"same","spotify:track:one",4,11.1));
+    assert(tracker.BindCaptureExact(capture,"same","spotify:track:one",4,11.1,true));
+    assert(State(tracker,capture,OwnershipState::Bound).playback_token==playback);
+}
+
+void TestExactRestartTransferRejectsUnsafePredecessors() {
+    // Active, completed, wrong owner, lost evidence, conflict, and non-restart aborts.
+    for(unsigned scenario=0;scenario<15;++scenario) {
+        DecoderOwnershipTracker tracker;tracker.Reset(1);
+        const auto first=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,1.0,1,10);
+        tracker.ObserveDecoded(Activity(0x1000,1.1,1.2,1,11));
+        assert(tracker.BindCaptureExact(first,"same","spotify:track:one",4,1.3));
+        if(scenario==1)tracker.CompleteCapture(first,1.5,15);
+        if(scenario==12) {
+            auto invalid=Activity(0x1000,1.6,1.5,1,14);
+            tracker.ObserveDecoded(invalid);
+            State(tracker,first,OwnershipState::Conflict);
+        }
+        if(scenario==4)tracker.ObservationLost(ObservationLoss::CaptureQueue,1.5);
+        if(scenario!=0)tracker.AbortCapture(first,scenario==5?
+            CaptureAbortReason::QueueLoss:scenario==6?CaptureAbortReason::DecoderError:
+            CaptureAbortReason::Reinitialized);
+        if(scenario==3)tracker.ObservationLost(ObservationLoss::DecodedQueue,1.6);
+        if(scenario==7) {
+            const auto middle=tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,1.7,1,17);
+            tracker.AbortCapture(middle,CaptureAbortReason::QueueLoss);
+        }
+        if(scenario==13)tracker.BeginCapture(DecoderCodec::Flac,0x1000,0,1.7,1,17);
+        if(scenario==14) {
+            for(unsigned index=0;index<33;++index)
+                tracker.BeginCapture(DecoderCodec::Flac,0x2000,0,1.7,1,17);
+        }
+        const auto next=tracker.BeginCapture(scenario==10?DecoderCodec::Ogg:DecoderCodec::Flac,
+            scenario==2?0x2000:0x1000,0,2.0,scenario==11?2:1,20);
+        tracker.CompleteCapture(next,3.0,30);
+        assert(!tracker.BindCaptureExact(next,"same",scenario==8?"spotify:track:other":"spotify:track:one",
+            scenario==9?5:4,3.1,true));
+        if(scenario==1) {
+            const char* rejection=nullptr;
+            assert(!tracker.BindCaptureExact(next,"same","spotify:track:one",4,3.1,true,&rejection));
+            assert(rejection&&std::string(rejection)=="restart-predecessor-not-eligible");
+        }
+    }
+}
+
 void TestBoundedCaptureAndOwnerStorage() {
     DecoderOwnershipTracker tracker;tracker.Reset(1);
     std::uint64_t first_capture=0;
@@ -542,12 +700,19 @@ int main() {
     TestDelayedDecodedEvidenceUsesCompletedLifetimeWindow();
     TestProducerSequenceOwnsCompletionBoundaryAndAddressReuse();
     TestCompletedConflictDoesNotPoisonLaterCapture();
+    TestProducerSequenceSeparatesStillActiveReusedDecoder();
+    TestInvalidatedLatestLifetimeDoesNotFallBackToOlderReader();
+    TestDecodedRangeAcrossReusedDecoderRemainsAmbiguous();
+    TestEqualProducerBeginsRemainAmbiguous();
     TestAbortLossEpochAndTime();
     TestElapsedTimeNeverRejectsOwnershipEvidence();
     TestBlankIdOutgoingAndSuccessorUseLifecycleStages();
     TestReadyClockSkewCannotRejectLifecycle();
     TestCurrentItemChangeReconsidersOnlyUniqueAmbiguousSuccessor();
     TestExactDecoderIdentityResolvesSameCodecConflict();
+    TestExactCompletedSourceDoesNotRequireDecodedOutput();
+    TestExactCompleteFlacCanReplaceCleanRestartChain();
+    TestExactRestartTransferRejectsUnsafePredecessors();
     TestBoundedCaptureAndOwnerStorage();
     TestBoundedPlaybackStorage();
 }

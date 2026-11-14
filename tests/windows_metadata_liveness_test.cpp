@@ -10,6 +10,9 @@ void operator delete(void* p,std::size_t) noexcept {if(p)HeapFree(GetProcessHeap
 namespace {
 HANDLE blocked=nullptr,release_enrichment=nullptr,refresh_blocked=nullptr,release_refresh=nullptr;
 std::atomic<unsigned> polls{0},enrichments{0};
+std::atomic<std::uint64_t> artwork_revision{0};
+bool exact_uri_test=false;
+HANDLE second_enrichment_started=nullptr;
 int Post(int,history::Task* task){
  ++polls;task->execute(task);task->base.release(&task->base);
  // Simulate the renderer's bounded cached-state reply to each native poll.
@@ -25,13 +28,94 @@ namespace history {
 void EnrichStoredMetadata(RichMetadata& metadata){
  const auto pass=enrichments.fetch_add(1);
  if(pass==0){SetEvent(blocked);WaitForSingleObject(release_enrichment,10000);}
+ if(exact_uri_test){
+  if(pass==1)SetEvent(second_enrichment_started);
+  metadata.fields["COMMENT"]=metadata.uri;
+  metadata.fields["DATE"]="2024";
+  return;
+ }
  if(pass==2){SetEvent(refresh_blocked);WaitForSingleObject(release_refresh,10000);}
  metadata.fields["COMMENT"]="slow enrichment";
 }
+std::uint64_t AlbumArtworkRevision() noexcept {return artwork_revision.load();}
 bool CacheAlbumArtwork(const std::string&,const std::string&){return false;}
 bool GetAlbumArtwork(const std::string&,std::vector<uint8_t>&,std::string&){return false;}
 }
-int main(){
+namespace {
+const std::string uri_a="spotify:track:0000000000000000000001",uri_b="spotify:track:0000000000000000000002";
+history::Media ExactMedia(const std::string& uri){
+ history::Media media;media.title=L"Song";media.artist=L"Artist";media.album=L"Album";media.duration=200;media.spotify_uri=uri;return media;
+}
+history::RichMetadata Seed(const std::string& uri){
+ history::RichMetadata metadata;metadata.title="Song";metadata.artist="Artist";metadata.album="Album";
+ metadata.duration=200;metadata.uri=uri;metadata.fields["DATE"]="2025";metadata.fields["COMMENT"]=uri;return metadata;
+}
+std::string Tag(const std::string& uri,const std::string& name){
+ history::Tags tags;history::EnrichTags(ExactMedia(uri),tags);
+ for(const auto& field:tags.fields)if(field.first==name)return field.second;
+ return {};
+}
+void WaitTag(const std::string& uri,const std::string& name,const std::string& value){
+ const auto deadline=GetTickCount64()+5000;
+ while(Tag(uri,name)!=value){assert(GetTickCount64()<deadline);Sleep(5);}
+}
+void SendSparse(const std::string& uri,const wchar_t* year){
+ auto text=L"FLOGGFY_METADATA_V1:v=1&title=Song&artist=Artist&album=Album&duration=200&uri="+
+  std::wstring(uri.begin(),uri.end())+L"&DATE="+year;
+ history::String value{text.data(),text.size(),nullptr};assert(history::Enqueue(&value));
+}
+void CreateBarriers(){
+ exact_uri_test=true;blocked=CreateEventW(nullptr,TRUE,FALSE,nullptr);release_enrichment=CreateEventW(nullptr,TRUE,FALSE,nullptr);
+ second_enrichment_started=CreateEventW(nullptr,TRUE,FALSE,nullptr);assert(blocked&&release_enrichment&&second_enrichment_started);
+}
+void StopEnrichment(){
+ history::enrichment_running=false;SetEvent(history::enrichment_event);
+ assert(WaitForSingleObject(history::enrichment_thread,5000)==WAIT_OBJECT_0);
+}
+void SparseUriRefreshKeepsOwnFields(){
+ CreateBarriers();history::cache.Put(Seed(uri_a));history::cache.Put(Seed(uri_b));
+ history::message_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);history::metadata_running=true;
+ HANDLE worker=CreateThread(nullptr,0,history::MetadataWorker,nullptr,0,nullptr);assert(worker);
+ SendSparse(uri_a,L"2026");assert(WaitForSingleObject(blocked,5000)==WAIT_OBJECT_0);
+ WaitTag(uri_a,"DATE","2026");
+ assert(Tag(uri_a,"COMMENT")==uri_a&&"sparse exact-URI refresh must preserve its own enrichment");
+ SendSparse(uri_b,L"2027");WaitTag(uri_b,"DATE","2027");
+ assert(Tag(uri_b,"COMMENT")==uri_b);
+ history::Media ambiguous=ExactMedia({});history::Tags tags;history::EnrichTags(ambiguous,tags);
+ assert(tags.fields.empty()&&"label-only lookup must remain ambiguous");
+ history::metadata_running=false;SetEvent(history::message_event);assert(WaitForSingleObject(worker,5000)==WAIT_OBJECT_0);
+ SetEvent(release_enrichment);StopEnrichment();CloseHandle(worker);
+}
+void DelayedUriEnrichmentKeepsNewerLiveFields(){
+ CreateBarriers();auto first=Seed(uri_a),second=Seed(uri_b);first.fields.erase("COMMENT");second.fields.erase("COMMENT");
+ history::cache.Put(first);history::cache.Put(second);
+ assert(history::StartEnrichmentWorker());
+ history::QueueEnrichment(first,history::GetSettings().generation);
+ assert(WaitForSingleObject(blocked,5000)==WAIT_OBJECT_0);
+ // A newer live refresh arrives while the actual storage boundary is blocked.
+ auto live=first;live.fields["DATE"]="2026";live.fields["TRACKNUMBER"]="7";
+ {history::ExclusiveSrw guard(history::cache_lock);history::cache.Put(live);}
+ history::QueueEnrichment(second,history::GetSettings().generation);SetEvent(release_enrichment);
+ assert(WaitForSingleObject(second_enrichment_started,5000)==WAIT_OBJECT_0);StopEnrichment();
+ assert(Tag(uri_a,"COMMENT")==uri_a&&"delayed enrichment must commit by exact URI despite ambiguous labels");
+ assert(Tag(uri_b,"COMMENT")==uri_b&&"enrichment must never cross URI ownership");
+ assert(Tag(uri_a,"DATE")=="2026"&&Tag(uri_a,"TRACKNUMBER")=="7");
+}
+}
+int main(int argc,char** argv){
+ if(argc>1){
+  if(!strcmp(argv[1],"--artwork-revision")){
+   const auto before=history::MetadataRevision();
+   // The artwork cache publishes its revision before the metadata worker can
+   // reacquire cache_lock and report the enrichment completion.
+   artwork_revision.fetch_add(1);
+   assert(history::MetadataRevision()>before&&"publication freshness must observe artwork immediately");
+  }
+  else if(!strcmp(argv[1],"--ambiguous-refresh"))SparseUriRefreshKeepsOwnFields();
+  else if(!strcmp(argv[1],"--ambiguous-delayed"))DelayedUriEnrichmentKeepsNewerLiveFields();
+  else assert(false);
+  puts("PASS: exact-URI worker enrichment preserves sparse and newer live metadata");return 0;
+ }
  refresh_blocked=CreateEventW(nullptr,TRUE,FALSE,nullptr);release_refresh=CreateEventW(nullptr,TRUE,FALSE,nullptr);
  blocked=CreateEventW(nullptr,TRUE,FALSE,nullptr);release_enrichment=CreateEventW(nullptr,TRUE,FALSE,nullptr);assert(blocked&&release_enrichment);
  history::message_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);history::post_task=Post;

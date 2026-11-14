@@ -1,9 +1,54 @@
 #pragma once
 #include "library_layout.h"
 #include "recording_file.h"
+#include "recording_memory.h"
+#include <limits>
 #include <string>
 #include <vector>
 namespace history {
+using RecordingMemoryPermit=bool(*)(void*,size_t incremental_peak);
+// A publication installs the root callback; nested scopes add their currently
+// retained transaction buffers. Callback reservations must only grow until the
+// outer operation returns. Denial remains visible through all enclosing scopes.
+class RecordingReadMemoryScope {
+    inline static thread_local RecordingReadMemoryScope* current_=nullptr;
+    RecordingReadMemoryScope* previous_=nullptr;
+    RecordingMemoryPermit permit_=nullptr;void* context_=nullptr;
+    size_t retained_=0;bool denied_=false;
+    void Deny() noexcept {for(auto* scope=this;scope;scope=scope->previous_)scope->denied_=true;}
+public:
+    explicit RecordingReadMemoryScope(RecordingMemoryPermit permit=nullptr,void* context=nullptr) noexcept
+        :previous_(current_),permit_(permit),context_(context){current_=this;}
+    ~RecordingReadMemoryScope(){current_=previous_;}
+    RecordingReadMemoryScope(const RecordingReadMemoryScope&)=delete;
+    RecordingReadMemoryScope& operator=(const RecordingReadMemoryScope&)=delete;
+    bool Request(size_t peak) noexcept {
+        if(peak>std::numeric_limits<size_t>::max()-retained_){Deny();return false;}
+        const auto total=retained_+peak;bool allowed=false;
+        try {allowed=permit_?permit_(context_,total):!previous_||previous_->Request(total);}
+        catch(...) {allowed=false;}
+        if(!allowed)Deny();
+        return allowed;
+    }
+    void SetRetainedBytes(size_t bytes) noexcept {retained_=bytes;}
+    bool Denied() const noexcept {return denied_;}
+    static bool AdmitCurrent(size_t bytes) noexcept {return !current_||current_->Request(bytes);}
+    static bool HasPermit() noexcept {
+        for(auto* scope=current_;scope;scope=scope->previous_)if(scope->permit_)return true;
+        return false;
+    }
+};
+inline size_t RecordingMetadataMemoryUsage(const RecordingFile& file) noexcept {
+    size_t bytes=sizeof(file)+file.tags.cover.capacity()+file.tags.mime.capacity()+
+        file.tags.fields.capacity()*sizeof(file.tags.fields[0])+file.picture_comments.capacity()*sizeof(std::string)+
+        file.artworks.capacity()*sizeof(RecordingArtwork)+file.artwork.mime.capacity();
+    for(const auto& field:file.tags.fields)bytes+=field.first.capacity()+field.second.capacity();
+    for(const auto& comment:file.picture_comments)bytes+=comment.capacity();
+    for(const auto& artwork:file.artworks)bytes+=artwork.mime.capacity();
+    return bytes;
+}
+// Header-only preflight against the held object; restores its position to zero.
+bool PlanLockedRecordingMemory(void* locked_file,RecordingMemoryPlan& plan);
 // Complete container and supported codec-header validation, not independent
 // audio decoding. A header alone never counts as a saved song.
 enum class RecordingRead { ValidComplete, Incomplete, InvalidContainer, ReadError };

@@ -259,7 +259,8 @@ bool MakeOwnedMp3(const std::uint8_t* source,std::size_t size,const Tags& tags,
         }
         if(frames.size()>0x0fffffffu||info.audio_size>kFileLimit-10-frames.size())
             return Fail(error,"MP3 output exceeds limit");
-        std::vector<std::uint8_t> result={'I','D','3',4,0,0};Syncsafe(result,frames.size());
+        std::vector<std::uint8_t> result;result.reserve(10+frames.size()+info.audio_size);
+        result={'I','D','3',4,0,0};Syncsafe(result,frames.size());
         result.insert(result.end(),frames.begin(),frames.end());
         result.insert(result.end(),source+info.audio_offset,source+info.audio_offset+info.audio_size);
         out.swap(result);error.clear();return true;
