@@ -6,7 +6,7 @@
 
 int main() {
     using namespace history;
-    MatcherSnapshot snapshot;snapshot.snapshot_id=1;snapshot.capture_id=7;
+    MatcherSnapshot snapshot;snapshot.inventory_evaluated=true;snapshot.snapshot_id=1;snapshot.capture_id=7;
     auto* candidate=snapshot.AddCandidate(12);assert(candidate);
     candidate->usable=true;candidate->source_duration_ms=0;
     candidate->first_seen_delta_ms=-1200;candidate->start_delta_ms=0;
@@ -67,6 +67,25 @@ int main() {
     const auto omitted_signature=MatcherSnapshotSignature(snapshot);
     snapshot.competitors[15].complete=true;
     assert(MatcherSnapshotSignature(snapshot)!=omitted_signature);
+    const auto unassociated_signature=MatcherSnapshotSignature(snapshot);
+    snapshot.association_metadata_id=70;
+    assert(MatcherSnapshotSignature(snapshot)!=unassociated_signature);
+    const auto associated=SerializeMatcherSnapshot(snapshot);
+    bool association_found=false;
+    for(const auto& part:associated.records)if(part.find("matcher_association")!=std::string::npos) {
+        association_found=true;assert(part.find("metadata=70 retained=0")!=std::string::npos);
+    }
+    assert(association_found);
+    const auto inherited_signature=MatcherSnapshotSignature(snapshot);
+    snapshot.association_retained=true;
+    assert(MatcherSnapshotSignature(snapshot)!=inherited_signature);
+    MatcherSnapshot early;early.capture_id=1;early.abort_reason=3;
+    early.FinalizeSnapshot(MatcherReason::CaptureAborted);
+    const auto early_serialized=SerializeMatcherSnapshot(early);
+    assert(early_serialized.records[0].find("metadata_total=unknown")!=std::string::npos);
+    assert(early_serialized.records[0].find("inventory_evaluated=0")!=std::string::npos);
+    assert(early_serialized.records[0].find("abort_reason=3")!=std::string::npos);
+    assert(early_serialized.records[1].find("reason=capture-aborted")!=std::string::npos);
     MatcherDiagnosticBudget budget(1024);
     assert(budget.Admit(1000,3).admitted);
     auto exhausted=budget.Admit(25,2);assert(!exhausted.admitted&&exhausted.emit_exhaustion);

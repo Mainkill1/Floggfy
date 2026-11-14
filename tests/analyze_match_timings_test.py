@@ -47,6 +47,33 @@ class MatcherTimingTests(unittest.TestCase):
             self.assertEqual(json.loads(result.stdout)["weak"]["duration_ms"]["max"], 0)
             self.assertEqual(ini.read_bytes(), before)
 
+    def test_rejected_and_waiting_reasons_keep_delta_statistics_separate(self):
+        report = ANALYZER.analyze_lines([
+            "matcher_candidate epoch=1 capture=1 metadata=2 decision=duration-mismatch path=weak timing_evaluated=1 duration_evaluated=1 first_seen_delta_ms=-40 start_delta_ms=-20 duration_delta_ms=300\n",
+            "matcher_candidate epoch=1 capture=1 metadata=2 decision=duration-mismatch path=weak timing_evaluated=1 duration_evaluated=1 first_seen_delta_ms=-40 start_delta_ms=-20 duration_delta_ms=300\n",
+            "matcher_candidate epoch=1 capture=1 metadata=2 decision=waiting-native-identity path=native timing_evaluated=0 duration_evaluated=0 first_seen_delta_ms=-40 start_delta_ms=-20 duration_delta_ms=unknown\n",
+            "matcher capture=3 metadata=4 decision=outside-start-window first_seen_delta_ms=-12000 start_delta_ms=-11000 duration_delta_ms=10\n",
+            "matcher_candidate capture=3 metadata=4 decision=not-evaluated path=weak duration_delta_ms=0\n",
+        ])
+        self.assertIn("duration-mismatch", report.get("rejected", {}))
+        rejected = report["rejected"]["duration-mismatch"]["weak"]
+        self.assertEqual(rejected["observations"], 1)
+        self.assertEqual(rejected["duration_ms"]["median"], 300)
+        self.assertEqual(rejected["duration_evaluated_count"], 1)
+        self.assertEqual(report["waiting"]["waiting-native-identity"]["native"]["duration_ms"]["count"], 0)
+        self.assertEqual(report["rejected"]["outside-start-window"]["unknown"]["start_ms"]["max"], 11000)
+        self.assertIn("not-evaluated", report["unevaluated"])
+        self.assertEqual(report["exact"]["matches"], 0)
+        self.assertEqual(report["weak"]["matches"], 0)
+
+    def test_cli_namespaces_session_ids_per_input_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [Path(directory) / "first.log", Path(directory) / "second.log"]
+            for path in paths:
+                path.write_text("matcher capture=1 metadata=1 decision=matched-native-id first_seen_delta_ms=10 start_delta_ms=0 duration_delta_ms=0\n")
+            result = subprocess.run([sys.executable, str(SPEC.origin), "--json", *map(str, paths)], check=True, capture_output=True, text=True)
+            self.assertEqual(json.loads(result.stdout)["exact"]["matches"], 2)
+
     def test_unknown_nonfinite_missing_malformed_and_oversize_records(self):
         report = ANALYZER.analyze_lines([
             "matcher capture=1 metadata=1 decision=matched-native-id first_seen_delta_ms=nan start_delta_ms=inf duration_delta_ms=wat\n",

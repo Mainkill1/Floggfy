@@ -14,7 +14,7 @@ enum class MatcherReason {
     NotEvaluated,Pending,MetadataAssigned,MetadataUnusable,OutsideStartWindow,
     DurationMismatch,WaitingNativeIdentity,RetiredStreamEvidence,RetiredMetadataEvidence,
     AmbiguousStreams,AmbiguousMetadata,WaitingDuration,OwnershipExcluded,BindingPending,
-    MatchedNative,MatchedWeak,RetiredCompleteUnmatched,SavedUnmatched,SaveUnmatchedDisabled,RetiredInvalid
+    MatchedNative,MatchedWeak,RetiredCompleteUnmatched,SavedUnmatched,SaveUnmatchedDisabled,RetiredInvalid,CaptureAborted
 };
 inline const char* MatcherReasonName(MatcherReason reason) noexcept {
     switch(reason) {
@@ -39,6 +39,7 @@ inline const char* MatcherReasonName(MatcherReason reason) noexcept {
         FLOGGFY_MATCHER_REASON(SavedUnmatched,"saved-unmatched");
         FLOGGFY_MATCHER_REASON(SaveUnmatchedDisabled,"save-unmatched-disabled");
         FLOGGFY_MATCHER_REASON(RetiredInvalid,"retired-invalid");
+        FLOGGFY_MATCHER_REASON(CaptureAborted,"capture-aborted");
 #undef FLOGGFY_MATCHER_REASON
     }
     return "unknown";
@@ -69,10 +70,13 @@ struct MatcherSnapshot {
     uint64_t snapshot_id=0,capture_id=0,epoch=0;
     MatcherPath path=MatcherPath::Unknown;
     std::optional<unsigned> ownership_state,ownership_reason;
+    std::optional<uint64_t> association_metadata_id;
+    bool association_retained=false;
     std::optional<uint64_t> queue_dropped;
     std::optional<double> source_duration_ms,end_ms;
     MatcherReason terminal=MatcherReason::NotEvaluated;
-    bool complete=false;
+    bool complete=false,inventory_evaluated=false;
+    std::optional<unsigned> abort_reason;
     uint64_t source_bytes=0,subsequent_starts=0,retirement_threshold=0;
     unsigned time_offset_tolerance_ms=0,duration_tolerance_ms=0;
     std::optional<uint64_t> known_pruned_metadata;
@@ -124,6 +128,9 @@ inline SerializedMatcherSnapshot Serialize(const MatcherSnapshot& snapshot,std::
     // Terminal evidence has priority over a long candidate inventory.
     if(snapshot.terminal!=MatcherReason::NotEvaluated)
         bodies.push_back(std::string("matcher_terminal reason=")+MatcherReasonName(snapshot.terminal)+common);
+    if(snapshot.association_metadata_id)
+        bodies.push_back("matcher_association"+common+" metadata="+std::to_string(*snapshot.association_metadata_id)+
+            " retained="+std::to_string(snapshot.association_retained)+" path="+MatcherPathName(snapshot.path));
     bodies.push_back("matcher_settings"+common+" complete="+std::to_string(snapshot.complete)+
         " source_bytes="+std::to_string(snapshot.source_bytes)+" subsequent_starts="+std::to_string(snapshot.subsequent_starts)+
         " retirement_threshold="+std::to_string(snapshot.retirement_threshold)+
@@ -162,12 +169,13 @@ inline SerializedMatcherSnapshot Serialize(const MatcherSnapshot& snapshot,std::
     result.truncated=result.omitted_records!=0;
     if(limit<summary_reserve){result.omitted_records=bodies.size()+1;result.truncated=true;return result;}
     const auto parts=selected+1;
-    std::string summary="matcher_snapshot metadata_total="+std::to_string(snapshot.metadata_total)+
+    std::string summary="matcher_snapshot metadata_total="+(snapshot.inventory_evaluated?std::to_string(snapshot.metadata_total):"unknown")+
         " kind=summary metadata_kept="+std::to_string(snapshot.metadata_count)+
-        " metadata_omitted="+std::to_string(snapshot.metadata_total-snapshot.metadata_count)+
-        " competitors_total="+std::to_string(snapshot.competitor_total)+
+        " metadata_omitted="+(snapshot.inventory_evaluated?std::to_string(snapshot.metadata_total-snapshot.metadata_count):"unknown")+
+        " competitors_total="+(snapshot.inventory_evaluated?std::to_string(snapshot.competitor_total):"unknown")+
         " competitors_kept="+std::to_string(snapshot.competitor_count)+
-        " competitors_omitted="+std::to_string(snapshot.competitor_total-snapshot.competitor_count)+common+
+        " competitors_omitted="+(snapshot.inventory_evaluated?std::to_string(snapshot.competitor_total-snapshot.competitor_count):"unknown")+common+
+        " inventory_evaluated="+std::to_string(snapshot.inventory_evaluated)+" abort_reason="+IntegerNumber(snapshot.abort_reason)+
         " path="+std::string(MatcherPathName(snapshot.path))+
         " source_duration_ms="+Number(snapshot.source_duration_ms)+" end_ms="+Number(snapshot.end_ms)+
         " ownership_state="+IntegerNumber(snapshot.ownership_state)+" ownership_reason="+IntegerNumber(snapshot.ownership_reason)+
@@ -207,7 +215,9 @@ inline uint64_t MatcherSnapshotSignature(const MatcherSnapshot& snapshot) noexce
     matcher_diagnostic_detail::Fingerprint hash;
     hash.Add(snapshot.capture_id);hash.Add(snapshot.epoch);hash.Add(snapshot.path);
     hash.Add(snapshot.ownership_state);hash.Add(snapshot.ownership_reason);hash.Add(snapshot.queue_dropped);
+    hash.Add(snapshot.association_metadata_id);hash.Add(snapshot.association_retained);
     hash.Add(snapshot.source_duration_ms);hash.Add(snapshot.end_ms);hash.Add(snapshot.complete);
+    hash.Add(snapshot.inventory_evaluated);hash.Add(snapshot.abort_reason);
     hash.Add(snapshot.source_bytes);hash.Add(snapshot.subsequent_starts);hash.Add(snapshot.retirement_threshold);
     hash.Add(snapshot.time_offset_tolerance_ms);hash.Add(snapshot.duration_tolerance_ms);
     hash.Add(snapshot.known_pruned_metadata);hash.Add(snapshot.prior_history);

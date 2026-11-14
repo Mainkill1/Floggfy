@@ -2,6 +2,13 @@
 set -euo pipefail
 cd -- "$(dirname -- "$0")"
 mkdir -p build
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/retry_schedule_test.cpp -o build/retry-schedule-test
+build/retry-schedule-test
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/matcher_diagnostics_test.cpp -o build/matcher-diagnostics-test
+build/matcher-diagnostics-test
+python3 tests/analyze_match_timings_test.py
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/tag_memory_plan_test.cpp -o build/tag-memory-plan-test
+build/tag-memory-plan-test
 gcc -std=c11 -O2 -Wall -Wextra -c native/vendor/minimp4/minimp4.c -o build/minimp4-native-test.o
 gcc -std=c11 -O2 -Wall -Wextra -c native/vorbis_headers_stb.c -o build/vorbis-headers-stb-test.o
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/hook_init_state_test.cpp -o build/hook-init-state-test
