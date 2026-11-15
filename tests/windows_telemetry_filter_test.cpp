@@ -131,6 +131,8 @@ int main(int argc,char** argv){
   assert(text.find("POST")!=text.npos&&text.find("https://spclient.wg.spotify.com/gabo-receiver-service/v3/events")!=text.npos);
   assert(text.find("secret")==text.npos&&text.find("name:")==text.npos&&text.find("\"a\": [")!=text.npos);
   assert(text.find("application/json")!=text.npos&&text.find("standalone")!=text.npos);
+  assert(text.find("POST https://spclient.wg.spotify.com/gabo-receiver-service/v3/events\n")!=text.npos);
+  assert(text.find("Capture: complete")!=text.npos&&text.find("Truncated: no")==text.npos&&text.find("Element 0:")==text.npos);
 
   // Allowed routes never enter post-data access, even with dumping enabled.
   Reset();url=L"https://spclient.wg.spotify.com/metadata/4/track/1";SetLastError(42);
@@ -155,8 +157,8 @@ int main(int argc,char** argv){
   assert(ReadLog(log).find("content encoding not decoded")!=std::string::npos&&ReadLog(log).find("e30=")!=std::string::npos);
   // The body cap, file omission and excluded multipart data remain explicit.
   payload.assign(256*1024+20,'x');with_file=true;excluded=true;capture();privacy::DrainStatus();with_file=false;excluded=false;
-  auto limited=ReadLog(log);assert(limited.find("Captured bytes: 262144")!=limited.npos&&limited.find("Truncated: yes")!=limited.npos);
-  assert(limited.find("File elements omitted: 1")!=limited.npos&&limited.find("Excluded elements: yes")!=limited.npos&&file_reads==0);
+  auto limited=ReadLog(log);assert(limited.find("Size: 262,144 B captured")!=limited.npos&&limited.find("body truncated (limit 262,144 B)")!=limited.npos);
+  assert(limited.find("1 file element(s) omitted")!=limited.npos&&limited.find("CEF excluded body elements")!=limited.npos&&file_reads==0);
   assert(post.refs==1&&element.refs==1&&file_element.refs==1);
   // Every cancellation entrypoint copies once; the custom cancel callback does not duplicate it.
   privacy::ObserveClient(&client.api);auto h=reinterpret_cast<GetHandler>(client.api.methods[17])(&client.api);
@@ -173,7 +175,7 @@ int main(int argc,char** argv){
   const auto hooks=ReadLog(log);assert(hooks.find("Hook: resource\n")!=hooks.npos&&hooks.find("Hook: preload\n")!=hooks.npos&&hooks.find("Hook: resource-default\n")!=hooks.npos);
   // Capability loss records unsupported capture rather than reading invalid callbacks.
   payload={'{','}'};element.api.methods[7]=nullptr;const auto prior_reads=body_reads;capture();privacy::DrainStatus();
-  assert(body_reads==prior_reads&&ReadLog(log).find("Unsupported fields/elements: yes")!=std::string::npos);
+  assert(body_reads==prior_reads&&ReadLog(log).find("unsupported fields/elements")!=std::string::npos);
   element.api.methods[7]=reinterpret_cast<void*>(Bytes);
   // A valid JSON prefix plus an unsupported element is not a complete JSON body.
   with_file=true;with_unknown=true;payload={'{','}'};capture();privacy::DrainStatus();with_file=false;with_unknown=false;
@@ -182,7 +184,7 @@ int main(int argc,char** argv){
   // CEF GetElements builds a full temporary vector; skip it if count exceeds our cap.
   declared_elements=65;const auto lists_before=element_lists;const auto reads_before=body_reads;capture();privacy::DrainStatus();declared_elements=0;
   assert(element_lists==lists_before&&body_reads==reads_before&&post.refs==1);
-  assert(ReadLog(log).find("Elements copied/declared: 0/65")!=std::string::npos);
+  assert(ReadLog(log).find("Parts: 0/65 inspected")!=std::string::npos);
   // A full queue drops before reading another body; draining is bounded to two.
   const auto before_queue=body_reads;
   for(unsigned i=0;i<9;++i)capture();

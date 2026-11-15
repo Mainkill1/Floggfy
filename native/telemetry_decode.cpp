@@ -1,8 +1,10 @@
 #include "telemetry_decode.h"
+#include "telemetry_schema.h"
 #include <cstdint>
 #include <cstdio>
 #include <limits>
 #include <utility>
+#include <vector>
 extern "C" {
 #include "vendor/puff/puff.h"
 }
@@ -53,10 +55,10 @@ bool InflateGzip(std::string_view input,std::string& output,const char*& detail)
  if(Crc32(output)!=Little32(input,trailer)){output.clear();detail="gzip-checksum-mismatch";return false;}
  return true;
 }
-bool Text(std::string_view input){
+bool Text(std::string_view input,bool printable=true){
  for(size_t i=0;i<input.size();){
   unsigned c=Byte(input[i++]);
-  if(c<128){if(c<32&&c!='\n'&&c!='\r'&&c!='\t')return false;if(c==127)return false;continue;}
+  if(c<128){if(printable&&((c<32&&c!='\n'&&c!='\r'&&c!='\t')||c==127))return false;continue;}
   unsigned value=0,count=0,minimum=0;
   if(c>=0xc2&&c<=0xdf){value=c&31;count=1;minimum=0x80;}
   else if(c>=0xe0&&c<=0xef){value=c&15;count=2;minimum=0x800;}
@@ -77,6 +79,59 @@ bool Varint(std::string_view input,size_t& position,uint64_t& value){
   value|=uint64_t(c&127)<<(i*7);if(!(c&128))return true;
  }return false;
 }
+struct WireField {unsigned number=0,wire=0;uint64_t value=0;std::string_view bytes,raw;};
+bool ReadFields(std::string_view input,std::vector<WireField>& fields){
+ size_t position=0;
+ while(position<input.size()){
+  if(fields.size()==kNodes)return false;
+  const auto start=position;uint64_t tag=0;
+  if(!Varint(input,position,tag)||!(tag>>3)||(tag>>3)>0x1fffffffu)return false;
+  WireField field;field.number=unsigned(tag>>3);field.wire=unsigned(tag&7);
+  if(field.wire==0){if(!Varint(input,position,field.value))return false;}
+  else if(field.wire==1||field.wire==5){
+   const size_t width=field.wire==1?8:4;if(width>input.size()-position)return false;
+   for(size_t i=0;i<width;++i)field.value|=uint64_t(Byte(input[position++]))<<(i*8);
+  }else if(field.wire==2){
+   uint64_t length=0;if(!Varint(input,position,length)||length>input.size()-position)return false;
+   field.bytes=input.substr(position,size_t(length));position+=size_t(length);
+  }else return false;
+  field.raw=input.substr(start,position-start);fields.push_back(field);
+ }
+ return true;
+}
+// Only select the audited envelope when its identifying nested layout matches.
+// Unknown extra fields are retained later, while unrelated protobuf stays generic.
+bool KnownEnvelope(std::string_view input){
+ std::vector<WireField> root;if(!ReadFields(input,root))return false;
+ size_t checked=root.size();unsigned events=0;
+ for(const auto& outer:root){
+  if(outer.number==2){if(outer.wire!=0||outer.value>1)return false;continue;}
+  if(outer.number!=1)continue;
+  if(outer.wire!=2)return false;
+  std::vector<WireField> event;if(!ReadFields(outer.bytes,event))return false;
+  checked+=event.size();if(checked>kNodes)return false;
+  bool name=false;unsigned fragments=0;
+  for(const auto& field:event){
+   if(field.number==2){if(field.wire!=2||field.bytes.empty()||!Text(field.bytes))return false;name=true;}
+   else if(field.number==3){
+    if(field.wire!=2)return false;
+    std::vector<WireField> fragment;if(!ReadFields(field.bytes,fragment))return false;
+    checked+=fragment.size();if(checked>kNodes)return false;
+    bool fragment_name=false;
+    for(const auto& part:fragment){
+     if(part.number==1){if(part.wire!=2||part.bytes.empty()||!Text(part.bytes))return false;fragment_name=true;}
+     else if(part.number==2&&part.wire!=2)return false;
+    }
+    if(!fragment_name)return false;
+    ++fragments;
+   }else if((field.number==4&&field.wire!=2)||(field.number==5&&field.wire!=0))return false;
+  }
+  if(!name||!fragments)return false;
+  ++events;
+ }
+ return events!=0;
+}
+
 class Protobuf {
  unsigned nodes=0;
  bool Add(std::string& out,std::string_view text){if(text.size()>kOutput-out.size()){detail="protobuf-output-limit";return false;}out+=text;return true;}
@@ -123,7 +178,7 @@ class Protobuf {
     const bool text=Text(bytes);if(text&&(!Add(out,",\"text\":")||!JsonString(out,bytes)))return false;
     bool nested=false;
     // Length-delimited data has no schema: a nested parse is only a possibility.
-    // Preserve bytes alongside it so the interpretation never loses information.
+    // Show the decoded form once; retain base64 only for opaque binary values.
     if(!text&&!bytes.empty()){
      const auto candidate=Byte(bytes[0])&7;
      if(candidate==0||candidate==1||candidate==2||candidate==5){
@@ -134,21 +189,129 @@ class Protobuf {
       detail=previous;
      }
     }
-    if((!text||nested)&&(!Add(out,",\"bytes_base64\":")||!Base64(out,bytes)))return false;
+    if(!text&&!nested){
+     if(!Add(out,",\"interpretation\":\"opaque binary; not readable UTF-8 or a recognized nested message\",\"bytes_base64\":")||!Base64(out,bytes))return false;
+    }
    }else {detail="protobuf-unsupported-wire-type";return false;}
    if(!Add(out,"}"))return false;
   }
   return Add(out,"]}");
  }
+ struct Group {const schema::Field* field;std::vector<std::string> values;};
+ static const schema::Field* Field(std::string_view message,unsigned number){
+  for(const auto& field:schema::fields)if(message==field.message&&number==field.number)return &field;
+  return nullptr;
+ }
+ template<size_t N> static const char* Alias(const schema::MessageAlias (&aliases)[N],std::string_view name){
+  for(const auto& alias:aliases)if(name==alias.event_type)return alias.message;
+  return nullptr;
+ }
+ static std::string_view SingleString(const std::vector<WireField>& fields,unsigned number){
+  std::string_view value;unsigned matches=0;
+  for(const auto& field:fields)if(field.number==number){if(field.wire!=2||!Text(field.bytes,false))return {};value=field.bytes;++matches;}
+  return matches==1?value:std::string_view{};
+ }
+ bool Limited()const{return std::string_view(detail).find("-limit")!=std::string_view::npos;}
+ bool Opaque(std::string_view bytes,std::string& out){return Add(out,"{\"bytes_base64\":")&&Base64(out,bytes)&&Add(out,"}");}
+ bool Payload(std::string_view bytes,const char* message,std::string& out,unsigned depth){
+  const auto previous=detail;const auto before=nodes;
+  if(message){if(NamedMessage(bytes,message,out,depth,{}))return true;if(Limited())return false;out.clear();nodes=before;detail=previous;}
+  std::string generic;
+  if(Message(bytes,generic,depth))return Add(out,"{\"schema\":\"unknown\",\"message\":")&&Add(out,generic)&&Add(out,"}");
+  if(Limited())return false;
+  nodes=before;detail=previous;return Opaque(bytes,out);
+ }
+ // Protobuf JSON uses strings for signed 64-bit values to preserve precision;
+ // int32 stays numeric and booleans retain their descriptor-defined semantics.
+ static std::string Number(uint64_t value,unsigned type){
+  if(type==schema::TYPE_BOOL)return value?"true":"false";
+  if(type==schema::TYPE_INT32){const auto low=uint32_t(value);return low<=0x7fffffffu?std::to_string(low):"-"+std::to_string(uint32_t(~low)+1u);}
+  const auto signed_value=value<=0x7fffffffffffffffull?std::to_string(value):"-"+std::to_string((~value)+1);
+  return "\""+signed_value+"\"";
+ }
+ enum class ValueStatus {Ready,Unknown,Failure};
+ ValueStatus Values(const WireField& wire,const schema::Field& field,const char* payload_message,
+                    bool fragment_data,std::string_view event,std::vector<std::string>& values,unsigned depth){
+  std::string value;
+  const bool numeric=field.type==schema::TYPE_INT32||field.type==schema::TYPE_INT64||field.type==schema::TYPE_BOOL;
+  if(numeric){
+   if(wire.wire==0)values.push_back(Number(wire.value,field.type));
+   else if(wire.wire==2&&field.repeated){
+    size_t position=0;const auto before=nodes;
+    while(position<wire.bytes.size()){
+     if(++nodes>kNodes){detail="protobuf-node-limit";return ValueStatus::Failure;}
+     uint64_t element=0;if(!Varint(wire.bytes,position,element)){nodes=before;return ValueStatus::Unknown;}
+     values.push_back(Number(element,field.type));
+    }
+   }else return ValueStatus::Unknown;
+   return ValueStatus::Ready;
+  }
+  if(wire.wire!=2)return ValueStatus::Unknown;
+  if(field.type==schema::TYPE_STRING){if(!Text(wire.bytes,false))return ValueStatus::Unknown;if(!JsonString(value,wire.bytes))return ValueStatus::Failure;}
+  else if(field.type==schema::TYPE_BYTES){
+   if(fragment_data){if(!Payload(wire.bytes,payload_message,value,depth+1))return ValueStatus::Failure;}
+   else if(!Opaque(wire.bytes,value))return ValueStatus::Failure; // Typed bytes are never guessed as nested messages.
+  }else if(field.type==schema::TYPE_MESSAGE){
+   if(!NamedMessage(wire.bytes,field.nested_message,value,depth+1,event))return ValueStatus::Failure;
+  }else return ValueStatus::Unknown;
+  values.push_back(std::move(value));return ValueStatus::Ready;
+ }
+ bool NamedMessage(std::string_view input,std::string_view message,std::string& out,unsigned depth,std::string_view event){
+  if(depth>kDepth){detail="protobuf-depth-limit";return false;}
+  std::vector<WireField> fields;if(!ReadFields(input,fields)){detail="protobuf-invalid-message";return false;}
+  if(fields.size()>kNodes-nodes){detail="protobuf-node-limit";return false;}nodes+=unsigned(fields.size());
+  if(message=="spotify.event_sender.proto.EventEnvelope")event=SingleString(fields,2);
+  const bool fragment=message=="spotify.event_sender.proto.EventEnvelope.EventFragment";
+  const char* payload_message=nullptr;
+  if(fragment){
+   const auto name=SingleString(fields,1);
+   payload_message=name==schema::payload_fragment?Alias(schema::event_aliases,event):Alias(schema::context_aliases,name);
+  }
+  std::vector<Group> groups;std::string unknown;size_t stored=0;
+  for(const auto& wire:fields){
+   const auto field=Field(message,wire.number);std::vector<std::string> values;
+   const auto status=field?Values(wire,*field,payload_message,fragment&&wire.number==2,event,values,depth):ValueStatus::Unknown;
+   if(status==ValueStatus::Failure)return false;
+   if(status==ValueStatus::Unknown){unknown+=wire.raw;continue;}
+   size_t index=0;for(;index<groups.size();++index)if(groups[index].field==field)break;
+   if(index==groups.size())groups.push_back({field,{}});
+   for(auto& value:values){if(value.size()>kOutput-stored){detail="protobuf-output-limit";return false;}stored+=value.size();groups[index].values.push_back(std::move(value));}
+  }
+  if(!Add(out,"{"))return false;
+  bool first=true;
+  if(message==schema::request_message){if(!Add(out,"\"schema\":")||!JsonString(out,message))return false;first=false;}
+  for(const auto& group:groups){
+   if(!first&&!Add(out,","))return false;
+   first=false;
+   if(!JsonString(out,group.field->name)||!Add(out,":"))return false;
+   const bool array=group.field->repeated||group.values.size()!=1;
+   if(array&&!Add(out,"["))return false;
+   for(size_t i=0;i<group.values.size();++i){if(i&&!Add(out,","))return false;if(!Add(out,group.values[i]))return false;}
+   if(array&&!Add(out,"]"))return false;
+  }
+  if(!unknown.empty()){
+   std::string generic;if(!Message(unknown,generic,depth+1))return false;
+   if(!first&&!Add(out,","))return false;
+   if(!Add(out,"\"_unknown_fields\":")||!Add(out,generic))return false;
+  }
+  return Add(out,"}");
+ }
+
 public:
+ bool named=false;
  const char* detail="protobuf-invalid-message";
- bool Decode(std::string_view input,std::string& output){
+ bool Decode(std::string_view input,std::string& output,bool gabo_envelope){
+  if(gabo_envelope&&KnownEnvelope(input)){
+   if(NamedMessage(input,schema::request_message,output,0,{})){named=true;return true;}
+   if(Limited())return false;
+   output.clear();nodes=0;detail="protobuf-invalid-message";
+  }
   std::string message;if(!Message(input,message,0))return false;
   return Add(output,"{\"format\":\"protobuf wire fields; schema unknown\",\"message\":")&&Add(output,message)&&Add(output,"}");
  }
 };
 }
-PayloadDecode DecodeTelemetryPayload(std::string_view body,std::string_view content_type,std::string_view content_encoding){
+PayloadDecode DecodeTelemetryPayload(std::string_view body,std::string_view content_type,std::string_view content_encoding,bool gabo_envelope){
  PayloadDecode result;
  if(body.size()>kExpanded){result.detail="input-limit";return result;}
  const auto type=LowerTrim(content_type),encoding=LowerTrim(content_encoding);
@@ -159,8 +322,8 @@ PayloadDecode DecodeTelemetryPayload(std::string_view body,std::string_view cont
  if(gzip){if(!InflateGzip(body,expanded,result.detail))return result;body=expanded;}
  result.decoded_bytes=body.size();
  if(protobuf){
-  Protobuf parser;if(!parser.Decode(body,result.text)){result.text.clear();result.detail=parser.detail;return result;}
-  result.protobuf=true;result.detail=gzip?"gzip+protobuf-wire-fields":"protobuf-wire-fields";
+  Protobuf parser;if(!parser.Decode(body,result.text,gabo_envelope)){result.text.clear();result.detail=parser.detail;return result;}
+  result.protobuf=true;result.detail=parser.named?(gzip?"gzip+protobuf-schema":"protobuf-schema"):(gzip?"gzip+protobuf-wire-fields":"protobuf-wire-fields");
  }else{result.text.assign(body);result.detail="gzip-decoded";}
  result.decoded=true;return result;
 }

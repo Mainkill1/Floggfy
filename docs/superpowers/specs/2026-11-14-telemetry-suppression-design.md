@@ -62,3 +62,13 @@ gzip validation/decompression using vendored inflate-only puff and generic wire
 field JSON rendering. Preserve unknown field numbers and explicit inference;
 no schema guesses, live decoding service or extra runtime DLL. Tests must replay
 the exact captured format plus corruption/expansion limits before installation.
+
+The user requested removal of redundant base64, compact request headers, and
+schema-aware construction of payload data. Most base64 volume duplicated already
+decoded nested messages; retain base64 only for opaque values. Normal request
+headers omit false/zero diagnostics, with warnings preserved for incomplete input.
+Offline extraction of the installed client's FileDescriptorProto definitions
+provides verified envelope/event/context field names and types. Render recognized
+Gabo messages with those names and repeated arrays; retain unknown wire fields
+without guessing or dropping duplicate fragment names. No runtime binary scanning
+or protobuf runtime dependency is added.

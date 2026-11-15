@@ -88,3 +88,24 @@ DumpTelemetry=1. Live log validation found two valid decoded gzip/protobuf JSON
 entries (canary, sender stats/internal errors) and one readable three-record Sentry
 JSON envelope. All three captured requests were written, with zero truncations,
 unsupported fields, busy/queue drops or write failures at that observation.
+
+## Follow-up: named structures and compact headers
+
+Removed redundant base64 copies of decoded nested messages and compacted normal
+request headers while retaining incomplete-capture warnings. Extracted a small,
+verified descriptor field map from the installed Spotify 1.3.9.2055 DLL. Named
+decoding requires the Gabo route and a matching envelope; unknown fields/layouts
+retain a numbered fallback, while declared binary identifiers stay opaque.
+No runtime scanning or protobuf dependency was added.
+
+All five exact private captures passed production Windows FormatDump replay and
+JSON parsing. The largest formatted entry fell from 413,232 to 51,185 bytes.
+The focused telemetry suite passed, including packed/unpacked numeric fields,
+out-of-order names, duplicate fragments, unknown fields and decoding limits.
+Independent review verified all 59 schema fields and found no blocking issues.
+The DLL built successfully with only Windows imports. Installed the exact tested
+binary, archived the prior DLL/INI/log, and restarted Spotify. Two fresh Gabo
+requests decoded into named JSON: canary, statistics and internal-error events,
+including verified device context fields. The client remained responsive and all
+expected privacy attachment flags were active; coverage still reports partial.
+Main and remote remain unchanged.

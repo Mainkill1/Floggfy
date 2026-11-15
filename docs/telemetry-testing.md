@@ -59,11 +59,16 @@ Keep this branch local until those checks establish the actual supported paths.
 
 Set `DumpTelemetry=1` together with `BlockTelemetry=1`, then restart. The optional
 `Floggfy-telemetry.log` is written in Save Location. Each entry places its UTC time,
-method, destination, blocking rule, interception point, content type/encoding and
-body lengths above a readable payload. JSON is formatted for inspection. Gzip
+method and destination, blocking rule/hook, content type/encoding and captured/decoded
+byte sizes above the payload. Normal headers are compact; incomplete capture and
+decoding problems produce explicit warnings and relevant part details. JSON is formatted for inspection. Gzip
 bodies are decompressed and checked before formatting. Protobuf is rendered as
-JSON with numbered wire fields, readable strings and explicitly inferred nested
-messages; field names and integer units are not guessed. Unsupported, invalid or
+JSON using [verified Spotify message definitions](telemetry-schema-source.md) for
+recognized Gabo envelopes, observed event types and context fragments. Repeated
+fields are arrays. Unknown layouts retain numbered wire fields and explicitly
+inferred nested messages; their names and units are not guessed. Successful
+nested decoding is shown once, without a duplicate base64 copy. Opaque binary
+fields retain their bytes with an explicit label. Unsupported, invalid or
 incomplete data retains a labeled raw representation and a decoding reason.
 
 This captures future blocked application requests, not network packets or old

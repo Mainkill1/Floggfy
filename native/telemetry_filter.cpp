@@ -251,23 +251,45 @@ std::string Base64(const unsigned char* bytes,size_t size){
   if((i/3+1)%16==0)output+='\n';
  }return output;
 }
+std::string ByteSize(size_t value){
+ auto text=std::to_string(value);
+ for(size_t position=text.size();position>3;position-=3)text.insert(position-3,",");
+ return text+" B";
+}
 std::string FormatDump(const DumpRecord& record){
- std::string out="\n=== Blocked request "+std::to_string(record.id)+" | "+Stamp(record.utc)+" | pid="+std::to_string(GetCurrentProcessId())+" ===\n";
- out+="Session: "+Stamp(dump.started)+"\nMethod: "+Inline(record.method)+"\nDestination: "+Inline(record.url)+"\nRule: "+RuleName(record.rule)+"\nHook: "+record.hook;
- out+="\nContent-Type: "+Inline(record.content_type)+"\nContent-Encoding: "+Inline(record.encoding);
- out+="\nCaptured bytes: "+std::to_string(record.length)+" / limit 262144\nPost data: "+(record.has_post?std::string("yes"):std::string("none"));
- out+="\nTruncated: "+std::string(record.truncated?"yes":"no")+"\nMetadata truncated: "+(record.metadata_truncated?"yes":"no")+"\nExcluded elements: "+(record.excluded?"yes":"no")+"\nUnsupported fields/elements: "+(record.unsupported?"yes":"no");
- out+="\nFile elements omitted: "+std::to_string(record.file_elements)+"\nElements copied/declared: "+std::to_string(record.elements)+"/"+std::to_string(record.declared_elements)+"\n";
- for(size_t i=0;i<record.elements;++i){const auto& part=record.parts[i];out+="Element "+std::to_string(i)+": type="+(part.type==1?"bytes":part.type==2?"file (not read)":part.type==0?"empty":"unsupported")+std::string(" offset=")+std::to_string(part.offset)+" reported="+std::to_string(part.reported)+" copied="+std::to_string(part.copied)+"\n";}
  std::string_view bytes(reinterpret_cast<const char*>(record.bytes.data()),record.length);
  const bool complete=!record.truncated&&!record.excluded&&!record.file_elements&&!record.unsupported;
  PayloadDecode decoded;
- if(complete)decoded=DecodeTelemetryPayload(bytes,DumpUtf8(record.content_type),DumpUtf8(record.encoding));
+ if(complete)decoded=DecodeTelemetryPayload(bytes,DumpUtf8(record.content_type),DumpUtf8(record.encoding),record.rule==Rule::Gabo);
  else decoded.detail="capture-incomplete";
- if(decoded.decoded){
-  bytes=decoded.text;
-  out+="Decode: "+std::string(decoded.detail)+"\nDecoded payload bytes: "+std::to_string(decoded.decoded_bytes)+"\n";
- }else if(std::string_view(decoded.detail)!="unsupported-content-format")out+="Decode unavailable: "+std::string(decoded.detail)+"; original captured bytes retained\n";
+ if(decoded.decoded)bytes=decoded.text;
+ std::string out="\n=== Blocked request "+std::to_string(record.id)+" | "+Stamp(record.utc)+" | pid="+std::to_string(GetCurrentProcessId())+" ===\n";
+ out+=Inline(record.method)+" "+Inline(record.url)+"\nRule: "+RuleName(record.rule)+" | Hook: "+record.hook;
+ out+="\nType: "+(record.content_type.empty()?std::string("unspecified"):Inline(record.content_type));
+ out+=" | Encoding: "+(record.encoding.empty()?std::string("identity"):Inline(record.encoding));
+ out+="\nSize: "+ByteSize(record.length)+" captured";
+ if(decoded.decoded)out+=" -> "+ByteSize(decoded.decoded_bytes)+" decoded";
+ out+="\nCapture: "+std::string(complete&&!record.metadata_truncated?"complete":"incomplete");
+ if(decoded.decoded)out+=" | Decode: "+std::string(decoded.detail);
+ out+='\n';
+ std::string warnings;
+ const auto warn=[&](const std::string& text){if(!warnings.empty())warnings+="; ";warnings+=text;};
+ if(record.truncated)warn("body truncated (limit "+ByteSize(kDumpBytes)+")");
+ if(record.metadata_truncated)warn("request details truncated");
+ if(record.excluded)warn("CEF excluded body elements");
+ if(record.unsupported)warn("unsupported fields/elements");
+ if(record.file_elements)warn(std::to_string(record.file_elements)+" file element(s) omitted");
+ if(!warnings.empty())out+="Warnings: "+warnings+"\n";
+ if(!record.has_post&&!record.unsupported)out+="Body: none\n";
+ if(record.elements>1||record.elements!=record.declared_elements||!complete){
+  out+="Parts: "+std::to_string(record.elements)+"/"+std::to_string(record.declared_elements)+" inspected\n";
+  for(size_t i=0;i<record.elements;++i){
+   const auto& part=record.parts[i];
+   out+="  Part "+std::to_string(i)+" ("+(part.type==1?"bytes":part.type==2?"file, not read":part.type==0?"empty":"unsupported")+std::string("): offset ")+std::to_string(part.offset)+", "+ByteSize(part.copied)+" of "+ByteSize(part.reported)+" captured\n";
+  }
+ }
+ if(!decoded.decoded&&std::string_view(decoded.detail)!="unsupported-content-format")out+="Decode unavailable: "+std::string(decoded.detail)+"; original captured bytes retained\n";
+ out+='\n';
  const bool identity=decoded.decoded||record.encoding.empty()||detail::Equal(record.encoding,L"identity");
  bool text=identity&&!bytes.empty()&&MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,bytes.data(),int(bytes.size()),nullptr,0)>0;
  for(unsigned char c:bytes)if((c<32&&c!='\n'&&c!='\r'&&c!='\t')||c==127){text=false;break;}
