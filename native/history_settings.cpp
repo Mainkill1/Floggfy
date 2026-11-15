@@ -93,6 +93,9 @@ static constexpr char default_ini[]=
     "; Saves raw streams and matching metadata to Save Location\\DumpStreams; restart required.\r\n"
     "DumpStreams=0\r\n"
     "\r\n"
+    "; Logs blocked request details and payloads to Save Location\\Floggfy-telemetry.log; restart required.\r\n"
+    "DumpTelemetry=0\r\n"
+    "\r\n"
     "[Matcher]\r\n"
     "; New media starts before retiring an unmatched stream (1-100).\r\n"
     "MaxMatchQueue=5\r\n"
@@ -213,10 +216,11 @@ struct RestartFlag {
     bool Settings::* member;
     bool default_value;
 };
-static constexpr std::array<RestartFlag,7> restart_flags{{
+static constexpr std::array<RestartFlag,8> restart_flags{{
     {L"SaveUnmatched",&Settings::save_unmatched,true},
     {L"NetworkPatch",&Settings::network_patch,false},
     {L"BlockTelemetry",&Settings::block_telemetry,false},
+    {L"DumpTelemetry",&Settings::dump_telemetry,false},
     {L"DumpStreams",&Settings::dump_streams,false},
     {L"DebugConnect",&Settings::debug_connect,true},
     {L"DebugNetworking",&Settings::debug_networking,false},

@@ -17,6 +17,7 @@ struct Settings {
     bool debug_networking=false; // Master deep-diagnostics hook + separate log; restart-only.
     bool debug_connect=true; // Requires DebugLog; observes cached Connect state/local actions.
     bool block_telemetry=false; // Restart-only privacy opt-in; independent of capture/enrichment.
+    bool dump_telemetry=false; // Restart-only opt-in readable blocked-request log.
     bool network_patch=false; // INI-only startup opt-in; requires a full restart.
     unsigned max_buffered_mib=kDefaultBufferedMiB,capture_speed=1,capture_speed_limit=0,log_level=1,generation=0,capture_epoch=0;
     // Scoped publication revisions exclude pacing and other playback preferences.

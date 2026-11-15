@@ -1,15 +1,21 @@
 // Removing cancellation, adding a self-reference transfer to get_url, replacing
 // object identity, or forwarding blocked requests must fail these tests.
+#include "../native/history_settings.h"
 #include "../native/telemetry_filter.cpp"
 #include <cassert>
 #include <cstring>
 #include <cstdio>
 #include <string>
 #include <vector>
+#include <filesystem>
+#include <fstream>
 namespace history {
+Settings dump_settings;
+Settings GetSettings(){return dump_settings;}
 std::vector<std::string> telemetry_messages;
 int privacy_warnings=0;
-void LogEvent(LogKind kind,const char*,const std::string& detail){assert(kind==LogKind::Warning&&detail.find("partial")!=std::string::npos);++privacy_warnings;}
+int dump_warnings=0;
+void LogEvent(LogKind kind,const char* event,const std::string& detail){assert(kind==LogKind::Warning);if(!std::strcmp(event,"privacy-partial")){assert(detail.find("partial")!=std::string::npos);++privacy_warnings;}else{assert(!std::strcmp(event,"privacy-dump")&&detail.find("secret")==std::string::npos);++dump_warnings;}}
 void QueueDiagnostic(const char* text){telemetry_messages.emplace_back(text);}
 }
 namespace fixture {
@@ -33,6 +39,34 @@ Storage<Object<0>> browser,frame,callback,context,url_client;
 Storage<Client> client;
 Storage<Handler> handler;
 Storage<Resource> resource;
+Storage<Object<7>> post;
+Storage<Object<8>> element,file_element;
+std::vector<unsigned char> payload={'{','"','a','"',':','[','1',',','2',']','}'};
+int body_reads=0,post_reads=0,file_reads=0,element_lists=0;
+size_t declared_elements=0;
+bool with_file=false,excluded=false,with_unknown=false;
+std::wstring content_encoding=L"identity";
+String* GetMethod(Request*){static wchar_t value[]=L"POST";return new String{value,4,nullptr};}
+String* GetHeader(Request*,const String* name){
+ static wchar_t type[]=L"application/json";
+ std::wstring_view key(name->str,name->length);assert(key==L"Content-Type"||key==L"Content-Encoding");
+ return key==L"Content-Type"?new String{type,wcslen(type),nullptr}:new String{content_encoding.data(),content_encoding.size(),nullptr};
+}
+Object<7>* GetPost(Request*){++post_reads;post.api.base.add(&post.api.base);return &post.api;}
+int Excluded(Object<7>*){return excluded;}
+size_t ElementCount(Object<7>*){return declared_elements?declared_elements:(with_file?2:1);}
+void Elements(Object<7>*,size_t* count,Object<8>** values){++element_lists;assert(*count>=1&&values[0]==nullptr);values[0]=&element.api;element.api.base.add(&element.api.base);if(with_file){assert(*count>=2&&values[1]==nullptr);values[1]=&file_element.api;file_element.api.base.add(&file_element.api.base);}*count=with_file?2:1;}
+int ElementType(Object<8>* self){return self==&file_element.api?(with_unknown?99:2):1;}
+String* FileName(Object<8>*){++file_reads;assert(false&&"capture read a referenced file name");return nullptr;}
+size_t ByteCount(Object<8>*){return payload.size();}
+size_t Bytes(Object<8>*,size_t size,void* out){++body_reads;const auto count=std::min(size,payload.size());std::memcpy(out,payload.data(),count);return count;}
+void SetupBody(){
+ request.api.methods[3]=reinterpret_cast<void*>(GetMethod);request.api.methods[8]=reinterpret_cast<void*>(GetPost);request.api.methods[12]=reinterpret_cast<void*>(GetHeader);
+ post.api.methods[1]=reinterpret_cast<void*>(Excluded);post.api.methods[2]=reinterpret_cast<void*>(ElementCount);post.api.methods[3]=reinterpret_cast<void*>(Elements);
+ for(auto* e:{&element.api,&file_element.api}){e->methods[4]=reinterpret_cast<void*>(ElementType);e->methods[5]=reinterpret_cast<void*>(FileName);e->methods[6]=reinterpret_cast<void*>(ByteCount);e->methods[7]=reinterpret_cast<void*>(Bytes);}
+}
+std::string ReadLog(const std::filesystem::path& path){std::ifstream stream(path,std::ios::binary);return {std::istreambuf_iterator<char>(stream),std::istreambuf_iterator<char>()};}
+
 std::wstring url;
 int forwarded=0,freed=0,resource_calls=0,before_calls=0;
 bool null_handler=false,null_resource=false;
@@ -64,20 +98,109 @@ extern "C" __declspec(dllexport) __attribute__((noinline)) void* cef_urlrequest_
 }
 int main(int argc,char** argv){
  using namespace fixture;
- request.api.methods[1]=reinterpret_cast<void*>(GetUrl);
+ request.api.methods[1]=reinterpret_cast<void*>(GetUrl);SetupBody();
  client.api.methods[17]=reinterpret_cast<void*>(OriginalHandler);
  handler.api.methods[2]=reinterpret_cast<void*>(OriginalResource);
  resource.api.methods[1]=reinterpret_cast<void*>(OriginalBefore);
  auto address=GetProcAddress(GetModuleHandleW(nullptr),"cef_urlrequest_create");Create create=nullptr;std::memcpy(&create,&address,sizeof(create));
+ const bool dump_failure=argc==2&&!std::strcmp(argv[1],"--dump-write-failure");
+ const bool dumping=dump_failure||(argc==2&&!std::strcmp(argv[1],"--dump"));
+ if(dumping){
+  wchar_t temp[MAX_PATH];assert(GetTempPathW(MAX_PATH,temp));
+  const auto folder=std::filesystem::path(temp)/(L"Floggfy-dump-test-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64()));
+  assert(std::filesystem::create_directories(folder));
+  history::dump_settings.dump_telemetry=true;history::dump_settings.root=folder.wstring();SetupBody();
+  assert(privacy::Prepare(GetModuleHandleW(nullptr),true)&&MH_ApplyQueued()==MH_OK);privacy::Finalize(true);
+  if(dump_failure){
+   const auto log=folder/L"Floggfy-telemetry.log";assert(std::filesystem::create_directory(log));
+   auto capture=[&](){Reset();url=L"sp://logging/v3";SetLastError(42);assert(create(&request.api,&url_client.api,&context.api)==nullptr&&GetLastError()==42);privacy::DrainStatus();};
+   capture();capture();assert(history::dump_warnings==1&&"persistent write errors must not repeat default warnings");
+   assert(std::filesystem::remove(log));
+   HANDLE file=CreateFileW(log.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);assert(file!=INVALID_HANDLE_VALUE);
+   LARGE_INTEGER end{};end.QuadPart=5*1024*1024;assert(SetFilePointerEx(file,end,nullptr,FILE_BEGIN)&&SetEndOfFile(file));CloseHandle(file);
+   capture();capture();assert(history::dump_warnings==2&&std::filesystem::file_size(log)==5*1024*1024);
+   bool failed=false,full=false;for(const auto& line:history::telemetry_messages){failed=failed||line.find("write_failed=2")!=line.npos;full=full||line.find("log_full=2")!=line.npos;}
+   assert(failed&&full&&post.refs==1&&element.refs==1&&file_reads==0);
+   assert(MH_Uninitialize()==MH_OK);std::puts("PASS: write failure and existing 5 MiB cap preserve cancellation and deduplicate warnings");return 0;
+  }
+  url=L"https://name:secret@spclient.wg.spotify.com/gabo-receiver-service/v3/events?token=secret#secret";SetLastError(42);
+  assert(create(&request.api,&url_client.api,&context.api)==nullptr&&GetLastError()==42);
+  assert(body_reads==1&&post_reads==1&&post.refs==1&&element.refs==1&&file_reads==0);
+  const auto log=folder/L"Floggfy-telemetry.log";assert(!std::filesystem::exists(log)&&"callback performed disk writing");
+  privacy::DrainStatus();const auto text=ReadLog(log);
+  assert(text.find("POST")!=text.npos&&text.find("https://spclient.wg.spotify.com/gabo-receiver-service/v3/events")!=text.npos);
+  assert(text.find("secret")==text.npos&&text.find("name:")==text.npos&&text.find("\"a\": [")!=text.npos);
+  assert(text.find("application/json")!=text.npos&&text.find("standalone")!=text.npos);
+
+  // Allowed routes never enter post-data access, even with dumping enabled.
+  Reset();url=L"https://spclient.wg.spotify.com/metadata/4/track/1";SetLastError(42);
+  assert(create(&request.api,&url_client.api,&context.api)==reinterpret_cast<void*>(0x1234));assert(post_reads==1&&body_reads==1&&GetLastError()==43);
+  auto capture=[&](){Reset();url=L"sp://logging/v3";SetLastError(42);assert(create(&request.api,&url_client.api,&context.api)==nullptr&&GetLastError()==42);};
+  // One binary byte stream survives exactly in the full base64 representation.
+  payload={0,1,2,0xff,'x'};capture();privacy::DrainStatus();
+  assert(ReadLog(log).find("AAEC/3g=")!=std::string::npos);
+  // Text that is not one JSON value (Sentry envelopes) stays readable.
+  const std::string ndjson="{\"envelope\":1}\n{\"event\":2}\n";payload.assign(ndjson.begin(),ndjson.end());capture();privacy::DrainStatus();
+  assert(ReadLog(log).find(ndjson)!=std::string::npos);
+  // Content encoding is explicit and never misrepresented as decoded JSON.
+  content_encoding=L"gzip";payload={'{','}'};capture();privacy::DrainStatus();content_encoding=L"identity";
+  assert(ReadLog(log).find("content encoding not decoded")!=std::string::npos&&ReadLog(log).find("e30=")!=std::string::npos);
+  // The body cap, file omission and excluded multipart data remain explicit.
+  payload.assign(256*1024+20,'x');with_file=true;excluded=true;capture();privacy::DrainStatus();with_file=false;excluded=false;
+  auto limited=ReadLog(log);assert(limited.find("Captured bytes: 262144")!=limited.npos&&limited.find("Truncated: yes")!=limited.npos);
+  assert(limited.find("File elements omitted: 1")!=limited.npos&&limited.find("Excluded elements: yes")!=limited.npos&&file_reads==0);
+  assert(post.refs==1&&element.refs==1&&file_element.refs==1);
+  // Every cancellation entrypoint copies once; the custom cancel callback does not duplicate it.
+  privacy::ObserveClient(&client.api);auto h=reinterpret_cast<GetHandler>(client.api.methods[17])(&client.api);
+  auto get_resource=reinterpret_cast<GetResource>(h->methods[2]);payload={'{','}'};
+  Reset();url=L"sp://logging/v3";int disable=7;SetLastError(42);const auto resource_reads=post_reads;
+  auto blocked=get_resource(h,&browser.api,&frame.api,&request.api,1,0,nullptr,&disable);assert(blocked&&post_reads==resource_reads+1);
+  Reset();SetLastError(42);assert(reinterpret_cast<Before>(blocked->methods[1])(blocked,&browser.api,&frame.api,&request.api,&callback.api)==0);
+  assert(post_reads==resource_reads+1);Drop(blocked);privacy::DrainStatus();
+  Reset();url=L"https://spclient.wg.spotify.com/metadata/4/track/1";disable=7;SetLastError(42);
+  auto allowed=get_resource(h,&browser.api,&frame.api,&request.api,1,0,nullptr,&disable);
+  Reset();url=L"sp://logging/v3";SetLastError(42);assert(reinterpret_cast<Before>(allowed->methods[1])(allowed,&browser.api,&frame.api,&request.api,&callback.api)==0);privacy::DrainStatus();
+  null_handler=true;h=reinterpret_cast<GetHandler>(client.api.methods[17])(&client.api);get_resource=reinterpret_cast<GetResource>(h->methods[2]);
+  Reset();disable=7;SetLastError(42);blocked=get_resource(h,&browser.api,&frame.api,&request.api,1,0,nullptr,&disable);assert(blocked);Drop(blocked);Drop(h);null_handler=false;privacy::DrainStatus();
+  const auto hooks=ReadLog(log);assert(hooks.find("Hook: resource\n")!=hooks.npos&&hooks.find("Hook: preload\n")!=hooks.npos&&hooks.find("Hook: resource-default\n")!=hooks.npos);
+  // Capability loss records unsupported capture rather than reading invalid callbacks.
+  payload={'{','}'};element.api.methods[7]=nullptr;const auto prior_reads=body_reads;capture();privacy::DrainStatus();
+  assert(body_reads==prior_reads&&ReadLog(log).find("Unsupported fields/elements: yes")!=std::string::npos);
+  element.api.methods[7]=reinterpret_cast<void*>(Bytes);
+  // A valid JSON prefix plus an unsupported element is not a complete JSON body.
+  with_file=true;with_unknown=true;payload={'{','}'};capture();privacy::DrainStatus();with_file=false;with_unknown=false;
+  const auto incomplete=ReadLog(log);const auto last_entry=incomplete.substr(incomplete.rfind("=== Blocked request"));
+  assert(last_entry.find("Payload (JSON, formatted)")==std::string::npos&&last_entry.find("not validated as a complete JSON value")!=std::string::npos);
+  // CEF GetElements builds a full temporary vector; skip it if count exceeds our cap.
+  declared_elements=65;const auto lists_before=element_lists;const auto reads_before=body_reads;capture();privacy::DrainStatus();declared_elements=0;
+  assert(element_lists==lists_before&&body_reads==reads_before&&post.refs==1);
+  assert(ReadLog(log).find("Elements copied/declared: 0/65")!=std::string::npos);
+  // A full queue drops before reading another body; draining is bounded to two.
+  const auto before_queue=body_reads;
+  for(unsigned i=0;i<9;++i)capture();
+  assert(body_reads==before_queue+8);privacy::DrainStatus();
+  assert(ReadLog(log).find("queue_dropped=1")!=std::string::npos);
+  for(unsigned i=0;i<4;++i)privacy::DrainStatus();
+  // Reach the process capture limit with small valid JSON then verify no more reads.
+  for(unsigned i=0;i<24;++i){capture();privacy::DrainStatus();}
+  const auto after_limit=body_reads;capture();privacy::DrainStatus();assert(body_reads==after_limit);
+  const auto all=ReadLog(log);assert(all.find("captured=32")!=std::string::npos);
+  assert(all.find("limit_dropped=1")!=std::string::npos&&post.refs==1&&element.refs==1&&file_element.refs==1);
+  for(const auto& line:history::telemetry_messages){assert(line.find("sp://")==std::string::npos&&line.find("https://")==std::string::npos&&line.find("envelope")==std::string::npos);}
+  assert(std::distance(std::filesystem::directory_iterator(folder),std::filesystem::directory_iterator{})==1);
+  std::printf("PASS: bounded readable dump, JSON/text/base64, refs, sanitized metadata, queue and session limits; log=%s\n",folder.string().c_str());
+  assert(MH_Uninitialize()==MH_OK);return 0;
+ }
  const bool rollback_before=argc==2&&!std::strcmp(argv[1],"--rollback-before-apply");
  const bool rollback_after=argc==2&&!std::strcmp(argv[1],"--rollback-after-apply");
  if(argc==2&&!rollback_before&&!rollback_after){
   const bool disabled=!std::strcmp(argv[1],"--disabled");
   assert(disabled||!std::strcmp(argv[1],"--missing-exports"));
+  history::dump_settings.dump_telemetry=disabled;
   SetLastError(42);assert(!privacy::Prepare(disabled?GetModuleHandleW(nullptr):GetModuleHandleW(L"kernel32.dll"),!disabled));
   privacy::ObserveClient(nullptr);assert(GetLastError()==42&&privacy::Enabled()!=disabled);
   url=L"sp://logging/v3";assert(create(&request.api,&url_client.api,&context.api)==reinterpret_cast<void*>(0x1234));
-  assert(forwarded==1&&freed==0&&GetLastError()==43);privacy::DrainStatus();
+  assert(forwarded==1&&freed==0&&body_reads==0&&post_reads==0&&GetLastError()==43);privacy::DrainStatus();
   assert(!history::telemetry_messages.empty());
   std::puts("PASS: disabled or unavailable filter preserves original request behavior");return 0;
  }
@@ -177,6 +300,7 @@ int main(int argc,char** argv){
  Reset();request.api.methods[1]=nullptr;SetLastError(42);const auto previous=forwarded;
  assert(create(&request.api,&url_client.api,&context.api)==reinterpret_cast<void*>(0x1234));
  assert(forwarded==previous+1&&request.drops==1&&GetLastError()==43);
+ assert(body_reads==0&&post_reads==0&&"dumping off must never inspect body data");
  assert(MH_Uninitialize()==MH_OK);
  std::puts("PASS: native cancellation, allowed forwarding, identity, transferred refs, LastError and partial diagnostics");
 }

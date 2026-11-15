@@ -53,3 +53,21 @@
   validation remain pending; this is a local candidate, not a protection claim.
 - Final DLL imports only Windows libraries; no external MinGW runtime dependency.
   Installed Spotify DLL and INI were not changed. Main and remote remain unchanged.
+
+## Follow-up: readable blocked-request log
+
+User requested inspection of cancelled payloads and specified one readable log
+with request details above JSON. Implement opt-in DumpTelemetry and format/write
+bounded copies outside callbacks; no changes to rules or producer suppression.
+Settings defaults/strict opt-in and the full restart-options fixture have passed.
+Focused native tests cover JSON/text/binary preservation, off/allowed behavior,
+CEF ownership, body/queue/session caps and logging failures. Before installation,
+build the DLL and inspect real startup samples; retain prior DLL/INI for rollback.
+
+Follow-up validation: focused telemetry runner, new/strict settings and restart
+migration tests passed; final DLL built with Windows-only imports. Installed with
+DumpTelemetry=1 and retained prior DLL/INI. Live Gabo requests produced complete
+readable headers plus correctly labeled gzip/protobuf bytes. Offline decoding
+identified EventSender canary/statistics/internal-error reports with installation
+and device contexts. One concurrent capture was omitted (reported busy_dropped=1),
+while its blocking decision remained intact. No packet-level egress claim is made.

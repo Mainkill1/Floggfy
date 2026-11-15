@@ -7,6 +7,8 @@ void LogEvent(LogKind,const char*,const std::string&) {}
 void QueueDiagnostic(const char*) {}
 }
 int main(int argc,char** argv) {
+  assert(std::string(history::default_ini).find("DumpTelemetry=0")!=std::string::npos&&
+      "blocked payload recording must be an explicit opt-in");
   assert(std::string(history::default_ini).find("SaveUnmatched=1")!=std::string::npos&&
       "first-time setup must preserve unmatched recordings by default");
   assert(std::string(history::default_ini).find("[Matcher]\r\n")!=std::string::npos&&
@@ -27,6 +29,14 @@ int main(int argc,char** argv) {
       history::Settings target;target.metadata=false;target.downloads=false;
       history::ReadRestartOptionsText(target,L"[To Disk]\r\n"+fixture.first);
       assert(target.block_telemetry==fixture.second);
+  }
+  for(const auto& fixture:std::array<std::pair<std::wstring,bool>,6>{{
+      {L"",false},{L"DumpTelemetry=0\r\n",false},{L"DumpTelemetry=1\r\n",true},
+      {L"DumpTelemetry=01\r\n",false},{L"DumpTelemetry=2\r\n",false},
+      {L"DumpTelemetry=1\r\nDumpTelemetry=1\r\n",false}}}) {
+      history::Settings target;target.metadata=false;target.downloads=false;
+      history::ReadRestartOptionsText(target,L"[To Disk]\r\n"+fixture.first);
+      assert(target.dump_telemetry==fixture.second);
   }
   assert(argc==2);
   assert(history::Settings{}.downloads&&history::Settings{}.update_existing_metadata&&!history::Settings{}.auto_skip_downloaded&&!history::Settings{}.aac&&history::Settings{}.podcasts&&!history::Settings{}.windows_playback_fallback&&history::Settings{}.capture_speed==1&&history::Settings{}.capture_speed_limit==0&&history::Settings{}.log_level==1);

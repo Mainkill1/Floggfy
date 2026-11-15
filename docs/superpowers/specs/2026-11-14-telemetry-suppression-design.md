@@ -44,3 +44,15 @@ Exercise exact hostname/path boundaries and deceptive URLs. JS tests verify real
 queue effects and return contracts; failed discovery stays partial. Run existing
 native/Windows checks and build a local candidate. Live egress and functional
 smoke testing remains required before claiming protection for the installed client.
+
+## Authorized follow-up: readable request inspection
+
+The user requested payload inspection to assess false positives and specified a
+single human-readable log, with time/destination/details above formatted JSON.
+Add restart-only `DumpTelemetry=0`; capture bounded copies of future cancelled
+requests and drain them outside callbacks into Save Location/Floggfy-telemetry.log.
+This explicit diagnostic option is the exception to the original no-body-logging
+scope. Default diagnostics remain counters only. Omit credentials in headers and
+URL query/userinfo, preserve raw body meaning, label incomplete/encoded data and
+never let diagnostics change cancellation or allowed forwarding. No proxy,
+packet-capture service, extra log viewer or decompression dependency is needed.

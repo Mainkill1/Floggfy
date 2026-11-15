@@ -3,8 +3,8 @@
 For issue #28. This module is experimental and opt-in. Set `BlockTelemetry=1`
 under `[To Disk]`, then restart Spotify. `0` (default) installs no privacy hooks.
 Recording and metadata preferences do not control it. Use `LogLevel=4` to see
-fixed capability fields and aggregate block counters; no request URL or body is
-logged. The default log level reports partial/unsupported coverage warnings.
+fixed capability fields and aggregate block counters; ordinary diagnostics never
+include request URLs or bodies. The default log level reports partial/unsupported coverage warnings.
 
 Current policy blocks only these known routes:
 
@@ -54,3 +54,34 @@ Metadata=0. Independently capture process/network activity during controlled
 telemetry requests to check egress; a returned request error alone is insufficient.
 HTTPS packets alone cannot distinguish paths on a shared Spotify connection.
 Keep this branch local until those checks establish the actual supported paths.
+
+## Inspecting blocked requests
+
+Set `DumpTelemetry=1` together with `BlockTelemetry=1`, then restart. The optional
+`Floggfy-telemetry.log` is written in Save Location. Each entry places its UTC time,
+method, destination, blocking rule, interception point, content type/encoding and
+body lengths above a readable payload. JSON is formatted for inspection. Binary,
+encoded, invalid or incomplete JSON is labeled explicitly; it is not guessed to
+be decoded application data.
+
+This captures future blocked application requests, not network packets or old
+counter entries. It does not capture allowed requests or events suppressed before
+request creation. URL userinfo/query/fragment and authorization/cookie headers are
+omitted; the captured body itself is retained for inspection and can contain
+identifiers or other account data. Payload contents stay in this separate local
+file and are not copied into normal diagnostics.
+
+Capture is limited to 256 KiB per request, eight queued requests and 32 captured
+requests per process. The log stops accepting entries at 5 MiB; move or remove it
+to start a new investigation. More than 64 body elements are omitted rather than
+materialized. Entries and status reports identify truncation, unsupported/file-backed
+data and omissions. Logging failure never changes the
+blocking decision. Copying happens before releasing CEF request objects; writing
+and formatting happen outside request callbacks. Disable `DumpTelemetry` and
+restart after the investigation.
+
+The first installed-client samples were `application/x-protobuf` with gzip
+encoding, despite the separate JavaScript uploader supporting JSON. Native dumps
+preserve these complete bytes as labeled base64. Human-readable protobuf analysis
+requires offline decompression and wire decoding; field numbers are retained where
+no schema is known. Do not treat the base64 fallback as decoded JSON.
