@@ -38,7 +38,7 @@ x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/wind
  native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp build/windows-tests/history-ogg.o \
  -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-history-test.exe"
 x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/windows-tests/metadata-ogg.o
-x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_metadata_identity_test.cpp native/telemetry_filter.cpp -I native/vendor/libogg/include \
+x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_metadata_identity_test.cpp native/telemetry_filter.cpp native/telemetry_decode.cpp native/telemetry_inflate.cpp -I native/vendor/libogg/include \
  native/rich_metadata.cpp native/cached_metadata.cpp native/cached_metadata_windows.cpp native/history_settings.cpp native/async_log.cpp \
  native/media_session.cpp native/auto_skip.cpp native/library_layout.cpp native/album_artwork.cpp native/playback_quality_windows.cpp native/playback_quality.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/windows-tests/metadata-ogg.o build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 \
  -lruntimeobject -lwinhttp -o "$floggfy_test_root/windows-metadata-identity-test.exe"
@@ -108,7 +108,7 @@ x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_settings_unicode_test.cpp -l
 "$floggfy_settings_test_root/windows-settings-unicode-test.exe"
 
 # Deliberately blocked enrichment must not delay the metadata heartbeat.
-x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_metadata_liveness_test.cpp native/telemetry_filter.cpp \
+x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_metadata_liveness_test.cpp native/telemetry_filter.cpp native/telemetry_decode.cpp native/telemetry_inflate.cpp \
  native/rich_metadata.cpp native/cached_metadata.cpp native/auto_skip.cpp native/library_layout.cpp native/history_settings.cpp native/async_log.cpp \
  native/media_session.cpp native/image_info.cpp native/playback_quality_windows.cpp native/playback_quality.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/windows-tests/metadata-ogg.o build/windows-tests/minhook-*.o \
  -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_test_root/windows-metadata-liveness-test.exe"

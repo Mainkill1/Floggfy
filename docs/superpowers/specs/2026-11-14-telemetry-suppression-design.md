@@ -54,5 +54,11 @@ requests and drain them outside callbacks into Save Location/Floggfy-telemetry.l
 This explicit diagnostic option is the exception to the original no-body-logging
 scope. Default diagnostics remain counters only. Omit credentials in headers and
 URL query/userinfo, preserve raw body meaning, label incomplete/encoded data and
-never let diagnostics change cancellation or allowed forwarding. No proxy,
-packet-capture service, extra log viewer or decompression dependency is needed.
+never let diagnostics change cancellation or allowed forwarding. No proxy, packet-capture service or extra log viewer is needed.
+
+The user subsequently required decoded information directly in this same log.
+Actual samples prove gzip-compressed protobuf is needed. Add bounded worker-only
+gzip validation/decompression using vendored inflate-only puff and generic wire
+field JSON rendering. Preserve unknown field numbers and explicit inference;
+no schema guesses, live decoding service or extra runtime DLL. Tests must replay
+the exact captured format plus corruption/expansion limits before installation.

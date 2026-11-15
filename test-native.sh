@@ -105,3 +105,7 @@ node tests/collector_playback_test.js
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/telemetry_policy_test.cpp -o build/telemetry-policy-test
 build/telemetry-policy-test
 node tests/telemetry_producers_test.js
+
+# Optional telemetry payload decoding remains portable and bounded.
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/telemetry_decode_test.cpp native/telemetry_decode.cpp native/telemetry_inflate.cpp -o build/telemetry-decode-test
+build/telemetry-decode-test

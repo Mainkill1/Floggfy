@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include "telemetry_filter.h"
 #include "telemetry_policy.h"
+#include "telemetry_decode.h"
 #include "async_log.h"
 #include "history_settings.h"
 #include "vendor/minhook/include/MinHook.h"
@@ -259,13 +260,22 @@ std::string FormatDump(const DumpRecord& record){
  out+="\nFile elements omitted: "+std::to_string(record.file_elements)+"\nElements copied/declared: "+std::to_string(record.elements)+"/"+std::to_string(record.declared_elements)+"\n";
  for(size_t i=0;i<record.elements;++i){const auto& part=record.parts[i];out+="Element "+std::to_string(i)+": type="+(part.type==1?"bytes":part.type==2?"file (not read)":part.type==0?"empty":"unsupported")+std::string(" offset=")+std::to_string(part.offset)+" reported="+std::to_string(part.reported)+" copied="+std::to_string(part.copied)+"\n";}
  std::string_view bytes(reinterpret_cast<const char*>(record.bytes.data()),record.length);
- const bool identity=record.encoding.empty()||detail::Equal(record.encoding,L"identity");
+ const bool complete=!record.truncated&&!record.excluded&&!record.file_elements&&!record.unsupported;
+ PayloadDecode decoded;
+ if(complete)decoded=DecodeTelemetryPayload(bytes,DumpUtf8(record.content_type),DumpUtf8(record.encoding));
+ else decoded.detail="capture-incomplete";
+ if(decoded.decoded){
+  bytes=decoded.text;
+  out+="Decode: "+std::string(decoded.detail)+"\nDecoded payload bytes: "+std::to_string(decoded.decoded_bytes)+"\n";
+ }else if(std::string_view(decoded.detail)!="unsupported-content-format")out+="Decode unavailable: "+std::string(decoded.detail)+"; original captured bytes retained\n";
+ const bool identity=decoded.decoded||record.encoding.empty()||detail::Equal(record.encoding,L"identity");
  bool text=identity&&!bytes.empty()&&MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,bytes.data(),int(bytes.size()),nullptr,0)>0;
  for(unsigned char c:bytes)if((c<32&&c!='\n'&&c!='\r'&&c!='\t')||c==127){text=false;break;}
- auto pretty=text&&!record.truncated&&!record.excluded&&!record.file_elements&&!record.unsupported?PrettyJson(bytes).Run():std::string{};
+ auto pretty=text&&complete?PrettyJson(bytes).Run():std::string{};
  if(!pretty.empty())out+="Payload (JSON, formatted):\n"+pretty;
+ else if(decoded.protobuf)out+="Payload (decoded protobuf JSON; compact formatting):\n"+decoded.text;
  else if(text)out+="Payload (UTF-8 text; not validated as a complete JSON value):\n"+std::string(bytes);
- else out+=std::string("Payload (base64; ")+(identity?"binary/empty":"content encoding not decoded")+"):\n"+Base64(record.bytes.data(),record.length);
+ else out+=std::string("Payload (base64; ")+(identity?"binary/empty":"content encoding not decoded")+"):\n"+Base64(reinterpret_cast<const unsigned char*>(bytes.data()),bytes.size());
  return out+"\n=== End request "+std::to_string(record.id)+" ===\n";
 }
 // Open without write sharing so size checking and appending are one transaction

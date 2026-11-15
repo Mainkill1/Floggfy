@@ -71,3 +71,20 @@ readable headers plus correctly labeled gzip/protobuf bytes. Offline decoding
 identified EventSender canary/statistics/internal-error reports with installation
 and device contexts. One concurrent capture was omitted (reported busy_dropped=1),
 while its blocking decision remained intact. No packet-level egress claim is made.
+
+## Follow-up: decode directly in the log
+
+Implemented worker-side gzip integrity checks and bounded generic protobuf JSON
+rendering after the user requested decoded content in the same log. The first real
+stats replay exposed 2,075 fields, so the node cap was raised from 2,048 to 4,096
+and readable text no longer incurs speculative nested parsing. Five exact private
+live samples passed both the portable production helper and Windows FormatDump;
+the largest formatted log entry was 413,232 bytes. Synthetic corruption/size/depth/
+node/output tests and the full focused telemetry runner passed. Review found no
+blocking issues. The final DLL built with Windows-only imports.
+
+Installed the tested DLL, archived the prior encoded-only log, and restarted with
+DumpTelemetry=1. Live log validation found two valid decoded gzip/protobuf JSON
+entries (canary, sender stats/internal errors) and one readable three-record Sentry
+JSON envelope. All three captured requests were written, with zero truncations,
+unsupported fields, busy/queue drops or write failures at that observation.

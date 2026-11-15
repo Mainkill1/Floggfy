@@ -4,6 +4,8 @@ set -euo pipefail
 cd -- "$(dirname -- "$0")"
 mkdir -p build/telemetry-tests
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/telemetry_policy_test.cpp -o build/telemetry-tests/policy
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/telemetry_decode_test.cpp native/telemetry_decode.cpp native/telemetry_inflate.cpp -o build/telemetry-tests/decode
+build/telemetry-tests/decode
 build/telemetry-tests/policy
 node tests/telemetry_producers_test.js
 floggfy_privacy_temp=$(cmd.exe /c echo %TEMP% 2>/dev/null | tr -d '\r')
@@ -14,7 +16,7 @@ for source in buffer hook trampoline hde/hde64; do
         "native/vendor/minhook/src/$source.c" -o "build/telemetry-tests/minhook-${source//\//-}.o"
 done
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -static-libgcc -static-libstdc++ \
-    tests/windows_telemetry_filter_test.cpp build/telemetry-tests/minhook-*.o -o "$floggfy_privacy_root/filter.exe"
+    tests/windows_telemetry_filter_test.cpp native/telemetry_decode.cpp native/telemetry_inflate.cpp build/telemetry-tests/minhook-*.o -o "$floggfy_privacy_root/filter.exe"
 "$floggfy_privacy_root/filter.exe" --dump
 "$floggfy_privacy_root/filter.exe" --dump-write-failure
 "$floggfy_privacy_root/filter.exe" --disabled

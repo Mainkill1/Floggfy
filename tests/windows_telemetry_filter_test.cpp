@@ -9,6 +9,7 @@
 #include <vector>
 #include <filesystem>
 #include <fstream>
+#include "telemetry_decode_fixture.h"
 namespace history {
 Settings dump_settings;
 Settings GetSettings(){return dump_settings;}
@@ -45,12 +46,11 @@ std::vector<unsigned char> payload={'{','"','a','"',':','[','1',',','2',']','}'}
 int body_reads=0,post_reads=0,file_reads=0,element_lists=0;
 size_t declared_elements=0;
 bool with_file=false,excluded=false,with_unknown=false;
-std::wstring content_encoding=L"identity";
+std::wstring content_encoding=L"identity",content_type=L"application/json";
 String* GetMethod(Request*){static wchar_t value[]=L"POST";return new String{value,4,nullptr};}
 String* GetHeader(Request*,const String* name){
- static wchar_t type[]=L"application/json";
  std::wstring_view key(name->str,name->length);assert(key==L"Content-Type"||key==L"Content-Encoding");
- return key==L"Content-Type"?new String{type,wcslen(type),nullptr}:new String{content_encoding.data(),content_encoding.size(),nullptr};
+ return key==L"Content-Type"?new String{content_type.data(),content_type.size(),nullptr}:new String{content_encoding.data(),content_encoding.size(),nullptr};
 }
 Object<7>* GetPost(Request*){++post_reads;post.api.base.add(&post.api.base);return &post.api;}
 int Excluded(Object<7>*){return excluded;}
@@ -136,6 +136,14 @@ int main(int argc,char** argv){
   Reset();url=L"https://spclient.wg.spotify.com/metadata/4/track/1";SetLastError(42);
   assert(create(&request.api,&url_client.api,&context.api)==reinterpret_cast<void*>(0x1234));assert(post_reads==1&&body_reads==1&&GetLastError()==43);
   auto capture=[&](){Reset();url=L"sp://logging/v3";SetLastError(42);assert(create(&request.api,&url_client.api,&context.api)==nullptr&&GetLastError()==42);};
+  // Real production worker decoding must put gzip/protobuf event fields IN this log.
+  const auto compressed=telemetry_fixture::Bytes(telemetry_fixture::gzip_protobuf);payload.assign(compressed.begin(),compressed.end());
+  content_type=L"application/x-protobuf";content_encoding=L"gzip";capture();
+  assert(ReadLog(log).find("ui.page_view")==std::string::npos&&"callback performed worker-only decoding/writing");
+  privacy::DrainStatus();const auto decoded_log=ReadLog(log);
+  assert(decoded_log.find("ui.page_view")!=std::string::npos&&decoded_log.find("\"unsigned\": \"42\"")!=std::string::npos&&"gzip protobuf event fields must be decoded in the native log");
+  assert(decoded_log.find("gzip+protobuf-wire-fields")!=std::string::npos&&decoded_log.find("schema unknown")!=std::string::npos);
+  content_type=L"application/json";content_encoding=L"identity";
   // One binary byte stream survives exactly in the full base64 representation.
   payload={0,1,2,0xff,'x'};capture();privacy::DrainStatus();
   assert(ReadLog(log).find("AAEC/3g=")!=std::string::npos);

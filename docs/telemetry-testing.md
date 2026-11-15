@@ -60,9 +60,11 @@ Keep this branch local until those checks establish the actual supported paths.
 Set `DumpTelemetry=1` together with `BlockTelemetry=1`, then restart. The optional
 `Floggfy-telemetry.log` is written in Save Location. Each entry places its UTC time,
 method, destination, blocking rule, interception point, content type/encoding and
-body lengths above a readable payload. JSON is formatted for inspection. Binary,
-encoded, invalid or incomplete JSON is labeled explicitly; it is not guessed to
-be decoded application data.
+body lengths above a readable payload. JSON is formatted for inspection. Gzip
+bodies are decompressed and checked before formatting. Protobuf is rendered as
+JSON with numbered wire fields, readable strings and explicitly inferred nested
+messages; field names and integer units are not guessed. Unsupported, invalid or
+incomplete data retains a labeled raw representation and a decoding reason.
 
 This captures future blocked application requests, not network packets or old
 counter entries. It does not capture allowed requests or events suppressed before
@@ -81,7 +83,8 @@ and formatting happen outside request callbacks. Disable `DumpTelemetry` and
 restart after the investigation.
 
 The first installed-client samples were `application/x-protobuf` with gzip
-encoding, despite the separate JavaScript uploader supporting JSON. Native dumps
-preserve these complete bytes as labeled base64. Human-readable protobuf analysis
-requires offline decompression and wire decoding; field numbers are retained where
-no schema is known. Do not treat the base64 fallback as decoded JSON.
+encoding, despite the separate JavaScript uploader supporting JSON. The log writer
+now decodes that combination directly in Floggfy-telemetry.log. Decoding is bounded
+to 1 MiB expanded data, protobuf depth eight, 4,096 fields and 512 KiB JSON output.
+Invalid checksums, malformed protobuf or exceeded bounds produce an explicit
+fallback reason instead of an apparently complete decoded payload.

@@ -21,7 +21,7 @@ x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vendor/minimp4/minim
 x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vorbis_headers_stb.c -o build/album-artists/vorbis.o
 x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/album-artists/ogg.o
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -municode -static-libgcc -static-libstdc++ \
-    -I native/vendor/libogg/include tests/windows_album_artist_test.cpp native/telemetry_filter.cpp \
+    -I native/vendor/libogg/include tests/windows_album_artist_test.cpp native/telemetry_filter.cpp native/telemetry_decode.cpp native/telemetry_inflate.cpp \
     native/rich_metadata.cpp native/cached_metadata.cpp native/async_log.cpp native/media_session.cpp \
     native/image_info.cpp native/playback_quality_windows.cpp native/playback_quality.cpp native/flac_history_core.cpp \
     native/compressed_buffer.cpp native/ogg_tags.cpp native/ogg_history_core.cpp native/auto_skip.cpp native/library_layout.cpp \
