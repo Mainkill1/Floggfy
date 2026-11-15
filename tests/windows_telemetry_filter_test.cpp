@@ -252,6 +252,28 @@ int main(int argc,char** argv){
   assert(create(&request.api,&url_client.api,&context.api)==reinterpret_cast<void*>(0x1234));
   assert(forwarded==previous+1&&request.drops==1&&request.adds==0&&url_client.drops==1&&context.drops==1&&GetLastError()==43);
  }
+ // Each category can restore forwarding without weakening other categories.
+ struct CategoryCase {privacy::Rule rule;bool history::Settings::*field;const wchar_t* url;};
+ const CategoryCase categories[]={
+  {privacy::Rule::Gabo,&history::Settings::block_event_reports,L"https://spclient.wg.spotify.com/gabo-receiver-service/v3/events"},
+  {privacy::Rule::Logging,&history::Settings::block_internal_logging,L"sp://logging/v2/send_pending_message"},
+  {privacy::Rule::Sentry,&history::Settings::block_sentry,L"https://o22381.ingest.sentry.io/api/114855/envelope/"},
+  {privacy::Rule::Playback,&history::Settings::block_playback_reports,L"https://spclient.wg.spotify.com/melody/v1/msg/batch"},
+  {privacy::Rule::Growth,&history::Settings::block_growth_analytics,L"https://www.spotify.com/api/growth-events/wwwanalytics"},
+  {privacy::Rule::Crash,&history::Settings::block_crash_reports,L"https://crashdump.spotify.com/"},
+  {privacy::Rule::TrackError,&history::Settings::block_track_errors,L"https://spclient.wg.spotify.com/track-error/v1/errors"},
+  {privacy::Rule::AITelemetry,&history::Settings::block_ai_telemetry,L"https://spclient.wg.spotify.com/v1/telemetry/sandbox"}
+ };
+ for(const auto& item:categories){
+  history::Settings options;options.*(item.field)=false;privacy::ConfigureCategories(options);
+  Reset();url=item.url;SetLastError(42);const auto previous=forwarded;
+  assert(create(&request.api,&url_client.api,&context.api)==reinterpret_cast<void*>(0x1234));
+  assert(forwarded==previous+1&&GetLastError()==43);
+  options.*(item.field)=true;privacy::ConfigureCategories(options);
+  Reset();SetLastError(42);
+  assert(create(&request.api,&url_client.api,&context.api)==nullptr&&forwarded==previous+1&&GetLastError()==42);
+ }
+ privacy::ConfigureCategories(history::Settings{});
  const auto original_client=client.api;const auto original_handler=handler.api; // Identity remains public and private.
  SetLastError(42);privacy::ObserveClient(&client.api);assert(GetLastError()==42);
  auto get_handler=reinterpret_cast<GetHandler>(client.api.methods[17]);
@@ -295,6 +317,18 @@ int main(int argc,char** argv){
  Client short_client{};short_client.base.size=sizeof(Base);privacy::ObserveClient(&short_client);assert(GetLastError()==42);
  // Renderer diagnostics accept only the four fixed combinations.
  privacy::ObserveRenderer(L"sender=1 ubi=1 early=0");privacy::DrainStatus();
+ privacy::ObserveRendererCapabilities(L"fetch=1 xhr=1 beacon=1 cosmos=1 early=0");
+ privacy::ObserveRendererCount(L"playback_reports=1");privacy::DrainStatus();
+ assert(privacy::renderer_capabilities.load()==31&&privacy::renderer_blocked[static_cast<unsigned>(privacy::Rule::Playback)].load()==1);
+ privacy::ObserveRendererCount(L"playback_reports=999999999999999999999");
+ privacy::ObserveRendererCount(L"playback_reports=1 https://secret.invalid");
+ privacy::ObserveRendererCapabilities(L"fetch=1 xhr=1 beacon=1 cosmos=1 early=1");
+ privacy::ObserveRendererCapabilities(L"fetch=1 xhr=1 beacon=1 cosmos=1 early=0 extra");
+ assert(privacy::renderer_capabilities.load()==31&&privacy::renderer_blocked[static_cast<unsigned>(privacy::Rule::Playback)].load()==1);
+ history::Settings category_off;category_off.block_playback_reports=false;privacy::ConfigureCategories(category_off);
+ privacy::ObserveRendererCount(L"playback_reports=1");
+ assert(privacy::renderer_blocked[static_cast<unsigned>(privacy::Rule::Playback)].load()==1);
+ privacy::ConfigureCategories(history::Settings{});
  const auto diagnostics=history::telemetry_messages.size();
  assert(history::privacy_warnings>0&&"enabled partial coverage must be visible at default log level");
  privacy::ObserveRenderer(L"sender=1 ubi=1 early=1");

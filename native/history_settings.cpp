@@ -74,9 +74,6 @@ static constexpr char default_ini[]=
     "; Work around Spotify falsely reporting no internet. AKA NCIS patch.\r\n"
     "NetworkPatch=0\r\n"
     "\r\n"
-    "; Suppress known telemetry; restart required. Coverage may be partial.\r\n"
-    "BlockTelemetry=0\r\n"
-    "\r\n"
     "; Logging: 0=off, 1=finished/warnings/failures, 2=activity, 4=diagnostics.\r\n"
     "; Logs use Save Location; each is capped at 5 MiB.\r\n"
     "LogLevel=1\r\n"
@@ -93,7 +90,21 @@ static constexpr char default_ini[]=
     "; Saves raw streams and matching metadata to Save Location\\DumpStreams; restart required.\r\n"
     "DumpStreams=0\r\n"
     "\r\n"
-    "; Logs blocked request details and payloads to Save Location\\Floggfy-telemetry.log; restart required.\r\n"
+    "[Telemetry]\r\n"
+    "; Master switch for the enabled categories below. Coverage may be partial.\r\n"
+    "BlockTelemetry=0\r\n"
+    "; Event batches, playback reports, growth analytics and Sentry errors.\r\n"
+    "BlockEventReports=1\r\n"
+    "BlockPlaybackReports=1\r\n"
+    "BlockGrowthAnalytics=1\r\n"
+    "BlockSentry=1\r\n"
+    "; Crash uploads, internal logging and track-error reports.\r\n"
+    "BlockCrashReports=1\r\n"
+    "BlockInternalLogging=1\r\n"
+    "BlockTrackErrors=1\r\n"
+    "; Known AI telemetry routes only; other paths may remain uncovered.\r\n"
+    "BlockAITelemetry=1\r\n"
+    "; Save blocked request details and payloads to Save Location\\Floggfy-telemetry.log.\r\n"
     "DumpTelemetry=0\r\n"
     "\r\n"
     "[Matcher]\r\n"
@@ -216,16 +227,75 @@ struct RestartFlag {
     bool Settings::* member;
     bool default_value;
 };
-static constexpr std::array<RestartFlag,8> restart_flags{{
+static constexpr std::array<RestartFlag,6> restart_flags{{
     {L"SaveUnmatched",&Settings::save_unmatched,true},
     {L"NetworkPatch",&Settings::network_patch,false},
-    {L"BlockTelemetry",&Settings::block_telemetry,false},
-    {L"DumpTelemetry",&Settings::dump_telemetry,false},
     {L"DumpStreams",&Settings::dump_streams,false},
     {L"DebugConnect",&Settings::debug_connect,true},
     {L"DebugNetworking",&Settings::debug_networking,false},
     {L"DebugHookDiagnostics",&Settings::debug_hook_diagnostics,false}
 }};
+static constexpr std::array<RestartFlag,10> blocking_flags{{
+    {L"BlockTelemetry",&Settings::block_telemetry,false},
+    {L"BlockEventReports",&Settings::block_event_reports,true},
+    {L"BlockPlaybackReports",&Settings::block_playback_reports,true},
+    {L"BlockGrowthAnalytics",&Settings::block_growth_analytics,true},
+    {L"BlockSentry",&Settings::block_sentry,true},
+    {L"BlockCrashReports",&Settings::block_crash_reports,true},
+    {L"BlockInternalLogging",&Settings::block_internal_logging,true},
+    {L"BlockTrackErrors",&Settings::block_track_errors,true},
+    {L"BlockAITelemetry",&Settings::block_ai_telemetry,true},
+    {L"DumpTelemetry",&Settings::dump_telemetry,false}
+}};
+static bool LegacyBlockingFlag(const RestartFlag& flag) {
+    return flag.member==&Settings::block_telemetry||flag.member==&Settings::dump_telemetry;
+}
+static bool ReadBlockingOptionsText(Settings& target,std::wstring_view text) {
+    bool migration=false;
+    for(const auto& flag:blocking_flags) {
+        auto value=settings_file::Find(text,flag.key,L"[Telemetry]");
+        const auto previous=settings_file::Find(text,flag.key,L"[Blocking]");
+        migration=migration||!value.present||previous.present;
+        if(!value.present)value=previous;
+        if(LegacyBlockingFlag(flag)) {
+            const auto legacy=settings_file::Find(text,flag.key);
+            migration=migration||legacy.present;
+            if(!value.present)value=legacy;
+        }
+        // Missing category keys use their defaults. Explicit malformed values,
+        // including duplicates, never opt a category or the master in.
+        target.*(flag.member)=!value.present?flag.default_value:
+            !value.duplicate&&value.raw_value==L"1";
+    }
+    return migration;
+}
+static void MigrateBlockingOptions(std::wstring& text) {
+    Settings current;ReadBlockingOptionsText(current,text);
+    for(const auto& flag:blocking_flags) {
+        if(!settings_file::Find(text,flag.key,L"[Telemetry]").present)
+            settings_file::Set(text,flag.key,current.*(flag.member)?L"1":L"0",L"[Telemetry]");
+        settings_file::Erase(text,flag.key,L"[Blocking]");
+        if(LegacyBlockingFlag(flag))settings_file::Erase(text,flag.key);
+    }
+    // Remove empty legacy headers while retaining comments and unknown keys.
+    for(size_t position=0;position<text.size();) {
+        const auto end=text.find(L'\n',position);
+        const auto next=end==text.npos?text.size():end+1;
+        if(settings_file::EqualKey(settings_file::TrimView(std::wstring_view(text).substr(position,(end==text.npos?text.size():end)-position)),L"[Blocking]")) {
+            bool empty=true;
+            for(size_t scan=next;scan<text.size();) {
+                const auto finish=text.find(L'\n',scan);
+                const auto after=finish==text.npos?text.size():finish+1;
+                const auto line=settings_file::TrimView(std::wstring_view(text).substr(scan,(finish==text.npos?text.size():finish)-scan));
+                if(!line.empty()&&line.front()==L'['&&line.back()==L']')break;
+                if(!line.empty()&&line.front()!=L';'){empty=false;break;}
+                scan=after;
+            }
+            if(empty){text.erase(position,next-position);continue;}
+        }
+        position=next;
+    }
+}
 static bool ReadRestartOptionsText(Settings& target,std::wstring_view text) {
     bool missing=false;
     for(const auto& flag:restart_flags) {
@@ -234,12 +304,13 @@ static bool ReadRestartOptionsText(Settings& target,std::wstring_view text) {
         target.*(flag.member)=!value.present?flag.default_value:
             !value.duplicate&&value.value==L"1";
     }
-    return missing;
+    return ReadBlockingOptionsText(target,text)||missing;
 }
 static bool ReadRestartOptions(Settings& target,const std::wstring& path) {
     std::wstring text;bool unicode=false;
     if(!settings_file::Read(path,text,unicode)) {
         for(const auto& flag:restart_flags)target.*(flag.member)=false;
+        for(const auto& flag:blocking_flags)target.*(flag.member)=false;
         return false;
     }
     return ReadRestartOptionsText(target,text);
@@ -281,6 +352,7 @@ static bool ReadMatcherOptions(Settings& target,const std::wstring& path) {
     return ReadMatcherOptionsText(target,text);
 }
 static void InsertMissingRestartDefaults(std::wstring& text) {
+    MigrateBlockingOptions(text);
     for(const auto& flag:restart_flags)
         if(!settings_file::Find(text,flag.key).present)
             settings_file::Set(text,flag.key,flag.default_value?L"1":L"0");

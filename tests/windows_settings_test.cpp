@@ -38,6 +38,11 @@ int main(int argc,char** argv) {
       history::ReadRestartOptionsText(target,L"[To Disk]\r\n"+fixture.first);
       assert(target.dump_telemetry==fixture.second);
   }
+  {
+      history::Settings target;
+      history::ReadRestartOptionsText(target,L"[To Disk]\nBlockTelemetry=1\nDumpTelemetry=1\n[Telemetry]\nBlockTelemetry=0\nDumpTelemetry=0\n");
+      assert(!target.block_telemetry&&!target.dump_telemetry);
+  }
   assert(argc==2);
   assert(history::Settings{}.downloads&&history::Settings{}.update_existing_metadata&&!history::Settings{}.auto_skip_downloaded&&!history::Settings{}.aac&&history::Settings{}.podcasts&&!history::Settings{}.windows_playback_fallback&&history::Settings{}.capture_speed==1&&history::Settings{}.capture_speed_limit==0&&history::Settings{}.log_level==1);
   assert(history::Settings{}.never_pause==-1&&!history::Settings{}.dump_streams);
@@ -72,6 +77,15 @@ int main(int argc,char** argv) {
     else if(scenario=="log-duplicate") assert(history::settings_file::Write(path,
       L"[To Disk]\r\nMenu=0\r\nLogLevel=4\r\nLogLevel=0\r\n",true));
     else assert(WritePrivateProfileStringW(L"To Disk",L"Menu",L"0",path.c_str()));
+    if(scenario=="blocking-legacy-one"||scenario=="blocking-legacy-zero"||scenario=="blocking-precedence") {
+      assert(WritePrivateProfileStringW(L"To Disk",L"BlockTelemetry",scenario=="blocking-legacy-zero"?L"0":L"1",path.c_str()));
+      assert(WritePrivateProfileStringW(L"To Disk",L"DumpTelemetry",scenario=="blocking-legacy-one"?L"1":L"0",path.c_str()));
+      if(scenario=="blocking-precedence")assert(WritePrivateProfileStringW(L"Telemetry",L"BlockTelemetry",L"0",path.c_str()));
+    }
+    if(scenario=="blocking-category-zero") {
+      for(const auto& flag:history::blocking_flags)
+        assert(WritePrivateProfileStringW(L"Telemetry",flag.key,flag.member==&history::Settings::block_telemetry?L"1":L"0",path.c_str()));
+    }
     if(scenario=="aac-one") assert(WritePrivateProfileStringW(L"To Disk",L"AAC",L"1",path.c_str()));
     if(scenario=="podcasts-one") assert(WritePrivateProfileStringW(L"To Disk",L"Podcasts",L"1",path.c_str()));
     if(scenario=="podcasts-zero") assert(WritePrivateProfileStringW(L"To Disk",L"Podcasts",L"0",path.c_str()));
@@ -121,6 +135,10 @@ int main(int argc,char** argv) {
   }
   history::InitSettings(nullptr);
   auto s=history::GetSettings();
+  assert(s.block_telemetry==(scenario=="blocking-legacy-one"||scenario=="blocking-category-zero"));
+  assert(s.dump_telemetry==(scenario=="blocking-legacy-one"));
+  for(const auto& flag:history::blocking_flags)
+    if(flag.default_value)assert((s.*(flag.member))==(scenario!="blocking-category-zero"));
   assert(s.downloads==(scenario!="zero" && scenario!="legacy-zero"));
   assert(s.max_buffered_mib==(scenario=="buffer-1024"||scenario=="buffer-over"?1024u:scenario=="buffer-under"?8u:512u));
   const bool speed_disabled=!(scenario=="speed-10-limit-10"||scenario=="speed-10-limit-over"||
@@ -222,6 +240,12 @@ int main(int argc,char** argv) {
   assert(GetPrivateProfileIntW(L"To Disk",L"Podcasts",9,path.c_str())==(s.podcasts?1:0));
   assert(GetPrivateProfileIntW(L"To Disk",L"Windows Playback Fallback",9,path.c_str())==(s.windows_playback_fallback?1:0));
   std::wstring persisted;bool unicode=false;assert(history::settings_file::Read(path,persisted,unicode));
+  assert(!history::settings_file::Find(persisted,L"BlockTelemetry").present);
+  assert(!history::settings_file::Find(persisted,L"DumpTelemetry").present);
+  for(const auto& flag:history::blocking_flags) {
+    const auto value=history::settings_file::Find(persisted,flag.key,L"[Telemetry]");
+    assert(value.present&&!value.duplicate&&value.value==(s.*(flag.member)?L"1":L"0"));
+  }
   const auto persisted_log=history::settings_file::Find(persisted,L"LogLevel");
   assert(persisted_log.present&&!persisted_log.duplicate&&persisted_log.value==std::to_wstring(expected_log));
   assert(!history::settings_file::Find(persisted,L"Log").present);

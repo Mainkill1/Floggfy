@@ -17,6 +17,7 @@
 #include "hook_diagnostics.h"
 #include "metadata_bridge.h"
 #include "telemetry_filter.h"
+#include "telemetry_crash.h"
 #include "pe_imports.h"
 #include "to_disk_menu.h"
 #include "startup_ready.h"
@@ -342,6 +343,21 @@ static void StartConnectivityHook(HMODULE module,bool enabled) {
     }
 }
 
+static void DrainCrashStatus() {
+    const auto status=privacy::GetCrashStatus();
+    static privacy::CrashStatus previous{};static bool seen=false;
+    if(seen&&status.requested==previous.requested&&status.hook_active==previous.hook_active&&
+       status.sanitized_launches==previous.sanitized_launches&&status.launches_without_url==previous.launches_without_url&&
+       status.rewrite_failures==previous.rewrite_failures&&status.unmatched_launches==previous.unmatched_launches)return;
+    previous=status;seen=true;
+    char line[320];
+    std::snprintf(line,sizeof(line),"privacy crash requested=%u launch_hook=%u uploads_disabled=%llu already_without_url=%llu rewrite_failures=%llu unmatched_launches=%llu coverage=future-CreateProcessW-launches-only",
+      unsigned(status.requested),unsigned(status.hook_active),static_cast<unsigned long long>(status.sanitized_launches),
+      static_cast<unsigned long long>(status.launches_without_url),static_cast<unsigned long long>(status.rewrite_failures),
+      static_cast<unsigned long long>(status.unmatched_launches));
+    Log(line);
+}
+
 static DWORD WINAPI StartupMonitor(LPVOID) {
     wchar_t path[MAX_PATH];
     DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH);
@@ -351,6 +367,10 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
 
     history::InitSettings(proxy_module);
     const auto startup_settings=history::GetSettings();
+    // Attach this independent launch guard as early as the settings allow.
+    // Do not wait for CEF: it cannot cover the separate crash reporter process.
+    if(privacy::PrepareCrash(startup_settings.block_telemetry&&startup_settings.block_crash_reports))
+        privacy::FinalizeCrash(MH_ApplyQueued()==MH_OK);
     const bool network_patch_enabled=startup_settings.network_patch;
     const bool decoded_messages_enabled=startup_settings.debug_networking;
     bool privacy_started=false;
@@ -389,6 +409,7 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
         }
         history::DrainDecodedConnectMessages();
         privacy::DrainStatus();
+        DrainCrashStatus();
         if(i==0)startup::SignalReady();
         Sleep(i < 600 ? 25 : 1000);
     }

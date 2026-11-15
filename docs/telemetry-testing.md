@@ -1,17 +1,38 @@
 # Local telemetry suppression testing
 
 For issue #28. This module is experimental and opt-in. Set `BlockTelemetry=1`
-under `[To Disk]`, then restart Spotify. `0` (default) installs no privacy hooks.
+under `[Telemetry]`, then restart Spotify. `0` (default) installs no privacy hooks.
 Recording and metadata preferences do not control it. Use `LogLevel=4` to see
 fixed capability fields and aggregate block counters; ordinary diagnostics never
 include request URLs or bodies. The default log level reports partial/unsupported coverage warnings.
 
-Current policy blocks only these known routes:
+The master controls these independent categories. Set any category to `0` to
+allow it again. Category defaults are `1`; the master and dump defaults are `0`.
+RC1 settings under `[To Disk]` and interim `[Blocking]` values migrate to
+`[Telemetry]`; explicit values in the new section take precedence. Migration preserves custom settings.
+
+| Option | Reporting category |
+|---|---|
+| `BlockEventReports` | Gabo event batches |
+| `BlockPlaybackReports` | Melody playback starts, statistics and media event reports |
+| `BlockGrowthAnalytics` | Website growth analytics beacons |
+| `BlockSentry` | Known Sentry error-reporting project |
+| `BlockCrashReports` | Crash upload destination and recognized crash-reporter launches |
+| `BlockInternalLogging` | Cosmos logging v1, v2 and v3 |
+| `BlockTrackErrors` | Track-error reports |
+| `BlockAITelemetry` | Known AI sandbox/turn-termination telemetry paths |
+
+URL policy uses these narrow destinations:
 
 | Destination | Route |
 |---|---|
-| spclient.wg.spotify.com | /gabo-receiver-service and children |
-| sp://logging | /v3 and children |
+| spclient.wg.spotify.com and regional `*-spclient.spotify.com` hosts | /gabo-receiver-service and children |
+| Same client hosts | /melody/v1/msg and /melody/unauth/v1/msg reporting routes |
+| Same client hosts | /track-error/v1/errors |
+| Same client hosts | /v1/telemetry/sandbox and /v1/telemetry/turn-termination |
+| www.spotify.com | /api/growth-events and children |
+| crashdump.spotify.com | Crash uploads |
+| sp://logging | /v1, /v2 and /v3 and children |
 | o22381.ingest.sentry.io | /api/114855 and children |
 
 The Gabo route is identified in [spotify-adblock's policy](https://github.com/abba23/spotify-adblock/blob/main/config.toml).
@@ -37,7 +58,19 @@ instance afterward. Unobserved callback implementations, null resource handlers
 on redirects, service workers and other native networking stacks may bypass the
 covered callbacks. Unknown URLs/ABIs pass through. Overall status stays partial;
 installed hooks or an enabled INI value do not prove complete privacy protection.
-No proxy, firewall enforcement or interception certificate is installed.
+Renderer request guards cover observed fetch, XHR, beacon and Cosmos entry
+points; they report attachment separately from actual block counts. Guards are
+installed after renderer initialization, so earlier activity remains unverified.
+The crash control removes the upload URL only from a recognized
+`crashpad_handler.exe` launch in the Spotify install directory, preserving the
+local database and IPC arguments. Crashpad documents that omitting `--url`
+[disables uploads](https://github.com/chromium/crashpad/blob/main/handler/crashpad_handler.md).
+The native crash control applies only to recognized future reporter launches;
+existing reporters and launches before attachment are not protected. Unknown
+Hermes/native transports and dynamically selected service destinations can bypass
+these controls. AI path rules are based on installed-client strings; their active
+host/call path has not been established. No proxy, firewall enforcement or
+interception certificate is installed.
 
 ## Checks
 
@@ -73,7 +106,9 @@ incomplete data retains a labeled raw representation and a decoding reason.
 
 This captures future blocked application requests, not network packets or old
 counter entries. It does not capture allowed requests or events suppressed before
-request creation. URL userinfo/query/fragment and authorization/cookie headers are
+request creation. Renderer cancellations have category counters; their payloads
+are not copied to this native request log. Crash-launch suppression is reported
+separately and does not represent a captured network request. URL userinfo/query/fragment and authorization/cookie headers are
 omitted; the captured body itself is retained for inspection and can contain
 identifiers or other account data. Payload contents stay in this separate local
 file and are not copied into normal diagnostics.

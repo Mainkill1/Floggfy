@@ -26,5 +26,19 @@ x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -static-libgcc -stat
 "$floggfy_privacy_root/filter.exe"
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -static-libgcc -static-libstdc++ \
     tests/windows_settings_test.cpp -lole32 -luuid -lshell32 -o "$floggfy_privacy_root/settings.exe"
-"$floggfy_privacy_root/settings.exe" new
+for scenario in new blocking-legacy-one blocking-legacy-zero blocking-precedence blocking-category-zero; do
+    "$floggfy_privacy_root/settings.exe" "$scenario"
+done
+x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -static-libgcc -static-libstdc++ \
+    -municode tests/windows_pr13_settings_test.cpp -lole32 -luuid -lshell32 -o "$floggfy_privacy_root/restart-settings.exe"
+"$floggfy_privacy_root/restart-settings.exe"
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/telemetry_crash_command_test.cpp -o build/telemetry-tests/crash-command
+build/telemetry-tests/crash-command
+mkdir -p "$floggfy_privacy_root/crash"
+x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -municode -static-libgcc -static-libstdc++ \
+    tests/windows_telemetry_crash_test.cpp build/telemetry-tests/minhook-*.o -o "$floggfy_privacy_root/crash/Spotify.exe"
+for mode in --disabled --rollback-before-apply --rollback-after-apply; do
+    "$floggfy_privacy_root/crash/Spotify.exe" "$mode"
+done
+"$floggfy_privacy_root/crash/Spotify.exe"
 python3 tests/diagnostics_source_test.py

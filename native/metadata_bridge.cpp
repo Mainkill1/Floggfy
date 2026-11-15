@@ -298,6 +298,20 @@ static int Console(Display* self,Browser* b,int level,const String* text,const S
   privacy::ObserveRenderer({text->str+privacy_prefix_size,text->length-privacy_prefix_size});
   Release(b);return 1;
  }
+ constexpr wchar_t capability_prefix[]=L"FLOGGFY_PRIVACY_V2:";
+ constexpr size_t capability_prefix_size=sizeof(capability_prefix)/sizeof(*capability_prefix)-1;
+ if(text&&text->str&&text->length>=capability_prefix_size&&
+    !wmemcmp(text->str,capability_prefix,capability_prefix_size)){
+  privacy::ObserveRendererCapabilities({text->str+capability_prefix_size,text->length-capability_prefix_size});
+  Release(b);return 1;
+ }
+ constexpr wchar_t count_prefix[]=L"FLOGGFY_PRIVACY_COUNT_V1:";
+ constexpr size_t count_prefix_size=sizeof(count_prefix)/sizeof(*count_prefix)-1;
+ if(text&&text->str&&text->length>=count_prefix_size&&
+    !wmemcmp(text->str,count_prefix,count_prefix_size)){
+  privacy::ObserveRendererCount({text->str+count_prefix_size,text->length-count_prefix_size});
+  Release(b);return 1;
+ }
  if(CurrentTimeline(text)||CurrentPlayback(text)){Release(b);return 1;}
  if(text&&text->str&&QueueRendererDiagnostic({text->str,text->length})) {
   Release(b);return 1; // Reserved diagnostics never fall through to raw console logging.
@@ -310,7 +324,22 @@ static void InjectPrivacy(Frame* frame) {
  const auto main=reinterpret_cast<int(*)(Frame*)>(frame->methods[15]);
  const auto execute=reinterpret_cast<void(*)(Frame*,const String*,const String*,int)>(frame->methods[14]);
  if(!main||!execute||!main(frame))return;
- String code={const_cast<wchar_t*>(telemetry_script),sizeof(telemetry_script)/sizeof(*telemetry_script)-1,nullptr};
+ const auto settings=GetSettings();
+ // Pass every switch explicitly: omitted or false options never opt in. Keep
+ // the constant local to each injection so repeated frame injection is valid.
+ std::wstring script=L"(()=>{const __floggfyPrivacyOptions=Object.freeze({";
+ const auto option=[&script](const wchar_t* key,bool enabled){script+=key;script+=enabled?L":true,":L":false,";};
+ option(L"block_telemetry",settings.block_telemetry);
+ option(L"block_event_reports",settings.block_event_reports);
+ option(L"block_playback_reports",settings.block_playback_reports);
+ option(L"block_growth_analytics",settings.block_growth_analytics);
+ option(L"block_sentry",settings.block_sentry);
+ option(L"block_crash_reports",settings.block_crash_reports);
+ option(L"block_internal_logging",settings.block_internal_logging);
+ option(L"block_track_errors",settings.block_track_errors);
+ option(L"block_ai_telemetry",settings.block_ai_telemetry);
+ script+=L"});";script+=telemetry_script;script+=L"})();";
+ String code={script.data(),script.size(),nullptr};
  const wchar_t name[]=L"floggfy-privacy.js";String source={const_cast<wchar_t*>(name),wcslen(name),nullptr};
  execute(frame,&code,&source,1);
 }

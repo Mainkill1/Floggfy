@@ -31,7 +31,20 @@ using Before=int(*)(Resource*,void*,void*,Request*,void*);
 struct LastError {DWORD value=GetLastError();~LastError(){SetLastError(value);}void Restore()const{SetLastError(value);}};
 std::atomic<bool> enabled{false},dirty{false},fallback_seen{false};
 std::atomic<unsigned> unsupported{0},renderer{0};
-std::atomic<unsigned long long> blocked[4]{};
+constexpr unsigned kRules=static_cast<unsigned>(Rule::Count);
+std::atomic<unsigned long long> blocked[kRules]{},renderer_blocked[kRules]{};
+std::atomic<unsigned> category_mask{(1u<<kRules)-2},renderer_capabilities{0};
+void ConfigureCategories(const history::Settings& options) noexcept {
+ unsigned mask=0;
+ const auto set=[&](Rule rule,bool on){if(on)mask|=1u<<static_cast<unsigned>(rule);};
+ set(Rule::Gabo,options.block_event_reports);set(Rule::Logging,options.block_internal_logging);
+ set(Rule::Sentry,options.block_sentry);set(Rule::Playback,options.block_playback_reports);
+ set(Rule::Growth,options.block_growth_analytics);set(Rule::Crash,options.block_crash_reports);
+ set(Rule::TrackError,options.block_track_errors);set(Rule::AITelemetry,options.block_ai_telemetry);
+ category_mask.store(mask,std::memory_order_release);
+}
+bool Selected(Rule rule) noexcept {return (category_mask.load(std::memory_order_acquire)&(1u<<static_cast<unsigned>(rule)))!=0;}
+
 void(*free_string)(String*)=nullptr;
 
 bool Memory(const void* p,size_t bytes,bool executable=false) noexcept {
@@ -69,7 +82,7 @@ Rule RequestRule(Request* request) noexcept {
  if(Memory(value,sizeof(String))&&value->length<=32768&&(!value->length||Memory(value->str,value->length*sizeof(wchar_t))))rule=Classify({value->str,value->length});
  else Unsupported();
  free_string(value);
- return rule;
+ return Selected(rule)?rule:Rule::Allow;
 }
 // Dumping is an explicit, restart-only diagnostic. Callbacks only copy bounded
 // in-memory data; the existing startup worker drains the queue to one local log.
@@ -447,9 +460,12 @@ bool Prepare(HMODULE cef,bool preference) noexcept {
  LastError error;
  if(preparation_attempted)return false;
  preparation_attempted=true;
+ try{
+  const auto settings=history::GetSettings();ConfigureCategories(settings);
+  if(preference&&settings.dump_telemetry&&!settings.root.empty()){dump.location=settings.root;GetSystemTime(&dump.started);dump.enabled=true;}
+ }catch(...){preference=false;}
  enabled.store(preference,std::memory_order_release);dirty=true;
  if(!preference)return false;
- try{const auto settings=history::GetSettings();if(settings.dump_telemetry&&!settings.root.empty()){dump.location=settings.root;GetSystemTime(&dump.started);dump.enabled=true;}}catch(...){}
  if(!cef){Unsupported();return false;}
  free_string=Export<decltype(free_string)>(cef,"cef_string_userfree_utf16_free");
  if(!Memory(reinterpret_cast<void*>(free_string),1,true)){free_string=nullptr;Unsupported();return false;}
@@ -499,16 +515,48 @@ void ObserveRenderer(std::wstring_view status) noexcept {
  else return;
  if(renderer.exchange(value)!=value)dirty=true;
 }
+void ObserveRendererCapabilities(std::wstring_view status) noexcept {
+ LastError error;if(!Enabled())return;
+ unsigned bits=16; // Separate seen bit: zero capabilities is a meaningful report.
+ const wchar_t* names[]={L"fetch=",L" xhr=",L" beacon=",L" cosmos="};
+ for(unsigned i=0;i<4;++i){
+  const std::wstring_view name(names[i]);
+  if(status.substr(0,name.size())!=name)return;
+  status.remove_prefix(name.size());
+  if(status.empty()||(status.front()!=L'0'&&status.front()!=L'1'))return;
+  if(status.front()==L'1')bits|=1u<<i;
+  status.remove_prefix(1);
+ }
+ if(status!=L" early=0")return;
+ if(renderer_capabilities.exchange(bits)!=bits)dirty=true;
+}
+void ObserveRendererCount(std::wstring_view status) noexcept {
+ LastError error;if(!Enabled())return;
+ struct Category {std::wstring_view name;Rule rule;};
+ constexpr Category categories[]={
+  {L"event_reports",Rule::Gabo},{L"internal_logging",Rule::Logging},{L"sentry",Rule::Sentry},
+  {L"playback_reports",Rule::Playback},{L"growth_analytics",Rule::Growth},{L"crash_reports",Rule::Crash},
+  {L"track_errors",Rule::TrackError},{L"ai_telemetry",Rule::AITelemetry}
+ };
+ const auto separator=status.find(L'=');if(separator==status.npos)return;
+ const auto name=status.substr(0,separator),amount=status.substr(separator+1);
+ // Renderer sends fixed deltas; never log arbitrary console strings.
+ if(amount!=L"1")return;
+ for(const auto& category:categories)if(name==category.name){
+  if(Selected(category.rule)){renderer_blocked[static_cast<unsigned>(category.rule)].fetch_add(1,std::memory_order_relaxed);dirty=true;}
+  return;
+ }
+}
 void DrainStatus() noexcept {
  LastError error;
  DrainDumps();
  if(!dirty.exchange(false))return;
  char line[400];
- const auto producers=renderer.load();
+ const auto producers=renderer.load(),renderer_hooks=renderer_capabilities.load();
  const bool standalone=create_hook.active.load(),browser=resource_hook.active.load()||fallback_seen.load(),preload=before_hook.active.load();
  // DrainStatus runs on the startup worker. Warn only when capabilities change,
  // never once per blocked request or per unsupported callback observation.
- const unsigned summary=unsigned(Enabled())|(unsigned(standalone)<<1)|(unsigned(browser)<<2)|(unsigned(preload)<<3)|(unsigned(unsupported.load()!=0)<<4)|(producers<<5);
+ const unsigned summary=unsigned(Enabled())|(unsigned(standalone)<<1)|(unsigned(browser)<<2)|(unsigned(preload)<<3)|(unsigned(unsupported.load()!=0)<<4)|(producers<<5)|(renderer_hooks<<8);
  static unsigned previous=~0u;
  const bool changed=summary!=previous;previous=summary;
  std::snprintf(line,sizeof(line),"privacy status=%s standalone=%u browser=%u preload=%u renderer_seen=%u sender=%u ubi=%u unsupported=%u; early=0 coverage=partial runtime-unverified redirects-and-other-stacks-unverified",
@@ -519,9 +567,11 @@ void DrainStatus() noexcept {
     ?"Telemetry suppression coverage is partial: CEF callbacks and late renderer producers only; unobserved callbacks, redirects and other network stacks remain unverified."
     :"Telemetry suppression native hooks are unsupported; overall coverage remains partial and unverified.");
   history::QueueDiagnostic(line);
-  for(auto rule:{Rule::Gabo,Rule::Logging,Rule::Sentry}){
-   const auto count=blocked[static_cast<unsigned>(rule)].load();if(!count)continue;
-   std::snprintf(line,sizeof(line),"privacy blocked rule=%s count=%llu",RuleName(rule),count);history::QueueDiagnostic(line);
+  std::snprintf(line,sizeof(line),"privacy renderer fetch=%u xhr=%u beacon=%u cosmos=%u seen=%u early=0",unsigned(bool(renderer_hooks&1)),unsigned(bool(renderer_hooks&2)),unsigned(bool(renderer_hooks&4)),unsigned(bool(renderer_hooks&8)),unsigned(bool(renderer_hooks&16)));history::QueueDiagnostic(line);
+  if(changed){std::snprintf(line,sizeof(line),"privacy categories event_reports=%u playback_reports=%u growth_analytics=%u sentry=%u crash_reports=%u internal_logging=%u track_errors=%u ai_telemetry=%u",unsigned(Selected(Rule::Gabo)),unsigned(Selected(Rule::Playback)),unsigned(Selected(Rule::Growth)),unsigned(Selected(Rule::Sentry)),unsigned(Selected(Rule::Crash)),unsigned(Selected(Rule::Logging)),unsigned(Selected(Rule::TrackError)),unsigned(Selected(Rule::AITelemetry)));history::QueueDiagnostic(line);}
+  for(unsigned i=1;i<kRules;++i){
+   const auto native=blocked[i].load(),js=renderer_blocked[i].load();if(!native&&!js)continue;
+   std::snprintf(line,sizeof(line),"privacy blocked rule=%s count=%llu native=%llu renderer=%llu",RuleName(static_cast<Rule>(i)),native+js,native,js);history::QueueDiagnostic(line);
   }
  }catch(...){}
 }

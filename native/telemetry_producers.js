@@ -16,6 +16,8 @@
   }}catch{}
  }
  if(own(window,'__floggfyPrivacyObserve')!==undefined)return;
+ const options=typeof __floggfyPrivacyOptions==='object'?__floggfyPrivacyOptions:{};
+ const enabled=category=>options.block_telemetry===true&&options['block_'+category]===true;
  const senders=new WeakMap(),ubis=new WeakMap(),timers=new WeakMap();
  let senderCount=0,senderFailed=0,ubiCount=0,ubiFailed=0,lastStatus='';
  function report(){
@@ -35,6 +37,10 @@
    Object.defineProperty(target,key,d?{...d,value:replacement}:{value:replacement,writable:true,configurable:true});
    return own(target,key)===replacement;
   }catch{return false;}
+ }
+ function canReplace(target,key){
+  if(!method(target,key))return false;
+  try{const d=Object.getOwnPropertyDescriptor(target,key);return d?('value'in d&&d.writable===true):Object.isExtensible(target);}catch{return false;}
  }
  const senderMethods=['storeEvent','sendEvents','sendESStats','initSendingEvents','lastFlush'];
  function senderShape(sender){
@@ -87,7 +93,8 @@
   ubis.set(wrapper,ok);
  }
  function observe(value){
-  if(!object(value))return;
+  installRequests();
+  if(!enabled('event_reports')||!object(value))return;
   try{
    const map=own(value,'_map');
    // Native Map.get avoids getters, custom iteration and registry.resolve.
@@ -96,6 +103,118 @@
   }catch{}
   report();
  }
+ // Match telemetry_policy.h's audited destinations; URL payloads never cross
+ // the console boundary. A zero master or category leaves its callers intact.
+ function count(category){try{console.log('FLOGGFY_PRIVACY_COUNT_V1:'+category+'=1');}catch{}}
+ const route=(path,root)=>path===root||path.startsWith(root+'/');
+ function classify(url){
+  if(typeof url!=='string'||!url.length||url.length>4096||/[\x00-\x20\x7f]/.test(url))return;
+  const match=/^(https?|sp):\/\/([^/\\?#]*)([^?#]*)/i.exec(url);if(!match)return;
+  const scheme=match[1].toLowerCase();let host=match[2].slice(match[2].lastIndexOf('@')+1).toLowerCase();
+  const port=host.indexOf(':');
+  if(port!==-1){const value=host.slice(port+1);if(!/^\d{1,5}$/.test(value)||+value<1||+value>65535)return;host=host.slice(0,port);}
+  if(host.endsWith('.'))host=host.slice(0,-1);
+  const segments=[],decoded=match[3].replace(/%([0-9a-f]{2})/gi,(all,hex)=>{
+   const c=String.fromCharCode(parseInt(hex,16));return /[a-z0-9._~\/\\-]/i.test(c)?c:all;
+  }).replace(/\\/g,'/');
+  for(const segment of decoded.split('/')){if(segment==='..')segments.pop();else if(segment&&segment!=='.')segments.push(segment);}
+  const path='/'+segments.join('/'),http=scheme==='http'||scheme==='https';
+  const regional=/^([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)-spclient\.spotify\.com$/.exec(host);
+  const spclient=http&&(host==='spclient.wg.spotify.com'||regional&&regional[1].length+8<=63);
+  if(spclient&&route(path,'/gabo-receiver-service'))return 'event_reports';
+  if(spclient&&(route(path,'/melody/v1/msg')||route(path,'/melody/unauth/v1/msg')))return 'playback_reports';
+  if(spclient&&path==='/track-error/v1/errors')return 'track_errors';
+  if(spclient&&(path==='/v1/telemetry/sandbox'||path==='/v1/telemetry/turn-termination'))return 'ai_telemetry';
+  if(http&&host==='www.spotify.com'&&route(path,'/api/growth-events'))return 'growth_analytics';
+  if(http&&host==='crashdump.spotify.com')return 'crash_reports';
+  if(scheme==='sp'&&host==='logging'&&['/v1','/v2','/v3'].some(root=>route(path,root)))return 'internal_logging';
+  if(http&&host==='o22381.ingest.sentry.io'&&route(path,'/api/114855'))return 'sentry';
+ }
+ // Use branded platform getters, never caller-controlled url/toString getters.
+ const urlGetter=typeof URL==='function'?Object.getOwnPropertyDescriptor(URL.prototype,'href')?.get:undefined;
+ const requestGetter=typeof Request==='function'?Object.getOwnPropertyDescriptor(Request.prototype,'url')?.get:undefined;
+ function address(value,request=false){
+  if(typeof value==='string'){
+   if(value.length>4096)return;
+   if(value.includes('://'))return value;
+   try{return new URL(value,window.location.href).href;}catch{return;}
+  }
+  if(object(value)){
+   if(request&&requestGetter)try{return requestGetter.call(value);}catch{}
+   if(urlGetter)try{return urlGetter.call(value);}catch{}
+  }
+ }
+ const blocked=(value,request=false)=>{const category=classify(address(value,request));return category&&enabled(category)?category:undefined;};
+ const capabilities={fetch:0,xhr:0,beacon:0,cosmos:0};let lastCapabilities='';
+ function reportRequests(){
+  const status='FLOGGFY_PRIVACY_V2:fetch='+capabilities.fetch+' xhr='+capabilities.xhr+' beacon='+capabilities.beacon+' cosmos='+capabilities.cosmos+' early=0';
+  if(status!==lastCapabilities){lastCapabilities=status;try{console.log(status);}catch{}}
+ }
+ // The observer already runs during bounded collector discovery. Reuse it to
+ // discover a late native bridge; do not install another timer or global setter.
+ function installRequests(){
+  if(options.block_telemetry!==true)return;
+  if(!capabilities.fetch){
+   const original=method(window,'fetch');
+   if(original&&replace(window,'fetch',{fetch(...args){
+    const category=blocked(args[0],true);if(!category)return Reflect.apply(original,this,args);
+    count(category);return Promise.reject(new TypeError('Failed to fetch'));
+   }}.fetch))capabilities.fetch=1;
+  }
+  if(!capabilities.beacon){
+   const navigator=own(window,'navigator')||window.navigator,original=method(navigator,'sendBeacon');
+   if(original&&replace(navigator,'sendBeacon',{sendBeacon(...args){
+    const category=this===navigator&&blocked(args[0]);if(!category)return Reflect.apply(original,this,args);
+    count(category);return false;
+   }}.sendBeacon))capabilities.beacon=1;
+  }
+  if(!capabilities.xhr){
+   const prototype=own(own(window,'XMLHttpRequest'),'prototype');
+   const open=method(prototype,'open'),send=method(prototype,'send'),abort=method(prototype,'abort'),dispatch=method(prototype,'dispatchEvent');
+   if(open&&send&&abort&&dispatch&&typeof Event==='function'&&typeof DOMException==='function'&&
+      canReplace(prototype,'open')&&canReplace(prototype,'send')){
+    const requests=new WeakMap();
+    const opened=replace(prototype,'open',{open(...args){
+     const result=Reflect.apply(open,this,args);requests.set(this,{category:blocked(args[1]),async:args[2]===undefined||Boolean(args[2])});return result;
+    }}.open);
+    if(opened&&replace(prototype,'send',{send(...args){
+     const state=requests.get(this);
+     if(!state||!state.category||this.readyState!==1)return Reflect.apply(send,this,args);
+     Reflect.apply(abort,this,[]);count(state.category);
+     if(!state.async)throw new DOMException('Blocked by privacy settings','NetworkError');
+     // abort() on OPENED before send has no native events. Deliver cancellation,
+     // never load/success, and invalidate the pending notification on a new open.
+     queueMicrotask(()=>{if(requests.get(this)!==state)return;
+      Reflect.apply(dispatch,this,[new Event('abort')]);Reflect.apply(dispatch,this,[new Event('loadend')]);
+     });
+    }}.send))capabilities.xhr=1;
+   }
+  }
+  if(!capabilities.cosmos){
+   const send=method(window,'sendCosmosRequest'),cancel=method(window,'cancelCosmosRequest');
+   if(send&&cancel&&canReplace(window,'sendCosmosRequest')&&canReplace(window,'cancelCosmosRequest')){
+    const tokens=new WeakSet(),pending=new WeakSet();
+    const cancelled=replace(window,'cancelCosmosRequest',{cancelCosmosRequest(...args){
+     if(object(args[0])&&tokens.has(args[0])){pending.delete(args[0]);return;}
+     return Reflect.apply(cancel,this,args);
+    }}.cancelCosmosRequest);
+    if(cancelled&&replace(window,'sendCosmosRequest',{sendCosmosRequest(...args){
+     const input=args[0],request=own(input,'request'),failure=own(input,'onFailure');let category;
+     // Installed module 1508's verified bridge shape and failure(code,text)
+     // callback. Unknown bridges, methods, requests and Hermes remain partial.
+     if(typeof request==='string'&&request.length<=1048576&&typeof failure==='function'&&
+        typeof own(input,'onSuccess')==='function'&&typeof own(input,'persistent')==='boolean'){
+      try{const decoded=JSON.parse(request);if(classify(decoded.uri)==='internal_logging'&&enabled('internal_logging'))category='internal_logging';}catch{}
+     }
+     if(!category)return Reflect.apply(send,this,args);
+     const token=Object.freeze({});tokens.add(token);pending.add(token);count(category);
+     queueMicrotask(()=>{if(pending.delete(token))Reflect.apply(failure,undefined,[-1,'Blocked by privacy settings']);});return token;
+    }}.sendCosmosRequest))capabilities.cosmos=1;
+   }
+  }
+  reportRequests();
+ }
  try{Object.defineProperty(window,'__floggfyPrivacyObserve',{value:observe,configurable:true});}catch{return;}
+ installRequests();
  report();
 })();

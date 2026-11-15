@@ -2,15 +2,26 @@
 #include <array>
 #include <string_view>
 namespace privacy {
-enum class Rule {Allow,Gabo,Logging,Sentry};
+enum class Rule {Allow,Gabo,Logging,Sentry,Playback,Growth,Crash,TrackError,AITelemetry,Count};
 inline const char* RuleName(Rule rule) noexcept {
-    switch(rule){case Rule::Gabo:return "gabo";case Rule::Logging:return "logging";case Rule::Sentry:return "sentry";default:return "none";}
+    switch(rule){case Rule::Gabo:return "gabo";case Rule::Logging:return "logging";case Rule::Sentry:return "sentry";case Rule::Playback:return "playback";case Rule::Growth:return "growth";case Rule::Crash:return "crash";case Rule::TrackError:return "track_error";case Rule::AITelemetry:return "ai_telemetry";default:return "none";}
 }
 namespace detail {
 inline wchar_t Lower(wchar_t c) noexcept {return c>=L'A'&&c<=L'Z'?c+(L'a'-L'A'):c;}
 inline bool Equal(std::wstring_view a,std::wstring_view b) noexcept {
     if(a.size()!=b.size())return false;
     for(size_t i=0;i<a.size();++i)if(Lower(a[i])!=b[i])return false;
+    return true;
+}
+// Regional client hosts are a single DNS label ending in -spclient.spotify.com.
+// Do not accept arbitrary subdomains, suffix lookalikes or malformed labels.
+inline bool Spclient(std::wstring_view host) noexcept {
+    if(Equal(host,L"spclient.wg.spotify.com"))return true;
+    constexpr std::wstring_view suffix=L"-spclient.spotify.com";
+    if(host.size()<=suffix.size()||!Equal(host.substr(host.size()-suffix.size()),suffix))return false;
+    const auto region=host.substr(0,host.size()-suffix.size());
+    if(region.size()+8>63||region.front()==L'-'||region.back()==L'-')return false;
+    for(auto c:region) {c=Lower(c);if(!((c>=L'a'&&c<=L'z')||(c>=L'0'&&c<=L'9')||c==L'-'))return false;}
     return true;
 }
 inline int Hex(wchar_t c) noexcept {
@@ -40,10 +51,12 @@ inline Rule Classify(std::wstring_view url) noexcept {
         host=host.substr(0,port);
     }
     if(!host.empty()&&host.back()==L'.')host.remove_suffix(1);
-    const bool gabo=http&&detail::Equal(host,L"spclient.wg.spotify.com");
+    const bool spclient=http&&detail::Spclient(host);
     const bool logging=detail::Equal(scheme,L"sp")&&detail::Equal(host,L"logging");
     const bool sentry=http&&detail::Equal(host,L"o22381.ingest.sentry.io");
-    if(!gabo&&!logging&&!sentry)return Rule::Allow;
+    const bool growth=http&&detail::Equal(host,L"www.spotify.com");
+    const bool crash=http&&detail::Equal(host,L"crashdump.spotify.com");
+    if(!spclient&&!logging&&!sentry&&!growth&&!crash)return Rule::Allow;
     auto raw=stop==url.npos?std::wstring_view{}:url.substr(stop);
     raw=raw.substr(0,raw.find_first_of(L"?#"));
     std::array<wchar_t,4097> decoded{},canonical{};size_t count=0;
@@ -70,8 +83,13 @@ inline Rule Classify(std::wstring_view url) noexcept {
         begin=end+1;
     }
     const std::wstring_view normalized(canonical.data(),used);
-    if(gabo&&detail::Route(normalized,L"/gabo-receiver-service"))return Rule::Gabo;
-    if(logging&&detail::Route(normalized,L"/v3"))return Rule::Logging;
+    if(spclient&&detail::Route(normalized,L"/gabo-receiver-service"))return Rule::Gabo;
+    if(spclient&&(detail::Route(normalized,L"/melody/v1/msg")||detail::Route(normalized,L"/melody/unauth/v1/msg")))return Rule::Playback;
+    if(spclient&&normalized==L"/track-error/v1/errors")return Rule::TrackError;
+    if(spclient&&(normalized==L"/v1/telemetry/sandbox"||normalized==L"/v1/telemetry/turn-termination"))return Rule::AITelemetry;
+    if(growth&&detail::Route(normalized,L"/api/growth-events"))return Rule::Growth;
+    if(crash)return Rule::Crash;
+    if(logging&&(detail::Route(normalized,L"/v1")||detail::Route(normalized,L"/v2")||detail::Route(normalized,L"/v3")))return Rule::Logging;
     if(sentry&&detail::Route(normalized,L"/api/114855"))return Rule::Sentry;
     return Rule::Allow;
 }

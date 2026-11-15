@@ -11,4 +11,6 @@ void ObserveClient(void* client) noexcept;
 void DrainStatus() noexcept;
 bool Enabled() noexcept;
 void ObserveRenderer(std::wstring_view fixed_status) noexcept;
+void ObserveRendererCapabilities(std::wstring_view fixed_status) noexcept;
+void ObserveRendererCount(std::wstring_view fixed_count) noexcept;
 }

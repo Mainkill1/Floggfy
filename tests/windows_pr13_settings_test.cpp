@@ -9,16 +9,88 @@ static void StrictOptIn() {
     for(const wchar_t* value:{L"0",L"2",L"-1",L"01",L"+1",L"true",L"1junk",L"1.0",L"0x1",L"\"1\"",L"",L"111111111111111111111111111111111"}) {
         std::wstring text=L"[To Disk]\r\n";
         for(const auto& flag:restart_flags)text+=std::wstring(flag.key)+L"="+value+L"\r\n";
+        text+=L"[Telemetry]\n";
+        for(const auto& flag:blocking_flags)text+=std::wstring(flag.key)+L"="+value+L"\n";
         Settings parsed;assert(!ReadRestartOptionsText(parsed,text));
         assert(!parsed.save_unmatched&&!parsed.network_patch&&!parsed.block_telemetry&&!parsed.dump_telemetry&&!parsed.debug_connect&&!parsed.debug_networking&&!parsed.debug_hook_diagnostics&&!parsed.dump_streams);
     }
     Settings parsed;
-    assert(!ReadRestartOptionsText(parsed,L"[tO dIsK]\nSaveUnmatched=1\nNetworkPatch= 1 \nBlockTelemetry=1\nDumpTelemetry=1\nDebugConnect=1\nDebugNetworking=\t1\t\nDebugHookDiagnostics=1\nDumpStreams=1\n"));
+    assert(ReadRestartOptionsText(parsed,L"[tO dIsK]\nSaveUnmatched=1\nNetworkPatch= 1 \nBlockTelemetry=1\nDumpTelemetry=1\nDebugConnect=1\nDebugNetworking=\t1\t\nDebugHookDiagnostics=1\nDumpStreams=1\n"));
     assert(parsed.network_patch&&parsed.block_telemetry&&parsed.dump_telemetry&&parsed.debug_connect&&parsed.debug_networking&&parsed.debug_hook_diagnostics);
     assert(ReadRestartOptionsText(parsed,L"[Other]\nNetworkPatch=1\n"));
     assert(!parsed.network_patch&&parsed.debug_connect&&!parsed.debug_networking&&!parsed.debug_hook_diagnostics);
     assert(ReadRestartOptionsText(parsed,L"[To Disk]\nNetworkPatch=1\nNetworkPatch=0\n"));
     assert(!parsed.network_patch); // Ambiguous duplicate opt-ins fail closed.
+}
+static void BlockingOptions() {
+    using namespace history;
+    Settings parsed;
+    assert(ReadBlockingOptionsText(parsed,L"[Other]\nBlockTelemetry=1\nBlockPlaybackReports=0\n"));
+    assert(!parsed.block_telemetry&&!parsed.dump_telemetry);
+    for(const auto& flag:blocking_flags)assert(parsed.*(flag.member)==flag.default_value);
+    for(const auto& flag:blocking_flags) {
+        for(const wchar_t* value:{L"0",L"",L"2",L"01",L"-1",L"+1",L"true",L"1junk",L"1 ",L" 1",L"\t1",L"\"1\""}) {
+            ReadBlockingOptionsText(parsed,std::wstring(L"[Telemetry]\n")+flag.key+L"="+value+L"\n");
+            assert(!(parsed.*(flag.member)));
+        }
+        ReadBlockingOptionsText(parsed,std::wstring(L"[Telemetry]\n")+flag.key+L"=1\n");
+        assert(parsed.*(flag.member));
+        ReadBlockingOptionsText(parsed,std::wstring(L"[Telemetry]\n")+flag.key+L"=1\n[tElEmEtRy]\n"+flag.key+L"=1\n");
+        assert(!(parsed.*(flag.member)));
+    }
+    // Migration preserves zero, honors new-section precedence and leaves
+    // unknown sections/comments and explicit malformed values untouched.
+    for(const wchar_t* value:{L"0",L"1",L"01",L"1\nBlockTelemetry=1"}) {
+        std::wstring text=std::wstring(L"; keep\n[To Disk]\nBlockTelemetry=")+value+L"\nDumpTelemetry=0\n[Other]\nBlockTelemetry=1\n";
+        InsertMissingRestartDefaults(text);
+        assert(!ReadBlockingOptionsText(parsed,text));
+        assert(parsed.block_telemetry==(std::wstring(value)==L"1")&&!parsed.dump_telemetry);
+        assert(!settings_file::Find(text,L"BlockTelemetry").present&&!settings_file::Find(text,L"DumpTelemetry").present);
+        assert(settings_file::Find(text,L"BlockTelemetry",L"[Other]").value==L"1");
+        assert(text.find(L"; keep")!=text.npos);
+        const auto once=text;InsertMissingRestartDefaults(text);assert(text==once);
+    }
+    for(const wchar_t* explicit_value:{L"0",L"1",L"invalid",L"1\nBlockTelemetry=0"}) {
+        std::wstring text=std::wstring(L"[To Disk]\nBlockTelemetry=1\nDumpTelemetry=1\n[Telemetry]\nBlockTelemetry=")+explicit_value+L"\nDumpTelemetry=0\nBlockPlaybackReports=0\n";
+        InsertMissingRestartDefaults(text);
+        assert(!ReadBlockingOptionsText(parsed,text));
+        assert(parsed.block_telemetry==(std::wstring(explicit_value)==L"1")&&!parsed.dump_telemetry&&!parsed.block_playback_reports);
+        assert(parsed.block_event_reports&&parsed.block_crash_reports);
+    }
+    // New-section values win even when invalid; legacy Blocking beats To Disk.
+    for(const auto& flag:blocking_flags) {
+        for(const wchar_t* value:{L"0",L"1",L"01",L" 1",L"1 ",L"1\n"}) {
+            const auto assignment=std::wstring(flag.key)+L"="+value+L"\n";
+            std::wstring text=L"[To Disk]\nBlockTelemetry=1\nDumpTelemetry=1\n[Blocking]\n; retain old notes\nUnknown=keep\n"+assignment;
+            InsertMissingRestartDefaults(text);
+            assert(!ReadBlockingOptionsText(parsed,text));
+            assert((parsed.*(flag.member))==(std::wstring(value)==L"1"||std::wstring(value)==L"1\n"));
+            assert(!settings_file::Find(text,flag.key,L"[Blocking]").present);
+            assert(settings_file::Find(text,L"Unknown",L"[Blocking]").value==L"keep");
+            assert(text.find(L"; retain old notes")!=text.npos);
+            text=L"[To Disk]\nBlockTelemetry=1\nDumpTelemetry=1\n[Blocking]\n"+std::wstring(flag.key)+L"=1\n[Telemetry]\n"+assignment;
+            InsertMissingRestartDefaults(text);
+            assert(!ReadBlockingOptionsText(parsed,text));
+            assert((parsed.*(flag.member))==(std::wstring(value)==L"1"||std::wstring(value)==L"1\n"));
+        }
+        for(const wchar_t* section:{L"[Blocking]",L"[Telemetry]"}) {
+            std::wstring text=std::wstring(L"[To Disk]\nBlockTelemetry=1\nDumpTelemetry=1\n")+section+L"\n"+flag.key+L"=1\n"+flag.key+L"=1\n";
+            InsertMissingRestartDefaults(text);ReadBlockingOptionsText(parsed,text);
+            assert(!(parsed.*(flag.member)));
+        }
+    }
+    std::wstring old_section=L"[To Disk]\nBlockTelemetry=1\nDumpTelemetry=1\n[Blocking]\n; keep this note\nBlockTelemetry=0\nDumpTelemetry=0\nBlockPlaybackReports=0\n";
+    InsertMissingRestartDefaults(old_section);
+    assert(old_section.find(L"[Blocking]")==old_section.npos);
+    assert(old_section.find(L"; keep this note")!=old_section.npos);
+    assert(!ReadBlockingOptionsText(parsed,old_section));
+    assert(!parsed.block_telemetry&&!parsed.dump_telemetry&&!parsed.block_playback_reports);
+    std::wstring embedded;for(const char byte:std::string(default_ini))embedded+=wchar_t(static_cast<unsigned char>(byte));
+    assert(!ReadBlockingOptionsText(parsed,embedded));
+    for(const auto& flag:blocking_flags)assert(parsed.*(flag.member)==flag.default_value);
+    const auto section=embedded.find(L"[Telemetry]\r\n");
+    assert(section!=embedded.npos&&embedded.find(L"BlockTelemetry=",section)<embedded.find(L"BlockEventReports=",section));
+    assert(embedded.find(L"BlockAITelemetry=",section)<embedded.find(L"DumpTelemetry=",section));
 }
 static void MatcherOptions() {
     using namespace history;
@@ -158,7 +230,11 @@ static void PreserveExternalEdits() {
     assert(WritePrivateProfileStringW(L"Matcher",L"MaxMatchQueue",L"9",path.c_str()));
     assert(WritePrivateProfileStringW(L"Matcher",L"TimeOffsetToleranceMs",L"7000",path.c_str()));
     assert(WritePrivateProfileStringW(L"Matcher",L"DurationToleranceMs",L"125",path.c_str()));
+    for(const auto& flag:blocking_flags)assert(WritePrivateProfileStringW(L"Telemetry",flag.key,flag.default_value?L"0":L"1",path.c_str()));
     const auto epoch=CaptureEpoch();assert(SetLyrics(false)&&FlushSettings(5000)&&CaptureEpoch()==epoch);
+    for(const auto& flag:blocking_flags)
+        assert(GetPrivateProfileIntW(L"Telemetry",flag.key,9,path.c_str())==unsigned(!flag.default_value));
+    assert(!GetSettings().block_telemetry&&GetSettings().block_event_reports&&!GetSettings().dump_telemetry);
     assert(GetPrivateProfileIntW(L"To Disk",L"NetworkPatch",9,path.c_str())==1);
     assert(GetPrivateProfileIntW(L"To Disk",L"DebugConnect",9,path.c_str())==0);
     assert(GetPrivateProfileIntW(L"To Disk",L"DebugNetworking",9,path.c_str())==1);
@@ -187,4 +263,4 @@ static void PreserveExternalEdits() {
     assert(SetLyrics(true)&&FlushSettings(5000));
     assert(GetPrivateProfileIntW(L"To Disk",L"DebugNetworking",9,path.c_str())==0); // Missing => default, not stale snapshot.
 }
-int wmain(){StrictOptIn();MatcherOptions();EffectiveDebug();PreserveExternalEdits();puts("PASS: matcher limits/duplicates/sections, external startup edits, default migration, strict opt-in, Unicode, effective native/renderer debug opt-out");return 0;}
+int wmain(){StrictOptIn();BlockingOptions();MatcherOptions();EffectiveDebug();PreserveExternalEdits();puts("PASS: matcher limits/duplicates/sections, external startup edits, default migration, strict opt-in, Unicode, effective native/renderer debug opt-out");return 0;}

@@ -1,9 +1,10 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const path='native/telemetry_producers.js';
 const script=fs.existsSync(path)?fs.readFileSync(path,'utf8'):'';
-function boot(){
- const output=[],cancelled=[],window={};
- const context=vm.createContext({window,console:{log:line=>output.push(line)},clearInterval:id=>cancelled.push(id)});
+const defaults={block_telemetry:true,block_event_reports:true,block_playback_reports:true,block_growth_analytics:true,block_sentry:true,block_crash_reports:true,block_internal_logging:true,block_track_errors:true,block_ai_telemetry:true};
+function boot(options={},window={}){
+ const output=[],cancelled=[];
+ const context=vm.createContext({window,__floggfyPrivacyOptions:{...defaults,...options},URL,Request,Event,DOMException,queueMicrotask,console:{log:line=>output.push(line)},clearInterval:id=>cancelled.push(id)});
  vm.runInContext(script,context);
  assert.equal(typeof window.__floggfyPrivacyObserve,'function','bootstrap installs bounded observer');
  return {context,window,output,cancelled,observe:window.__floggfyPrivacyObserve};
@@ -39,7 +40,8 @@ function ubi(eventSender){
   logPageTransition(location){this.location=location;},getPageTransitionLoggerByChain(){return null;}};
 }
 async function main(){
- const b=boot();assert.deepEqual(b.output,['FLOGGFY_PRIVACY_V1:sender=0 ubi=0 early=0']);
+ await requestGuards();
+ const b=boot();assert(b.output.includes('FLOGGFY_PRIVACY_V1:sender=0 ubi=0 early=0'));
  const {instance:s,state}=sender();let resume;
  const capturedFlush=s.flush.bind(s),inFlight=capturedFlush(new Promise(resolve=>resume=resolve));
  s.storeEvent(true,'queued-before-observation');b.observe(registry(s));
@@ -65,7 +67,7 @@ async function main(){
  assert.deepEqual(state.queue,['queued-before-observation'],'impressions and segments never reach event storage');
  assert.equal(state.uploads,0);
  const location={pageId:'local'};u.logPageTransition(location);assert.strictEqual(u.location,location,'navigation state updates remain functional');
- for(const line of b.output)assert.match(line,/^FLOGGFY_PRIVACY_V1:sender=[01] ubi=[01] early=0$/);
+ for(const line of b.output)assert.match(line,/^FLOGGFY_PRIVACY_(?:V1:sender=[01] ubi=[01] early=0|V2:fetch=[01] xhr=[01] beacon=[01] cosmos=[01] early=0|COUNT_V1:[a-z_]+=1)$/);
 
  const untouched=boot(),other=sender();const original=other.instance.storeEvent;
  untouched.observe(other.instance);untouched.observe(registry(other.instance,Symbol.for('PlayerAPI')));
@@ -74,7 +76,7 @@ async function main(){
  untouched.observe(evil);const record={};Object.defineProperty(record,'instance',{get(){getters++;throw Error('instance getter');}});
  untouched.observe({_map:new Map([[Symbol.for('EventSender'),record]])});
  const bad=sender();Object.defineProperty(bad.instance,'storeEvent',{get(){getters++;throw Error('method getter');}});
- untouched.observe(registry(bad.instance));assert.equal(getters,0);assert.equal(untouched.output.length,1);
+ untouched.observe(registry(bad.instance));assert.equal(getters,0);assert.equal(untouched.output.filter(line=>line.startsWith('FLOGGFY_PRIVACY_V1:')).length,1);
  assert.equal(Object.prototype.hasOwnProperty.call(Object.prototype,'storeEvent'),false);
 
  const partial=boot(),locked=sender();Object.defineProperty(locked.instance,'storeEvent',{value:locked.instance.storeEvent,writable:false});
@@ -97,5 +99,96 @@ async function main(){
  assert.deepEqual(b.cancelled,[42,42],'new sender instance is independently suppressed');
  await replacement.instance.send('new instance');assert.equal(replacement.state.queue.length,0);
  console.log('PASS: audited telemetry producer queues, timer, contracts, partial coverage, idempotence and getter isolation');
+}
+
+// These exercise the injected script against native API boundaries. Restoring a
+// blocked call, changing the receiver/arguments, or settling success fails them.
+function networkWindow(){
+ const calls=[],failure=new Error('native failure');
+ class XHR extends EventTarget {
+  constructor(){super();this.readyState=0;this.status=0;this.events=[];for(const name of ['abort','loadend'])this.addEventListener(name,()=>this.events.push(name));}
+  open(method,url,async=true){if(url==='bad')throw failure;this.readyState=1;this.async=async;calls.push(['open',this,...arguments]);}
+  send(body){if(this.readyState!==1)throw new DOMException('Invalid state','InvalidStateError');calls.push(['send',this,body]);}
+  abort(){calls.push(['abort',this]);this.readyState=0;}
+ }
+ XHR.DONE=4;
+ const window={location:{href:'https://www.spotify.com/'},XMLHttpRequest:XHR,
+  fetch:function(...args){calls.push(['fetch',this,...args]);if(args[0]==='fail')throw failure;return Promise.resolve({ok:true});},
+  navigator:{sendBeacon:function(...args){calls.push(['beacon',this,...args]);return true;}},
+  sendCosmosRequest:function(...args){calls.push(['cosmos',this,...args]);if(args[0]&&args[0].throwNative)throw failure;return 27;},
+  cancelCosmosRequest:function(...args){calls.push(['cancel',this,...args]);return 'cancelled';}};
+ return {window,calls,failure,XHR};
+}
+const routes=[
+ ['event_reports','https://spclient.wg.spotify.com/gabo-receiver-service/v3/events'],
+ ['playback_reports','https://spclient.wg.spotify.com/melody/v1/msg/batch'],
+ ['growth_analytics','https://www.spotify.com/api/growth-events/wwwanalytics'],
+ ['sentry','https://o22381.ingest.sentry.io/api/114855/envelope/'],
+ ['crash_reports','https://crashdump.spotify.com:443/upload'],
+ ['internal_logging','sp://logging/v3/events'],
+ ['track_errors','https://spclient.wg.spotify.com/track-error/v1/errors'],
+ ['ai_telemetry','https://spclient.wg.spotify.com/v1/telemetry/sandbox']
+];
+async function requestGuards(){
+ const fixture=networkWindow(),b=boot({},fixture.window),w=b.window;
+ for(const [category,url] of routes){
+  await assert.rejects(w.fetch(url,{method:'POST'}),error=>error.name==='TypeError');
+  assert.equal(w.navigator.sendBeacon(url,'payload'),false);
+  assert(b.output.includes('FLOGGFY_PRIVACY_COUNT_V1:'+category+'=1'));
+ }
+ assert.equal(fixture.calls.length,0,'blocked APIs never reach native send');
+ for(const url of ['https://spclient.wg.spotify.com/melody/v1/license_url','https://accounts.spotify.com/login','https://spclient.wg.spotify.com/metadata/4/track/id','https://spclient.wg.spotify.com/color-lyrics/v2/track/id','https://spclient.wg.spotify.com/track-error/v1/errors-extra','https://example.com/melody/v1/msg/batch','sp://logging/v4/events','https://o22381.ingest.sentry.io/api/999/envelope/']){
+  assert.equal((await w.fetch(url)).ok,true);assert.equal(w.navigator.sendBeacon(url),true);
+ }
+ const receiver={};const init={method:'GET'};await w.fetch.call(receiver,'https://example.com',init);
+ assert.deepEqual(fixture.calls.at(-1),['fetch',receiver,'https://example.com',init]);
+ assert.throws(()=>w.fetch('fail'),error=>error===fixture.failure);
+ assert.throws(()=>new w.fetch('https://example.com'),TypeError,'fetch remains nonconstructible');
+ await assert.rejects(w.fetch(new Request(routes[0][1])),error=>error.name==='TypeError');
+ assert.equal(w.navigator.sendBeacon(new URL(routes[2][1])),false);
+ assert.strictEqual(w.XMLHttpRequest,fixture.XHR,'native constructor and statics retained');assert.equal(w.XMLHttpRequest.DONE,4);
+ const xhr=new w.XMLHttpRequest();xhr.open('POST',routes[1][1]);assert.equal(xhr.send('secret'),undefined);
+ assert.equal(xhr.readyState,0);assert.equal(xhr.status,0);await Promise.resolve();assert.deepEqual(xhr.events,['abort','loadend']);
+ assert.equal(fixture.calls.filter(call=>call[0]==='send').length,0);
+ assert.throws(()=>xhr.send(),error=>error.name==='InvalidStateError');
+ xhr.open('POST','https://example.com/allowed');xhr.send('allowed');assert.deepEqual(fixture.calls.at(-1),['send',xhr,'allowed']);
+ for(const synchronous of [false,0,null,'']){xhr.open('POST',routes[0][1],synchronous);assert.throws(()=>xhr.send(),error=>error.name==='NetworkError','WebIDL false values keep synchronous error behavior');}
+ assert.throws(()=>xhr.open('GET','bad'),error=>error===fixture.failure);
+ const reopened=new w.XMLHttpRequest();reopened.open('POST',routes[0][1]);reopened.send();reopened.open('GET','https://example.com');await Promise.resolve();assert.deepEqual(reopened.events,[],'reopen invalidates queued cancellation notifications');
+ let failures=0,successes=0;
+ const send={request:JSON.stringify({uri:'sp://logging/v3/events',method:'POST',body:'{}',headers:{}}),persistent:false,onSuccess(){successes++;},onFailure(code,message){failures++;assert.equal(code,-1);assert.equal(typeof message,'string');}};
+ const before=fixture.calls.length,token=w.sendCosmosRequest(send);assert(token);assert.equal(failures,0,'failure callback follows native asynchronous contract');
+ assert.equal(w.cancelCosmosRequest(token),undefined);await Promise.resolve();assert.equal(failures,0,'cancelled native requests must not call their callbacks');assert.equal(successes,0);assert.equal(fixture.calls.length,before);
+ w.sendCosmosRequest(send);await Promise.resolve();assert.equal(failures,1);assert.equal(w.cancelCosmosRequest(token),undefined);assert.equal(fixture.calls.length,before,'synthetic tokens never reach native cancellation, including repeat cancels');
+ const allowed={...send,request:JSON.stringify({uri:'sp://player/v2/main',method:'GET',headers:{},body:''})};
+ assert.equal(w.sendCosmosRequest.call(receiver,allowed),27);assert.deepEqual(fixture.calls.at(-1),['cosmos',receiver,allowed]);
+ assert.equal(w.cancelCosmosRequest.call(receiver,27),'cancelled');assert.deepEqual(fixture.calls.at(-1),['cancel',receiver,27]);
+ const malformed={...send,request:'bad json'};assert.equal(w.sendCosmosRequest(malformed),27);
+ assert.throws(()=>w.sendCosmosRequest({throwNative:true}),error=>error===fixture.failure);
+ const late=networkWindow(),sendOriginal=late.window.sendCosmosRequest,cancelOriginal=late.window.cancelCosmosRequest;
+ delete late.window.sendCosmosRequest;delete late.window.cancelCosmosRequest;const discovered=boot({},late.window);
+ discovered.window.sendCosmosRequest=sendOriginal;discovered.window.cancelCosmosRequest=cancelOriginal;discovered.observe({});
+ assert.notStrictEqual(discovered.window.sendCosmosRequest,sendOriginal);discovered.window.sendCosmosRequest(send);await Promise.resolve();assert.equal(failures,2);
+ const partial=networkWindow();Object.defineProperty(partial.window,'cancelCosmosRequest',{value:partial.window.cancelCosmosRequest,writable:false});const unsupported=boot({},partial.window);
+ assert(unsupported.output.includes('FLOGGFY_PRIVACY_V2:fetch=1 xhr=1 beacon=1 cosmos=0 early=0'));
+ assert.equal(unsupported.window.sendCosmosRequest(send),27,'unwrappable cancellation keeps entire Cosmos bridge untouched');
+ const locked=networkWindow(),originalOpen=locked.XHR.prototype.open,originalCancel=locked.window.cancelCosmosRequest;
+ Object.defineProperty(locked.XHR.prototype,'send',{value:locked.XHR.prototype.send,writable:false});
+ Object.defineProperty(locked.window,'sendCosmosRequest',{value:locked.window.sendCosmosRequest,writable:false});
+ const lockedBoot=boot({},locked.window);for(let i=0;i<50;i++)lockedBoot.observe({});
+ assert.strictEqual(locked.XHR.prototype.open,originalOpen,'failed paired XHR installation never stacks open wrappers');
+ assert.strictEqual(locked.window.cancelCosmosRequest,originalCancel,'failed paired Cosmos installation never stacks cancel wrappers');
+ for(const [category,url] of routes){
+  const current=networkWindow(),disabled=boot({['block_'+category]:false},current.window);
+  assert.equal((await disabled.window.fetch(url)).ok,true,category+'=0 must restore fetch');
+  assert.equal(disabled.window.navigator.sendBeacon(url),true);
+  const xhr=new disabled.window.XMLHttpRequest();xhr.open('POST',url);xhr.send('restored');assert.equal(current.calls.at(-1)[0],'send',category+'=0 must restore XHR');
+  if(category==='internal_logging')assert.equal(disabled.window.sendCosmosRequest(send),27,'internal logging zero restores Cosmos');
+  const item=sender();disabled.observe(registry(item.instance));
+  if(category==='event_reports'){await item.instance.send('restored');assert.equal(item.state.queue.length,1);await assert.rejects(disabled.window.fetch(routes[1][1]),error=>error.name==='TypeError');}
+ }
+ const off=networkWindow(),originalFetch=off.window.fetch,originalSend=off.window.sendCosmosRequest,disabled=boot({block_telemetry:false},off.window),producer=sender();disabled.observe(registry(producer.instance));
+ assert.strictEqual(off.window.fetch,originalFetch);assert.strictEqual(off.window.sendCosmosRequest,originalSend);await producer.instance.send('restored');assert.equal(producer.state.queue.length,1);
+ console.log('PASS: renderer category selection, request failures, XHR cancellation, Cosmos callbacks, late discovery and native forwarding');
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});
