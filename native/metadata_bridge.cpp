@@ -1,5 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include "metadata_bridge.h"
+#include "telemetry_filter.h"
 #include "hook_init_state.h"
 #include "hook_rollback.h"
 #include "hook_startup_minhook.h"
@@ -15,6 +16,7 @@
 #include "srw_guard.h"
 #include "vendor/minhook/include/MinHook.h"
 #include "../build/metadata_script.h"
+#include "../build/telemetry_script.h"
 #include <atomic>
 #include <algorithm>
 #include <array>
@@ -62,7 +64,7 @@ struct CallbackHook {
  }
  template<class F> F Original()const{return reinterpret_cast<F>(original.load(std::memory_order_acquire));}
 };
-static CallbackHook display_getter,load_getter,console_callback,loading_callback,load_end_callback;
+static CallbackHook display_getter,load_getter,console_callback,loading_callback,load_end_callback,load_start_callback;
 struct Task {Base base;void(*execute)(Task*);};
 struct PollTask {Task task;std::atomic<unsigned> refs{1};};
 static Frame* polling_frame=nullptr;static SRWLOCK frame_lock=SRWLOCK_INIT;
@@ -289,6 +291,13 @@ static bool CurrentPlayback(const String* text) {
 }
 static int Console(Display* self,Browser* b,int level,const String* text,const String* source,int line) {
  auto callback=metadata_callbacks.Enter();
+ constexpr wchar_t privacy_prefix[]=L"FLOGGFY_PRIVACY_V1:";
+ constexpr size_t privacy_prefix_size=sizeof(privacy_prefix)/sizeof(*privacy_prefix)-1;
+ if(text&&text->str&&text->length>=privacy_prefix_size&&
+    !wmemcmp(text->str,privacy_prefix,privacy_prefix_size)){
+  privacy::ObserveRenderer({text->str+privacy_prefix_size,text->length-privacy_prefix_size});
+  Release(b);return 1;
+ }
  if(CurrentTimeline(text)||CurrentPlayback(text)){Release(b);return 1;}
  if(text&&text->str&&QueueRendererDiagnostic({text->str,text->length})) {
   Release(b);return 1; // Reserved diagnostics never fall through to raw console logging.
@@ -296,7 +305,22 @@ static int Console(Display* self,Browser* b,int level,const String* text,const S
  if(Enqueue(text)){Release(b);return 1;}
  return console_callback.Original<int(*)(Display*,Browser*,int,const String*,const String*,int)>()(self,b,level,text,source,line);
 }
+static void InjectPrivacy(Frame* frame) {
+ if(!privacy::Enabled()||!frame||frame->base.size!=sizeof(Frame))return;
+ const auto main=reinterpret_cast<int(*)(Frame*)>(frame->methods[15]);
+ const auto execute=reinterpret_cast<void(*)(Frame*,const String*,const String*,int)>(frame->methods[14]);
+ if(!main||!execute||!main(frame))return;
+ String code={const_cast<wchar_t*>(telemetry_script),sizeof(telemetry_script)/sizeof(*telemetry_script)-1,nullptr};
+ const wchar_t name[]=L"floggfy-privacy.js";String source={const_cast<wchar_t*>(name),wcslen(name),nullptr};
+ execute(frame,&code,&source,1);
+}
+static void LoadStart(Load* self,Browser* b,Frame* f,int transition){
+ auto callback=metadata_callbacks.Enter();
+ try{InjectPrivacy(f);}catch(...) {/* Privacy failure must not interrupt loading. */}
+ load_start_callback.Original<void(*)(Load*,Browser*,Frame*,int)>()(self,b,f,transition);
+}
 static void Inject(Frame* frame) {
+ InjectPrivacy(frame);
  if(!frame||frame->base.size!=sizeof(Frame))return;
  auto main=reinterpret_cast<int(*)(Frame*)>(frame->methods[15]);
  if(!main||!main(frame))return;
@@ -324,12 +348,14 @@ static Display* GetDisplay(Client* self){
 static Load* GetLoad(Client* self){
  auto callback=metadata_callbacks.Enter();auto result=load_getter.Original<Load*(*)(Client*)>()(self);
  if(result&&result->base.size==sizeof(Load)){
+  if(privacy::Enabled())load_start_callback.Install(result->methods[1],reinterpret_cast<void*>(LoadStart),"privacy load start");
   loading_callback.Install(result->methods[0],reinterpret_cast<void*>(Loading),"loading");
   load_end_callback.Install(result->methods[2],reinterpret_cast<void*>(LoadEnd),"load end");
  }
  return result;
 }
 static Client* ObserveClient(Client* client){
+ privacy::ObserveClient(client);
  if(!client||client->base.size!=sizeof(Client)){LogEvent(LogKind::Warning,"warning","metadata client ABI unsupported; collector not attached");return client;}
  const bool display=display_getter.Install(client->methods[4],reinterpret_cast<void*>(GetDisplay),"display getter");
  const bool load=load_getter.Install(client->methods[14],reinterpret_cast<void*>(GetLoad),"load getter");

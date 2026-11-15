@@ -20,6 +20,14 @@ int main(int argc,char** argv) {
       history::Settings target;history::ReadRestartOptionsText(target,L"[To Disk]\r\n"+fixture.first);
       assert(target.save_unmatched==fixture.second);
   }
+  for(const auto& fixture:std::array<std::pair<std::wstring,bool>,6>{{
+      {L"",false},{L"BlockTelemetry=0\r\n",false},{L"BlockTelemetry=1\r\n",true},
+      {L"BlockTelemetry=01\r\n",false},{L"BlockTelemetry=2\r\n",false},
+      {L"BlockTelemetry=1\r\nBlockTelemetry=1\r\n",false}}}) {
+      history::Settings target;target.metadata=false;target.downloads=false;
+      history::ReadRestartOptionsText(target,L"[To Disk]\r\n"+fixture.first);
+      assert(target.block_telemetry==fixture.second);
+  }
   assert(argc==2);
   assert(history::Settings{}.downloads&&history::Settings{}.update_existing_metadata&&!history::Settings{}.auto_skip_downloaded&&!history::Settings{}.aac&&history::Settings{}.podcasts&&!history::Settings{}.windows_playback_fallback&&history::Settings{}.capture_speed==1&&history::Settings{}.capture_speed_limit==0&&history::Settings{}.log_level==1);
   assert(history::Settings{}.never_pause==-1&&!history::Settings{}.dump_streams);

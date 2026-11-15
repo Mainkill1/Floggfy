@@ -16,6 +16,7 @@
 #include "async_log.h"
 #include "hook_diagnostics.h"
 #include "metadata_bridge.h"
+#include "telemetry_filter.h"
 #include "pe_imports.h"
 #include "to_disk_menu.h"
 #include "startup_ready.h"
@@ -352,6 +353,7 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
     const auto startup_settings=history::GetSettings();
     const bool network_patch_enabled=startup_settings.network_patch;
     const bool decoded_messages_enabled=startup_settings.debug_networking;
+    bool privacy_started=false;
     Log(network_patch_enabled?"NetworkPatch=1; legacy network compatibility patch enabled":
         "NetworkPatch=0; network compatibility hooks disabled");
     // Polling also covers clients that loaded Spotify.dll before notification
@@ -360,15 +362,19 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
     for (unsigned i = 0;; ++i) {
         HMODULE cef;
         if(GetModuleHandleExW(0,L"libcef.dll",&cef)) {
-            // Queue all initial observers before one suspension/resume. Enabling
-            // either set separately can let CEF construct the other object first.
+            // Prepare every root before the shared suspension/resume so a
+            // separate privacy enable cannot race browser observer attachment.
             history::HookDiagnosticScope diagnostic(history::diagnostics::Phase::StartupHooks);
-            hooks::StartTogether(
-                [&]{return history::PrepareMetadataCollector(cef);},
-                [&]{return PrepareToDiskMenu(cef);},
-                []{const auto status=MH_ApplyQueued();
-                    return status==MH_OK;},
-                history::FinalizeMetadataCollector,FinalizeToDiskMenu);
+            bool privacy_prepared=false;
+            if(!privacy_started){privacy_prepared=privacy::Prepare(cef,startup_settings.block_telemetry);privacy_started=true;}
+            const bool metadata_prepared=history::PrepareMetadataCollector(cef);
+            const bool menu_prepared=PrepareToDiskMenu(cef);
+            if(privacy_prepared||metadata_prepared||menu_prepared){
+                const bool applied=MH_ApplyQueued()==MH_OK;
+                if(privacy_prepared)privacy::Finalize(applied);
+                if(metadata_prepared)history::FinalizeMetadataCollector(applied);
+                if(menu_prepared)FinalizeToDiskMenu(applied);
+            }
             FreeLibrary(cef);
         }
         HMODULE module;
@@ -382,6 +388,7 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
             FreeLibrary(module);
         }
         history::DrainDecodedConnectMessages();
+        privacy::DrainStatus();
         if(i==0)startup::SignalReady();
         Sleep(i < 600 ? 25 : 1000);
     }

@@ -8,6 +8,11 @@ bool PrepareToDiskMenu(HMODULE){return false;}
 void FinalizeToDiskMenu(bool){}
 void StartAudioHistory(HMODULE,HMODULE){}
 extern "C" MH_STATUS WINAPI MH_ApplyQueued(){return MH_OK;}
+namespace privacy {
+bool Prepare(HMODULE,bool) noexcept {return false;}
+void Finalize(bool) noexcept {}
+void DrainStatus() noexcept {}
+}
 namespace history {
 void StartDecodedConnectMessages(HMODULE,bool) noexcept{}
 void DrainDecodedConnectMessages() noexcept{}

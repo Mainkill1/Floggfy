@@ -63,6 +63,7 @@ Tested with the Spotify 1.3.9.2055 desktop update on Windows x64.
 - `SaveUnmatched=1` under `[To Disk]` saves complete, codec-validated unidentified streams in `Unmatched` at retirement. Incomplete or corrupt preloads are discarded. Set `0` to discard unmatched streams too.
 - `DumpStreams=1` saves raw streams and matching metadata for debugging; it is separate from complete recordings in `Unmatched`.
 - `LogLevel=0/1/2/4` selects off, finished outcomes, visible lifecycle, or full diagnostics. Debug, networking, and hook evidence use separate capped files; see the advanced settings guide.
+- `BlockTelemetry=1` enables experimental suppression of known analytics producers and CEF telemetry requests after a restart. It is off by default and independent of recording/metadata settings. Coverage is partial; see [privacy testing](docs/telemetry-testing.md).
 - `NetworkPatch=1` enables a workaround for Windows incorrectly reporting no Internet. It defaults to `0`.
 - See [settings and troubleshooting](AUDIO-HISTORY.md) for all options, including advanced diagnostics.
 

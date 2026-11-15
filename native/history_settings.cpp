@@ -74,6 +74,9 @@ static constexpr char default_ini[]=
     "; Work around Spotify falsely reporting no internet. AKA NCIS patch.\r\n"
     "NetworkPatch=0\r\n"
     "\r\n"
+    "; Suppress known telemetry; restart required. Coverage may be partial.\r\n"
+    "BlockTelemetry=0\r\n"
+    "\r\n"
     "; Logging: 0=off, 1=finished/warnings/failures, 2=activity, 4=diagnostics.\r\n"
     "; Logs use Save Location; each is capped at 5 MiB.\r\n"
     "LogLevel=1\r\n"
@@ -210,9 +213,10 @@ struct RestartFlag {
     bool Settings::* member;
     bool default_value;
 };
-static constexpr std::array<RestartFlag,6> restart_flags{{
+static constexpr std::array<RestartFlag,7> restart_flags{{
     {L"SaveUnmatched",&Settings::save_unmatched,true},
     {L"NetworkPatch",&Settings::network_patch,false},
+    {L"BlockTelemetry",&Settings::block_telemetry,false},
     {L"DumpStreams",&Settings::dump_streams,false},
     {L"DebugConnect",&Settings::debug_connect,true},
     {L"DebugNetworking",&Settings::debug_networking,false},

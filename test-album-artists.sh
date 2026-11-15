@@ -7,6 +7,8 @@ python3 - <<'PY'
 from pathlib import Path
 script=Path('native/metadata_collector.js').read_text()
 Path('build/metadata_script.h').write_text('static constexpr wchar_t metadata_script[]=LR"FLOGGFY('+script+')FLOGGFY";\n')
+privacy=Path('native/telemetry_producers.js').read_text()
+Path('build/telemetry_script.h').write_text('static constexpr wchar_t telemetry_script[]=LR"FLOGGFY('+privacy+')FLOGGFY";\n')
 PY
 floggfy_album_temp=$(cmd.exe /c echo %TEMP% 2>/dev/null | tr -d '\r')
 floggfy_album_root="$(wslpath -u "$floggfy_album_temp")/Floggfy-album-artists-$(date +%s)-$$"
@@ -19,7 +21,7 @@ x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vendor/minimp4/minim
 x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vorbis_headers_stb.c -o build/album-artists/vorbis.o
 x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/album-artists/ogg.o
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -municode -static-libgcc -static-libstdc++ \
-    -I native/vendor/libogg/include tests/windows_album_artist_test.cpp \
+    -I native/vendor/libogg/include tests/windows_album_artist_test.cpp native/telemetry_filter.cpp \
     native/rich_metadata.cpp native/cached_metadata.cpp native/async_log.cpp native/media_session.cpp \
     native/image_info.cpp native/playback_quality_windows.cpp native/playback_quality.cpp native/flac_history_core.cpp \
     native/compressed_buffer.cpp native/ogg_tags.cpp native/ogg_history_core.cpp native/auto_skip.cpp native/library_layout.cpp \

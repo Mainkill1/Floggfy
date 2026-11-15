@@ -377,6 +377,10 @@
     try{if(text(own(own(snapshot.call(o),'item'),'uri')))player=o;}catch{}
    }
    const services=own(o,'_map');
+   if(services||own(o,'ubiLogger')){
+    const observe=own(window,'__floggfyPrivacyObserve');
+    if(typeof observe==='function')try{observe(o);}catch{}
+   }
    try{let n=0;for(const [key,value] of Map.prototype.entries.call(services)){
     if(++n>160)break;
     if(String(key)==='Symbol(RequestBuilder)'){const candidate=own(value,'instance');if(method(candidate,'build'))builder=candidate;}
