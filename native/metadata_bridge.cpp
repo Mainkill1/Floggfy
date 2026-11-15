@@ -312,6 +312,13 @@ static int Console(Display* self,Browser* b,int level,const String* text,const S
   privacy::ObserveRendererCount({text->str+count_prefix_size,text->length-count_prefix_size});
   Release(b);return 1;
  }
+ constexpr wchar_t dump_prefix[]=L"FLOGGFY_PRIVACY_DUMP_V1:";
+ constexpr size_t dump_prefix_size=sizeof(dump_prefix)/sizeof(*dump_prefix)-1;
+ if(text&&text->str&&text->length>=dump_prefix_size&&
+    !wmemcmp(text->str,dump_prefix,dump_prefix_size)){
+  privacy::ObserveRendererDump({text->str+dump_prefix_size,text->length-dump_prefix_size});
+  Release(b);return 1; // Payloads never fall through to ordinary console logs.
+ }
  if(CurrentTimeline(text)||CurrentPlayback(text)){Release(b);return 1;}
  if(text&&text->str&&QueueRendererDiagnostic({text->str,text->length})) {
   Release(b);return 1; // Reserved diagnostics never fall through to raw console logging.
@@ -338,6 +345,7 @@ static void InjectPrivacy(Frame* frame) {
  option(L"block_internal_logging",settings.block_internal_logging);
  option(L"block_track_errors",settings.block_track_errors);
  option(L"block_ai_telemetry",settings.block_ai_telemetry);
+ option(L"dump_telemetry",settings.dump_telemetry);
  script+=L"});";script+=telemetry_script;script+=L"})();";
  String code={script.data(),script.size(),nullptr};
  const wchar_t name[]=L"floggfy-privacy.js";String source={const_cast<wchar_t*>(name),wcslen(name),nullptr};

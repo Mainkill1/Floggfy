@@ -106,8 +106,12 @@ incomplete data retains a labeled raw representation and a decoding reason.
 
 This captures future blocked application requests, not network packets or old
 counter entries. It does not capture allowed requests or events suppressed before
-request creation. Renderer cancellations have category counters; their payloads
-are not copied to this native request log. Crash-launch suppression is reported
+request creation. Renderer cancellations use the same log with `renderer-fetch`, `renderer-xhr`,
+`renderer-beacon` or `renderer-cosmos` hook labels, preserving their block-time
+UTC timestamp. Capture remains optional and never changes cancellation. String
+and in-memory byte bodies are bounded; Blobs are sliced before reading. Request
+streams, file bodies, FormData and unsupported values are omitted and marked
+incomplete, rather than consumed or serialized speculatively. Crash-launch suppression is reported
 separately and does not represent a captured network request. URL userinfo/query/fragment and authorization/cookie headers are
 omitted; the captured body itself is retained for inspection and can contain
 identifiers or other account data. Payload contents stay in this separate local

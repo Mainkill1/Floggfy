@@ -18,6 +18,7 @@ done
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -static-libgcc -static-libstdc++ \
     tests/windows_telemetry_filter_test.cpp native/telemetry_decode.cpp native/telemetry_inflate.cpp build/telemetry-tests/minhook-*.o -o "$floggfy_privacy_root/filter.exe"
 "$floggfy_privacy_root/filter.exe" --dump
+"$floggfy_privacy_root/filter.exe" --renderer-dump
 "$floggfy_privacy_root/filter.exe" --dump-write-failure
 "$floggfy_privacy_root/filter.exe" --disabled
 "$floggfy_privacy_root/filter.exe" --missing-exports

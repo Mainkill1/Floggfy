@@ -103,6 +103,40 @@ int main(int argc,char** argv){
  handler.api.methods[2]=reinterpret_cast<void*>(OriginalResource);
  resource.api.methods[1]=reinterpret_cast<void*>(OriginalBefore);
  auto address=GetProcAddress(GetModuleHandleW(nullptr),"cef_urlrequest_create");Create create=nullptr;std::memcpy(&create,&address,sizeof(create));
+ if(argc==2&&!std::strcmp(argv[1],"--renderer-dump")){
+  wchar_t temp[MAX_PATH];assert(GetTempPathW(MAX_PATH,temp));
+  const auto folder=std::filesystem::path(temp)/(L"Floggfy-renderer-dump-"+std::to_wstring(GetCurrentProcessId()));
+  std::filesystem::create_directories(folder);
+  history::dump_settings.dump_telemetry=true;history::dump_settings.root=folder.wstring();
+  assert(privacy::Prepare(GetModuleHandleW(nullptr),true)&&MH_ApplyQueued()==MH_OK);privacy::Finalize(true);
+  const auto b64=[](const std::string& value){auto s=privacy::Base64(reinterpret_cast<const unsigned char*>(value.data()),value.size());s.erase(std::remove(s.begin(),s.end(),'\n'),s.end());return std::wstring(s.begin(),s.end());};
+  const std::string payload="{\"events\":[{\"type\":\"jssdk_playback_start\"}]}";
+  const auto packet=[&](const std::string& url,const std::wstring& flags=L"1",const std::wstring& body=L""){
+   return L"fetch\n1794716400000\n"+b64("POST")+L"\n"+b64(url)+L"\n"+b64("application/json")+L"\n\n"+flags+L"\n"+std::to_wstring(payload.size())+L"\n"+(body.empty()?b64(payload):body);
+  };
+  const auto good=packet("https://user:secret@spclient.wg.spotify.com/melody/v1/msg/batch?secret=token");
+  privacy::ObserveRendererDump(good);assert(privacy::dump.captured==1);
+  privacy::DrainStatus();
+  std::ifstream input(folder/L"Floggfy-telemetry.log",std::ios::binary);std::string log{std::istreambuf_iterator<char>(input),{}};
+  assert(log.find("jssdk_playback_start")!=log.npos&&log.find("Hook: renderer-fetch")!=log.npos);
+  assert(log.find("Rule: playback")!=log.npos&&log.find("secret")==log.npos&&log.find("token")==log.npos);
+  privacy::ObserveRendererDump(packet("https://spclient.wg.spotify.com/metadata/4/track/1"));
+  privacy::ObserveRendererDump(packet("https://spclient.wg.spotify.com/melody/v1/msg/batch",L"1",L"@@@"));
+  privacy::ObserveRendererDump(L"fetch\ninvalid");
+  privacy::ObserveRendererDump(good+L"\nextra");
+  assert(privacy::dump.captured==1);
+  history::Settings off;off.block_playback_reports=false;privacy::ConfigureCategories(off);privacy::ObserveRendererDump(good);assert(privacy::dump.captured==1);
+  privacy::ConfigureCategories(history::Settings{});privacy::dump.enabled=false;privacy::ObserveRendererDump(good);assert(privacy::dump.captured==1);
+  privacy::dump.enabled=true;
+  privacy::ObserveRendererDump(packet("https://spclient.wg.spotify.com/melody/v1/msg/batch",L"9"));
+  assert(privacy::dump.captured==2);privacy::DrainStatus();
+  std::ifstream second(folder/L"Floggfy-telemetry.log",std::ios::binary);std::string combined{std::istreambuf_iterator<char>(second),{}};
+  const auto formatted=combined.find("Payload (JSON, formatted):");
+  assert(formatted!=combined.npos&&combined.find("Payload (JSON, formatted):",formatted+1)!=combined.npos);
+  assert(combined.find("request details truncated or unavailable")!=combined.npos);
+  assert(body_reads==0&&post_reads==0);
+  std::puts("PASS: renderer playback JSON reaches shared dump; opt-outs, sanitization and malformed messages respected");return 0;
+ }
  const bool dump_failure=argc==2&&!std::strcmp(argv[1],"--dump-write-failure");
  const bool dumping=dump_failure||(argc==2&&!std::strcmp(argv[1],"--dump"));
  if(dumping){

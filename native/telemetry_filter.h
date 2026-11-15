@@ -13,4 +13,5 @@ bool Enabled() noexcept;
 void ObserveRenderer(std::wstring_view fixed_status) noexcept;
 void ObserveRendererCapabilities(std::wstring_view fixed_status) noexcept;
 void ObserveRendererCount(std::wstring_view fixed_count) noexcept;
+void ObserveRendererDump(std::wstring_view bounded_record) noexcept;
 }

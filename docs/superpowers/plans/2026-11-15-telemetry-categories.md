@@ -40,3 +40,28 @@ installation. Live INI validation confirmed all enabled master/category/dump
 values survived, the old empty [Blocking] header was removed, and every other
 setting stayed unchanged. Spotify remained responsive. The new candidate is
 local for user testing; published RC1 and main remain unchanged.
+
+
+## Follow-up: renderer request dumps
+
+Observed 24 playback blocks with native=0/renderer=24 while the dump contained
+only Gabo/Sentry records. Cause: renderer guards emitted counters but the body
+capture existed only in CEF callbacks. Add an opt-in bounded renderer envelope
+for already-cancelled requests, revalidate destination/category in the native
+receiver, then use the existing queue/formatter/file limits. Do not pass requests
+through to obtain a native capture. Preserve timestamps and label capture hooks.
+Skip streams/files/unknown body types explicitly; preserve cancellation on failure.
+
+- Native fixture proves readable playback JSON, URL sanitization, opt-outs and
+  rejection of malformed messages through the shared writer.
+- Focused renderer and full telemetry suites passed; independent review found no
+  remaining blockers after handling Request-body inheritance and oversized data.
+- Live captures proved playback stats, starts and errors reach the log. That
+  replay exposed authorization-only headers being mislabeled as unsupported
+  bodies; fixed the classification and added bounded header-pair support.
+  Metadata omissions no longer suppress formatting of a complete JSON body.
+- Final formatter/renderer regressions and DLL rebuild passed; final local
+  installation preserves all INI settings. No published release was changed.
+
+Final live verification: 17 complete playback captures parsed as formatted JSON,
+including jssdk_playback_stats and jssdk_playback_start. Spotify remained responsive.
