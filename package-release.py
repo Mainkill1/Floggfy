@@ -32,6 +32,12 @@ for vendor in ['minhook', 'libogg', 'cef', 'soggfy', 'stb']:
         root / 'native' / 'vendor' / vendor / 'LICENSE.txt').read_bytes()
 payloads['third-party/minimp4/LICENSE'] = (
     root / 'native' / 'vendor' / 'minimp4' / 'LICENSE').read_bytes()
+# Keep the inflate decoder's license with the binary distribution.
+for name in ['puff.h', 'UPSTREAM.md']:
+    payloads[f'third-party/puff/{name}'] = (
+        root / 'native' / 'vendor' / 'puff' / name).read_bytes()
+for name in ['telemetry-testing.md', 'telemetry-schema-source.md', 'telemetry-schema-1.3.9.2055.json']:
+    payloads[f'docs/{name}'] = (root / 'docs' / name).read_bytes()
 path = out / f'Floggfy-v{version}-Launcher-Windows-x64.zip'
 with zipfile.ZipFile(path, 'w') as archive:
     for name, data in payloads.items():
