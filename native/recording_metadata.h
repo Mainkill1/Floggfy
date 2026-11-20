@@ -57,6 +57,7 @@ public:
             found->metadata_counter.Begin(RecordKind::Metadata);
         } else {
             auto& target=found->metadata.media;
+            if(media.metadata)target.metadata=media.metadata;
             if(!media.spotify_uri.empty())target.spotify_uri=media.spotify_uri;
             if(!media.playback_instance.empty())target.playback_instance=media.playback_instance;
             // Empty/delayed properties never erase labels already observed.

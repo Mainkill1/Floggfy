@@ -119,7 +119,9 @@ async function automatic(){
  const c={...context,window:{__floggfyConfig:{metadata:true,lyrics:true}},document:{querySelector:()=>({__reactContainer$test:{memoizedProps:{registry:services}}})},performance:{now:()=>now},console:{info:x=>messages.push(x)},setInterval:()=>{timers++;}};
  vm.runInNewContext(script,c);for(let i=0;i<10;i++)c.window.__floggfyPoll();
  assert.equal(timers,0,'native polling must be the sole timer');
- assert.equal(calls.length,2,'one metadata and one lyrics request while panel is closed');
+ assert.equal(calls.length,0,'polls collect locally until native authorizes enrichment');
+ c.window.__floggfyEnrich(uri,{metadata:true,album:true,lyrics:true});
+ assert.equal(calls.length,2,'one metadata and one lyrics request after native grant');
  assert(calls.some(x=>x.endsWith('/metadata/4/track/00000000000000000000000000000001')));
  const flush=async()=>{for(let i=0;i<8;i++)await Promise.resolve();c.window.__floggfyPoll();};
  pending.find(x=>x.path.includes('metadata')).resolve({body:{artist:[{name:'Artist'},{name:'Guest'}],album:{gid:'c'.repeat(32),artist:[{name:'Album Artist'}],label:'Label',date:{year:2025,month:2,day:3},cover_group:{image:[{file_id:'a'.repeat(40),width:64,height:64},{file_id:'b'.repeat(40),width:640,height:640}]}},number:4,disc_number:2,external_id:[{type:'isrc',id:'TESTISRC'}],language_of_performance:['en']}});
@@ -133,10 +135,11 @@ async function automatic(){
  c.window.__floggfyConfig.lyrics=true;await flush();assert.equal(calls.length,3,'reuse completed cache');
  // Switching tracks before replies must never attach old lyrics or art.
  localState.item={uri:'spotify:track:0000000000000000000002',metadata:{title:'Two',artist_name:'Artist',album_title:'Album',duration:'200000'}};
- c.window.__floggfyPoll();assert.equal(calls.length,5);
+ c.window.__floggfyPoll();c.window.__floggfyEnrich(localState.item.uri,{metadata:true,album:true,lyrics:true});assert.equal(calls.length,5);
  localState.item={uri:'spotify:track:0000000000000000000003',metadata:{title:'Three',artist_name:'Artist',album_title:'Album',duration:'200000'}};
- c.window.__floggfyPoll();pending[3].resolve({body:{album:{label:'STALE'}}});pending[4].resolve({body:{lyrics:{lines:[{words:'STALE'}]}}});await flush();
- assert(!messages.filter(x=>x.startsWith('FLOGGFY_METADATA_V1:')).at(-1).includes('STALE'));
+ c.window.__floggfyPoll();c.window.__floggfyEnrich(localState.item.uri,{metadata:true,album:true,lyrics:true});pending[3].resolve({body:{album:{label:'STALE'}}});pending[4].resolve({body:{lyrics:{lines:[{words:'STALE'}]}}});await flush();
+ const stale=messages.filter(x=>x.startsWith('FLOGGFY_METADATA_V1:')&&x.includes('STALE'));
+ assert(stale.length>0);assert(stale.every(x=>x.includes('uri=spotify%3Atrack%3A0000000000000000000002')&&x.includes('title=Two')));
  // Failure is bounded to one delayed retry, never a per-poll request storm.
  pending[5].reject({status:500});pending[6].reject({status:404});await flush();assert.equal(calls.length,7);
  now=6000;await flush();assert.equal(calls.length,8,'404 is terminal, metadata retries once');pending[7].reject({status:500});await flush();now=60000;await flush();assert.equal(calls.length,8);
@@ -152,7 +155,7 @@ async function disabledAndTimeout(){
  const main={__reactContainer$test:{memoizedProps:{registry:services}}};
  const c={...context,window:{__floggfyConfig:config},document:{querySelector:()=>main},performance:{now:()=>now},console:{info:x=>messages.push(x)},AbortController};
  vm.runInNewContext(script,c);c.window.__floggfyPoll();assert.equal(calls.length,0,'disabled before first tick');
- config.metadata=true;c.window.__floggfyPoll();assert.equal(calls.length,1,'Lyrics=0 permits metadata only');
+ config.metadata=true;c.window.__floggfyPoll();c.window.__floggfyEnrich(uri,{metadata:true,album:true,lyrics:true});assert.equal(calls.length,1,'Lyrics=0 permits metadata only');
  now=12001;c.window.__floggfyPoll();assert(calls[0].signal.aborted,'timeout aborts transport');assert.equal(calls.length,1);
  now=18000;c.window.__floggfyPoll();assert.equal(calls.length,2);
  config.lyrics=true;c.window.__floggfyPoll();assert.equal(calls.length,3);
@@ -170,11 +173,11 @@ async function physicalTransportBound(){
   const registry={_map:new Map([[Symbol('PlayerAPI'),{instance:player}],[Symbol('RequestBuilder'),{instance:builder}]])};
   const main={__reactContainer$test:{memoizedProps:{registry}}};
   const c={...context,window:{__floggfyConfig:config},document:{querySelector:()=>main},performance:{now:()=>now},console:{info:()=>{}},AbortController};
-  vm.runInNewContext(script,c);
+  vm.runInNewContext(script,c);c.window.__floggfyEnrich(uri,{metadata:true,album:true,lyrics:true});
   for(let i=2;i<85;i++){
    now+=13000;local.item.uri='spotify:track:'+String(i).padStart(22,'0');
    config.metadata=false;c.window.__floggfyPoll();config.metadata=true;
-   config.lyrics=i%2===0;c.window.__floggfyPoll();
+   config.lyrics=i%2===0;c.window.__floggfyPoll();c.window.__floggfyEnrich(local.item.uri,{metadata:true,album:true,lyrics:true});
   }
   assert.equal(sends.length,4,'unsettled sends retain physical slots through timeouts, settings and cache evictions; abort support='+supportsAbort);
   sends[0]({body:{lyrics:{lines:[{words:'stale reply'}]}}});for(let i=0;i<8;i++)await Promise.resolve();

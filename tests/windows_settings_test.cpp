@@ -43,6 +43,7 @@ int main(int argc,char** argv) {
       history::ReadRestartOptionsText(target,L"[To Disk]\nBlockTelemetry=1\nDumpTelemetry=1\n[Telemetry]\nBlockTelemetry=0\nDumpTelemetry=0\n");
       assert(!target.block_telemetry&&!target.dump_telemetry);
   }
+  assert(std::string(history::default_ini).find("MetadataCacheReadMiB=256")!=std::string::npos);
   assert(argc==2);
   assert(history::Settings{}.downloads&&history::Settings{}.update_existing_metadata&&!history::Settings{}.auto_skip_downloaded&&!history::Settings{}.aac&&history::Settings{}.podcasts&&!history::Settings{}.windows_playback_fallback&&history::Settings{}.capture_speed==1&&history::Settings{}.capture_speed_limit==0&&history::Settings{}.log_level==1);
   assert(history::Settings{}.never_pause==-1&&!history::Settings{}.dump_streams);
@@ -89,6 +90,10 @@ int main(int argc,char** argv) {
     if(scenario=="aac-one") assert(WritePrivateProfileStringW(L"To Disk",L"AAC",L"1",path.c_str()));
     if(scenario=="podcasts-one") assert(WritePrivateProfileStringW(L"To Disk",L"Podcasts",L"1",path.c_str()));
     if(scenario=="podcasts-zero") assert(WritePrivateProfileStringW(L"To Disk",L"Podcasts",L"0",path.c_str()));
+    if(scenario=="metadata-cache-custom") assert(WritePrivateProfileStringW(L"To Disk",L"MetadataCacheReadMiB",L"512",path.c_str()));
+    if(scenario=="metadata-cache-invalid") assert(WritePrivateProfileStringW(L"To Disk",L"MetadataCacheReadMiB",L"invalid",path.c_str()));
+    if(scenario=="metadata-cache-zero") assert(WritePrivateProfileStringW(L"To Disk",L"MetadataCacheReadMiB",L"0",path.c_str()));
+    if(scenario=="metadata-cache-over") assert(WritePrivateProfileStringW(L"To Disk",L"MetadataCacheReadMiB",L"4097",path.c_str()));
     if(scenario=="buffer-1024") assert(WritePrivateProfileStringW(L"History",L"MaxBufferedMiB",L"1024",path.c_str()));
     if(scenario=="buffer-over") assert(WritePrivateProfileStringW(L"History",L"MaxBufferedMiB",L"2048",path.c_str()));
     if(scenario=="buffer-under") assert(WritePrivateProfileStringW(L"History",L"MaxBufferedMiB",L"1",path.c_str()));
@@ -135,6 +140,7 @@ int main(int argc,char** argv) {
   }
   history::InitSettings(nullptr);
   auto s=history::GetSettings();
+  assert(s.metadata_cache_read_mib==(scenario=="metadata-cache-custom"?512u:256u));
   assert(s.block_telemetry==(scenario=="blocking-legacy-one"||scenario=="blocking-category-zero"));
   assert(s.dump_telemetry==(scenario=="blocking-legacy-one"));
   for(const auto& flag:history::blocking_flags)
@@ -218,6 +224,8 @@ int main(int argc,char** argv) {
   assert(history::CaptureEpoch()==epoch); // Enrichment preferences never discard audio.
   assert(!history::GetSettings().lyrics);
   assert(history::FlushSettings(5000));
+  if(scenario=="new"||scenario=="missing"||scenario=="metadata-cache-custom")
+    assert(GetPrivateProfileIntW(L"To Disk",L"MetadataCacheReadMiB",0,path.c_str())==s.metadata_cache_read_mib);
   assert(GetPrivateProfileIntW(L"To Disk",L"LogLevel",99,path.c_str())==expected_log);
   assert(GetPrivateProfileIntW(L"To Disk",L"CaptureSpeed",0,path.c_str())==s.capture_speed);
   assert(GetPrivateProfileIntW(L"To Disk",L"Lyrics",9,path.c_str())==0);

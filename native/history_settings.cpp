@@ -56,6 +56,8 @@ static constexpr char default_ini[]=
     "; Metadata (lyrics and updates require Metadata=1)\r\n"
     "Metadata=1\r\n"
     "Lyrics=1\r\n"
+    "; Cached metadata read limit per lookup in MiB (1-4096).\r\n"
+    "MetadataCacheReadMiB=256\r\n"
     "\r\n"
     "; Fill missing tags, artwork and lyrics in existing recordings.\r\n"
     "UpdateExistingMetadata=1\r\n"
@@ -296,6 +298,16 @@ static void MigrateBlockingOptions(std::wstring& text) {
         position=next;
     }
 }
+static bool ParseUnsignedSetting(const settings_file::IniValue& value,unsigned minimum,unsigned maximum,unsigned& parsed) {
+    parsed=0;
+    if(!value.present||value.duplicate||value.value.empty())return false;
+    for(const auto digit:value.value) {
+        if(digit<L'0'||digit>L'9'||parsed>maximum/10)return false;
+        parsed=parsed*10+unsigned(digit-L'0');
+        if(parsed>maximum)return false;
+    }
+    return parsed>=minimum;
+}
 static bool ReadRestartOptionsText(Settings& target,std::wstring_view text) {
     bool missing=false;
     for(const auto& flag:restart_flags) {
@@ -304,7 +316,10 @@ static bool ReadRestartOptionsText(Settings& target,std::wstring_view text) {
         target.*(flag.member)=!value.present?flag.default_value:
             !value.duplicate&&value.value==L"1";
     }
-    return ReadBlockingOptionsText(target,text)||missing;
+    const auto budget=settings_file::Find(text,L"MetadataCacheReadMiB");
+    unsigned parsed=0;
+    target.metadata_cache_read_mib=ParseUnsignedSetting(budget,1,4096,parsed)?parsed:256;
+    return ReadBlockingOptionsText(target,text)||missing||!budget.present;
 }
 static bool ReadRestartOptions(Settings& target,const std::wstring& path) {
     std::wstring text;bool unicode=false;
@@ -321,25 +336,15 @@ static constexpr std::array<MatcherOption,3> matcher_options{{
     {L"TimeOffsetToleranceMs",&Settings::matcher_time_offset_ms,10000,0,120000},
     {L"DurationToleranceMs",&Settings::matcher_duration_ms,250,0,2000}
 }};
-static bool ParseMatcherUnsigned(const settings_file::IniValue& value,unsigned minimum,unsigned maximum,unsigned& parsed) {
-    parsed=0;
-    if(!value.present||value.duplicate||value.value.empty())return false;
-    for(const auto digit:value.value) {
-        if(digit<L'0'||digit>L'9'||parsed>maximum/10)return false;
-        parsed=parsed*10+unsigned(digit-L'0');
-        if(parsed>maximum)return false;
-    }
-    return parsed>=minimum;
-}
 static bool ReadMatcherOptionsText(Settings& target,std::wstring_view text) {
     const auto legacy=settings_file::Find(text,L"TimingToleranceSeconds",L"[Matcher]");
     unsigned legacy_seconds=0;
-    const bool valid_legacy=ParseMatcherUnsigned(legacy,0,120,legacy_seconds);
+    const bool valid_legacy=ParseUnsignedSetting(legacy,0,120,legacy_seconds);
     bool needs_persist=legacy.present;
     for(const auto& option:matcher_options) {
         const auto value=settings_file::Find(text,option.key,L"[Matcher]");
         unsigned parsed=0;
-        const bool valid=ParseMatcherUnsigned(value,option.minimum,option.maximum,parsed);
+        const bool valid=ParseUnsignedSetting(value,option.minimum,option.maximum,parsed);
         const bool migrate=!value.present&&valid_legacy&&option.member==&Settings::matcher_time_offset_ms;
         target.*(option.member)=valid?parsed:migrate?legacy_seconds*1000:option.initial;
         needs_persist=needs_persist||!valid;
@@ -353,6 +358,8 @@ static bool ReadMatcherOptions(Settings& target,const std::wstring& path) {
 }
 static void InsertMissingRestartDefaults(std::wstring& text) {
     MigrateBlockingOptions(text);
+    if(!settings_file::Find(text,L"MetadataCacheReadMiB").present)
+        settings_file::Set(text,L"MetadataCacheReadMiB",L"256");
     for(const auto& flag:restart_flags)
         if(!settings_file::Find(text,flag.key).present)
             settings_file::Set(text,flag.key,flag.default_value?L"1":L"0");

@@ -10,6 +10,7 @@ namespace history {
 bool PrepareMetadataCollector(HMODULE cef);
 void FinalizeMetadataCollector(bool applied);
 // RAM-only identity enrichment; never reads storage or fetches artwork.
+void RetainMetadata(Media&);
 void EnrichCatalog(const Media&,Catalog&);
 void EnrichTags(const Media&,Tags&);
 // Includes immediately visible artwork content and cache availability changes.

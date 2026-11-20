@@ -3292,6 +3292,7 @@ static uint64_t ObserveRecordingMetadata(Media media,CaptureBuffers& buffers,Med
     if(const auto* latest=buffers.history.Current();latest&&time<latest->metadata.finish)
         return latest->metadata.generation;
     CarryBoundReadyIdentity(media,current,!buffers.unidentified_successor_uri.empty());
+    RetainMetadata(media);
     const auto before=buffers.history.Starts();
     PrepareUnidentifiedSuccessor(buffers,current,media);
     const auto& record=buffers.history.Observe(media,time);

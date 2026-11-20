@@ -1,8 +1,10 @@
 #define WIN32_LEAN_AND_MEAN
 #include "cached_metadata.h"
+#include "history_settings.h"
+#include "async_log.h"
 #include <algorithm>
 #include <cmath>
-#include <deque>
+#include <cstdio>
 #include <shlobj.h>
 #include <windows.h>
 
@@ -10,15 +12,11 @@ namespace history {
 namespace {
 // This is deliberately not a LevelDB database open: no LOCK, recovery, writes,
 // API calls or Spotify service resolution. Only shared reads of existing files.
-constexpr uint64_t max_file_bytes = 8 * 1024 * 1024, max_lookup_bytes = 96 * 1024 * 1024;
+constexpr uint64_t max_file_bytes = 8 * 1024 * 1024;
 struct File {
   std::wstring path;
   uint64_t size = 0, modified = 0;
   bool log = false;
-};
-struct Budget {
-  uint64_t bytes = 0;
-  ULONGLONG until = GetTickCount64() + 2000;
 };
 class FindHandle {
   HANDLE handle_;
@@ -39,19 +37,20 @@ public:
       SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END);
   }
 };
-std::vector<File> Files(const std::wstring &directory, bool &complete) {
+std::vector<File> Files(const std::wstring &directory, const char* &failure) {
   std::vector<File> files;
   WIN32_FIND_DATAW data{};
   HANDLE h = FindFirstFileW((directory + L"\\*").c_str(), &data);
   FindHandle guard(h);
   if (h == INVALID_HANDLE_VALUE) {
-    complete = false;
+    failure = GetLastError()==ERROR_PATH_NOT_FOUND || GetLastError()==ERROR_FILE_NOT_FOUND
+        ? "missing-cache" : "unreadable";
     return files;
   }
   unsigned inspected = 0;
   do {
     if (++inspected > 512) {
-      complete = false;
+      failure = "file-count";
       break;
     }
     if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
@@ -65,7 +64,7 @@ std::vector<File> Files(const std::wstring &directory, bool &complete) {
       continue;
     uint64_t size = (uint64_t(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
     if (size > max_file_bytes) {
-      complete = false;
+      failure = "file-size";
       continue;
     }
     if (!size)
@@ -75,20 +74,23 @@ std::vector<File> Files(const std::wstring &directory, bool &complete) {
          (uint64_t(data.ftLastWriteTime.dwHighDateTime) << 32) | data.ftLastWriteTime.dwLowDateTime,
          log});
   } while (FindNextFileW(h, &data));
-  if (GetLastError() != ERROR_NO_MORE_FILES)
-    complete = false;
+  if (inspected <= 512 && GetLastError() != ERROR_NO_MORE_FILES)
+    failure = "unreadable";
   std::sort(files.begin(), files.end(), [](const File &a, const File &b) {
     return a.modified != b.modified ? a.modified > b.modified : a.path > b.path;
   });
   if (files.size() > 128)
-    complete = false;
+    failure = "file-count";
   return files;
 }
 bool Collect(const std::vector<File> &files, const std::string &uri, CachedRecords &records,
-             Budget &budget) {
+             StoredMetadataRead &result, const std::string &album_uri = {},
+             CachedRecords* albums = nullptr) {
   for (const auto &file : files) {
-    if (GetTickCount64() >= budget.until || file.size > max_lookup_bytes - budget.bytes)
+    if (file.size > result.budget_bytes - result.read_bytes) {
+      result.reason = "read-budget";
       return false;
+    }
     HANDLE h = CreateFileW(file.path.c_str(), GENERIC_READ,
                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                            OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
@@ -98,6 +100,7 @@ bool Collect(const std::vector<File> &files, const std::string &uri, CachedRecor
       // This does not claim to reflect unreadable WAL updates or evictions.
       if (file.log && GetLastError() == ERROR_SHARING_VIOLATION)
         continue;
+      result.reason = "unreadable";
       return false;
     }
     // Files can be compacted, replaced or appended while Spotify is running.
@@ -112,44 +115,69 @@ bool Collect(const std::vector<File> &files, const std::string &uri, CachedRecor
     DWORD got = 0;
     bool ok = ReadFile(h, bytes.data(), DWORD(bytes.size()), &got, nullptr) != 0;
     CloseHandle(h);
-    budget.bytes += file.size;
-    if (!ok || got != bytes.size())
+    result.read_bytes += got;
+    if (!ok || got != bytes.size()) {
+      result.reason = "unreadable";
       return false;
+    }
     bool valid = file.log ? CollectMetadataLog(bytes, uri, records)
                           : CollectMetadataTable(bytes, uri, records);
-    if (!valid)
+    if (valid && albums && !album_uri.empty())
+      valid = file.log ? CollectMetadataLog(bytes, album_uri, *albums)
+                       : CollectMetadataTable(bytes, album_uri, *albums);
+    if (!valid) {
+      result.reason = "invalid-record";
       return false;
+    }
   }
   return true;
 }
 } // namespace
-bool ReadStoredMetadata(const std::wstring &users_root, RichMetadata &live) {
+bool ReadStoredMetadata(const std::wstring &users_root, RichMetadata &live,
+                        StoredMetadataRead* diagnostic) {
   BackgroundIo background;
-  Budget budget;
+  StoredMetadataRead local;
+  auto& result = diagnostic ? *diagnostic : local;
+  result = {};
+  result.budget_bytes = uint64_t(GetSettings().metadata_cache_read_mib) * 1024 * 1024;
   WIN32_FIND_DATAW data{};
   HANDLE h = FindFirstFileW((users_root + L"\\*").c_str(), &data);
   FindHandle guard(h);
-  if (h == INVALID_HANDLE_VALUE)
+  if (h == INVALID_HANDLE_VALUE) {
+    result.reason = GetLastError()==ERROR_PATH_NOT_FOUND || GetLastError()==ERROR_FILE_NOT_FOUND
+        ? "missing-cache" : "unreadable";
     return false;
+  }
   unsigned accounts = 0;
   do {
     if (!(data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || data.cFileName[0] == L'.')
       continue;
-    if (++accounts > 8 || GetTickCount64() >= budget.until)
+    if (++accounts > 8) {
+      result.reason = "account-count";
       break;
-    bool complete = true;
-    auto files = Files(users_root + L"\\" + data.cFileName + L"\\primary.ldb", complete);
-    if (!complete)
+    }
+    const char* failure = nullptr;
+    auto files = Files(users_root + L"\\" + data.cFileName + L"\\primary.ldb", failure);
+    if (failure) {
+      result.reason = failure;
       continue;
-    CachedRecords records;
-    if (!Collect(files, live.uri, records, budget))
+    }
+    CachedRecords records, albums;
+    if (!Collect(files, live.uri, records, result, live.album_uri, &albums))
       continue;
     CachedTrackMetadata track;
-    if (!DecodeCachedTrack(records, live.uri, track) || track.title != live.title ||
-        track.album != live.album || std::abs(track.duration - live.duration) > 1.0)
+    if (!DecodeCachedTrack(records, live.uri, track)) {
+      result.reason = std::any_of(records.begin(),records.end(),[](const auto& item){return !item.second.deleted;})
+          ? "invalid-record" : "missing-record";
       continue;
-    CachedRecords albums;
-    if (!Collect(files, track.album_uri, albums, budget))
+    }
+    if (track.title != live.title || track.album != live.album ||
+        std::abs(track.duration - live.duration) > 1.0 ||
+        (!live.album_uri.empty() && live.album_uri != track.album_uri)) {
+      result.reason = "identity-mismatch";
+      continue;
+    }
+    if (live.album_uri.empty() && !Collect(files, track.album_uri, albums, result))
       continue;
     std::map<std::string, std::string> fields;
     if (DecodeCachedAlbum(albums, track.album_uri, fields)) {
@@ -165,60 +193,38 @@ bool ReadStoredMetadata(const std::wstring &users_root, RichMetadata &live) {
       MergeCachedMetadata(complete, embedded);
       track.fields = std::move(embedded.fields);
     }
-    return MergeCachedMetadata(track, live);
+    const bool merged = MergeCachedMetadata(track, live);
+    result.reason = merged ? "found" : "identity-mismatch";
+    return merged;
   } while (FindNextFileW(h, &data));
+  if (accounts <= 8 && GetLastError()!=ERROR_NO_MORE_FILES)
+    result.reason = "unreadable";
   return false;
 }
 void EnrichStoredMetadata(RichMetadata &live) {
-  // Only MetadataWorker calls this function. Bound both positive and negative
-  // lookups so repeated renderer snapshots cannot cause repeated disk scans.
-  struct Memo {
-    std::string uri;
-    CachedTrackMetadata value;
-    ULONGLONG retry = 0;
-    bool found = false;
-  };
-  static std::deque<Memo> memo;
-  auto found =
-      std::find_if(memo.begin(), memo.end(), [&](const Memo &m) { return m.uri == live.uri; });
-  if (found != memo.end()) {
-    if (found->found && GetTickCount64() < found->retry) {
-      MergeCachedMetadata(found->value, live);
-      return;
-    }
-    if (!found->found && GetTickCount64() < found->retry)
-      return;
-    memo.erase(found);
-  }
+  // The owning metadata record controls retries; each requested lookup reads
+  // current local data within its configured byte budget.
+  StoredMetadataRead result;
   PWSTR local = nullptr;
-  if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &local)))
-    return;
-  std::wstring root;
   try {
-    root = std::wstring(local) + L"\\Spotify\\Users";
+    result.budget_bytes = uint64_t(GetSettings().metadata_cache_read_mib) * 1024 * 1024;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &local))) {
+      const auto root = std::wstring(local) + L"\\Spotify\\Users";
+      CoTaskMemFree(local);
+      local = nullptr;
+      if (ReadStoredMetadata(root, live, &result))
+        return;
+    } else {
+      result.reason = "missing-cache";
+    }
   } catch (...) {
-    CoTaskMemFree(local);
-    throw;
+    result.reason = "resource-failure";
   }
   CoTaskMemFree(local);
-  RichMetadata cached = live;
-  cached.fields.clear();
-  bool ok = ReadStoredMetadata(root, cached);
-  Memo entry;
-  entry.uri = live.uri;
-  entry.retry = GetTickCount64() + (ok ? 300000 : 15000);
-  entry.found = ok;
-  if (ok) {
-    entry.value.uri = cached.uri;
-    entry.value.title = cached.title;
-    entry.value.album = cached.album;
-    entry.value.album_uri = cached.album_uri;
-    entry.value.duration = cached.duration;
-    entry.value.fields = std::move(cached.fields);
-    MergeCachedMetadata(entry.value, live);
-  }
-  if (memo.size() >= 24)
-    memo.pop_front();
-  memo.push_back(std::move(entry));
+  char line[320];
+  std::snprintf(line,sizeof(line),"cached metadata uri=%.96s status=unavailable reason=%s readbytes=%llu budget=%llu",
+                live.uri.c_str(),result.reason,static_cast<unsigned long long>(result.read_bytes),
+                static_cast<unsigned long long>(result.budget_bytes));
+  QueueDiagnostic(line);
 }
 } // namespace history

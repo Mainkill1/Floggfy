@@ -8,6 +8,7 @@ struct Settings {
     bool downloads=true,ogg=true,flac=true,aac=false,podcasts=true,menu=true,music_folder=false;
     bool windows_playback_fallback=false;
     bool metadata=true,lyrics=true,update_existing_metadata=true,auto_skip_downloaded=false;
+    unsigned metadata_cache_read_mib=256; // Disk read budget per cached metadata lookup.
     int never_pause=-1; // -1 hides/disables the menu item; 0=off, 1=on.
     bool track_number_in_filename=false,convert_numbered_filenames=false;
     bool dump_streams=false; // Continuous raw input and metadata files; restart-only.

@@ -57,7 +57,9 @@ Tested with the Spotify 1.3.9.2055 desktop update on Windows x64.
   Ogg, FLAC, or enabled AAC audio under `Podcasts\Show`.
 - `Menu=0` disables the menu; configured saving continues.
 - Playback tracking uses Spotify app state and track URIs. `Windows Playback Fallback=1` enables the Windows media-session compatibility fallback; it defaults to `0`.
-- `Metadata=0` disables enrichment while retaining app playback tracking.
+- `Metadata=0` disables enrichment while retaining app playback tracking. Available song and podcast tags stay attached to the recording; online enrichment fills gaps only after local collection.
+- Cached artwork is read without modifying Spotify’s cache. Unsupported cache layouts fall back to online artwork; Windows WebP decoding uses the system image codec.
+- `MetadataCacheReadMiB=256` under `[To Disk]` limits disk reads per cached metadata lookup (1–4096 MiB). Local reads run in the background without a fixed time cutoff.
 - `[Matcher]` defaults to `TimeOffsetToleranceMs=10000` (0–120000 ms) and `DurationToleranceMs=250` (0–2000 ms). Exact playback IDs can match outside the timing window.
 - `MaxMatchQueue=5` under `[Matcher]` sets the subsequent media starts before unmatched retirement (1–100).
 - `SaveUnmatched=1` under `[To Disk]` saves complete, codec-validated unidentified streams in `Unmatched` at retirement. Incomplete or corrupt preloads are discarded. Set `0` to discard unmatched streams too.

@@ -10,6 +10,8 @@
 #include <chrono>
 namespace history {
 bool IsAlbumArtworkUrl(const std::string& url);
+// Online fallback only after the caller has attempted local artwork retrieval.
+bool DownloadAlbumArtwork(const std::string& url,std::vector<uint8_t>& bytes);
 // Call only on the metadata worker: bounded synchronous HTTPS fetch, no credentials.
 // True only when a new validated image becomes available.
 bool CacheAlbumArtwork(const std::string& track_uri,const std::string& url);

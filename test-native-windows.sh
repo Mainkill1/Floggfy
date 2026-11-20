@@ -39,8 +39,8 @@ x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/wind
  -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-history-test.exe"
 x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/windows-tests/metadata-ogg.o
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_metadata_identity_test.cpp native/telemetry_filter.cpp native/telemetry_decode.cpp native/telemetry_inflate.cpp -I native/vendor/libogg/include \
- native/rich_metadata.cpp native/cached_metadata.cpp native/cached_metadata_windows.cpp native/history_settings.cpp native/async_log.cpp \
- native/media_session.cpp native/auto_skip.cpp native/library_layout.cpp native/album_artwork.cpp native/playback_quality_windows.cpp native/playback_quality.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/windows-tests/metadata-ogg.o build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 \
+ native/rich_metadata.cpp native/cached_metadata.cpp native/cached_metadata_windows.cpp native/cached_artwork_windows.cpp native/history_settings.cpp native/async_log.cpp \
+ native/media_session.cpp native/auto_skip.cpp native/library_layout.cpp native/album_artwork.cpp native/playback_quality_windows.cpp native/playback_quality.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/windows-tests/metadata-ogg.o build/windows-tests/minhook-*.o -lwindowscodecs -lole32 -luuid -lshell32 \
  -lruntimeobject -lwinhttp -o "$floggfy_test_root/windows-metadata-identity-test.exe"
 "$floggfy_test_root/windows-history-test.exe"
 "$floggfy_test_root/windows-metadata-identity-test.exe"
@@ -51,6 +51,9 @@ x86_64-w64-mingw32-g++ "${common[@]}" tests/cached_metadata_test.cpp native/cach
 "$floggfy_test_root/cached-metadata-test.exe" "$(wslpath -w "$floggfy_test_root/cache-fixtures")"
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_cached_metadata_test.cpp native/cached_metadata.cpp native/cached_metadata_windows.cpp native/rich_metadata.cpp -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-cached-metadata-test.exe"
 "$floggfy_test_root/windows-cached-metadata-test.exe" "$(wslpath -w "$floggfy_test_root/cache-users")"
+mkdir -p "$floggfy_test_root/artwork-cache"
+x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_cached_artwork_test.cpp native/image_info.cpp -lwindowscodecs -lole32 -luuid -o "$floggfy_test_root/windows-cached-artwork-test.exe"
+"$floggfy_test_root/windows-cached-artwork-test.exe" "$(wslpath -w "$floggfy_test_root/artwork-cache")"
 
 x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/windows-tests/ogg-framing.o
 quality_sources=(native/playback_quality.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/windows-tests/ogg-framing.o)
@@ -91,7 +94,7 @@ x86_64-w64-mingw32-g++ "${common[@]}" tests/album_artwork_test.cpp native/album_
 floggfy_settings_test_root="$floggfy_test_root/settings-defaults"
 mkdir -p "$floggfy_settings_test_root"
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_settings_test.cpp -lole32 -luuid -lshell32 -o "$floggfy_settings_test_root/windows-settings-test.exe"
-for scenario in new missing zero legacy-zero lyrics-zero updates-zero aac-one podcasts-one podcasts-zero buffer-1024 buffer-over buffer-under auto-skip-one auto-skip-invalid auto-skip-padded never-pause-hidden never-pause-off never-pause-on never-pause-invalid never-pause-padded never-pause-duplicate speed-10 speed-10-limit-10 speed-10-limit-over speed-2-limit-3 speed-4-limit-3 speed-10-limit-zero speed-10-limit-one speed-10-limit-invalid speed-10-limit-padded speed-invalid speed-padded fallback-one fallback-zero fallback-invalid fallback-padded fallback-blank fallback-leading-space fallback-trailing-space fallback-tab fallback-word fallback-duplicate; do
+for scenario in new missing metadata-cache-custom metadata-cache-invalid metadata-cache-zero metadata-cache-over zero legacy-zero lyrics-zero updates-zero aac-one podcasts-one podcasts-zero buffer-1024 buffer-over buffer-under auto-skip-one auto-skip-invalid auto-skip-padded never-pause-hidden never-pause-off never-pause-on never-pause-invalid never-pause-padded never-pause-duplicate speed-10 speed-10-limit-10 speed-10-limit-over speed-2-limit-3 speed-4-limit-3 speed-10-limit-zero speed-10-limit-one speed-10-limit-invalid speed-10-limit-padded speed-invalid speed-padded fallback-one fallback-zero fallback-invalid fallback-padded fallback-blank fallback-leading-space fallback-trailing-space fallback-tab fallback-word fallback-duplicate; do
     "$floggfy_settings_test_root/windows-settings-test.exe" "$scenario"
 done
 

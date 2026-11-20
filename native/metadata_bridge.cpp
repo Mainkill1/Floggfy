@@ -9,6 +9,7 @@
 #include "playback_quality.h"
 #include "cached_metadata.h"
 #include "album_artwork.h"
+#include "cached_artwork_windows.h"
 #include "image_info.h"
 #include "history_settings.h"
 #include "collector_config.h"
@@ -76,13 +77,14 @@ static int PollAny(Base* b){return reinterpret_cast<PollTask*>(b)->refs>0;}
 static std::wstring CollectorOptions() {
  return BuildCollectorOptions(GetSettings(),ReadAutoSkipRequest());
 }
+static std::wstring OnlineEnrichmentScript();
 static void PollExecute(Task*) {
  Frame* frame=nullptr;
  {SharedSrw guard(frame_lock);frame=polling_frame;if(frame)frame->base.add(&frame->base);}
  struct Finish {Frame* frame;~Finish(){Release(frame);poll_pending=false;}} finish{frame};
  try {
   if(!frame || !reinterpret_cast<int(*)(Frame*)>(frame->methods[0])(frame))return;
-  const auto code_text=CollectorOptions()+L"if(window.__floggfyPoll)window.__floggfyPoll();";
+  const auto code_text=CollectorOptions()+L"if(window.__floggfyPoll)window.__floggfyPoll();"+OnlineEnrichmentScript();
   String code={const_cast<wchar_t*>(code_text.c_str()),code_text.size(),nullptr};
   const wchar_t name[]=L"floggfy-metadata.js";String source={const_cast<wchar_t*>(name),wcslen(name),nullptr};
   reinterpret_cast<void(*)(Frame*,const String*,const String*,int)>(frame->methods[14])(frame,&code,&source,1);
@@ -94,6 +96,7 @@ static void SchedulePoll(){
  t->task.base={sizeof(Task),PollAdd,PollDrop,PollOne,PollAny};t->task.execute=PollExecute;
  if(!post_task(0,&t->task))poll_pending=false; // The public CEF function consumes the task reference.
 }
+static std::shared_ptr<MetadataRecord> observed_metadata; // Current client snapshot, including legacy clients without a timeline.
 static MetadataCache cache;static SRWLOCK cache_lock=SRWLOCK_INIT,message_lock=SRWLOCK_INIT;
 static std::atomic<std::uint64_t> metadata_revision{1};
 static hooks::InitController metadata_init;
@@ -115,58 +118,164 @@ static bool Enqueue(const String* value) {
   } ReleaseSRWLockExclusive(&message_lock);
  } return true;
 }
-// A single bounded storage lane owns cache scans and HTTPS artwork fetches.
-// The poll/message lane only parses and publishes current client data.
-struct EnrichmentJob {RichMetadata metadata;unsigned generation=0;};
+// One background lane resolves missing fields. Jobs pin the same record used
+// by the matcher; no disk or network work runs on playback/decoder callbacks.
+struct EnrichmentJob {std::shared_ptr<MetadataRecord> record;};
 static SRWLOCK enrichment_lock=SRWLOCK_INIT;
-static std::array<EnrichmentJob,4> enrichment_jobs;
-static size_t enrichment_head=0,enrichment_count=0;
+static std::deque<EnrichmentJob> enrichment_jobs;
 static HANDLE enrichment_event=nullptr,enrichment_thread=nullptr;
 static std::atomic<bool> enrichment_running{false};
+struct OnlineEnrichment {std::shared_ptr<MetadataRecord> owner;RichMetadata snapshot;unsigned needs=0;};
+static std::deque<OnlineEnrichment> online_enrichment; // Protected by cache_lock.
+static bool HasField(const RichMetadata& metadata,const char* key) {
+ const auto found=metadata.fields.find(key);return found!=metadata.fields.end()&&!found->second.empty();
+}
+static bool IsTrackUri(const std::string& uri) {
+ return uri.size()==36&&uri.compare(0,14,"spotify:track:")==0&&
+        std::all_of(uri.begin()+14,uri.end(),[](unsigned char c){return (c>='0'&&c<='9')||(c>='A'&&c<='Z')||(c>='a'&&c<='z');});
+}
+static bool NeedsStoredMetadata(const RichMetadata& metadata) {
+ return IsTrackUri(metadata.uri)&&(!HasField(metadata,"DATE")||!HasField(metadata,"ISRC")||
+        !HasField(metadata,"LABEL")||metadata.album_uri.empty());
+}
 static void MergeAvailableFields(const RichMetadata& available,RichMetadata& live) {
+ if(available.uri!=live.uri)return;
+ if(live.title.empty())live.title=available.title;
+ if(live.artist.empty())live.artist=available.artist;
+ if(live.album.empty())live.album=available.album;
  CachedTrackMetadata cached;
  cached.uri=available.uri;cached.title=available.title;cached.album=available.album;
  cached.album_uri=available.album_uri;
  cached.duration=available.duration;cached.fields=available.fields;
- // Uses the established missing-field/richer-date rules: current live values
- // win, while unchanged messages retain already obtained enrichment.
  MergeCachedMetadata(cached,live);
+ // Optional omissions never erase an already identified cover. If Spotify
+ // explicitly supplies a different reference, old bytes must not follow it.
+ if(live.artwork_url.empty())live.artwork_url=available.artwork_url;
+ if(live.artwork_urls.empty()&&live.artwork_url==available.artwork_url)live.artwork_urls=available.artwork_urls;
+ if(live.metadata_source=="online"&&live.playback_quality.empty()&&!available.playback_quality.empty()){live.playback_quality=available.playback_quality;live.quality_time=available.quality_time;}
+ if(!live.artwork&&available.artwork&&
+    (available.artwork->reference==live.artwork_url||
+     std::find(live.artwork_urls.begin(),live.artwork_urls.end(),available.artwork->reference)!=live.artwork_urls.end()))live.artwork=available.artwork;
+}
+static void MergeSnapshot(const RichMetadata& previous,RichMetadata& incoming) {
+ if(incoming.metadata_source=="online") {
+  auto current=previous;current.metadata_source="online";
+  MergeAvailableFields(incoming,current);incoming=std::move(current);
+ }else MergeAvailableFields(previous,incoming);
 }
 static bool SameRecordingMetadata(const RichMetadata& left,const RichMetadata& right) {
  return left.title==right.title&&left.artist==right.artist&&left.album==right.album&&left.album_uri==right.album_uri&&
-        left.uri==right.uri&&left.artwork_url==right.artwork_url&&left.duration==right.duration&&
-        left.fields==right.fields;
+        left.uri==right.uri&&left.artwork_url==right.artwork_url&&left.artwork_urls==right.artwork_urls&&
+        left.artwork==right.artwork&&left.duration==right.duration&&left.fields==right.fields;
 }
-
+static std::wstring JsString(const std::string& utf8) {
+ const auto value=MetadataWide(utf8);std::wstring result=L"\"";
+ for(const auto c:value) {
+  if(c==L'\\'||c==L'"'){result+=L'\\';result+=c;}
+  else if(c<32||c==0x2028||c==0x2029){wchar_t escaped[7];swprintf(escaped,7,L"\\u%04x",unsigned(c));result+=escaped;}
+  else result+=c;
+ }
+ return result+L"\"";
+}
+static unsigned OnlineNeeds(const RichMetadata& data,bool lyrics) {
+ if(!IsTrackUri(data.uri))return 0;
+ const bool album=!HasField(data,"LABEL")||data.artwork_url.empty();
+ return ((!HasField(data,"DATE")||!HasField(data,"ISRC")||(album&&!ValidSpotifyAlbumUri(data.album_uri)))?1u:0u)|
+        (album?2u:0u)|
+        ((lyrics&&!HasField(data,"LYRICS"))?4u:0u);
+}
+static std::wstring OnlineEnrichmentScript() {
+ OnlineEnrichment request;
+ {ExclusiveSrw guard(cache_lock);if(online_enrichment.empty())return {};request=std::move(online_enrichment.front());online_enrichment.pop_front();}
+ const auto preferences=GetSettings();
+ if(!preferences.metadata) {ExclusiveSrw guard(cache_lock);request.owner->online_requested&=~request.needs;return {};}
+ if(!preferences.lyrics) {ExclusiveSrw guard(cache_lock);request.owner->online_requested&=~4u;request.needs&=~4u;}
+ if(!request.needs)return {};
+ const auto& m=request.snapshot;
+ std::string artwork_urls;for(const auto& url:m.artwork_urls){if(!artwork_urls.empty())artwork_urls+='\n';artwork_urls+=url;}
+ const auto truth=[](bool value){return value?L"true":L"false";};
+ // Only one request grant per UI tick; the collector owns asynchronous sends.
+ return L"if(window.__floggfyEnrich)window.__floggfyEnrich("+JsString(m.uri)+
+  L",{metadata:"+truth(request.needs&1)+L",album:"+truth(request.needs&2)+L",lyrics:"+truth(request.needs&4)+
+  L"},{uri:"+JsString(m.uri)+L",title:"+JsString(m.title)+L",artist:"+JsString(m.artist)+
+  L",album:"+JsString(m.album)+L",duration:"+std::to_wstring(m.duration)+L",album_uri:"+JsString(m.album_uri)+
+  L",artwork_url:"+JsString(m.artwork_url)+L",artwork_urls:"+JsString(artwork_urls)+L",SPOTIFY_URI:"+JsString(m.uri)+L"});";
+}
+static void QueueOnlineEnrichment(const std::shared_ptr<MetadataRecord>& owner,const RichMetadata& data,bool lyrics) {
+ ExclusiveSrw guard(cache_lock);
+ const unsigned needs=OnlineNeeds(data,lyrics)&~owner->online_requested;
+ if(!needs)return;
+ for(auto it=online_enrichment.begin();it!=online_enrichment.end();)
+  if(it->owner.use_count()==2){it->owner->online_requested&=~it->needs;it=online_enrichment.erase(it);}else ++it;
+ online_enrichment.push_back({owner,data,needs});owner->online_requested|=needs;
+ char line[320];snprintf(line,sizeof(line),"metadata uri=%s source=online status=requested reason=missing-after-local date=%u isrc=%u label=%u artwork=%u lyrics=%u",data.uri.c_str(),
+     unsigned(!HasField(data,"DATE")),unsigned(!HasField(data,"ISRC")),unsigned(!HasField(data,"LABEL")),unsigned(data.artwork_url.empty()),unsigned((needs&4)!=0));QueueDiagnostic(line);
+}
+static void ResolveArtwork(RichMetadata& data,bool online) {
+ auto references=data.artwork_urls;
+ if(references.empty()&&!data.artwork_url.empty())references.push_back(data.artwork_url);
+ std::string reason="missing-reference";
+ for(const auto& url:references) {
+  if(!IsAlbumArtworkUrl(url))continue;
+  std::vector<uint8_t> bytes;ImageInfo info;
+  const bool found=online?DownloadAlbumArtwork(url,bytes):ReadCachedArtwork(url,bytes,reason);
+  if(found&&ReadImageInfo(bytes,info)) {
+   auto image=std::make_shared<MetadataArtwork>();image->reference=url;image->mime=info.mime;image->bytes=std::move(bytes);data.artwork=std::move(image);
+   char line[220];snprintf(line,sizeof(line),"metadata uri=%s source=%s status=ready field=artwork bytes=%zu",data.uri.c_str(),online?"online-artwork":"local-artwork",data.artwork->bytes.size());QueueDiagnostic(line);return;
+  }
+  if(online)break; // One preferred-size online fallback, never one request per size.
+ }
+ if(!online&&!references.empty()) {
+  char line[256];snprintf(line,sizeof(line),"metadata uri=%s source=local-artwork status=unavailable reason=%s",data.uri.c_str(),reason.c_str());QueueDiagnostic(line);
+ }
+}
+static void PublishEnrichment(const std::shared_ptr<MetadataRecord>& owner,const RichMetadata& data) {
+ const bool lyrics=GetSettings().lyrics;
+ ExclusiveSrw guard(cache_lock);
+ auto merged=owner->value;MergeAvailableFields(data,merged);
+ if(!lyrics)merged.fields.erase("LYRICS");
+ const bool changed=!SameRecordingMetadata(owner->value,merged);
+ owner->value=std::move(merged);
+ if(changed)metadata_revision.fetch_add(1,std::memory_order_release);
+}
+static void QueueEnrichment(const std::shared_ptr<MetadataRecord>& record);
 static DWORD WINAPI EnrichmentWorker(LPVOID) {
  SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL);
  while(enrichment_running.load(std::memory_order_acquire)) {
-  EnrichmentJob job;bool got=false;
-  {ExclusiveSrw guard(enrichment_lock);
-   if(enrichment_count){std::swap(job,enrichment_jobs[enrichment_head]);enrichment_head=(enrichment_head+1)%enrichment_jobs.size();--enrichment_count;got=true;}}
-  if(!got){WaitForSingleObject(enrichment_event,1000);continue;}
+  EnrichmentJob job;
+  {ExclusiveSrw guard(enrichment_lock);if(!enrichment_jobs.empty()){job=std::move(enrichment_jobs.front());enrichment_jobs.pop_front();}}
+  if(!job.record){WaitForSingleObject(enrichment_event,1000);continue;}
+  {ExclusiveSrw guard(cache_lock);
+   // Registry + queued job only: playback/matcher/save no longer needs it.
+   if(job.record.use_count()==2){job.record->queued=false;continue;}
+  }
+  auto owner=job.record;
   try {
-   auto& metadata=job.metadata;
    auto preferences=GetSettings();
-   if(!preferences.metadata || preferences.generation!=job.generation)continue;
-   try {EnrichStoredMetadata(metadata);}catch(...){QueueDiagnostic("cached metadata unavailable; ordinary tags retained");}
-   bool artwork_changed=false;
-   if(!metadata.artwork_url.empty()) {
-    try {artwork_changed=CacheAlbumArtwork(metadata.uri,metadata.artwork_url);}catch(...){QueueDiagnostic("Spotify artwork unavailable; audio publication remains enabled");}
-   }
-   preferences=GetSettings();
-   if(!preferences.metadata || preferences.generation!=job.generation)continue;
-   if(!preferences.lyrics)metadata.fields.erase("LYRICS");
+   if(!preferences.metadata){ExclusiveSrw guard(cache_lock);owner->queued=false;continue;}
+   RichMetadata data;bool read_local=false,read_artwork=false;
    {ExclusiveSrw guard(cache_lock);
-    const auto current=metadata.uri.empty()?cache.Find(metadata.title,metadata.artist,metadata.album,metadata.duration):cache.FindUri(metadata.uri);
-    if(current && current->uri==metadata.uri) {
-     auto merged=*current;MergeAvailableFields(metadata,merged);
-     if(!preferences.lyrics)merged.fields.erase("LYRICS");
-     const bool changed=!SameRecordingMetadata(*current,merged);
-     cache.Put(merged);
-     if(changed||artwork_changed)metadata_revision.fetch_add(1,std::memory_order_release);
-    }}
+    data=owner->value;read_local=!owner->local_attempted&&NeedsStoredMetadata(data);owner->local_attempted=true;
+    read_artwork=!data.artwork&&!data.artwork_url.empty()&&owner->artwork_attempted!=data.artwork_url;
+    if(read_artwork)owner->artwork_attempted=data.artwork_url;
+   }
+   if(preferences.metadata) {
+    if(read_local)try{EnrichStoredMetadata(data);}catch(...){QueueDiagnostic("metadata source=local-cache status=failed reason=exception");}
+    PublishEnrichment(owner,data); // Local tags are ready even while artwork is pending.
+    preferences=GetSettings();
+    if(preferences.metadata&&read_artwork)ResolveArtwork(data,false);
+    PublishEnrichment(owner,data);
+    preferences=GetSettings();
+    if(preferences.metadata) {
+     QueueOnlineEnrichment(owner,data,preferences.lyrics);
+     if(read_artwork&&!data.artwork)ResolveArtwork(data,true);
+    }
+    PublishEnrichment(owner,data);
+   }
   }catch(...) {QueueDiagnostic("metadata enrichment failed; current client metadata retained");}
+  bool changed_reference=false;
+  {ExclusiveSrw guard(cache_lock);owner->queued=false;if(!GetSettings().metadata)owner->artwork_attempted.clear();changed_reference=!owner->value.artwork&&!owner->value.artwork_url.empty()&&owner->artwork_attempted!=owner->value.artwork_url;}
+  if(changed_reference&&GetSettings().metadata)QueueEnrichment(owner);
  }
  return 0;
 }
@@ -181,17 +290,24 @@ static bool StartEnrichmentWorker() {
  if(!enrichment_thread){enrichment_running=false;CloseHandle(enrichment_event);enrichment_event=nullptr;return false;}
  return true;
 }
-static void QueueEnrichment(const RichMetadata& metadata,unsigned generation) {
+static void QueueEnrichment(const std::shared_ptr<MetadataRecord>& record) {
  if(!enrichment_thread)return;
- EnrichmentJob job{metadata,generation}; // Prepare allocating fields before locking.
- {ExclusiveSrw guard(enrichment_lock);
-  // New data supersedes pending work for that exact URI.
-  for(size_t i=0;i<enrichment_count;++i) {
-   const auto index=(enrichment_head+i)%enrichment_jobs.size();
-   if(enrichment_jobs[index].metadata.uri==metadata.uri){std::swap(job,enrichment_jobs[index]);SetEvent(enrichment_event);return;}
-  }
-  if(enrichment_count==enrichment_jobs.size()){std::swap(job,enrichment_jobs[enrichment_head]);enrichment_head=(enrichment_head+1)%enrichment_jobs.size();}
-  else {std::swap(job,enrichment_jobs[(enrichment_head+enrichment_count)%enrichment_jobs.size()]);++enrichment_count;}}
+ {ExclusiveSrw guard(cache_lock);
+  if(record->queued)return;
+  const auto& data=record->value;
+  const auto preferences=GetSettings();if(!preferences.metadata)return;
+  if(!preferences.lyrics)record->online_requested&=~4u;
+  if(record->local_attempted&&!(OnlineNeeds(data,preferences.lyrics)&~record->online_requested)&&
+     (data.artwork||data.artwork_url.empty()||record->artwork_attempted==data.artwork_url))return;
+  record->queued=true;
+ }
+ try {
+  ExclusiveSrw records_guard(cache_lock);ExclusiveSrw jobs_guard(enrichment_lock);
+  for(auto it=enrichment_jobs.begin();it!=enrichment_jobs.end();)
+   if(it->record.use_count()==2){it->record->queued=false;it=enrichment_jobs.erase(it);}else ++it;
+  enrichment_jobs.push_back({record});
+ }
+ catch(...){ExclusiveSrw guard(cache_lock);record->queued=false;throw;}
  SetEvent(enrichment_event);
 }
 static DWORD WINAPI MetadataWorker(LPVOID) {
@@ -208,15 +324,17 @@ static DWORD WINAPI MetadataWorker(LPVOID) {
    const auto preferences=GetSettings();if(!preferences.metadata)continue;
    RichMetadata metadata;std::string error;
    if(!ParseRichMetadata(std::string(message.data,message.length),metadata,error))continue;
-   metadata.quality_time=message.time;
+   if(!metadata.playback_quality.empty())metadata.quality_time=message.time;
+   std::shared_ptr<MetadataRecord> owner;
    {ExclusiveSrw guard(cache_lock);
     const auto previous=metadata.uri.empty()?cache.Find(metadata.title,metadata.artist,metadata.album,metadata.duration):cache.FindUri(metadata.uri);
-    if(previous && previous->uri==metadata.uri)MergeAvailableFields(*previous,metadata);
+    if(previous && previous->uri==metadata.uri)MergeSnapshot(*previous,metadata);
     if(!preferences.lyrics)metadata.fields.erase("LYRICS");
     const bool changed=!previous||!SameRecordingMetadata(*previous,metadata);
-    cache.Put(metadata);
+    owner=cache.Pin(metadata);owner->value=metadata;
+    if(metadata.metadata_source!="online")observed_metadata=owner;
     if(changed)metadata_revision.fetch_add(1,std::memory_order_release);}
-   QueueEnrichment(metadata,preferences.generation);
+   QueueEnrichment(owner);
   }catch(...) {QueueDiagnostic("metadata message failed; next client snapshot will retry");}
  }
  return 0;
@@ -253,6 +371,7 @@ static bool CurrentTimeline(const String* text) {
   media.position=record.position;media.duration=record.metadata.duration;media.playback_speed=record.speed;media.playing=record.playing;media.playback_status=record.playing?4:5;
   media.explicit_control=record.explicit_control;
   media.prior_control=record.prior_control;
+  {ExclusiveSrw guard(cache_lock);media.metadata=cache.Pin(record.metadata);}
   PublishClientMedia(std::move(media),record.sampled_ms);
  }catch(...){InvalidateClientMedia();try{PublishClientMediaUnavailable("client-timeline-exception");}catch(...){}}
  return true;
@@ -412,10 +531,20 @@ std::uint64_t MetadataRevision() {
  // bytes are committed, before this worker reacquires the metadata cache lock.
  return metadata_revision.load(std::memory_order_acquire)+AlbumArtworkRevision();
 }
+void RetainMetadata(Media& media) {
+ if(media.metadata)return;
+ ExclusiveSrw guard(cache_lock);
+ const auto existing=media.spotify_uri.empty()?cache.Find(Utf8(media.title),Utf8(media.artist),Utf8(media.album),media.duration):cache.FindUri(media.spotify_uri);
+ if(existing){media.metadata=cache.Pin(*existing);return;}
+ if(media.spotify_uri.empty())return;
+ RichMetadata basic;basic.uri=media.spotify_uri;basic.title=Utf8(media.title);basic.artist=Utf8(media.artist);basic.album=Utf8(media.album);basic.duration=media.duration;
+ media.metadata=cache.Pin(basic);
+}
 static bool ReadCachedMetadata(const Media& media,RichMetadata& metadata) {
  const auto title=Utf8(media.title),artist=Utf8(media.artist),album=Utf8(media.album);
  SharedSrw guard(cache_lock);
- const auto record=media.spotify_uri.empty()?cache.Find(title,artist,album,media.duration):cache.FindUri(media.spotify_uri);
+ const auto record=media.metadata&&media.metadata->value.uri==media.spotify_uri?&media.metadata->value:
+     media.spotify_uri.empty()?cache.Find(title,artist,album,media.duration):cache.FindUri(media.spotify_uri);
  if(!record)return false;
  metadata=*record;
  return true;
@@ -424,7 +553,8 @@ std::string ReadClientPlaybackQuality(const Media& media) {
  if(!GetSettings().metadata)return {};
  const auto title=Utf8(media.title),artist=Utf8(media.artist),album=Utf8(media.album);
  SharedSrw guard(cache_lock);
- const auto record=media.spotify_uri.empty()?cache.Find(title,artist,album,media.duration):cache.FindUri(media.spotify_uri);
+ const auto record=media.metadata&&media.metadata->value.uri==media.spotify_uri?&media.metadata->value:
+     media.spotify_uri.empty()?cache.Find(title,artist,album,media.duration):cache.FindUri(media.spotify_uri);
  const auto now=GetTickCount64();
  return record && record->quality_time && now>=record->quality_time && now-record->quality_time<=20000 ? record->playback_quality : std::string{};
 }
@@ -440,7 +570,8 @@ void EnrichCatalog(const Media& media,Catalog& catalog) {
  const char* keys[]={"TITLE","ALBUM","ALBUMARTIST","ARTIST","TRACKNUMBER","DISCNUMBER"};
  std::array<std::string,6> fields;std::string uri,album_uri;
  {SharedSrw guard(cache_lock);
-  const auto record=media.spotify_uri.empty()?cache.Find(title,artist,album,media.duration):cache.FindUri(media.spotify_uri);
+  const auto record=media.metadata&&media.metadata->value.uri==media.spotify_uri?&media.metadata->value:
+     media.spotify_uri.empty()?cache.Find(title,artist,album,media.duration):cache.FindUri(media.spotify_uri);
   if(!record)return;
   uri=record->uri;
   album_uri=record->album_uri;
@@ -484,7 +615,9 @@ void EnrichTags(const Media& media,Tags& tags) {
  }
  if(!metadata.uri.empty()) {
   std::vector<uint8_t> cover;std::string mime;ImageInfo original;
-  if(GetAlbumArtwork(metadata.uri,cover,mime)&&ReadImageInfo(cover,original)) {
+  if(metadata.artwork){cover=metadata.artwork->bytes;mime=metadata.artwork->mime;}
+  else if(!media.metadata)GetAlbumArtwork(metadata.uri,cover,mime); // Legacy callers without an owned record.
+  if(ReadImageInfo(cover,original)) {
    tags.cover=std::move(cover);tags.mime=original.mime;
    // Provenance belongs to the validated client image actually selected above,
    // never to a cached text record or an unchanged embedded cover.

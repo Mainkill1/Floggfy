@@ -58,6 +58,7 @@ build/rich-metadata-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/bounded_queue_test.cpp -o build/bounded-queue-test
 build/bounded-queue-test
 node tests/metadata_collector_test.js
+node tests/collector_owned_metadata_test.js
 node tests/auto_skip_collector_test.js
 node tests/never_pause_collector_test.js
 

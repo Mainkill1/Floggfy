@@ -13,7 +13,8 @@ async function scenario(enabled){
   console:{info:x=>output.push(x)},encodeURIComponent};
  vm.runInNewContext(script,context);
  const poll=()=>context.window.__floggfyPoll();
- for(let i=0;i<5;i++)poll();assert.equal(sends,2);
+ for(let i=0;i<5;i++)poll();assert.equal(sends,0);
+ context.window.__floggfyEnrich(state.item.uri,{metadata:true,album:true,lyrics:true});assert.equal(sends,2);
  const lines=()=>output.filter(x=>x.startsWith('FLOGGFY_NETWORK_V1:'));
  assert.equal(lines().length,enabled?2:0);
  const response={status:200,body:{album:{gid:'0123456789abcdef0123456789abcdef'},PRIVATE_TOKEN:'SECRET'}};

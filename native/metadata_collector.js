@@ -4,7 +4,7 @@
  if(window.__floggfyMetadata)return;
  window.__floggfyMetadata=true;
  const prefix='FLOGGFY_METADATA_V1:',seenPayload=new Map(),records=[];
- const serviceCache=new Map();
+ const serviceCache=new Map(),snapshots=new Map();
  let builder,activeRequests=0,connectDevices;
  let player,root,queue=[],seen=new Set(),walked=0,lastPlayback='',playbackTime=-Infinity;
  let timelineBinding,lastReadyTimeline,episodeEndAnchor;
@@ -316,11 +316,11 @@
   for(const c of id){let carry=alphabet.indexOf(c);for(let i=15;i>=0;i--){carry+=bytes[i]*62;bytes[i]=carry&255;carry>>=8;}if(carry)return;}
   return bytes.map(x=>x.toString(16).padStart(2,'0')).join('');
  }
- function automatic(uri){
+ function automatic(){
   const config=options(),now=performance.now();
   for(const entry of serviceCache.values())for(const kind of ['metadata','album','lyrics']){
    const r=entry[kind];
-   if(r.pending&&(now-r.started>=12000||config.metadata!==true||(kind==='lyrics'&&config.lyrics===false))){
+   if(r.pending&&(now-r.started>=12000||!r.granted||config.metadata!==true||(kind==='lyrics'&&config.lyrics===false))){
     // Expire only the logical operation. Abort may be unsupported or ignored;
     // its physical slot belongs to send() until that promise settles.
     networkStatus(r.operation,kind,'expired',undefined,r.started);
@@ -328,31 +328,34 @@
     r.retryAt=now+5000;if(config.metadata!==true||(kind==='lyrics'&&config.lyrics===false))r.attempts=Math.max(0,r.attempts-1);
    }
   }
-  if(config.metadata!==true||!builder||!uri)return;
-  const entry=requestState(uri),id=uri.slice(14);
-  for(const kind of ['metadata','album','lyrics']){
-   const r=entry[kind];if(kind==='lyrics'&&config.lyrics===false)continue;
-   if(r.data||r.done||r.pending||r.attempts>=2||now<(r.retryAt||0)||activeRequests>=4)continue;
-   const albumId=text(own(own(entry.metadata.data,'album'),'gid'));if(kind==='album'&&!/^[a-f0-9]{32}$/.test(albumId||''))continue;
-   const hex=kind==='metadata'&&hexId(id);if(kind==='metadata'&&!hex)continue;
-   r.pending=true;r.started=now;r.attempts++;r.generation=(r.generation||0)+1;const generation=r.generation;activeRequests++;
-   const operation=networking()?(networkOperation=networkOperation%1000000+1):0,started=now;
-   r.operation=operation;
-   const settled=()=>{
-    activeRequests--;
-    if(r.generation===generation){r.pending=false;r.controller=undefined;}
-   };
-   try{
-    let request=method(builder,'build').call(builder);
-    request=request.withHost('https://spclient.wg.spotify.com').withPath(kind==='metadata'?'/metadata/4/track/'+hex:kind==='album'?'/metadata/4/album/'+albumId:'/color-lyrics/v2/track/'+id).withQueryParameters({format:'json',vocalRemoval:false});
-    if(typeof AbortController==='function'&&method(request,'withAbortSignal')){r.controller=new AbortController();request=request.withAbortSignal(r.controller.signal);}
-    networkStatus(operation,kind,'send',undefined,started);
-    Promise.resolve(request.send()).then(response=>{
-     networkStatus(operation,kind,'response',own(response,'status'),started);
-     if(r.generation!==generation)return;
-     const data=own(response,'body');if(object(data)){r.data=kind==='album'?{album:data}:data;r.done=true;}else r.retryAt=performance.now()+5000;
-    },error=>{const status=own(error,'status');networkStatus(operation,kind,'rejected',status,started);if(r.generation!==generation)return;r.done=status===400||status===401||status===403||status===404;r.retryAt=performance.now()+5000;}).then(settled,settled);
-   }catch{networkStatus(operation,kind,'setup_error',undefined,started);r.pending=false;activeRequests--;r.retryAt=now+5000;}
+  if(config.metadata!==true||!builder)return;
+  for(const [uri,entry] of serviceCache){
+   const id=uri.slice(14);
+   for(const kind of ['metadata','album','lyrics']){
+    const r=entry[kind];if(!r.granted||(kind==='lyrics'&&config.lyrics===false))continue;
+    if(r.data||r.done||r.pending||r.attempts>=2||now<(r.retryAt||0)||activeRequests>=4)continue;
+    const albumUri=own(entry.snapshot,'album_uri');
+    const albumId=text(own(own(entry.metadata.data,'album'),'gid'))||(/^spotify:album:[A-Za-z0-9]{22}$/.test(albumUri||'')?hexId(albumUri.slice(14)):undefined);if(kind==='album'&&!/^[a-f0-9]{32}$/.test(albumId||''))continue;
+    const hex=kind==='metadata'&&hexId(id);if(kind==='metadata'&&!hex)continue;
+    r.pending=true;r.started=now;r.attempts++;r.generation=(r.generation||0)+1;const generation=r.generation;activeRequests++;
+    const operation=networking()?(networkOperation=networkOperation%1000000+1):0,started=now;
+    r.operation=operation;
+    const settled=()=>{
+     activeRequests--;
+     if(r.generation===generation){r.pending=false;r.controller=undefined;}
+    };
+    try{
+     let request=method(builder,'build').call(builder);
+     request=request.withHost('https://spclient.wg.spotify.com').withPath(kind==='metadata'?'/metadata/4/track/'+hex:kind==='album'?'/metadata/4/album/'+albumId:'/color-lyrics/v2/track/'+id).withQueryParameters({format:'json',vocalRemoval:false});
+     if(typeof AbortController==='function'&&method(request,'withAbortSignal')){r.controller=new AbortController();request=request.withAbortSignal(r.controller.signal);}
+     networkStatus(operation,kind,'send',undefined,started);
+     Promise.resolve(request.send()).then(response=>{
+      networkStatus(operation,kind,'response',own(response,'status'),started);
+      if(r.generation!==generation)return;
+      const data=own(response,'body');if(object(data)){r.data=kind==='album'?{album:data}:data;r.done=true;emitEnrichment(entry);}else r.retryAt=performance.now()+5000;
+     },error=>{const status=own(error,'status');networkStatus(operation,kind,'rejected',status,started);if(r.generation!==generation)return;r.done=status===400||status===401||status===403||status===404;r.retryAt=performance.now()+5000;}).then(settled,settled);
+    }catch{networkStatus(operation,kind,'setup_error',undefined,started);r.pending=false;activeRequests--;r.retryAt=now+5000;}
+   }
   }
  }
  function scan(){
@@ -405,21 +408,35 @@
  function artists(v){return entries(Array.isArray(v)?v:own(v,'items'),32).map(x=>text(x)||text(own(x,'name'))||text(own(own(x,'profile'),'name'))).filter(Boolean);}
  function indexed(m,key){const names=[];const first=text(own(m,key));if(first)names.push(first);for(let i=1;i<32;i++){const n=text(own(m,key+':'+i)||own(m,key+'_'+i));if(n&&!names.includes(n))names.push(n);}return names;}
  function putArtists(data,tag,names){if(names.length&&(!data[tag]||names.length>=data[tag].split('; ').length))data[tag]=[...new Set(names)].join('; ');}
+ function releaseDate(value){
+  let release=text(value)||text(own(value,'isoString'));
+  if(release&&/^\d{4}-\d{2}-\d{2}T/.test(release))release=release.slice(0,10);
+  if(release&&/^\d{4}(?:-\d{2}(?:-\d{2})?)?$/.test(release))return release;
+  const year=text(own(value,'year')),month=text(own(value,'month')),day=text(own(value,'day'));
+  if(!/^\d{4}$/.test(year||''))return;
+  release=year;
+  if(/^(?:[1-9]|1[0-2])$/.test(month||'')){
+   release+='-'+month.padStart(2,'0');
+   if(/^(?:[1-9]|[12][0-9]|3[01])$/.test(day||''))release+='-'+day.padStart(2,'0');
+  }
+  return release;
+ }
+ function artworkUrl(value){
+  if(typeof value!=='string')return;
+  const match=/^(?:spotify:image:|https:\/\/i\.scdn\.co\/image\/)([a-fA-F0-9]{40})$/.exec(value);
+  return match?'https://i.scdn.co/image/'+match[1].toLowerCase():undefined;
+ }
  function merge(data,source,currentItem=false){
   if(!object(source))return;
-  const m=own(source,'metadata')||source,album=own(source,'album')||{},date=own(album,'date');
+  const m=own(source,'metadata')||source,album=own(source,'album')||{},show=own(source,'show')||{};
   const albumUri=text(own(album,'uri')||own(source,'album_uri')||own(m,'album_uri'));
   if(/^spotify:album:[A-Za-z0-9]{22}$/.test(albumUri||'')){
    data.album_uri=albumUri;data.SPOTIFY_ALBUM_URI=albumUri;
   }
-  let release=text(own(m,'release_date'))||text(own(m,'album_release_date'))||text(own(source,'release_date'))||text(own(own(source,'releaseDate'),'isoString'))||text(own(own(album,'releaseDate'),'isoString'));
-  if(release&&/^\d{4}-\d{2}-\d{2}T/.test(release))release=release.slice(0,10);
-  const year=text(own(date,'year')),month=text(own(date,'month')),day=text(own(date,'day'));
-  if(!release&&/^\d{4}$/.test(year||'')){
-   release=year;if(/^(?:[1-9]|1[0-2])$/.test(month||'')){release+='-'+month.padStart(2,'0');if(/^(?:[1-9]|[12][0-9]|3[01])$/.test(day||''))release+='-'+day.padStart(2,'0');}
-  }
-  if(!release)release=text(own(m,'year'));
-  if(release&&/^\d{4}(?:-\d{2}(?:-\d{2})?)?$/.test(release)&&(!data.DATE||release.slice(0,4)!==data.DATE.slice(0,4)||release.length>=data.DATE.length)){data.DATE=release;data.YEAR=release.slice(0,4);}
+  const release=[own(m,'release_date'),own(m,'releaseDate'),own(m,'album_release_date'),
+   own(source,'release_date'),own(source,'releaseDate'),own(album,'releaseDate'),own(album,'date'),
+   own(show,'release_date'),own(show,'releaseDate'),own(m,'year')].map(releaseDate).find(Boolean);
+  if(release&&(!data.DATE||release.slice(0,4)!==data.DATE.slice(0,4)||release.length>=data.DATE.length)){data.DATE=release;data.YEAR=release.slice(0,4);}
   const names=artists(own(source,'artists')||own(m,'artists')||own(source,'artist'));
   putArtists(data,'ARTIST',names.length?names:indexed(m,'artist_name'));
   const albumNames=artists(own(album,'artists')||own(album,'artist'));
@@ -442,14 +459,21 @@
   for(const copyright of entries(own(album,'copyright'),32)){
    const value=text(own(copyright,'text'));if(value&&value.length<=4096)data[own(copyright,'type')==='P'?'PHONOGRAMCOPYRIGHT':'COPYRIGHT']=value;
   }
-  const urls=[];
-  for(const key of ['image_xlarge_url','image_large_url','image_url','image_small_url']){const url=text(own(m,key));if(url)urls.push({url,size:key.includes('xlarge')?1000:key.includes('large')?640:0});}
-  for(const image of [...entries(own(album,'images'),32),...entries(own(own(album,'cover_group'),'image'),32)]){
-   const file=text(own(image,'file_id')),url=text(own(image,'url'))||(file&&/^[a-f0-9]{40}$/.test(file)?'https://i.scdn.co/image/'+file:undefined);
+  const urls=[...(data.__covers||[])];
+  for(const key of ['image_xlarge_url','image_large_url','image_url','image_small_url']){
+   const url=artworkUrl(own(m,key));if(url)urls.push({url,size:key.includes('xlarge')?1000:key.includes('large')?640:0});
+  }
+  for(const image of [...entries(own(source,'images'),32),...entries(own(show,'images'),32),
+    ...entries(own(album,'images'),32),...entries(own(own(album,'cover_group'),'image'),32)]){
+   const file=text(own(image,'file_id'));
+   const url=artworkUrl(text(image)||own(image,'url')||(file?'spotify:image:'+file:undefined));
    if(url)urls.push({url,size:Number(own(image,'width'))||0});
   }
-  const cover=urls.filter(x=>/^https:\/\/i\.scdn\.co\/image\/[a-f0-9]{40}$/.test(x.url)).sort((a,b)=>b.size-a.size)[0];
-  if(cover&&(!data.artwork_url||cover.size>(data.__coverSize||0))){data.artwork_url=cover.url;Object.defineProperty(data,'__coverSize',{value:cover.size,writable:true,configurable:true});}
+  const covers=urls.sort((a,b)=>b.size-a.size).filter((cover,i,all)=>all.findIndex(x=>x.url===cover.url)===i).slice(0,8);
+  if(covers.length){
+   data.artwork_url=covers[0].url;data.artwork_urls=covers.map(x=>x.url).join('\n');
+   Object.defineProperty(data,'__covers',{value:covers,writable:true,configurable:true});
+  }
   if(options().lyrics===false)return;
   const lyric=own(source,'lyrics')||own(m,'lyrics');
   let words=text(lyric);
@@ -483,6 +507,58 @@
    }
   }
  }
+ function emitMetadata(data){
+  const encode=()=>Object.entries(data).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&');
+  let payload=encode();if(payload.length>131072){delete data.LYRICS;payload=encode();}
+  const last=seenPayload.get(data.uri),now=performance.now();
+  if(payload.length>131072||(last&&last.payload===payload&&now-last.time<15000))return;
+  seenPayload.set(data.uri,{payload,time:now});if(seenPayload.size>64)seenPayload.delete(seenPayload.keys().next().value);
+  console.info(prefix+payload);
+ }
+ function emitEnrichment(entry){
+  if(options().metadata!==true||!entry.snapshot)return;
+  // The snapshot belongs to the URI authorized by native, including after a skip.
+  const data=Object.defineProperties({},Object.getOwnPropertyDescriptors(entry.snapshot));
+  delete data.playback_quality; // A delayed response cannot refresh an old playback observation.
+  data.metadata_source='online';
+  merge(data,entry.metadata.data);merge(data,entry.album.data);
+  if(options().lyrics!==false)merge(data,entry.lyrics.data);else delete data.LYRICS;
+  emitMetadata(data);
+ }
+ function nativeSnapshot(uri,snapshot){
+  if(!object(snapshot)||own(snapshot,'uri')!==uri)return;
+  const title=own(snapshot,'title'),artist=own(snapshot,'artist'),album=own(snapshot,'album'),duration=own(snapshot,'duration');
+  if(![title,artist,album].every(value=>typeof value==='string'&&value.trim().length>0&&value.length<=4096)||
+     typeof duration!=='number'||!Number.isFinite(duration)||duration<=0)return;
+  const data={v:1,uri,title,artist,album,duration,SPOTIFY_URI:uri};
+  const albumUri=own(snapshot,'album_uri');
+  if(typeof albumUri==='string'&&/^spotify:album:[A-Za-z0-9]{22}$/.test(albumUri)){
+   data.album_uri=albumUri;data.SPOTIFY_ALBUM_URI=albumUri;
+  }
+  const references=own(snapshot,'artwork_urls');
+  const covers=[own(snapshot,'artwork_url'),...(typeof references==='string'?references.split('\n').slice(0,8):[])];
+  const urls=[...new Set(covers.map(artworkUrl).filter(Boolean))].slice(0,8);
+  if(urls.length){
+   data.artwork_url=urls[0];data.artwork_urls=urls.join('\n');
+   Object.defineProperty(data,'__covers',{value:urls.map(url=>({url,size:0})),writable:true,configurable:true});
+  }
+  return data;
+ }
+ window.__floggfyEnrich=(uri,needs,fallback)=>{
+  if(options().metadata!==true||!/^spotify:track:[A-Za-z0-9]{22}$/.test(uri||'')||!object(needs))return false;
+  const existing=serviceCache.get(uri),provided=nativeSnapshot(uri,fallback);
+  const snapshot=snapshots.get(uri)||existing?.snapshot||provided;
+  if(!snapshot)return false;
+  const entry=requestState(uri);if(!entry.snapshot)entry.snapshot=snapshot;
+  if(provided&&['uri','title','artist','album','duration'].every(key=>provided[key]===entry.snapshot[key])){
+   // Local native reads can fill references absent from the observed snapshot.
+   // Retain its identity and richer fields while adding only exact references.
+   entry.snapshot=Object.defineProperties({},Object.getOwnPropertyDescriptors(entry.snapshot));
+   merge(entry.snapshot,{album:{uri:entry.snapshot.album_uri||provided.album_uri},images:(provided.artwork_urls||'').split('\n')});
+  }
+  for(const kind of ['metadata','album','lyrics'])if(own(needs,kind)===true)entry[kind].granted=true;
+  automatic();return true;
+ };
  function tick(){
   timelineBlocked='';
   try{
@@ -510,22 +586,16 @@
    if(level==='hifi24')level='lossless_24';
    if(['low','normal','high','very_high','lossless','lossless_24','hifi'].includes(level))data.playback_quality=level;
    playback({v:1,title:data.title,artist:data.artist,album:data.album,uri,duration:data.duration,playback_quality:data.playback_quality});
-   if(track)automatic(uri); // Episodes use only the current client snapshot; no music service requests.
    if(track)dispatchAutoSkip(state,uri);
    if(options().metadata===false)return;
-   if(track) {
-    const fetched=serviceCache.get(uri);
-    if(fetched){merge(data,fetched.metadata.data);merge(data,fetched.album.data);if(options().lyrics!==false)merge(data,fetched.lyrics.data);}
-    for(const record of records)cached(data,record);
-    merge(data,item,true); // Current playback snapshot wins over older cached data.
-    if(options().lyrics===false)delete data.LYRICS;
-   } else if(data.artist)data.PUBLISHER=data.artist;
-   const encode=()=>Object.entries(data).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&');
-   let payload=encode();if(payload.length>131072){delete data.LYRICS;payload=encode();}
-   const last=seenPayload.get(uri),now=performance.now();
-   if(payload.length>131072||(last&&last.payload===payload&&now-last.time<15000))return;
-   seenPayload.set(uri,{payload,time:now});if(seenPayload.size>64)seenPayload.delete(seenPayload.keys().next().value);
-   console.info(prefix+payload);
+   const fetched=serviceCache.get(uri);
+   if(fetched){merge(data,fetched.metadata.data);merge(data,fetched.album.data);if(options().lyrics!==false)merge(data,fetched.lyrics.data);}
+   for(const record of records)cached(data,record);
+   merge(data,item,true); // Current playback snapshot wins over older cached data.
+   if(options().lyrics===false)delete data.LYRICS;
+   if(!track&&data.artist&&!data.PUBLISHER)data.PUBLISHER=data.artist;
+   snapshots.set(uri,data);if(snapshots.size>64)snapshots.delete(snapshots.keys().next().value);
+   emitMetadata(data);
   }catch{debugPrevious=undefined;unavailableTimeline('player-exception');/* Missing caches leave ordinary tags intact. */}
  }
  window.__floggfyPoll=tick;

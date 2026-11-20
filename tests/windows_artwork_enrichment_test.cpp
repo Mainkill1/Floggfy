@@ -19,6 +19,8 @@ unsigned artwork_reads=0;
 namespace history {
 std::uint64_t AlbumArtworkRevision() noexcept {return 0;}
 bool CacheAlbumArtwork(const std::string&,const std::string&) {return false;}
+bool IsAlbumArtworkUrl(const std::string& url){return url.rfind("https://i.scdn.co/image/",0)==0;}
+bool DownloadAlbumArtwork(const std::string&,std::vector<uint8_t>&){return false;}
 bool GetAlbumArtwork(const std::string& uri,std::vector<uint8_t>& bytes,std::string& mime) {
  ++artwork_reads;
  if(uri!=ready_uri || ready_cover.empty())return false;
@@ -64,6 +66,43 @@ static void CheckClientArtwork() {
 
 }
 
+static void CheckOwnedMetadata() {
+ using namespace history;
+ RichMetadata first;first.uri="spotify:episode:0000000000000000000009";first.title="Episode";
+ first.artist="Publisher";first.album="Show";first.duration=200;
+ first.fields["DATE"]="2025-09-10";
+ first.artwork_url="https://i.scdn.co/image/"+std::string(40,'a');
+ first.artwork_urls={first.artwork_url};
+ auto artwork=std::make_shared<MetadataArtwork>();artwork->reference=first.artwork_url;
+ artwork->mime="image/png";artwork->bytes=artwork_fixture::png();first.artwork=artwork;
+ first.playback_quality="lossless";first.quality_time=42;
+ RichMetadata sparse;sparse.uri=first.uri;sparse.title=first.title;sparse.duration=first.duration;
+ auto unknown=sparse;MergeAvailableFields(first,unknown);assert(unknown.playback_quality.empty());
+ sparse.metadata_source="online";
+ MergeAvailableFields(first,sparse);
+ assert(sparse.album=="Show"&&sparse.artist=="Publisher"&&sparse.fields.at("DATE")=="2025-09-10");
+ assert(sparse.artwork_url==first.artwork_url&&sparse.artwork==artwork);
+ assert(sparse.playback_quality=="lossless"&&sparse.quality_time==42);
+ Media media;media.spotify_uri=first.uri;media.title=L"Episode";media.duration=200;
+ cache.Put(sparse);media.metadata=cache.Pin(sparse);
+ for(int i=0;i<80;++i){auto other=first;other.uri="spotify:episode:other"+std::to_string(i);cache.Put(other);}
+ Tags tags;const auto reads=artwork_reads;EnrichTags(media,tags);
+ assert(tags.cover==artwork->bytes&&artwork_reads==reads&&ArtworkSource(tags)=="spotify-client");
+ auto corrected=sparse;corrected.artwork.reset();corrected.artwork_url="https://i.scdn.co/image/"+std::string(40,'b');corrected.artwork_urls={corrected.artwork_url};
+ MergeAvailableFields(first,corrected);assert(!corrected.artwork);
+ auto late=first;late.metadata_source="online";late.fields["LYRICS"]="later words";
+ MergeSnapshot(corrected,late);
+ assert(late.artwork_url==corrected.artwork_url&&!late.artwork&&late.fields.at("LYRICS")=="later words"); // Explicitly changed reference cannot reuse stale bytes.
+ RichMetadata track=first;track.uri="spotify:track:0000000000000000000008";
+ track.album_uri="spotify:album:0000000000000000000007";track.fields["ISRC"]="test";track.fields["LABEL"]="Label";
+ assert(OnlineNeeds(track,false)==0&&OnlineNeeds(track,true)==4);
+ track.album_uri.clear();track.fields.erase("LABEL");assert((OnlineNeeds(track,false)&3)==3); // Missing album ID authorizes its prerequisite.
+ const auto owner=cache.Pin(track);QueueOnlineEnrichment(owner,track,false);
+ const auto before=owner->online_requested;QueueOnlineEnrichment(owner,track,true);
+ assert(!(before&4)&&(owner->online_requested&4)); // Enabling lyrics remains effective.
+ while(!online_enrichment.empty())OnlineEnrichmentScript();
+}
+
 // No settings or logger threads are started. These tests exercise the real
 // enrichment/update gates with an explicitly selected in-memory preference.
 static unsigned Preferences(bool metadata,bool updates) {
@@ -105,6 +144,8 @@ static std::vector<uint8_t> AudioBytes(const std::vector<uint8_t>& bytes,bool fl
 static void CheckPublication(const std::wstring& root,bool flac) {
  using namespace history;
  Media media;media.title=L"Song";media.artist=L"Artist";media.album=L"Album";media.duration=200;
+ RichMetadata fixture;fixture.uri=ready_uri;fixture.title="Song";fixture.artist="Artist";fixture.album="Album";fixture.duration=200;
+ cache.Put(fixture);
  Catalog catalog;catalog.spotify_uri=ready_uri;
  const auto path=root+(flac?L"\\recording.flac":L"\\recording.ogg");
  Tags basic;
@@ -166,7 +207,7 @@ static void CheckPublication(const std::wstring& root,bool flac) {
  assert(DeleteFileW(path.c_str()));
 }
 int main() {
- CheckClientArtwork();
+ CheckClientArtwork();CheckOwnedMetadata();
  wchar_t temp[MAX_PATH];assert(GetTempPathW(MAX_PATH,temp));
  const auto root=std::wstring(temp)+L"Floggfy-artwork-policy-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64());
  assert(CreateDirectoryW(root.c_str(),nullptr));

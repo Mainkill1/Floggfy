@@ -78,6 +78,7 @@ FileMetadataUpdate CountedMetadataUpdate(const std::wstring& path,const Tags& in
  return UpdateRecordingMetadata(path,incoming,catalog,generation);
 }
 std::string ReadClientPlaybackQuality(const Media&) {return {};}
+void RetainMetadata(Media&) {}
 void EnrichCatalog(const Media&,Catalog& catalog) {if(extra_disc)catalog.disc=extra_disc;}
 void EnrichTags(const Media &, Tags & tags) {
  if(!change_root_during_enrich.empty()){auto root=change_root_during_enrich;change_root_during_enrich.clear();assert(SetSaveLocation(root));}
