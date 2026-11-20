@@ -30,6 +30,15 @@ bool RefuseMemory(const void*,void*,std::size_t) noexcept {
     return false;
 }
 
+std::uintptr_t bounded_state=0;
+std::size_t readable_state=0;
+bool CopyBoundedState(const void* source,void* destination,std::size_t size) noexcept {
+    const auto address=reinterpret_cast<std::uintptr_t>(source);
+    if(address>=bounded_state&&address<bounded_state+kPlayerStateSearchBytes&&
+       (address-bounded_state>=readable_state||size>readable_state-(address-bounded_state)))return false;
+    return CopyMemory(source,destination,size);
+}
+
 }
 
 int main() {
@@ -50,7 +59,7 @@ int main() {
 
     std::array<unsigned char,0x100> owner{};
     std::array<unsigned char,0x240> source{};
-    std::array<unsigned char,0xa00> state{};
+    std::array<unsigned char,0x1000> state{};
     const auto source_pointer=reinterpret_cast<std::uintptr_t>(source.data());
     const auto state_pointer=reinterpret_cast<std::uintptr_t>(state.data());
     std::memcpy(owner.data()+0x78,&source_pointer,sizeof(source_pointer));
@@ -67,7 +76,7 @@ int main() {
     // Captured field layout: an eight-byte native prefix before the 16-byte ID.
     // Confirm both this layout and the older inline payload against metadata.
     for(const size_t payload_offset:{size_t{0},size_t{8}}) {
-        std::fill(state.begin()+0x9b8,state.begin()+0x9b8+kPlayerFieldBytes,0);
+        std::fill(state.begin()+0x9b8,state.end(),0);
         if(payload_offset) {
             const unsigned char prefix[]={0x50,0x58,0xad,0x18,0x07,0x02,0,0};
             std::copy(std::begin(prefix),std::end(prefix),state.begin()+0x9b8);
@@ -81,6 +90,96 @@ int main() {
         assert(ReadPlaybackInstance(owner.data(),current_client_path,CopyMemory,through_player,&field,match->offset));
         assert(through_player.bytes==first.bytes);
         assert(!ReadPlaybackInstance(owner.data(),current_client_path,CopyMemory,through_player,&field,kPlayerFieldBytes));
+    }
+
+    // Discover from the exact local metadata ID, without a fixed field address.
+    // 0xa08 is the observed 1.3.10.2586 layout; other positions ensure discovery
+    // does not merely select from a list of known Spotify versions.
+    for(const size_t location:{size_t{0x9b8},size_t{0x9c0},size_t{0xa08},size_t{0x5f7}}) {
+        state.fill(0);
+        std::memcpy(state.data()+location,first.bytes.data(),first.bytes.size());
+        const auto located=LocatePlaybackInstance(owner.data(),current_client_path,CopyMemory,first);
+        assert(located.status==LocationStatus::Verified&&located.offset==location&&located.matches==1);
+        PlayerPath learned=current_client_path;learned.playback_id_offset=located.offset;
+        std::array<unsigned char,kPlayerFieldBytes> field{};
+        assert(ReadPlaybackInstance(owner.data(),learned,CopyMemory,through_player,&field));
+        DiagnosticBridge layout;
+        // Native evidence can arrive before the corresponding metadata.
+        assert(!layout.Observe(0x1000,0x2000,0,1,field.data(),field.size(),SnapshotRole::PlayerPlaybackId));
+        assert(layout.SetExpected(kFirst,1));
+        const auto learned_match=layout.TakeMatch();assert(learned_match&&learned_match->offset==0);
+        // A preload with a different ID at the learned location stays readable.
+        Instance next{};assert(ParseInstance(kSecond,next));
+        std::memcpy(state.data()+location,next.bytes.data(),next.bytes.size());
+        assert(ReadPlaybackInstance(owner.data(),learned,CopyMemory,through_player,&field));
+        assert(through_player.bytes==next.bytes);
+    }
+    assert(LocatePlaybackInstance(owner.data(),current_client_path,RefuseMemory,first).status==LocationStatus::Unreadable);
+    state.fill(0);
+    assert(LocatePlaybackInstance(owner.data(),current_client_path,CopyMemory,first).status==LocationStatus::NotFound);
+    std::memcpy(state.data()+0x100,first.bytes.data(),first.bytes.size());
+    std::memcpy(state.data()+0xa08,first.bytes.data(),first.bytes.size());
+    const auto duplicate_location=LocatePlaybackInstance(owner.data(),current_client_path,CopyMemory,first);
+    assert(duplicate_location.status==LocationStatus::Ambiguous&&duplicate_location.matches==2);
+
+    state.fill(0);std::memcpy(state.data()+0xa08,first.bytes.data(),first.bytes.size());
+    std::memcpy(state.data()+0xb00,first.bytes.data(),first.bytes.size());
+    bounded_state=reinterpret_cast<std::uintptr_t>(state.data());readable_state=0xa40;
+    const auto bounded_location=LocatePlaybackInstance(owner.data(),current_client_path,CopyBoundedState,first);
+    assert(bounded_location.status==LocationStatus::Verified&&bounded_location.offset==0xa08&&bounded_location.readable_bytes==readable_state);
+    readable_state=0xa10;
+    assert(LocatePlaybackInstance(owner.data(),current_client_path,CopyBoundedState,first).status!=LocationStatus::Verified);
+
+    {
+        DiagnosticBridge discovery;
+        state.fill(0);std::memcpy(state.data()+0xa08,first.bytes.data(),first.bytes.size());
+        assert(discovery.NeedsPlayerState(0x1000,0x2000,3));
+        discovery.ObservePlayerState(0x1000,0x2000,3,1,state,10.5);
+        assert(!discovery.NeedsPlayerState(0x1000,0x2000,3));
+        assert(discovery.Location().status==LocationStatus::WaitingMetadata);
+        // Decoder owner is gone before metadata arrives; only retained evidence
+        // may be used, and its timestamp must not be changed to metadata time.
+        state.fill(0);
+        assert(discovery.SetExpected(kFirst,1));
+        assert(discovery.Location().status==LocationStatus::Verified&&discovery.Location().offset==0xa08);
+        const auto late=discovery.TakeMatch();
+        assert(late&&late->observed_at==10.5&&late->ObservedDuring(10,11)&&!late->ObservedDuring(11,12));
+        assert(discovery.HasPlayerIdentity(0x2000,3,10,11));
+        assert(!discovery.HasPlayerIdentity(0x2000,3,11,12));
+        assert(!discovery.HasPlayerIdentity(0x2000,4,10,11));
+        assert(!discovery.NeedsPlayerState(0x3000,0x4000,3));
+        // The learned field can retain a next-track ID before its metadata.
+        Instance next{};assert(ParseInstance(kSecond,next));
+        std::array<unsigned char,kPlayerFieldBytes> preload{};
+        std::copy(next.bytes.begin(),next.bytes.end(),preload.begin());
+        assert(!discovery.Observe(0x3000,0x4000,3,2,preload.data(),preload.size(),SnapshotRole::PlayerPlaybackId,11.5));
+        assert(discovery.Location().offset==0xa08);
+        assert(discovery.SetExpected(kSecond,2));
+        const auto next_match=discovery.TakeMatch();assert(next_match&&next_match->decoder==0x4000&&next_match->observed_at==11.5);
+        discovery.Reset();assert(discovery.Location().status==LocationStatus::WaitingMetadata);
+        state.fill(0);std::memcpy(state.data()+0x100,first.bytes.data(),first.bytes.size());
+        std::memcpy(state.data()+0xa08,first.bytes.data(),first.bytes.size());
+        discovery.ObservePlayerState(0x1000,0x2000,3,3,state,12);
+        assert(discovery.SetExpected(kFirst,3));
+        assert(discovery.Location().status==LocationStatus::Ambiguous&&!discovery.TakeMatch());
+    }
+    {
+        DiagnosticBridge delayed_initialization;assert(delayed_initialization.SetExpected(kFirst,1));
+        state.fill(0);
+        delayed_initialization.ObservePlayerState(1,2,0,1,state,10);
+        assert(delayed_initialization.Location().status==LocationStatus::NotFound);
+        assert(!delayed_initialization.NeedsPlayerState(1,2,0,10.01));
+        for(unsigned i=1;i<=100;++i) {
+            const double time=10+i*.3;
+            assert(delayed_initialization.NeedsPlayerState(1,2,0,time));
+            delayed_initialization.ObservePlayerState(1,2,0,i+1,state,time);
+        }
+        assert(!delayed_initialization.ObservationLost());
+        std::memcpy(state.data()+0xa08,first.bytes.data(),first.bytes.size());
+        delayed_initialization.ObservePlayerState(1,2,0,102,state,41);
+        assert(delayed_initialization.Location().status==LocationStatus::Verified);
+        const auto initialized=delayed_initialization.TakeMatch();assert(initialized&&initialized->observed_at==41);
+        assert(!delayed_initialization.HasPlayerIdentity(2,0,10,40));
     }
 
     DiagnosticBridge bridge;

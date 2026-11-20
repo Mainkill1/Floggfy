@@ -89,9 +89,9 @@ SRWLOCK playback_identity_lock=SRWLOCK_INIT;
 std::atomic<std::uint64_t> playback_identity_sequence{0};
 std::atomic<double> playback_identity_refresh_floor{0};
 std::uint64_t playback_identity_metadata_generation=0;
-// Learn the payload position by an exact full-ID match against app metadata.
-// A field prefix is not a playback ID, and must never become a dump association.
-std::atomic<int> playback_id_payload_offset{-1};
+// Absolute player-state field offset, learned from a unique full metadata ID.
+// Published separately so decoder boundaries never depend on the worker lock.
+std::atomic<int> playback_id_state_offset{-1};
 decoded_output::Accelerator decoded_accelerator;
 std::atomic<bool> decoded_fallback_requested{false};
 enum class DecodedFallbackReason : unsigned {
@@ -741,33 +741,46 @@ static int PlaybackPumpHook(void* owner,void* second,void* third) {
     };
     if(owner&&playback_pump_decoder_offset>0) {
         uintptr_t decoder=0;
-        std::memcpy(&decoder,static_cast<const unsigned char*>(owner)+playback_pump_decoder_offset,
-                    sizeof(decoder));
-        const playback_identity::PlayerPath path{0x78,0x1e8,0x9b8};
+        std::memcpy(&decoder,static_cast<const unsigned char*>(owner)+playback_pump_decoder_offset,sizeof(decoder));
+        if(!decoder)return call_original();
+        playback_identity::PlayerPath path{0x78,0x1e8,0};
         const auto read=[](const void* source,void* destination,size_t size) noexcept {
             SIZE_T copied=0;
             return ReadProcessMemory(GetCurrentProcess(),source,destination,size,&copied)&&copied==size;
         };
+        const auto epoch=CaptureEpoch();const auto observed_at=Now();
+        const auto owner_address=reinterpret_cast<uintptr_t>(owner);
+        auto offset=playback_id_state_offset.load(std::memory_order_acquire);
+        if(offset<0&&TryAcquireSRWLockExclusive(&playback_identity_lock)) {
+            if(playback_identity_bridge.NeedsPlayerState(owner_address,decoder,epoch,observed_at)) {
+                std::array<unsigned char,playback_identity::kPlayerStateSearchBytes> state{};
+                const auto readable=playback_identity::ReadPlayerState(owner,path,read,state);
+                if(readable) {
+                    const auto sequence=playback_identity_sequence.fetch_add(1,std::memory_order_relaxed)+1;
+                    playback_identity_bridge.ObservePlayerState(owner_address,decoder,epoch,sequence,state,observed_at,readable);
+                } else playback_identity_bridge.PlayerStateUnreadable();
+                if(event)SetEvent(event);
+            }
+            const auto location=playback_identity_bridge.Location();
+            if(location.status==playback_identity::LocationStatus::Verified) {
+                offset=int(location.offset);playback_id_state_offset.store(offset,std::memory_order_release);
+            }
+            ReleaseSRWLockExclusive(&playback_identity_lock);
+        }
         playback_identity::Instance instance{};
         std::array<unsigned char,playback_identity::kPlayerFieldBytes> field{};
-        const auto payload_offset=playback_id_payload_offset.load(std::memory_order_acquire);
-        if(decoder&&playback_identity::ReadPlaybackInstance(owner,path,read,instance,&field,
-                payload_offset<0?0:size_t(payload_offset))) {
-            const auto epoch=CaptureEpoch();
-            if(payload_offset>=0) {
-                stream_dump::Playback(decoder,epoch,instance.bytes,Now(),&field);
-                if(DownloadsEnabled())QueueMp3Playback(decoder,epoch,instance.bytes,Now());
-            }
+        path.playback_id_offset=offset<0?0:size_t(offset);
+        if(offset>=0&&playback_identity::ReadPlaybackInstance(owner,path,read,instance,&field)) {
+            // Decoder boundaries must be queued before native processing even
+            // when the metadata worker currently owns the diagnostic lock.
+            stream_dump::Playback(decoder,epoch,instance.bytes,observed_at,&field);
+            if(DownloadsEnabled())QueueMp3Playback(decoder,epoch,instance.bytes,observed_at);
             if(!TryAcquireSRWLockExclusive(&playback_identity_lock))return call_original();
-            const auto observed_at=Now();
             const auto refresh_floor=playback_identity_refresh_floor.load(std::memory_order_acquire);
-            if(playback_identity_bridge.NeedsObservation(
-                   reinterpret_cast<uintptr_t>(owner),decoder,epoch,
-                   playback_identity::SnapshotRole::PlayerPlaybackId,
-                   field.data(),field.size(),refresh_floor)) {
+            if(playback_identity_bridge.NeedsObservation(owner_address,decoder,epoch,
+                   playback_identity::SnapshotRole::PlayerPlaybackId,field.data(),field.size(),refresh_floor)) {
                 const auto sequence=playback_identity_sequence.fetch_add(1,std::memory_order_relaxed)+1;
-                playback_identity_bridge.Observe(reinterpret_cast<uintptr_t>(owner),decoder,epoch,
-                    sequence,field.data(),field.size(),
+                playback_identity_bridge.Observe(owner_address,decoder,epoch,sequence,field.data(),field.size(),
                     playback_identity::SnapshotRole::PlayerPlaybackId,observed_at,refresh_floor);
                 if(event)SetEvent(event);
             }
@@ -779,11 +792,27 @@ static int PlaybackPumpHook(void* owner,void* second,void* third) {
 static void LogPlaybackIdentityMatch() {
     if(!playback_pump_target||!DebugLoggingEnabled())return;
     std::optional<playback_identity::ObservationInfo> observation;
+    playback_identity::PlayerLocation location;
     bool lost=false;
     AcquireSRWLockExclusive(&playback_identity_lock);
     observation=playback_identity_bridge.TakeObservation();
     lost=playback_identity_bridge.ObservationLost();
+    location=playback_identity_bridge.Location();
     ReleaseSRWLockExclusive(&playback_identity_lock);
+    static int reported_location=-1;
+    static size_t reported_offset=0,reported_matches=0;
+    if(reported_location!=int(location.status)||reported_offset!=location.offset||reported_matches!=location.matches) {
+        reported_location=int(location.status);reported_offset=location.offset;reported_matches=location.matches;
+        const char* status=location.status==playback_identity::LocationStatus::Verified?"verified":
+            location.status==playback_identity::LocationStatus::WaitingMetadata?"waiting-metadata":
+            location.status==playback_identity::LocationStatus::WaitingState?"waiting-player-state":
+            location.status==playback_identity::LocationStatus::Unreadable?"unreadable-player-state":
+            location.status==playback_identity::LocationStatus::Ambiguous?"multiple-id-locations":"id-not-found-in-player-state";
+        char line[240];snprintf(line,sizeof(line),
+            "identity-bridge event=location status=%s state_offset=0x%zx search_limit=%zu readable_bytes=%zu matches=%zu",
+            status,location.offset,playback_identity::kPlayerStateSearchBytes,location.readable_bytes,location.matches);
+        Log(LogKind::Diagnostic,line);
+    }
     if(observation) {
         const char* role=observation->role==playback_identity::SnapshotRole::Owner?"owner":
             observation->role==playback_identity::SnapshotRole::Decoder?"decoder":"player-id";
@@ -809,16 +838,9 @@ static size_t SetExpectedPlaybackIdentity(
     const bool accepted=!changed||playback_identity_bridge.SetExpected(media.playback_instance,generation);
     const auto count=accepted?playback_identity_bridge.QueryMatches(
         media.playback_instance,generation,CaptureEpoch(),matches.data(),matches.size()):0;
-    int offset=-1;bool conflicting_offsets=false;
-    for(size_t index=0;index<count;++index) {
-        const auto& match=matches[index];
-        if(match.role!=playback_identity::SnapshotRole::PlayerPlaybackId||
-           match.representation!=playback_identity::Representation::RawBytes||
-           match.offset>playback_identity::kPlayerFieldBytes-playback_identity::kInstanceBytes)continue;
-        if(offset>=0&&size_t(offset)!=match.offset)conflicting_offsets=true;
-        offset=int(match.offset);
-    }
-    if(offset>=0)playback_id_payload_offset.store(conflicting_offsets?-1:offset,std::memory_order_release);
+    const auto location=playback_identity_bridge.Location();
+    if(location.status==playback_identity::LocationStatus::Verified)
+        playback_id_state_offset.store(int(location.offset),std::memory_order_release);
     while(playback_identity_bridge.TakeMatch()) {} // Diagnostics are derived from the retained query below.
     ReleaseSRWLockExclusive(&playback_identity_lock);
     if(!accepted)return 0;
@@ -862,6 +884,7 @@ static size_t SetExpectedPlaybackIdentity(
 static void ResetPlaybackIdentityBridge() noexcept {
     AcquireSRWLockExclusive(&playback_identity_lock);
     playback_identity_bridge.Reset();
+    playback_id_state_offset.store(-1,std::memory_order_release);
     playback_identity_metadata_generation=0;
     ReleaseSRWLockExclusive(&playback_identity_lock);
 }
@@ -2525,7 +2548,7 @@ static uint64_t BindDirectReadyCapture(
         if(capture.ambiguous){report("reader-marked-ambiguous");return;}
         if(capture.mp3_source_staged){report("source-staged");return;}
         if(!capture.capture_token||!capture.decoder_owner){report("decoder-owner-unavailable");return;}
-        if(!match_count){report("no-native-observations-for-metadata");return;}
+        if(!match_count){report("no-native-id-match-for-metadata");return;}
         bool exact=false,inherited=false;
         inherited=std::find(capture.inherited_native_generations.begin(),
             capture.inherited_native_generations.end(),generation)!=capture.inherited_native_generations.end();
@@ -3470,14 +3493,30 @@ static void AssociateRetainedRecordings(CaptureBuffers& buffers) {
         return true;
     };
     // Weak matches require uniqueness in both collections, including unfinished
-    // competing streams. An installed native-ID hook gets time to supply proof.
+    // competing streams. Attachment alone is not native identity evidence.
+    // When an attached hook supplies no identity, only a completed source may
+    // use this path; positive or lost native evidence must never become a guess.
     for(const auto& record:buffers.history.Records()) {
         if(record.assigned||!UsableRecordingMetadata(record.metadata.media))continue;
         if(buffers.LostActiveMatches(record.metadata)) {
             each([&](Capture& capture){RecordMatcherDecision(capture,record.metadata,MatcherReason::RetiredStreamEvidence);});continue;
         }
-        if(playback_pump_target&&!record.metadata.media.playback_instance.empty()) {
-            each([&](Capture& capture){RecordMatcherDecision(capture,record.metadata,MatcherReason::WaitingNativeIdentity);});continue;
+        const bool native_fallback=playback_pump_target&&!record.metadata.media.playback_instance.empty();
+        if(native_fallback) {
+            std::array<playback_identity::Match,playback_identity::kObservationCapacity> matches{};
+            AcquireSRWLockShared(&playback_identity_lock);
+            const auto count=playback_identity_bridge.QueryMatches(record.metadata.media.playback_instance,
+                record.metadata.generation,CaptureEpoch(),matches.data(),matches.size());
+            const bool lost=playback_identity_bridge.ObservationLost();
+            ReleaseSRWLockShared(&playback_identity_lock);
+            if(count||lost) {
+                each([&](Capture& capture) {
+                    RecordMatcherDecision(capture,record.metadata,MatcherReason::WaitingNativeIdentity);
+                    ReportMatcher(capture,record.metadata,lost?512:256,
+                        lost?"native-identity-observations-lost":"native-identity-evidence-conflict");
+                });
+                continue;
+            }
         }
         if(buffers.retired_evidence.BlocksMetadata(EstimatedPlaybackStart(record.metadata),
             record.metadata.media.duration,preferences.matcher_time_offset_ms,preferences.matcher_duration_ms)) {
@@ -3491,7 +3530,7 @@ static void AssociateRetainedRecordings(CaptureBuffers& buffers) {
                 RecordMatcherDecision(capture,record.metadata,MatcherReason::OwnershipExcluded);return;
             }
             if(!compatible(capture,record.metadata))return;
-            if(capture.decoder_owner&&buffers.ownership_tracker) {
+            if(!native_fallback&&capture.decoder_owner&&buffers.ownership_tracker) {
                 const auto binding=buffers.ownership_tracker->Binding(capture.capture_token);
                 if(binding.state!=ownership::OwnershipState::AwaitingPlaybackInstance&&
                    binding.state!=ownership::OwnershipState::Bound) {
@@ -3520,7 +3559,52 @@ static void AssociateRetainedRecordings(CaptureBuffers& buffers) {
             ReportMatcher(*candidate,record.metadata,64,"retired-metadata-evidence");continue;
         }
         if(!DeclaredCaptureDuration(*candidate)) {RecordMatcherDecision(*candidate,record.metadata,MatcherReason::WaitingDuration,true);continue;}
-        if(candidate->decoder_owner&&buffers.ownership_tracker) {
+        if(native_fallback) {
+            // An invalidated decoder is still a possible competitor above;
+            // rejection is not evidence that its metadata belongs elsewhere.
+            if(candidate->decoder_owner&&buffers.ownership_tracker) {
+                const auto binding=buffers.ownership_tracker->Binding(candidate->capture_token);
+                const bool unresolved_successor=binding.state==ownership::OwnershipState::Conflict&&
+                    binding.reason==ownership::OwnershipReason::AmbiguousSuccessor;
+                const bool eligible=binding.state==ownership::OwnershipState::AwaitingPlaybackInstance||
+                    binding.state==ownership::OwnershipState::Bound||unresolved_successor;
+                const bool conflicting_bound=binding.state==ownership::OwnershipState::Bound&&
+                    ((binding.listen_generation&&binding.listen_generation!=record.metadata.generation)||
+                     (binding.playback_token&&binding.playback_token!=buffers.ownership_tracker->PlaybackToken(record.metadata.media.playback_instance)));
+                if(!eligible||conflicting_bound) {
+                    RecordMatcherDecision(*candidate,record.metadata,MatcherReason::OwnershipExcluded,true,true);continue;
+                }
+            }
+            // Incomplete competitors participated above: excluding them before
+            // counting would manufacture uniqueness for a prefetched recording.
+            const bool complete=candidate->finished>0&&(candidate->lossless?candidate->flac_source.complete:
+                candidate->aac?candidate->spac.Complete():candidate->mp3?
+                (candidate->mp3_info.DeclaredComplete()||(candidate->mp3_source_closed&&candidate->mp3_info.complete)):
+                candidate->stream.complete);
+            if(!complete) {
+                RecordMatcherDecision(*candidate,record.metadata,MatcherReason::WaitingNativeIdentity,true,true);
+                ReportMatcher(*candidate,record.metadata,1024,"waiting-complete-source");continue;
+            }
+            AcquireSRWLockShared(&playback_identity_lock);
+            const bool observed=playback_identity_bridge.HasPlayerIdentity(candidate->decoder_owner,
+                candidate->capture_epoch,candidate->born,candidate->identity_closed_at);
+            ReleaseSRWLockShared(&playback_identity_lock);
+            if(observed) {
+                RecordMatcherDecision(*candidate,record.metadata,MatcherReason::WaitingNativeIdentity,true,true);
+                ReportMatcher(*candidate,record.metadata,256,"native-identity-evidence-conflict");continue;
+            }
+            // A closed MP3 without a declared frame total additionally needs
+            // the already-unique duration evidence for final source validation.
+            const auto prior_mp3_duration=candidate->mp3_bound_duration;
+            if(candidate->mp3) {candidate->mp3_bound_duration=record.metadata.media.duration;candidate->final_validation=-1;}
+            if(CachedFinalValidation(*candidate)!=FinalCaptureValidation::Valid) {
+                if(candidate->mp3) {candidate->mp3_bound_duration=prior_mp3_duration;candidate->final_validation=-1;}
+                RecordMatcherDecision(*candidate,record.metadata,MatcherReason::OwnershipExcluded,true,true);
+                ReportMatcher(*candidate,record.metadata,2048,candidate->validation_reason);continue;
+            }
+            ReportMatcher(*candidate,record.metadata,4096,"native-unavailable-complete-source");
+        }
+        if(!native_fallback&&candidate->decoder_owner&&buffers.ownership_tracker) {
             const bool reconcile=buffers.unidentified_successor_uri==record.metadata.media.spotify_uri&&
                 buffers.unidentified_successor_instance==record.metadata.media.playback_instance;
             const auto playback=BindReadyCapture(buffers,record.metadata.media,record.metadata.generation,
@@ -3528,9 +3612,12 @@ static void AssociateRetainedRecordings(CaptureBuffers& buffers) {
             if(!playback) {RecordMatcherDecision(*candidate,record.metadata,MatcherReason::BindingPending,true,true);continue;}
             RememberBoundCaptureIdentity(buffers,record.metadata.media,record.metadata.generation,playback);
         } else {
+            // This is a metadata/media association, not a claim of exact native
+            // ownership. Keep adjacency conflicts intact for later diagnostics.
             candidate->association=record.metadata;candidate->listen_generation=record.metadata.generation;
             candidate->retention_start=record.start_number;buffers.history.MarkAssigned(record.metadata.generation);
             if(candidate->mp3) {candidate->mp3_bound_duration=record.metadata.media.duration;candidate->final_validation=-1;}
+            if(candidate->Encoding().rate)buffers.bound_encodings[record.metadata.generation]=candidate->Encoding();
         }
     }
     each([&](Capture& capture) {
