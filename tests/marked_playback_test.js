@@ -115,3 +115,31 @@ test("a rejected command does not repeatedly retry on each render", async () => 
     update(player, playlist, order);
     assert.equal(calls, 1);
 });
+
+test("prepares the play context before native dispatch and preserves its contract", () => {
+    const {update, player} = fixture();
+    let prepared = false, calls = 0;
+    const result = Promise.resolve("native-result");
+    const context = {uri: playlist}, origin = {featureIdentifier: "playlist"}, options = {};
+    // Register a hook in the renderer realm, as marked_playlist.js does.
+    const window = {};
+    vm.runInNewContext(script, {window});
+    window.__floggfyMarkedPlay = request => {
+        assert.equal(request.context, context);assert.equal(request.origin, origin);
+        request.context.url = "context://" + playlist;
+        request.context.pages = [{items: order}];prepared = true;
+    };
+    player.play = function(c, o, opts) {
+        ++calls;assert.equal(this, player);assert.ok(prepared);
+        assert.equal(c, context);assert.equal(o, origin);assert.equal(opts, options);
+        assert.equal(c.pages[0].items[1].uri, b);
+        return result;
+    };
+    const bind = window.__floggfyUpdateMarkedPlayback.bindPlay;
+    bind(player);const wrapped = player.play;bind(player);assert.equal(player.play, wrapped);
+    assert.equal(player.play(context, origin, options), result);assert.equal(calls, 1);
+    window.__floggfyMarkedPlay = undefined;
+    player.play = () => {throw Error("native failure");};bind(player);
+    assert.throws(() => player.play(context, origin, options), /native failure/);
+    update.bindPlay(Object.freeze({play() {}}));
+});

@@ -102,7 +102,8 @@ static CallbackHook display_getter,load_getter,console_callback,loading_callback
 struct Task {Base base;void(*execute)(Task*);};
 struct PollTask {Task task;std::atomic<unsigned> refs{1};};
 static Frame* polling_frame=nullptr;static SRWLOCK frame_lock=SRWLOCK_INIT;
-static std::atomic<bool> poll_pending{false};static int(*post_task)(int,Task*)=nullptr;
+static std::atomic<bool> poll_pending{false},poll_again{false};static int(*post_task)(int,Task*)=nullptr;
+static void SchedulePoll();
 static void PollAdd(Base* b){++reinterpret_cast<PollTask*>(b)->refs;}
 static int PollDrop(Base* b){auto t=reinterpret_cast<PollTask*>(b);if(--t->refs)return 0;delete t;return 1;}
 static int PollOne(Base* b){return reinterpret_cast<PollTask*>(b)->refs==1;}
@@ -116,7 +117,12 @@ static std::wstring MarkedPlaylistScript();
 static void PollExecute(Task*) {
  Frame* frame=nullptr;
  {SharedSrw guard(frame_lock);frame=polling_frame;if(frame)frame->base.add(&frame->base);}
- struct Finish {Frame* frame;~Finish(){Release(frame);poll_pending=false;}} finish{frame};
+ struct Finish {Frame* frame;~Finish(){
+  Release(frame);poll_pending=false;
+  // A catalog reply can arrive after this task took its snapshot. Preserve its
+  // wakeup instead of waiting for the next 500ms metadata heartbeat.
+  if(poll_again.exchange(false))SchedulePoll();
+ }} finish{frame};
  try {
   if(!frame || !reinterpret_cast<int(*)(Frame*)>(frame->methods[0])(frame))return;
   const auto artwork=NativeArtworkScript();
@@ -126,7 +132,10 @@ static void PollExecute(Task*) {
  }catch(...) {/* A failed renderer poll must allow the next heartbeat. */}
 }
 static void SchedulePoll(){
- if(!post_task||poll_pending.exchange(true))return;
+ if(!post_task)return;
+ poll_again=true;
+ if(poll_pending.exchange(true))return;
+ poll_again=false;
  auto t=new(std::nothrow) PollTask;if(!t){poll_pending=false;return;}
  t->task.base={sizeof(Task),PollAdd,PollDrop,PollOne,PollAny};t->task.execute=PollExecute;
  if(!post_task(0,&t->task))poll_pending=false; // The public CEF function consumes the task reference.

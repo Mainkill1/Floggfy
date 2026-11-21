@@ -52,10 +52,27 @@ extern "C" __declspec(dllexport) int cef_version_info(int) { return 999; }
 extern "C" __declspec(dllexport) int cef_post_task(int,history::Task* task) {
     task->base.release(&task->base);return 0;
 }
+static std::vector<history::Task*> scheduled_polls;
+static int QueuePoll(int,history::Task* task) {scheduled_polls.push_back(task);return 1;}
+static void CheckPollWakeups() {
+    const auto previous=history::post_task;
+    history::post_task=QueuePoll;
+    history::SchedulePoll();
+    history::SchedulePoll(); // Dates arrived while the previous task was queued.
+    assert(scheduled_polls.size()==1);
+    auto first=scheduled_polls.front();
+    first->execute(first);first->base.release(&first->base);
+    assert(scheduled_polls.size()==2); // No wait for the 500ms metadata heartbeat.
+    auto second=scheduled_polls.back();
+    second->execute(second);second->base.release(&second->base);
+    assert(scheduled_polls.size()==2&&!history::poll_pending);
+    history::post_task=previous;
+}
 extern "C" __declspec(dllexport) __attribute__((noinline)) int cef_browser_host_create_browser(
     const void*,history::Client*,const history::String*,const void*,void*,void*) { return 17; }
 
 int main(int argc,char** argv){
+    CheckPollWakeups();
     if(argc==2&&!std::strcmp(argv[1],"--unknown-cef")) {
         assert(history::PrepareMetadataCollector(GetModuleHandleW(nullptr))&&
                "unknown CEF versions must reach export-based hook preparation");

@@ -8,6 +8,11 @@
     const pageUri = /^spotify:(?:playlist|album):[A-Za-z0-9]{22}$/;
     const maxUris = 256;
     const dateTtlMs = 30_000;
+    const dateFormatter = new Intl.DateTimeFormat();
+    const timeFormatter = new Intl.DateTimeFormat(undefined, {
+        year: "numeric", month: "numeric", day: "numeric",
+        hour: "numeric", minute: "numeric", second: "numeric"
+    });
     const templateProperty = "grid-template-columns";
     const savedWidth = 104;
     const extendedTemplate = "var(--grid-template-columns) " + savedWidth + "px";
@@ -23,7 +28,6 @@
     let context;
     let columnCount;
     let dates = new Map();
-    let dateGeneration = 0;
     let freshScope;
     let freshUntil = 0;
     let pending;
@@ -265,7 +269,6 @@
         ++epoch;
         pending = undefined;
         dates = new Map();
-        ++dateGeneration;
         freshScope = undefined;
     }
 
@@ -491,18 +494,16 @@
                 const timestamp = returned.get(uri);
                 const date = typeof timestamp === "string" && new Date(timestamp);
                 const display = date && Number.isFinite(date.getTime()) ? {
-                    label: date.toLocaleDateString(),
-                    tooltip: date.toLocaleString(),
+                    label: dateFormatter.format(date),
+                    tooltip: timeFormatter.format(date),
                     utc: timestamp
                 } : {};
-                const previous = dates.get(uri);
-                if (!previous || previous.utc !== display.utc) ++dateGeneration;
                 dates.set(uri, { ...display, checkedAt });
             }
             pending = undefined;
         }
         const missingDates = requestDates(lookupUris);
-        const sorted = sorter?.apply(dates, dateGeneration);
+        const sorted = sorter?.apply(dates);
         if (sorted) sorter.syncPlayback?.();
         updateNativeSortIndicators(header.row, sorted);
         paint(header.row, header.layout, "", true, sortable, missingDates);

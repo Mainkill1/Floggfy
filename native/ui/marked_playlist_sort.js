@@ -332,23 +332,30 @@
                     data = complete(view, cachedValues(view));
                 }
                 if (!data) {
+                    const firstLoad = !loaded;
                     loaded = null;
                     view = await clearNativeSort(active, view);
                     if (session !== active) return;
                     if (!view) return reset(unsupported);
                     active.view = view;
-                    const result = await view.cache.cacheAll();
-                    if (session !== active) return;
-                    // Spotify may commit a replacement source on the following render.
-                    await new Promise(resolve => {
-                        window.requestAnimationFrame(() => window.requestAnimationFrame(resolve));
-                    });
-                    if (session !== active) return;
-                    view = currentFor(active);
-                    if (!view) return reset();
-                    // Older Spotify versions fill the cache without returning the items.
-                    data = own(view.source, "invalid") === false &&
-                        complete(view, result === undefined ? cachedValues(view) : own(result, "items"));
+                    // A fully cached page already has every row needed for sorting.
+                    // Keep the existing refetch on later source/generation changes.
+                    if (firstLoad && own(view.source, "invalid") === false)
+                        data = complete(view, cachedValues(view));
+                    if (!data) {
+                        const result = await view.cache.cacheAll();
+                        if (session !== active) return;
+                        // Spotify may commit a replacement source on the following render.
+                        await new Promise(resolve => {
+                            window.requestAnimationFrame(() => window.requestAnimationFrame(resolve));
+                        });
+                        if (session !== active) return;
+                        view = currentFor(active);
+                        if (!view) return reset();
+                        // Older Spotify versions fill the cache without returning the items.
+                        data = own(view.source, "invalid") === false &&
+                            complete(view, result === undefined ? cachedValues(view) : own(result, "items"));
+                    }
                     if (!data) return reset(incomplete);
                     // The full fetch can replace the source and advance its generation.
                     loaded = {view, id: own(view.source, "id"), original: data.original, count: data.rows.length};
@@ -391,30 +398,30 @@
             },
             refresh,
             preparePlayback,
-            syncPlayback() { if (session?.playItems && session.mode === mode) updatePlayback(session.playItems); },
+            syncPlayback() {
+                if (session?.playItems && session.mode === mode) {
+                    window.__floggfyUpdateMarkedPlayback?.bindPlay?.(window.__floggfyMarkedCurrentPlayer?.());
+                    updatePlayback(session.playItems);
+                }
+            },
             retryPlaybackRestore() {
                 window.__floggfyUpdateMarkedPlayback?.retryRestore?.(window.__floggfyMarkedCurrentPlayer?.());
             },
             get state() { return {mode, loading, error}; },
             get uris() { return session?.uris || null; },
-            apply(dates, dateGeneration) {
+            apply(dates) {
                 if (!refresh()) return false;
                 const active = session;
                 if (!active?.uris) return false;
 
-                if (dateGeneration !== undefined && active.dateGeneration === dateGeneration &&
-                    active.mode === mode) return true;
+                // Saving changes the displayed date, not the user's chosen
+                // playlist order or the queue already playing from that order.
+                if (active.owned && active.mode === mode) return true;
                 const timestamps = new Map();
-                let unchanged = active.mode === mode;
                 for (const uri of active.uris) {
                     if (!dates.has(uri)) return false;
                     const date = dates.get(uri)?.utc || "";
                     timestamps.set(uri, date);
-                    if (unchanged && active.timestamps.get(uri) !== date) unchanged = false;
-                }
-                if (unchanged) {
-                    active.dateGeneration = dateGeneration;
-                    return true;
                 }
 
                 const direction = mode === "ascending" ? 1 : -1;
@@ -447,8 +454,6 @@
                     active.playItems = playbackItems(ordered);
                     const modeChanged = active.mode !== mode;
                     active.mode = mode;
-                    active.timestamps = timestamps;
-                    active.dateGeneration = dateGeneration;
                     redraw(view.dispatch);
                     if (modeChanged) view.list.scrollToIndex(0);
                     if (error) {
@@ -477,6 +482,7 @@
     let lastUpdate;
     let savedTarget;
     let pendingRestore;
+    const playBindings = new WeakMap();
 
     function release() {
         order = undefined;
@@ -607,6 +613,27 @@
         } catch {
             // A temporarily unreadable state cannot establish a session change.
         }
+    };
+    update.bindPlay = player => {
+        if (!player || typeof player.play !== "function" || playBindings.get(player) === player.play) return;
+        const field = Object.getOwnPropertyDescriptor(player, "play");
+        if (field ? !("value" in field) || !field.writable : !Object.isExtensible(player)) return;
+        const original = player.play;
+        function play(...args) {
+            const request = {action: "play", context: args[0], origin: args[1], options: args[2] || {}};
+            const pages = request.context?.pages;
+            try {
+                if (this === player) window.__floggfyMarkedPlay?.(request);
+                if (request.context?.pages !== pages)
+                    args[2] = request.options;
+            } catch { /* Preparation cannot change native return/exception behavior. */ }
+            return Reflect.apply(original, this, args);
+        }
+        try {
+            Object.defineProperty(player, "play", field ? {...field, value: play} :
+                {value: play, writable: true, configurable: true});
+            playBindings.set(player, play);
+        } catch { /* Older clients can retain the existing event fallback. */ }
     };
     window.__floggfyUpdateMarkedPlayback = update;
 })();

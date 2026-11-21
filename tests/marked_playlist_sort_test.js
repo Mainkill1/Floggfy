@@ -104,7 +104,21 @@ test("sorts the complete playlist, preserves duplicate-track entries and restore
     assert.deepEqual(counts(), [3, 3, 2]);
 });
 
-test("unchanged date generation skips date lookups but still detects native replacement", async () => {
+test("uses Spotify's already complete cache without another full fetch", async () => {
+    const {controller, entries, source, cache, dates} = fixture();
+    source.validItems = entries.slice();
+    cache.cacheAll = () => assert.fail("complete native playlist must not be fetched again");
+    controller.cycle();
+    await tick();
+    assert.equal(controller.state.loading, false);
+    assert.equal(controller.uris.size, 263);
+    assert.equal(controller.apply(dates), true);
+    assert.equal(source.items[0], entries[264]);
+    controller.cycle();controller.cycle();
+    assert.equal(source.items, entries);
+});
+
+test("new save dates retain the chosen order until the user changes sort direction", async () => {
     const {controller, dates, source} = fixture();
     controller.cycle();
     await tick();
@@ -115,6 +129,12 @@ test("unchanged date generation skips date lookups but still detects native repl
     assert.equal(controller.apply(dates, 1), true);
     assert.equal(reads, 0);
     dates.set(uri(3), {utc: "2027-01-01T00:00:00Z"});
+    assert.equal(controller.apply(dates, 2), true);
+    assert.equal(source.items[0].index, 264, "saving a song must not move it during playback");
+    controller.cycle();
+    assert.equal(controller.apply(dates, 2), true);
+    controller.cycle();controller.cycle();
+    await tick();
     assert.equal(controller.apply(dates, 2), true);
     assert.equal(source.items[0].index, 3);
     source.items = source.items.slice();
@@ -518,7 +538,7 @@ test("discards a full cache load when the playlist changes before its render set
 });
 
 test("playing an unsaved row advances in Saved order, including duplicate occurrences", async () => {
-    const {controller, entries, dates} = fixture({count: 8});
+    const {controller, entries, dates, source, window} = fixture({count: 8});
     // Native playlist order is 23, 7 Years, 911. Saving 7 Years moves it
     // above the other two and leaves 911 immediately after 23.
     const [start, previouslyNext, expectedNext] = entries;
@@ -529,6 +549,15 @@ test("playing an unsaved row advances in Saved order, including duplicate occurr
     await tick();
     assert.equal(controller.apply(dates, 1), true);
 
+    // Consume the context before emitting any action event. Late mutation of
+    // event.data cannot change the already-dispatched native play request.
+    const player = {play(context, origin, options) {
+        return JSON.parse(JSON.stringify({context, origin, options}));
+    }};
+    window.__floggfyMarkedCurrentPlayer = () => player;
+    window.__floggfyMarkedPlay = request => controller.preparePlayback(request);
+    controller.syncPlayback();
+
     function play(entry, configure = () => {}) {
         const request = {
             action: "play", origin: {featureIdentifier: "playlist"},
@@ -536,15 +565,20 @@ test("playing an unsaved row advances in Saved order, including duplicate occurr
             options: {skipTo: {uid: entry.value.uid, uri: entry.value.uri, index: entry.index}}
         };
         configure(request);
-        controller.preparePlayback(request);
+        const sent = player.play(request.context, request.origin, request.options);
         // A playlist URI with no URL goes to Spotify's playlist service.
         // Explicit context pages are consumed by its context player.
-        const items = request.context.url ? request.context.pages[0].items : entries.map(row => row.value);
-        return {items, index: request.options.skipTo.index, request};
+        const items = sent.context.url ? sent.context.pages[0].items : entries.map(row => row.value);
+        return {items, index: sent.options.skipTo.index, request};
     }
     const {items, index} = play(start);
     assert.equal(items[index].uid, start.value.uid);
     assert.equal(items[index + 1].uid, expectedNext.value.uid);
+    const displayedOrder = source.items;
+    dates.set(start.value.uri, {utc: "2027-01-01T00:00:00Z"});
+    assert.equal(controller.apply(dates, 2), true);
+    assert.equal(source.items, displayedOrder, "completion retains the displayed and playing order");
+    assert.equal(play(start).items[index + 1].uid, expectedNext.value.uid);
     for (const configure of [
         req => { req.context.uri = "spotify:playlist:other"; },
         req => { req.options.shuffle = true; },
