@@ -41,6 +41,13 @@ struct State {
     std::shared_ptr<const Query> query;
     bool query_pending = false;
     std::optional<MarkedQueryReply> reply;
+
+    void ClearWork() {
+        rebuilding = query_pending = false;
+        files.clear();
+        query.reset();
+        reply.reset();
+    }
 };
 
 State& Shared() {
@@ -88,8 +95,8 @@ bool AllowedDirectory(const fs::path& name) {
     return !Equal(name.native(), L"Unmatched") && !Equal(name.native(), L"DumpStreams");
 }
 
-bool IsPlainDirectory(const fs::path& path) {
-    const auto attributes = GetFileAttributesW(WindowsPath(path.native()).c_str());
+bool IsPlainDirectory(const std::wstring& native_path) {
+    const auto attributes = GetFileAttributesW(native_path.c_str());
     return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) &&
         !(attributes & FILE_ATTRIBUTE_REPARSE_POINT);
 }
@@ -130,19 +137,21 @@ struct Stamp {
 
 FileStatus ReadStamp(const fs::path& root, const fs::path& relative, Stamp& stamp) {
     if (relative.has_root_path() || !SupportedFile(relative)) return FileStatus::Missing;
-    if (!IsPlainDirectory(root)) return FileStatus::Unavailable;
-    fs::path path = root;
+    auto path = WindowsPath(root.native());
+    if (!IsPlainDirectory(path)) return FileStatus::Unavailable;
+    path.reserve(path.size() + 1 + relative.native().size());
     // Check every directory, since GetFileAttributesExW follows intermediate junctions.
     for (auto item = relative.begin(); item != relative.end(); ++item) {
-        const auto& part = *item;
+        const auto& part = item->native();
         if (part.empty() || part == L"." || part == L".." ||
-            part.native().find(L':') != std::wstring::npos ||
-            part.native().find(L'\0') != std::wstring::npos) return FileStatus::Missing;
-        path /= part;
+            part.find(L':') != std::wstring::npos ||
+            part.find(L'\0') != std::wstring::npos) return FileStatus::Missing;
+        if (path.back() != L'\\' && path.back() != L'/') path += L'\\';
+        path += part;
         const bool file = std::next(item) == relative.end();
-        if (!file && !AllowedDirectory(part)) return FileStatus::Missing;
+        if (!file && !AllowedDirectory(*item)) return FileStatus::Missing;
         WIN32_FILE_ATTRIBUTE_DATA data{};
-        if (!GetFileAttributesExW(WindowsPath(path.native()).c_str(), GetFileExInfoStandard, &data)) {
+        if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) {
             const auto error = GetLastError();
             return win32::PathMissing(error)
                 ? FileStatus::Missing : FileStatus::Unavailable;
@@ -172,15 +181,18 @@ class Database {
 
         explicit Queries(sqlite::Connection connection)
             : db(std::move(connection)),
-              select(sqlite::Prepare(db, "SELECT path,saved_utc,bytes,write_time FROM marked_files"
-                  " WHERE uri=? AND path>? ORDER BY path LIMIT ?")),
               upsert(sqlite::Prepare(db,
                   "INSERT INTO marked_files(path,uri,saved_utc,bytes,write_time) VALUES(?,?,?,?,?)"
                   " ON CONFLICT(path) DO UPDATE SET uri=excluded.uri,saved_utc=excluded.saved_utc,"
                   " bytes=excluded.bytes,write_time=excluded.write_time"
                   " WHERE uri<>excluded.uri OR saved_utc<>excluded.saved_utc OR bytes<>excluded.bytes"
                   " OR write_time<>excluded.write_time")),
-              erase(sqlite::Prepare(db, "DELETE FROM marked_files WHERE path=?")) {}
+              erase(sqlite::Prepare(db, "DELETE FROM marked_files WHERE path=?")) {
+            std::string sql = "SELECT path,uri,saved_utc,bytes,write_time FROM marked_files WHERE uri IN (?";
+            for (std::size_t i = 1; i < kQueryLimit; ++i) sql += ",?";
+            sql += ") AND path>'' AND (uri,path)>(?,?) ORDER BY uri,path LIMIT " + std::to_string(kRowsPerPage);
+            select = sqlite::Prepare(db, sql.c_str());
+        }
     };
     std::optional<Queries> queries_;
 public:
@@ -188,7 +200,7 @@ public:
 
     bool Open(const fs::path& root) {
         if (queries_) return true;
-        if (!IsPlainDirectory(root)) return false;
+        if (!IsPlainDirectory(WindowsPath(root.native()))) return false;
         const auto path = root / L"Floggfy-marked.db";
         const auto db_attributes = GetFileAttributesW(WindowsPath(path.native()).c_str());
         if (db_attributes != INVALID_FILE_ATTRIBUTES &&
@@ -208,19 +220,22 @@ public:
         return false;
     }
 
-    std::optional<std::vector<Row>> Rows(const std::string& uri, const std::string& after) {
+    bool ReadPage(const std::vector<std::string>& uris, const std::string& after_uri,
+                  const std::string& after_path, std::vector<Row>& rows) {
+        rows.clear();
+        if (uris.empty()) return true;
         sqlite::Execution select(queries_->select);
-        if (!select.BindText(1, uri) || !select.BindText(2, after) ||
-            !select.BindInteger(3, kRowsPerPage)) return std::nullopt;
-        std::vector<Row> rows;
+        for (std::size_t i = 0; i < uris.size(); ++i)
+            if (!select.BindText(i + 1, uris[i])) return false;
+        if (!select.BindText(kQueryLimit + 1, after_uri) ||
+            !select.BindText(kQueryLimit + 2, after_path)) return false;
         int status;
         while ((status = select.Step()) == SQLITE_ROW) {
-            const Stamp stamp{static_cast<std::uint64_t>(select.Integer(2)),
-                              static_cast<std::uint64_t>(select.Integer(3))};
-            rows.push_back({select.Text(0), uri, select.Text(1), stamp});
+            const Stamp stamp{static_cast<std::uint64_t>(select.Integer(3)),
+                              static_cast<std::uint64_t>(select.Integer(4))};
+            rows.push_back({select.Text(0), select.Text(1), select.Text(2), stamp});
         }
-        if (status != SQLITE_DONE) return std::nullopt;
-        return rows;
+        return status == SQLITE_DONE;
     }
 
     Mutation Upsert(const Row& row) {
@@ -277,15 +292,15 @@ std::optional<Row> Refresh(Database& db, const fs::path& root, const fs::path& r
         return std::move(*cached);
 
     auto key = cached ? std::move(cached->path) : relative.u8string();
-    // Prune when a path is observed missing or excluded. Access failures retain its evidence.
-    if (status == FileStatus::Missing && Current(epoch, scan)) {
-        const auto result = db.Erase(key);
+    const auto record_change = [&](Mutation result, bool removed) {
         Changed(epoch, result);
-        if (stats) {
-            if (result == Mutation::Failed) ++stats->errors;
-            else ++stats->missing;
-        }
-    }
+        if (!stats) return;
+        if (result == Mutation::Failed) ++stats->errors;
+        else if (removed) ++stats->missing;
+        else ++stats->indexed;
+    };
+    // Prune when a path is observed missing or excluded. Access failures retain its evidence.
+    if (status == FileStatus::Missing && Current(epoch, scan)) record_change(db.Erase(key), true);
     if (status == FileStatus::Unavailable && stats) {
         ++stats->errors;
         WarnFile("could not access recording", key);
@@ -326,21 +341,11 @@ std::optional<Row> Refresh(Database& db, const fs::path& root, const fs::path& r
     }
     if (!record.complete || !record.owned || !ValidSpotifyTrackUri(record.uri) ||
         !ValidMarkedDate(record.saved_utc)) {
-        const auto result = db.Erase(key);
-        Changed(epoch, result);
-        if (stats) {
-            if (result == Mutation::Failed) ++stats->errors;
-            else ++stats->missing;
-        }
+        record_change(db.Erase(key), true);
         return {};
     }
     Row row{std::move(key), std::move(record.uri), std::move(record.saved_utc), stamp};
-    const auto result = db.Upsert(row);
-    Changed(epoch, result);
-    if (stats) {
-        if (result == Mutation::Failed) ++stats->errors;
-        else ++stats->indexed;
-    }
+    record_change(db.Upsert(row), false);
     return row;
 }
 
@@ -369,11 +374,11 @@ struct Scan {
         if (!directory.started) {
             directory.started = true;
             auto path = root;
-            bool available = IsPlainDirectory(path);
+            bool available = IsPlainDirectory(WindowsPath(path.native()));
             for (const auto& name : directory.relative) {
                 if (!available) break;
                 path /= name;
-                available = IsPlainDirectory(path);
+                available = IsPlainDirectory(WindowsPath(path.native()));
             }
             if (!available) {
                 ++stats.errors;
@@ -433,31 +438,31 @@ void AnswerQuery(Database& db, bool available, const fs::path& root, const Query
     MarkedQueryReply reply;
     reply.request = query.request;
     std::vector<std::string> dates(query.uris.size());
-    for (std::size_t i = 0; i < query.uris.size(); ++i) {
-        const auto& uri = query.uris[i];
-        std::string after;
-        for (;;) {
-            if (!QueryCurrent(epoch, query.sequence)) return;
-            auto rows = db.Rows(uri, after);
-            if (!rows) {
-                ReleaseFailedQuery(epoch, query.sequence);
-                Warn("could not read saved dates; query can be retried");
-                return;
-            }
-            const bool has_next_page = rows->size() == kRowsPerPage;
-            if (has_next_page) after = rows->back().path;  // Refresh consumes the cached row.
-            for (auto& cached : *rows) {
-                if (!QueryCurrent(epoch, query.sequence)) return;
-                const auto path = fs::u8path(cached.path);
-                auto row = Refresh(db, root, path, epoch, 0, &cached);
-                if (!row) continue;
-                // A re-read may find that this path now belongs to another requested track.
-                const auto slot = row->uri == uri ? i : static_cast<std::size_t>(
-                    std::find(query.uris.begin(), query.uris.end(), row->uri) - query.uris.begin());
-                if (slot < dates.size() && dates[slot] < row->date) dates[slot] = std::move(row->date);
-            }
-            if (!has_next_page) break;
+    std::vector<Row> rows;
+    std::string after_uri, after_path;
+    for (;;) {
+        if (!QueryCurrent(epoch, query.sequence)) return;
+        if (!db.ReadPage(query.uris, after_uri, after_path, rows)) {
+            ReleaseFailedQuery(epoch, query.sequence);
+            Warn("could not read saved dates; query can be retried");
+            return;
         }
+        const bool has_next_page = rows.size() == kRowsPerPage;
+        if (has_next_page) {
+            // Refresh consumes cached rows and can change their stored URIs.
+            after_uri = rows.back().uri;
+            after_path = rows.back().path;
+        }
+        for (auto& cached : rows) {
+            if (!QueryCurrent(epoch, query.sequence)) return;
+            const auto path = fs::u8path(cached.path);
+            auto row = Refresh(db, root, path, epoch, 0, &cached);
+            if (!row) continue;
+            const auto slot = static_cast<std::size_t>(
+                std::find(query.uris.begin(), query.uris.end(), row->uri) - query.uris.begin());
+            if (slot < dates.size() && dates[slot] < row->date) dates[slot] = std::move(row->date);
+        }
+        if (!has_next_page) break;
     }
     for (std::size_t i = 0; i < dates.size(); ++i)
         if (!dates[i].empty()) reply.dates.emplace_back(query.uris[i], std::move(dates[i]));
@@ -472,13 +477,15 @@ void AnswerQuery(Database& db, bool available, const fs::path& root, const Query
     if (query.ready) query.ready();
 }
 
-bool FinishScan(std::uint64_t epoch, std::uint64_t sequence) {
+void FinishScan(std::uint64_t epoch, std::uint64_t sequence, const ScanStats& stats) {
     auto& state = Shared();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    if (state.epoch != epoch || !state.rebuilding || state.scan != sequence) return false;
-    state.rebuilding = false;
-    ++state.revision;
-    return true;
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        if (state.epoch != epoch || !state.rebuilding || state.scan != sequence) return;
+        state.rebuilding = false;
+        ++state.revision;
+    }
+    LogEvent(LogKind::Finished, "marked-catalog", stats.Summary());
 }
 
 DWORD WINAPI Run(void*) {
@@ -496,7 +503,7 @@ DWORD WINAPI Run(void*) {
             std::unique_lock<std::mutex> lock(state.mutex);
             state.wake.wait(lock, [&] {
                 return state.stopped || state.epoch != epoch || state.query_pending || !state.files.empty() ||
-                    state.rebuilding || scan.sequence != (state.rebuilding ? state.scan : 0);
+                    state.rebuilding || scan.sequence != 0;
             });
             if (state.stopped) return 0;
             next_epoch = state.epoch;
@@ -531,16 +538,14 @@ DWORD WINAPI Run(void*) {
                 if (available && !relative.empty()) Refresh(db, root, relative, epoch, 0);
             } else if (!available || !scan.Step(db, root, epoch)) {
                 if (!available) ++scan.stats.errors;
-                if (FinishScan(epoch, next_scan)) {
-                    LogEvent(LogKind::Finished, "marked-catalog", scan.stats.Summary());
-                }
+                FinishScan(epoch, next_scan, scan.stats);
             }
         } catch (const std::exception&) {
             Warn("could not process catalog work");
             if (query) ReleaseFailedQuery(epoch, query->sequence);
-            else if (file.empty() && next_scan && FinishScan(epoch, next_scan)) {
+            else if (file.empty() && next_scan) {
                 ++scan.stats.errors;
-                LogEvent(LogKind::Finished, "marked-catalog", scan.stats.Summary());
+                FinishScan(epoch, next_scan, scan.stats);
             }
         }
     }
@@ -566,11 +571,7 @@ void ConfigureMarkedCatalog(const std::wstring& root, bool enabled) {
     }
     state.root = root;
     state.enabled = enabled;
-    state.rebuilding = false;
-    state.files.clear();
-    state.query.reset();
-    state.query_pending = false;
-    state.reply.reset();
+    state.ClearWork();
     ++state.epoch;
     ++state.revision;
     if (enabled) Start(state);
@@ -661,11 +662,7 @@ void StopMarkedCatalog() {
         std::lock_guard<std::mutex> lock(state.mutex);
         if (state.stopped) return;
         state.stopped = true;
-        state.rebuilding = false;
-        state.files.clear();
-        state.query.reset();
-        state.query_pending = false;
-        state.reply.reset();
+        state.ClearWork();
         worker = std::exchange(state.worker, nullptr);
         state.wake.notify_one();
     }

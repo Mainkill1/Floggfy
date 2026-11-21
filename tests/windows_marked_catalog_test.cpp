@@ -136,7 +136,7 @@ int main() {
     history::MarkedQueryReply mixed;
     WaitFor([&] { return history::TakeMarkedReply(mixed); });
     assert(mixed.dates.size() == 1 && mixed.dates.front() == std::make_pair(uri, late));
-    assert(catalog_prepares == 3 && catalog_selects == before_mixed + 2);
+    assert(catalog_prepares == 3 && catalog_selects == before_mixed + 1);
 
     sqlite3* competing = nullptr;
     assert(sqlite3_open((root / L"Floggfy-marked.db").u8string().c_str(), &competing) == SQLITE_OK);
@@ -217,6 +217,7 @@ int main() {
     for (int index = 0; index != 35; ++index) {
         Write(dirt / (L"duplicate-" + std::to_wstring(index) + L".mp3"), early);
     }
+    Write(dirt / L"other-track.flac", late + "\n" + missing_uri);
     const auto legacy = root / L"z-legacy.ogg";
     Write(legacy, {});
     assert(history::ToggleMarkedRebuild());
@@ -226,6 +227,12 @@ int main() {
     assert(history::ToggleMarkedRebuild());
     WaitFor([] { return !history::MarkedRebuildRunning(); });
     assert(Query() == late);
+    const auto before_paged = catalog_selects.load();
+    assert(history::QueueMarkedQuery("paged", {uri, missing_uri}));
+    history::MarkedQueryReply paged;
+    WaitFor([&] { return history::TakeMarkedReply(paged); });
+    assert(paged.dates == (decltype(paged.dates){{uri, late}, {missing_uri, late}}));
+    assert(catalog_selects == before_paged + 2);
     assert(starts == 4 && cancels == 1 && finishes == 3);
 
     assert(!history::QueueMarkedQuery("invalid token", {uri}));

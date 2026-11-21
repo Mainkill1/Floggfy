@@ -177,6 +177,15 @@ tables and one worker-owned connection. [to_disk_menu.cpp](../../native/ui/to_di
 [marked_catalog.cpp](../../native/ui/marked_catalog.cpp),
 [marked_playlist_sort.js](../../native/ui/marked_playlist_sort.js).
 
+One indexed query pages through the entire batch of requested tracks in URI and
+path order. The worker resets the statement before checking each page's files and
+returns verified dates in the original request order. Stamp checks reuse one
+path string while checking every parent and file. A Windows fixture requesting
+256 tracks, half saved, returned the same 6,400 dates across 50 requests.
+Median elapsed time across five runs fell from 587 to 341 ms and C++ heap
+allocations fell from 307,653 to 122,503. The comparison made 38,400 filesystem
+probes in each build.
+
 ## Telemetry and user diagnostics
 
 The optional telemetry module classifies known reporting destinations and honors
@@ -209,7 +218,7 @@ Fixtures, fault injection, fuzzers, and replay runners live under `tests/`.
 |---|---|
 | Capture and matcher | With audio retained, the worker still rechecks matching, retirement, and quality after a 50 ms wait or a queued event. Count scans on pauses, skips, and a long episode. If unchanged ticks dominate, gate matching on evidence changes while retaining capture retirement and save-queue retries. Compare match, archive, and retry results in capture replays. |
 | Save worker | Measure the incoming-file copy during a large quality upgrade. Determine how much scratch memory remains after the locked destination parse is reused, and how much the codec tag writer actually needs. |
-| Saved column | Measure one large playlist with a cold catalog and again after dates settle. Time SQL, filesystem stamp checks, and rendering separately. Keep the index if filesystem or UI work dominates. A replacement would also need to preserve rebuilds, duplicate paths, and stale-file detection. |
+| Saved column | The batched Windows fixture spent most of its time checking files. Measure renderer work separately on a large playlist. Evaluate further storage changes against rebuilds, duplicate paths and stale-file detection. |
 | Enrichment | Count disk-cache reads, artwork attempts, and online requests per recording with warm and cold caches. Track and album already share a scan when both IDs are known. Target repeated attempts for the same pinned metadata and artwork before widening cache scope. |
 | Startup and tooling | Settings already read one startup snapshot. Measure module readiness and activation separately. Share work only when the same startup attempt asks for the same capability, and preserve fallback when an older client supplies fewer capabilities. |
 | Telemetry and diagnostics | URL classification uses fixed rules. Compare blocking alone with payload logging enabled to see whether copying, decompression, or formatting dominates. Keep test fixtures in their own targets and check optional diagnostics separately for DLL size. |
