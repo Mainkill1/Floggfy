@@ -1,0 +1,138 @@
+file,line,column,end_line,kind,function_path,review_note
+native/album_artwork.cpp,29,9,34,function_definition,/DownloadAlbumArtwork/Emit,"Formats bounded operation, status and timing fields only when the download observer emits a diagnostic."
+native/album_artwork.cpp,35,9,35,function_definition,/DownloadAlbumArtwork/Fail,Captures the WinHTTP failure before teardown can change the thread error.
+native/album_artwork.cpp,36,9,42,function_definition,/DownloadAlbumArtwork/Observation,Disabled diagnostics skip the counter and clock. Enabled ones preserve the caller's thread error around the send-start log.
+native/album_artwork.cpp,43,9,48,function_definition,/DownloadAlbumArtwork/~Observation,The scope emits one completion or failure record even on early returns and restores the thread error.
+native/album_artwork.cpp,50,40,50,function_definition,/DownloadAlbumArtwork/~Handle,All three WinHTTP lifetimes use this destructor for the corresponding close on every exit.
+native/audio_history.cpp,1159,5,1166,function_definition,/ReleaseAuditLease,Transfers the retained byte charge only if a queued job has not already reserved the capture. Holding the budget lock keeps both counters consistent.
+native/audio_history.cpp,1167,5,1174,function_definition,/~ReleaseAuditLease,"Restores a temporary lease on every exit, including exceptions. Jobs that already own their reservation leave it intact."
+native/audio_history.cpp,1454,17,1454,lambda_expression,/PublicationArtifactKey/length,Prefixes text and binary fields with their lengths so artwork can append directly to the key without building a second string.
+native/audio_history.cpp,1870,9,1873,function_definition,/DrainOneReleaseAudit/~Release,"Drops ownership of the checked capture and subtracts its outstanding charge, including on audit failure."
+native/audio_history.cpp,2355,1,2365,function_definition,/RefreshCaptureBudget,"Measure the lock hold time and count the active, Ogg and ready entries visited on admitted events before replacing the full sum with deltas."
+native/audio_history.cpp,2358,24,2360,lambda_expression,/RefreshCaptureBudget/account,"Accounts allocated capacity across each of the three stores, including unused capacity that still consumes the budget."
+native/audio_history.cpp,2384,1,2403,function_definition,/PruneExcessCaptures,The size guard avoids scanning either collection in the common case. Over-limit entries get a recorded disposition before eviction.
+native/audio_history.cpp,2389,82,2391,lambda_expression,/PruneExcessCaptures/<callback>,Finds the oldest active capture only after the 32-entry cap is exceeded. An additional ordered index would also need updates on ordinary events.
+native/audio_history.cpp,2398,13,2398,lambda_expression,/PruneExcessCaptures/<callback>,"Compares Ogg capture birth times under the same 32-entry overflow rule, independent of native decoder keys."
+native/audio_history.cpp,2404,1,2413,function_definition,/ReleaseCaptureBuffers,Records shutdown outcomes and checks completed captures before clearing all collections and their retained-byte charge.
+native/cached_metadata.cpp,170,1,184,function_definition,/StoreRecord,Transparent lower_bound avoids temporary rejected keys. The entry cap and sequence comparison preserve newer records and tombstones.
+native/client_playback.h,30,1,33,function_definition,/ClientInstance,Applies one encoded and decoded size limit for instance identifiers in both wire parsers.
+native/client_playback.h,32,53,32,lambda_expression,/ClientInstance/<callback>,"Rejects spaces, control bytes and non-ASCII instance data in one bounded pass after decoding."
+native/client_playback.h,34,1,38,function_definition,/ClientNumber,Validates that strtod consumed the field and produced a finite value. Each caller enforces its own range.
+native/client_playback.h,39,1,44,function_definition,/ClientFlag,Uses one map lookup for optional and required flags and accepts precisely the wire values zero and one.
+native/compressed_buffer.cpp,6,1,10,function_definition,/CompressedBuffer::BlockAt,"Computes block and remaining length directly from the offset, returning a borrowed view bounded by the initialized data."
+native/compressed_buffer.cpp,11,1,23,function_definition,/CompressedBuffer::ReadContiguous,Returns a pointer into the block for contiguous data. Only a crossing read fills reusable scratch storage.
+native/file_publication.cpp,62,5,62,function_definition,/StagingFile,Default construction starts with an invalid stage handle. Failed exclusive creation cannot claim another file.
+native/file_publication.cpp,63,5,63,function_definition,/StagingFile,Deleted copy construction prevents two objects disposing the same stage.
+native/file_publication.cpp,64,5,64,function_definition,/& operator=(const StagingFile&),Deleted assignment prevents replacing a live stage handle or duplicating ownership.
+native/file_publication.cpp,77,5,80,function_definition,/Publish,Renames the held file and disarms its cleanup only after a successful commit.
+native/file_publication.cpp,142,1,156,function_definition,/ArchiveFileMatches,Checks file size first and compares in 16 KiB chunks. Distinct error outcomes preserve retry decisions on incomplete reads.
+native/file_publication.cpp,157,1,173,function_definition,/VerifiedArchiveFile,Holds the compared object through disposal or transfer. A changed foreign file survives archive cleanup.
+native/file_publication.cpp,174,1,193,function_definition,/WriteArchiveFile,Reuses a verified destination or matching interrupted stage. Renaming by handle closes the pathname replacement race.
+native/flac_history_core.cpp,86,1,90,function_definition,/AppendFlacBlock,"Emits a validated FLAC metadata block directly into the final buffer, with its three-byte length."
+native/flac_history_core.cpp,91,1,126,function_definition,/TagFlacWithPictures,Rebuilds metadata blocks and appends the original audio once. Approved pictures avoid constructing a redundant cover block.
+native/flac_history_core.cpp,94,15,94,lambda_expression,/TagFlacWithPictures/fail,Clears partially produced output and supplies the specific parse or size failure to the caller.
+native/history_settings.cpp,462,1,470,function_definition,/ChangeSettings,Runs each mutation under the settings lock and signals the worker after releasing it. Failed changes do not advance the generation.
+native/history_settings.cpp,472,27,479,lambda_expression,/Set/<callback>,"Changes the capture epoch, artifact revision and enrichment revision only for the settings that affect those consumers."
+native/history_settings.cpp,493,1,499,function_definition,/SetVisibleToggle,Routes both three-state controls through the same locked mutation and persistence signal.
+native/history_settings.cpp,494,27,498,lambda_expression,/SetVisibleToggle/<callback>,Rejects menu changes to a hidden setting and writes the visible on/off value while holding the settings lock.
+native/history_settings.cpp,507,27,516,lambda_expression,/SetCaptureSpeed/<callback>,Updates the fast speed value without invalidating intact compressed audio. The caller validates the requested speed.
+native/history_settings.cpp,524,27,530,lambda_expression,/SetSaveLocation/<callback>,Swaps prepared paths under the lock and changes the destination revision only when root or folder mode changes.
+native/marked_catalog.cpp,447,1,451,function_definition,/ReleaseFailedQuery,Releases only the failed epoch and sequence. A late SQLite failure cannot erase a newer query or cache an absent date.
+native/marked_playlist.js,537,34,537,arrow_function,/<callback>/window.__floggfyMarkedPlay,"Guards the native play callback with the feature toggle and forwards to the current sorter, which owns the visible order."
+native/marked_playlist_sort.js,130,9,139,function_declaration,/<callback>/window.__floggfyCreateMarkedSort/playbackItems,Materializes playable UID/URI pairs once per sorted order. Rejects incomplete rows before creating a partial play context.
+native/marked_playlist_sort.js,141,9,143,function_declaration,/<callback>/window.__floggfyCreateMarkedSort/updatePlayback,Passes the existing session items and player to the context updater. The optional callback permits older renderer builds.
+native/marked_playlist_sort.js,145,9,148,function_declaration,/<callback>/window.__floggfyCreateMarkedSort/writable,"Tests property writability before mutating the play command, including objects that cannot gain a missing property."
+native/marked_playlist_sort.js,150,9,175,function_declaration,/<callback>/window.__floggfyCreateMarkedSort/preparePlayback,Reuses the sorted page and updates the clicked occurrence in Spotify's existing play request. Unrelated sessions and shuffle pass through.
+native/marked_playlist_sort.js,163,52,164,arrow_function,/<callback>/window.__floggfyCreateMarkedSort/preparePlayback/<callback>,"Scans for a UID and checks its URI, preserving duplicate-track occurrences. Measure row-click latency before maintaining a second index."
+native/marked_playlist_sort.js,364,13,364,method_definition,/<callback>/window.__floggfyCreateMarkedSort/syncPlayback,Synchronizes only when a session has prepared playback items for the active sort mode.
+native/marked_playlist_sort.js,442,2,512,arrow_function,/<callback>,Installs the shared context updater once and keeps the active order and successful update scoped to the renderer.
+native/marked_playlist_sort.js,450,5,454,function_declaration,/<callback>/release,"Clears the cached order, identity index and last update together so changing playlists releases their references."
+native/marked_playlist_sort.js,456,44,511,arrow_function,/<callback>/window.__floggfyUpdateMarkedPlayback,"Builds the UID index once per order. Session, provider, shuffle and sequence guards avoid rewriting unrelated or user-queued playback."
+native/marked_playlist_sort.js,496,28,496,arrow_function,/<callback>/window.__floggfyUpdateMarkedPlayback/failed,"Applies a three-second retry delay after a failed update, leaving successful updates suppressed for the same session."
+native/metadata_collector.js,609,38,609,arrow_function,/<callback>/window.__floggfyMarkedCurrentPlayer,"Returns the current player reference from the existing collector, avoiding another discovery pass on a playlist interaction."
+native/mp3_stream.cpp,74,1,83,function_definition,/TextFrame,Shares the encoding of known ID3 text frames and custom TXXX fields between full tagging and single-field insertion.
+native/mp3_stream.cpp,276,1,289,function_definition,/AddMp3TextFrame,"Inserts the frame before the existing ID3 bytes and preserves padding, unknown frames and audio. Measure allocations for large files before another rewrite."
+native/network_kill_switch_settings.h,11,1,13,function_definition,/ReadConfiguredMode,Path callers construct one snapshot then reuse the same strict tri-state parser as startup.
+native/ogg_tags.cpp,10,1,12,function_definition,/WriteBig32,Encodes the big-endian picture length separately from the little-endian Vorbis field lengths.
+native/recording_file.cpp,98,60,111,lambda_expression,/Comments/<callback>,"Borrows each field from the shared reader, handles picture comments separately and retains malformed-picture status for safe metadata updates."
+native/rich_metadata.cpp,18,1,23,function_definition,/DecodeMetadataText,Both renderer parsers share percent decoding and UTF-8 validation. Rejects incomplete escapes before advancing.
+native/rich_metadata.cpp,29,12,29,lambda_expression,/ParseRichMetadata/fail,Centralizes rejection messages while leaving the caller's output record unchanged on parse failure.
+native/rich_metadata.cpp,59,66,59,lambda_expression,/ParseRichMetadata/<callback>,Verifies the 40-character artwork identifier on an allowed CDN path before inserting it into the bounded references list.
+native/settings_file.h,84,5,84,function_definition,/Snapshot,Reads one file image and encoding for the startup consumers. A failed read remains distinguishable from a missing key.
+native/settings_file.h,89,5,100,function_definition,/ReadChoice,Applies the same strict numeric choices and duplicate detection to fields read from the snapshot. The candidate list is small and startup-only.
+native/song_destination.cpp,55,1,60,function_definition,/SameCatalog,Compares catalog fields that affect filename or identity before allowing an old path result to be reused.
+native/song_destination.cpp,61,1,65,function_definition,/SameInputs,"Rejects changed generation, naming settings or root before the catalog comparison; equal inputs skip rebuilding paths."
+native/song_destination.cpp,122,1,126,function_definition,/QueueLatestRequest,Queues changed inputs immediately and coalesces probes for the same serial during the refresh interval.
+native/spac_stream.cpp,18,1,52,function_definition,/SpacStream::MeasurePage,Validates page size and lacing once per complete page and passes the layout to parsing. Partial input still returns the required byte count.
+native/spotify_uri.h,5,1,10,function_definition,/ValidSpotifyUri,Checks prefix and the 22 alphanumeric identifier characters on borrowed text; shared by metadata and playback callers.
+native/spotify_uri.h,11,1,13,function_definition,/ValidSpotifyTrackUri,Supplies the track prefix at call sites which must exclude episode and album URIs.
+native/spotify_uri.h,14,1,16,function_definition,/ValidSpotifyMediaUri,Allows track and episode URIs through the same bounded character validator.
+native/telemetry_filter.cpp,324,28,324,function_definition,/AppendDump/~Close,Keeps exclusive file ownership through the cap check and append; destructor closes the handle on formatter exceptions.
+native/telemetry_filter.cpp,349,22,349,lambda_expression,/DrainDumps/<callback>,Defers request decoding and formatting until AppendDump verifies capacity under the write lock.
+native/telemetry_filter.cpp,354,34,354,lambda_expression,/DrainDumps/<callback>,Defers building the summary string when the file is full; diagnostic counters are still available.
+native/to_disk_menu.cpp,96,1,101,function_definition,/ToggleFor,Searches the three short static toggle tables on a menu command. A separate index would duplicate the dispatch mapping.
+native/to_disk_menu.cpp,205,18,208,lambda_expression,/Populate/submenu,Gives each submenu label the CEF string lifetime it needs during creation without repeating the conversion at each call.
+native/to_disk_menu.cpp,408,1,418,function_definition,/RevealSavedFile,Shares worker launch and failure cleanup for revealing the song folder or a recent file. Explorer work stays off the menu thread.
+native/vorbis_comments.h,8,1,10,function_definition,/ReadLittle32,Decodes a four-byte little-endian field length without alignment assumptions. Bounds are checked by the caller.
+native/vorbis_comments.h,12,1,16,function_definition,/CommentKey,Canonicalizes ASCII field names so case-insensitive replacements preserve unrelated comments.
+native/vorbis_comments.h,21,1,39,function_definition,/ReadVorbisComments,Visits borrowed fields and rejects unreasonable counts or trailing data. FLAC and Ogg supply their framing separately.
+native/vorbis_comments.h,23,15,29,lambda_expression,/ReadVorbisComments/read,Checks the remaining length before advancing and returns a view into the original comment rather than allocating each value.
+native/vorbis_comments.h,45,5,55,function_definition,/Read,Builds the replacement key set once per tagging operation and borrows fields retained for output.
+native/vorbis_comments.h,49,53,54,lambda_expression,/Read/<callback>,Applies replacement and unkeyed-field policies while preserving borrowed values. Profile key normalization before changing the set representation.
+native/vorbis_comments.h,57,5,68,function_definition,/Write,"Serializes retained fields, replacements and optional picture within the codec limit. Consider direct key/value append if tag construction measures hot."
+native/vorbis_comments.h,58,21,58,lambda_expression,/Write/number,Emits exactly four length bytes in wire order into the destination.
+native/vorbis_comments.h,59,21,62,lambda_expression,/Write/append,"Checks remaining space for length plus payload before appending a field, so oversized metadata cannot wrap the limit."
+native/windows_file_write.h,6,1,16,function_definition,/WriteAllBytes,"Retries partial writes, advances only by confirmed bytes and limits each Win32 call to the representable DWORD count."
+tests/collector_connect_test.js,36,36,36,arrow_function,/context.window.__floggfyMarkedPlay,Captures the original play-action object so an identity assertion can verify that Saved sorting receives the native request intact.
+tests/marked_playback_test.js,14,1,25,function_declaration,/fixture,"Runs the real sorter in an isolated VM with a duplicate-URI playlist, an active session and a separate manual queue."
+tests/marked_playback_test.js,21,21,21,method_definition,/fixture/getState,Supplies the mutable player state that individual tests change between sync attempts.
+tests/marked_playback_test.js,21,53,23,method_definition,/fixture/updateContext,Records a deep copy of each context update so later test mutations cannot change the expected command history.
+tests/marked_playback_test.js,27,106,43,arrow_function,/<callback>,"Checks idempotent sort updates, duplicate-row identity, unchanged playback position/manual queue, and reapplication to a new session."
+tests/marked_playback_test.js,45,106,57,arrow_function,/<callback>,"Rejects unsuitable contexts, shuffle, unknown sessions and nonunique UID/URI matches before issuing a player command."
+tests/marked_playback_test.js,59,105,71,arrow_function,/<callback>,"Defers while a queued item plays, releases silently, and only restores an explicitly supplied baseline."
+tests/marked_playback_test.js,73,88,80,arrow_function,/<callback>,Rejects players lacking the required methods or a readable state and verifies zero commands.
+tests/marked_playback_test.js,77,23,77,arrow_function,/<callback>/player.getState,Injects a failing player state getter to exercise disconnected player handling.
+tests/marked_playback_test.js,82,88,96,arrow_function,/<callback>,Counts actual order-array reads and asserts repeated polling and a later context track do not traverse unchanged ordering again.
+tests/marked_playback_test.js,85,36,88,method_definition,/<callback>/get,The Proxy counts numeric index reads while preserving the original element values through Reflect.get.
+tests/marked_playback_test.js,98,87,107,arrow_function,/<callback>,Verifies native shuffle suppresses sorted updates and the order is reapplied when shuffle ends.
+tests/marked_playback_test.js,109,69,117,arrow_function,/<callback>,A rejected async context command must leave only one attempt across subsequent renders.
+tests/marked_playback_test.js,112,28,112,arrow_function,/<callback>/player.updateContext,Counts player updates and returns a rejected promise to exercise async failure handling.
+tests/marked_playback_test.js,114,23,114,arrow_function,/<callback>/<callback>,Advances the event loop before polling again so the rejection has settled when call count is checked.
+tests/marked_playlist_sort_test.js,107,91,122,arrow_function,/<callback>,Asserts the same date generation incurs zero lookups and still detects host replacement of its items array.
+tests/marked_playlist_sort_test.js,114,17,114,arrow_function,/<callback>/dates.get,Wraps the real Map getter with a counter to distinguish a true skipped lookup from a duplicate result.
+tests/marked_playlist_sort_test.js,445,89,491,arrow_function,/<callback>,"Checks Saved order drives the next track, including duplicate occurrences, unsupported request contexts and reset."
+tests/marked_playlist_sort_test.js,457,5,469,function_declaration,/<callback>/play,Builds native playlist play requests with exact UID/URI/index and exposes the context entries the player would consume.
+tests/marked_playlist_sort_test.js,457,38,457,arrow_function,/<callback>/play/<callback>,Default mutation leaves the synthetic native request unchanged in the ordinary play case.
+tests/marked_playlist_sort_test.js,467,90,467,arrow_function,/<callback>/play/<callback>,Projects baseline entries to their native values for the host path when a request lacks explicit sorted pages.
+tests/marked_playlist_sort_test.js,474,9,474,arrow_function,/<callback>/<callback>,Uses a different playlist URI to test that an unrelated play request remains untouched.
+tests/marked_playlist_sort_test.js,475,9,475,arrow_function,/<callback>/<callback>,Requests shuffle to exercise the path that preserves native ordering.
+tests/marked_playlist_sort_test.js,476,9,476,arrow_function,/<callback>/<callback>,Uses a search origin to verify Saved sorting does not rewrite play requests from another feature.
+tests/marked_playlist_sort_test.js,477,9,477,arrow_function,/<callback>/<callback>,Supplies an absent UID to exercise refusal to select an unrelated duplicate occurrence.
+tests/marked_playlist_sort_test.js,478,9,478,arrow_function,/<callback>/<callback>,Freezes options to verify unsupported nonwritable request shapes are left intact.
+tests/marked_playlist_sort_test.js,493,92,518,arrow_function,/<callback>,Verifies descending and ascending Saved orders update the active session and neutral mode restores every original row UID.
+tests/marked_playlist_sort_test.js,498,43,498,arrow_function,/<callback>/window.__floggfyMarkedCurrentPlayer,Supplies the synthetic current player to the same renderer lookup used in production.
+tests/marked_playlist_sort_test.js,500,19,501,arrow_function,/<callback>/getState,Returns a known active playlist/session and context-track UID for playback synchronization.
+tests/marked_playlist_sort_test.js,502,9,505,method_definition,/<callback>/updateContext,Records the ordered context tracks and asserts the correct existing session receives the update.
+tests/marked_playlist_sort_test.js,504,62,504,arrow_function,/<callback>/updateContext/<callback>,"Extracts UIDs from the updated page for comparison, preserving distinct occurrences with identical track URIs."
+tests/marked_playlist_sort_test.js,517,46,517,arrow_function,/<callback>/<callback>,Derives the expected restored order from original row UIDs and compares the full list.
+tests/marked_playlist_test.js,337,34,337,arrow_function,/<callback>/window.performance.now,Sets a controllable monotonic clock to test fresh-date reuse and expiry at the 30-second boundary.
+tests/marked_playlist_test.js,372,21,372,arrow_function,/control.apply,Substitutes a constant sort result so the heartbeat traversal counter measures only date selection and header painting.
+tests/marked_playlist_test.js,375,30,378,generator_function,/scope[Symbol.iterator],Counts iteration of the stable URI set and delegates to its real iterator. The fresh-cache heartbeat must make zero traversals.
+tests/metadata_update_test.cpp,220,1,233,function_definition,/PreserveFlacPictureBlocks,Preserves two different opaque FLAC PICTURE blocks in original order and confirms the upgraded audio stays intact.
+tests/runners/windows-common.sh,2,1,7,function_definition,/windows_test_dir,"Converts Windows TEMP to its WSL path and creates the requested fixture directory, centralizing shared runner setup."
+tests/runners/windows-common.sh,9,1,15,function_definition,/build_windows_minhook,Compiles the four MinHook translation units into the caller's object directory with distinct object names.
+tests/runners/windows-common.sh,17,1,23,function_definition,/build_windows_audio_objects,"Compiles the minimp4, Vorbis and Ogg objects once per fixture suite, passing through compiler options to the audio build."
+tests/windows_artwork_enrichment_test.cpp,15,1,19,function_definition,/SetFixtureArtwork,"Seeds a shared artwork object into the metadata cache, so pinned-record tests exercise the same ownership path used for tagging."
+tests/windows_deep_diagnostics_test.cpp,89,9,89,function_definition,/Architectures/~Cleanup,Removes only the two temporary synthetic PE files and the per-run directory when architecture checks exit.
+tests/windows_directory_lookup_test.cpp,457,1,457,function_definition,/RetainMetadata,Satisfies the metadata pinning interface without enabling live metadata in the isolated directory-lookup fixture.
+tests/windows_marked_catalog_test.cpp,122,13,122,lambda_expression,/main/<callback>,"Waits until an exclusive SQLite transaction produces a retryable query failure or an unexpected reply, then asserts no reply was delivered."
+tests/windows_marked_catalog_test.cpp,127,13,127,lambda_expression,/main/<callback>,"Waits for the same request token to succeed after rollback, allowing the fixture to verify the retained saved date."
+tests/windows_playback_diagnostics_test.cpp,2013,1,2090,function_definition,/ReleaseAuditOwnership,"Tests release-audit memory ownership through queue transfer, queue-full fallback, allocation failure and concurrent capture, including exact-fit budgets."
+tests/windows_playback_diagnostics_test.cpp,2091,1,2112,function_definition,/CapturePopCopiesOccupiedBytes,Checks reused capture slots at wraparound copy header and payload while leaving unused destination bytes unchanged.
+tests/windows_playback_diagnostics_test.cpp,2113,1,2155,function_definition,/CaptureRemovalAccounting,"Compares published capture reservations to surviving capacities after pressure eviction, queue loss and shutdown, including audit failure."
+tests/windows_playback_diagnostics_test.cpp,2201,1,2218,function_definition,/ReleaseAuditTestPhase,Injects allocation failure or starts concurrent capture during validation and checks the temporary publication reservation remains visible.
+tests/windows_playback_diagnostics_test.cpp,2206,46,2216,lambda_expression,/ReleaseAuditTestPhase/<callback>,Verifies validation released the budget lock and processes a real FLAC begin event while the audit retains its reservation.
+tests/windows_song_destination_test.cpp,20,1,22,function_definition,/CountingOutputPath,Counts calls to the production path builder so unchanged heartbeats can be asserted to reuse computed paths.
+tests/windows_telemetry_filter_test.cpp,7,1,9,function_definition,/CountingDecode,Counts invocations while delegating to the actual payload decoder; verifies fast rejection can skip decoding.
+tools/embed_assets.py,11,1,15,function_definition,/write_header,Writes each generated header to a unique temporary file in its destination directory and atomically replaces the final header for concurrent runners.
+tools/embed_assets.py,18,1,20,function_definition,/embed_script,Concatenates UTF-8 renderer assets in caller-specified order and delegates wide raw-string header generation to the atomic writer.
