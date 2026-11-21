@@ -1075,6 +1075,14 @@ void FinalCaptureRevalidation() {
         capture->stream.channels=2;capture->stream.pages=9;capture->stream.samples=44100;return capture;
     };
     auto valid_ogg=ogg(ogg_bytes);assert(ValidateFinalCapture(*valid_ogg)==FinalCaptureValidation::Valid);
+    // A long Vorbis vendor string places an audio page across the 64 KiB boundary.
+    std::vector<uint8_t> comment={3,'v','o','r','b','i','s',0xe8,0xfd,0,0};
+    comment.insert(comment.end(),65000,'v');
+    comment.insert(comment.end(),{0,0,0,0,1});
+    auto crossed=recording_fixture::ogg_headers(recording_fixture::identification(),recording_fixture::setup(),false,comment);
+    assert(crossed.size()>65536 && ValidateFinalCapture(*ogg(crossed))==FinalCaptureValidation::Valid);
+    crossed[65536]^=1;
+    assert(ValidateFinalCapture(*ogg(crossed))==FinalCaptureValidation::Invalid);
     auto corrupt_ogg_bytes=ogg_bytes;corrupt_ogg_bytes.back()^=1;
     auto corrupt_ogg=ogg(corrupt_ogg_bytes);assert(ValidateFinalCapture(*corrupt_ogg)==FinalCaptureValidation::Invalid);
 }

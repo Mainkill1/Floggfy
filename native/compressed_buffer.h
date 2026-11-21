@@ -10,6 +10,13 @@ class CompressedBuffer {
     std::vector<std::unique_ptr<uint8_t[]>> blocks;
     size_t length=0;
 public:
+    struct BlockView { const uint8_t* data; size_t size; };
+    // Borrow the initialized bytes from offset to the end of its block.
+    // Valid only until the buffer is modified.
+    BlockView BlockAt(size_t offset) const noexcept;
+    // For parsers that require one contiguous range. Scratch is used only
+    // when the requested bytes span blocks. Invalid or empty ranges return null.
+    const uint8_t* ReadContiguous(size_t offset,size_t count,std::vector<uint8_t>& scratch) const;
     size_t size() const { return length; }
     size_t capacity() const { return blocks.size()*block_size; }
     uint8_t operator[](size_t p) const { return blocks[p/block_size][p%block_size]; }

@@ -1058,7 +1058,7 @@ static FinalCaptureValidation ValidationResult(const Capture& capture,FinalCaptu
     capture.validation_reason=reason;return result;
 }
 static FinalCaptureValidation ValidateOggCapture(const Capture& capture) {
-    Stream rebuilt;size_t at=0;std::vector<uint8_t> page;page.reserve(65307);
+    Stream rebuilt;size_t at=0;std::vector<uint8_t> joined;
     while(at<capture.data.size()) {
         const auto remaining=capture.data.size()-at;
         if(remaining<27)return ValidationResult(capture,FinalCaptureValidation::Invalid,"ogg-short-page-header");
@@ -1067,9 +1067,9 @@ static FinalCaptureValidation ValidateOggCapture(const Capture& capture) {
         size_t body=0;
         for(size_t i=at+27;i<at+header;++i)body+=capture.data[i];
         if(body>remaining-header)return ValidationResult(capture,FinalCaptureValidation::Invalid,"ogg-short-page-body");
-        const size_t length=header+body;page.resize(length);
-        for(size_t i=0;i<length;++i)page[i]=capture.data[at+i];
-        const auto result=rebuilt.Push(page.data(),page.size());at+=length;
+        const size_t length=header+body;
+        const auto* page=capture.data.ReadContiguous(at,length,joined);
+        const auto result=rebuilt.Push(page,length);at+=length;
         if(result==Result::Invalid||result==Result::Ignore)return ValidationResult(capture,FinalCaptureValidation::Invalid,"ogg-page-rejected");
         if(result==Result::Complete&&at!=capture.data.size())return ValidationResult(capture,FinalCaptureValidation::Invalid,"ogg-bytes-after-eos");
     }
@@ -1080,14 +1080,13 @@ static FinalCaptureValidation ValidateOggCapture(const Capture& capture) {
     return ValidationResult(capture,FinalCaptureValidation::Valid,"ogg-complete");
 }
 static FinalCaptureValidation ValidateAacCapture(const Capture& capture) {
-    SpacStream rebuilt;std::vector<uint8_t> chunk(65536);size_t at=0;
+    SpacStream rebuilt;size_t at=0;
     while(at<capture.data.size()) {
-        const size_t amount=std::min(chunk.size(),capture.data.size()-at);
-        for(size_t i=0;i<amount;++i)chunk[i]=capture.data[at+i];
-        const auto result=rebuilt.Push(chunk.data(),amount);
+        const auto block=capture.data.BlockAt(at);
+        const auto result=rebuilt.Push(block.data,block.size);
         if(result==AacParse::Invalid||result==AacParse::Unsupported)return ValidationResult(capture,FinalCaptureValidation::Invalid,
             result==AacParse::Invalid?"aac-packet-invalid":"aac-configuration-unsupported");
-        at+=amount;
+        at+=block.size;
     }
     if(!rebuilt.Complete())return ValidationResult(capture,FinalCaptureValidation::Incomplete,"aac-incomplete-coverage");
     const auto& expected=capture.spac.info;const auto& actual=rebuilt.info;
