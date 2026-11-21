@@ -4,10 +4,22 @@
 #include <cassert>
 #include <vector>
 
+static std::wstring helper_warning_path;
+static std::string helper_warning_text;
+namespace network { bool Initialize(HMODULE,bool,int) {return true;} bool Enabled() {return false;} }
+namespace updates { bool Initialize(bool){return true;} bool Blocked(){return false;} DWORD LastError(){return 0;} }
 bool PrepareToDiskMenu(HMODULE){return false;}
 void FinalizeToDiskMenu(bool){}
 void StartAudioHistory(HMODULE,HMODULE){}
 extern "C" MH_STATUS WINAPI MH_ApplyQueued(){return MH_OK;}
+namespace privacy {
+bool PrepareCrash(bool) noexcept {return false;}
+void FinalizeCrash(bool) noexcept {}
+CrashStatus GetCrashStatus() noexcept {return {};}
+bool Prepare(HMODULE,bool) noexcept {return false;}
+void Finalize(bool) noexcept {}
+void DrainStatus() noexcept {}
+}
 namespace history {
 void StartDecodedConnectMessages(HMODULE,bool) noexcept{}
 void DrainDecodedConnectMessages() noexcept{}
@@ -16,6 +28,7 @@ void FinalizeMetadataCollector(bool){}
 void StartLogger(){}
 void QueueDiagnostic(const char*){}
 void LogEvent(LogKind,const char*,const std::string&){}
+bool WriteCappedLog(const std::wstring& path,const std::string& text){helper_warning_path=path;helper_warning_text=text;return true;}
 }
 namespace {
 template<class T> void Put(std::vector<BYTE>& image,size_t offset,T value) {
@@ -60,26 +73,35 @@ void Settings() {
     wchar_t executable[32768];assert(GetModuleFileNameW(nullptr,executable,32768));
     const std::wstring exe=executable,path=exe.substr(0,exe.find_last_of(L'\\'))+L"\\SpotifyHistory.ini";
     assert(history::CreateDefaultIni(path));
-    assert(GetPrivateProfileIntW(L"To Disk",L"NetworkPatch",9,path.c_str())==0);
+    assert(GetPrivateProfileIntW(L"Misc",L"NetworkPatch",9,path.c_str())==0);
     history::Settings parsed;
     assert(!history::ReadRestartOptions(parsed,path)&&!parsed.network_patch);
-    assert(WritePrivateProfileStringW(L"To Disk",L"NetworkPatch",L"1",path.c_str()));
+    assert(WritePrivateProfileStringW(L"Misc",L"NetworkPatch",L"1",path.c_str()));
     assert(!history::ReadRestartOptions(parsed,path)&&parsed.network_patch);
-    assert(WritePrivateProfileStringW(L"To Disk",L"NetworkPatch",L"0",path.c_str()));
+    assert(WritePrivateProfileStringW(L"Misc",L"NetworkPatch",L"0",path.c_str()));
     assert(!history::ReadRestartOptions(parsed,path)&&!parsed.network_patch);
-    assert(WritePrivateProfileStringW(L"To Disk",L"NetworkPatch",nullptr,path.c_str()));
+    assert(WritePrivateProfileStringW(L"Misc",L"NetworkPatch",nullptr,path.c_str()));
     assert(history::ReadRestartOptions(parsed,path)&&!parsed.network_patch);
     assert(WritePrivateProfileStringW(L"Other",L"Keep",L"\u97f3\u697d",path.c_str()));
     history::InitSettings(nullptr);
     assert(!history::GetSettings().network_patch&&history::GetSettings().downloads);
     assert(history::FlushSettings(5000));
-    assert(GetPrivateProfileIntW(L"To Disk",L"NetworkPatch",9,path.c_str())==0);
+    assert(GetPrivateProfileIntW(L"Misc",L"NetworkPatch",9,path.c_str())==0);
     // An external restart-only edit must survive an unrelated menu save.
-    assert(WritePrivateProfileStringW(L"To Disk",L"NetworkPatch",L"1",path.c_str()));
+    assert(WritePrivateProfileStringW(L"Misc",L"NetworkPatch",L"1",path.c_str()));
     const auto epoch=history::CaptureEpoch();assert(history::SetLyrics(false)&&history::FlushSettings(5000));
-    assert(GetPrivateProfileIntW(L"To Disk",L"NetworkPatch",9,path.c_str())==1);
+    assert(GetPrivateProfileIntW(L"Misc",L"NetworkPatch",9,path.c_str())==1);
     assert(history::CaptureEpoch()==epoch&&history::GetSettings().downloads);
     wchar_t kept[16];assert(GetPrivateProfileStringW(L"Other",L"Keep",L"",kept,16,path.c_str())==2&&std::wstring(kept)==L"\u97f3\u697d");
+    const auto folder=exe.substr(0,exe.find_last_of(L'\\'));
+    assert(WritePrivateProfileStringW(L"To Disk",L"Save Location",folder.c_str(),path.c_str()));
+    LogHelperNetworkFailure();
+    assert(helper_warning_path==folder+L"\\Floggfy.log");
+    assert(helper_warning_text.find("coverage is partial")!=std::string::npos);
+    assert(helper_warning_text.find("pid=")!=std::string::npos);
+    helper_warning_text.clear();
+    assert(WritePrivateProfileStringW(L"Debug",L"LogLevel",L"0",path.c_str()));
+    LogHelperNetworkFailure();assert(helper_warning_text.empty());
 }
 }
 int wmain() {

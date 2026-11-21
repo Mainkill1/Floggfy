@@ -239,9 +239,18 @@ bool MakeOwnedMp3(const std::uint8_t* source,std::size_t size,const Tags& tags,
     if(tags.fields.size()>65536||tags.cover.size()>4u*1024u*1024u)return Fail(error,"MP3 metadata exceeds limit");
     try {
         std::vector<std::uint8_t> frames;
+        const std::string* date=nullptr;
+        const std::string* year=nullptr;
+        for(const auto& item:tags.fields) {
+            if(item.first=="DATE"&&!item.second.empty()&&!date)date=&item.second;
+            if(item.first=="YEAR"&&!item.second.empty()&&!year)year=&item.second;
+        }
+        if(!date)date=year;
         for(const auto& item:tags.fields) {
             if(item.first.empty()||item.first.size()>4096||item.second.size()>65536)
                 return Fail(error,"MP3 metadata exceeds limit");
+            // DATE already contains the year; serialize one TDRC even when both are supplied.
+            if((item.first=="DATE"||item.first=="YEAR") && &item.second!=date)continue;
             std::vector<std::uint8_t> payload{3};
             if(const auto* id=FrameForField(item.first)) {
                 payload.insert(payload.end(),item.second.begin(),item.second.end());Frame(frames,id,payload);

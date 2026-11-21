@@ -1,0 +1,725 @@
+{
+  "source": {
+    "filename": "Spotify.dll",
+    "sha256": "9991ade34f9986ba60dd1122386f4c6cbdd2a167c85a07ce3c30554b7c38153f",
+    "size_bytes": 44244864,
+    "file_version": "1.3.9.2055",
+    "product_version": "1.3.9.2055"
+  },
+  "files": [
+    {
+      "filename": "gabito.proto",
+      "offset": 28446976,
+      "length": 669,
+      "descriptor_sha256": "37e3ff39093e2453a9e175c2a657b4f18d7f6664b700df93936c5adcc6a2301b",
+      "package": "spotify.event_sender.proto",
+      "syntax": "proto3",
+      "messages": [
+        {
+          "name": "spotify.event_sender.proto.EventEnvelope",
+          "fields": [
+            {
+              "name": "event_name",
+              "number": 2,
+              "label": 1,
+              "type": 9,
+              "type_name": "",
+              "json_name": "eventName"
+            },
+            {
+              "name": "event_fragment",
+              "number": 3,
+              "label": 3,
+              "type": 11,
+              "type_name": "spotify.event_sender.proto.EventEnvelope.EventFragment",
+              "json_name": "eventFragment"
+            },
+            {
+              "name": "sequence_id",
+              "number": 4,
+              "label": 1,
+              "type": 12,
+              "type_name": "",
+              "json_name": "sequenceId"
+            },
+            {
+              "name": "sequence_number",
+              "number": 5,
+              "label": 1,
+              "type": 3,
+              "type_name": "",
+              "json_name": "sequenceNumber"
+            }
+          ]
+        },
+        {
+          "name": "spotify.event_sender.proto.EventEnvelope.EventFragment",
+          "fields": [
+            {
+              "name": "name",
+              "number": 1,
+              "label": 1,
+              "type": 9,
+              "type_name": "",
+              "json_name": "name"
+            },
+            {
+              "name": "data",
+              "number": 2,
+              "label": 1,
+              "type": 12,
+              "type_name": "",
+              "json_name": "data"
+            }
+          ]
+        },
+        {
+          "name": "spotify.event_sender.proto.PublishEventsRequest",
+          "fields": [
+            {
+              "name": "event",
+              "number": 1,
+              "label": 3,
+              "type": 11,
+              "type_name": "spotify.event_sender.proto.EventEnvelope",
+              "json_name": "event"
+            },
+            {
+              "name": "suppress_persist",
+              "number": 2,
+              "label": 1,
+              "type": 8,
+              "type_name": "",
+              "json_name": "suppressPersist"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "filename": "context_application_desktop.proto",
+      "offset": 28449008,
+      "length": 202,
+      "descriptor_sha256": "a22410c428810bdc515215d72b2bdd6322d7a858b210291bcb60393518e91f47",
+      "package": "spotify.event_sender.proto",
+      "syntax": "proto3",
+      "messages": [
+        {
+          "name": "spotify.event_sender.proto.ApplicationDesktop",
+          "fields": [
+            {
+              "name": "version_string",
+              "number": 1,
+              "label": 1,
+              "type": 9,
+              "type_name": "",
+              "json_name": "versionString"
+            },
+            {
+              "name": "version_code",
+              "number": 2,
+              "label": 1,
+              "type": 3,
+              "type_name": "",
+              "json_name": "versionCode"
+            },
+            {
+              "name": "session_id",
+              "number": 3,
+              "label": 1,
+              "type": 12,
+              "type_name": "",
+              "json_name": "sessionId"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "filename": "context_device_desktop.proto",
+      "offset": 28449376,
+      "length": 269,
+      "descriptor_sha256": "27b32da71c23817ccc3729d1f55767c6ef5db1fa68acd4919e22c7e4325402c8",
+      "package": "spotify.event_sender.proto",
+      "syntax": "proto3",
+      "messages": [
+        {
+          "name": "spotify.event_sender.proto.DeviceDesktop",
+          "fields": [
+            {
+              "name": "platform_type",
+              "number": 1,
+              "label": 1,
+              "type": 9,
+              "type_name": "",
+              "json_name": "platformType"
+            },
+            {
+              "name": "device_manufacturer",
+              "number": 2,
+              "label": 1,
+              "type": 9,
+              "type_name": "",
+              "json_name": "deviceManufacturer"
+            },
+            {
+              "name": "device_model",
+              "number": 3,
+              "label": 1,
+              "type": 9,
+              "type_name": "",
+              "json_name": "deviceModel"
+            },
+            {
+              "name": "device_id",
+              "number": 4,
+              "label": 1,
+              "type": 9,
+              "type_name": "",
+              "json_name": "deviceId"
+            },
+            {
+              "name": "os_version",
+              "number": 5,
+              "label": 1,
+              "type": 9,
+              "type_name": "",
+              "json_name": "osVersion"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "filename": "context_client_context_id.proto",
+      "offset": 28449984,
+      "length": 114,
+      "descriptor_sha256": "5bc2e35d86f4fbcd03f2bb716dff2c8e7bce463f87b27733d624d8b18b5118a3",
+      "package": "spotify.event_sender.proto",
+      "syntax": "proto3",
+      "messages": [
+        {
+          "name": "spotify.event_sender.proto.ClientContextId",
+          "fields": [
+            {
+              "name": "value",
+              "number": 1,
+              "label": 1,
+              "type": 9,
+              "type_name": "",
+              "json_name": "value"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "filename": "context_client_id.proto",
+      "offset": 28450224,
+      "length": 99,
+      "descriptor_sha256": "cbfc243c9ceb2bb46934e91f4b1422642c620ac746de8cb97db71a5940435a0f",
+      "package": "spotify.event_sender.proto",
+      "syntax": "proto3",
+      "messages": [
+        {
+          "name": "spotify.event_sender.proto.ClientId",
+          "fields": [
+            {
+              "name": "value",
+              "number": 1,
+              "label": 1,
+              "type": 12,
+              "type_name": "",
+              "json_name": "value"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "filename": "context_installation_id.proto",
+      "offset": 28450704,
+      "length": 111,
+      "descriptor_sha256": "57118c326f28f3960e22f8787bfc24a4e16377d1a07f5f257c7ebb8b5e7ee330",
+      "package": "spotify.event_sender.proto",
+      "syntax": "proto3",
+      "messages": [
+        {
+          "name": "spotify.event_sender.proto.InstallationId",
+          "fields": [
+            {
+              "name": "value",
+              "number": 1,
+              "label": 1,
+              "type": 12,
+              "type_name": "",
+              "json_name": "value"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "filename": "context_monotonic_clock.proto",
+      "offset": 28450944,
+      "length": 127,
+      "descriptor_sha256": "d3037c5381fa1585d954f6b592dc8f0842309aa0a9ebff1a932a5bbd9cff54ce",
+      "package": "spotify.event_sender.proto",
+      "syntax": "proto3",
+      "messages": [
+        {
+          "name": "spotify.event_sender.proto.MonotonicClock",
+          "fields": [
+            {
+              "name": "id",
+              "number": 1,
+              "label": 1,
+              "type": 3,
+              "type_name": "",
+              "json_name": "id"
+            },
+            {
+              "name": "value",
+              "number": 2,
+              "label": 1,
+              "type": 3,
+              "type_name": "",
+              "json_name": "value"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "filename": "context_sdk.proto",
+      "offset": 28451424,
+      "length": 121,
+      "descriptor_sha256": "b5638dbf631eb976677d434a3f2b46d25452addeb08b5aa0df6ecb65094625d3",
+      "package": "spotify.event_sender.proto",
+      "syntax": "proto3",
+      "messages": [
+        {
+          "name": "spotify.event_sender.proto.Sdk",
+          "fields": [
+            {
+              "name": "version_name",
+              "number": 1,
+              "label": 1,
+              "type": 9,
+              "type_name": "",
+              "json_name": "versionName"
+            },
+            {
+              "name": "type",
+              "number": 2,
+              "label": 1,
+              "type": 9,
+              "type_name": "",
+              "json_name": "type"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "filename": "context_time.proto",
+      "offset": 28451664,
+      "length": 90,
+      "descriptor_sha256": "193945bf9a9b361b33aa329ecee2f1b487cfb0b3413dc34f358e3e6edcf22977",
+      "package": "spotify.event_sender.proto",
+      "syntax": "proto3",
+      "messages": [
+        {
+          "name": "spotify.event_sender.proto.Time",
+          "fields": [
+            {
+              "name": "value",
+              "number": 1,
+              "label": 1,
+              "type": 3,
+              "type_name": "",
+              "json_name": "value"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "filename": "include/EventSenderInternalError2NonAuth.proto",
+      "offset": 30557856,
+      "length": 252,
+      "descriptor_sha256": "3f3b8f14b21d3bede501cc59d85801a02a254280cb729fc9a056833ad91d5468",
+      "package": "spotify.event_sender.proto",
+      "syntax": "proto2",
+      "messages": [
+        {
+          "name": "spotify.event_sender.proto.EventSenderInternalError2NonAuth",
+          "fields": [
+            {
+              "name": "error_types",
+              "number": 1,
+              "label": 3,
+              "type": 9,
+              "type_name": "",
+              "json_name": "errorTypes"
+            },
+            {
+              "name": "error_total_counts",
+              "number": 2,
+              "label": 3,
+              "type": 5,
+              "type_name": "",
+              "json_name": "errorTotalCounts"
+            },
+            {
+              "name": "error_unreported_counts",
+              "number": 3,
+              "label": 3,
+              "type": 5,
+              "type_name": "",
+              "json_name": "errorUnreportedCounts"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "filename": "include/EventSenderStats2NonAuth.proto",
+      "offset": 30558304,
+      "length": 1517,
+      "descriptor_sha256": "0d17b5a3211f3ea2f351e75788d45d69142010389d26ac7a64541f685d35278d",
+      "package": "spotify.event_sender.proto",
+      "syntax": "proto2",
+      "messages": [
+        {
+          "name": "spotify.event_sender.proto.EventSenderStats2NonAuth",
+          "fields": [
+            {
+              "name": "sequence_ids",
+              "number": 1,
+              "label": 3,
+              "type": 12,
+              "type_name": "",
+              "json_name": "sequenceIds"
+            },
+            {
+              "name": "event_names",
+              "number": 2,
+              "label": 3,
+              "type": 9,
+              "type_name": "",
+              "json_name": "eventNames"
+            },
+            {
+              "name": "loss_stats_num_entries_per_sequence_id",
+              "number": 3,
+              "label": 3,
+              "type": 5,
+              "type_name": "",
+              "json_name": "lossStatsNumEntriesPerSequenceId"
+            },
+            {
+              "name": "loss_stats_event_name_index",
+              "number": 4,
+              "label": 3,
+              "type": 5,
+              "type_name": "",
+              "json_name": "lossStatsEventNameIndex"
+            },
+            {
+              "name": "loss_stats_storage_sizes",
+              "number": 5,
+              "label": 3,
+              "type": 3,
+              "type_name": "",
+              "json_name": "lossStatsStorageSizes"
+            },
+            {
+              "name": "loss_stats_sequence_number_mins",
+              "number": 6,
+              "label": 3,
+              "type": 3,
+              "type_name": "",
+              "json_name": "lossStatsSequenceNumberMins"
+            },
+            {
+              "name": "loss_stats_sequence_number_nexts",
+              "number": 7,
+              "label": 3,
+              "type": 3,
+              "type_name": "",
+              "json_name": "lossStatsSequenceNumberNexts"
+            },
+            {
+              "name": "ratelimiter_stats_event_name_index",
+              "number": 8,
+              "label": 3,
+              "type": 5,
+              "type_name": "",
+              "json_name": "ratelimiterStatsEventNameIndex"
+            },
+            {
+              "name": "ratelimiter_stats_drop_count",
+              "number": 9,
+              "label": 3,
+              "type": 3,
+              "type_name": "",
+              "json_name": "ratelimiterStatsDropCount"
+            },
+            {
+              "name": "drop_list_num_entries_per_sequence_id",
+              "number": 10,
+              "label": 3,
+              "type": 5,
+              "type_name": "",
+              "json_name": "dropListNumEntriesPerSequenceId"
+            },
+            {
+              "name": "drop_list_event_name_index",
+              "number": 11,
+              "label": 3,
+              "type": 5,
+              "type_name": "",
+              "json_name": "dropListEventNameIndex"
+            },
+            {
+              "name": "drop_list_counts_total",
+              "number": 12,
+              "label": 3,
+              "type": 3,
+              "type_name": "",
+              "json_name": "dropListCountsTotal"
+            },
+            {
+              "name": "drop_list_counts_unreported",
+              "number": 13,
+              "label": 3,
+              "type": 3,
+              "type_name": "",
+              "json_name": "dropListCountsUnreported"
+            },
+            {
+              "name": "states_list_event_name_index",
+              "number": 15,
+              "label": 3,
+              "type": 5,
+              "type_name": "",
+              "json_name": "statesListEventNameIndex"
+            },
+            {
+              "name": "states_list_entered_counts_total",
+              "number": 16,
+              "label": 3,
+              "type": 3,
+              "type_name": "",
+              "json_name": "statesListEnteredCountsTotal"
+            },
+            {
+              "name": "states_list_rejected_client_counts_total",
+              "number": 17,
+              "label": 3,
+              "type": 3,
+              "type_name": "",
+              "json_name": "statesListRejectedClientCountsTotal"
+            },
+            {
+              "name": "states_list_dropped_counts_total",
+              "number": 18,
+              "label": 3,
+              "type": 3,
+              "type_name": "",
+              "json_name": "statesListDroppedCountsTotal"
+            },
+            {
+              "name": "states_list_persisted_counts_total",
+              "number": 19,
+              "label": 3,
+              "type": 3,
+              "type_name": "",
+              "json_name": "statesListPersistedCountsTotal"
+            },
+            {
+              "name": "states_list_rejected_backend_counts_total",
+              "number": 20,
+              "label": 3,
+              "type": 3,
+              "type_name": "",
+              "json_name": "statesListRejectedBackendCountsTotal"
+            },
+            {
+              "name": "states_list_delivered_counts_total",
+              "number": 21,
+              "label": 3,
+              "type": 3,
+              "type_name": "",
+              "json_name": "statesListDeliveredCountsTotal"
+            },
+            {
+              "name": "states_list_deleted_counts_total",
+              "number": 22,
+              "label": 3,
+              "type": 3,
+              "type_name": "",
+              "json_name": "statesListDeletedCountsTotal"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "filename": "include/EventSenderCanaryNonAuth.proto",
+      "offset": 30560336,
+      "length": 543,
+      "descriptor_sha256": "21872dec24f754fae2d48392e5ce133f1bb7428372d83e6b3fd6196487e6ecaf",
+      "package": "spotify.event_sender.proto",
+      "syntax": "proto2",
+      "messages": [
+        {
+          "name": "spotify.event_sender.proto.EventSenderCanaryNonAuth",
+          "fields": [
+            {
+              "name": "batch_uuid",
+              "number": 1,
+              "label": 1,
+              "type": 9,
+              "type_name": "",
+              "json_name": "batchUuid"
+            },
+            {
+              "name": "event_id",
+              "number": 2,
+              "label": 1,
+              "type": 3,
+              "type_name": "",
+              "json_name": "eventId"
+            },
+            {
+              "name": "batch_size",
+              "number": 3,
+              "label": 1,
+              "type": 3,
+              "type_name": "",
+              "json_name": "batchSize"
+            },
+            {
+              "name": "sending_system",
+              "number": 4,
+              "label": 1,
+              "type": 9,
+              "type_name": "",
+              "json_name": "sendingSystem"
+            },
+            {
+              "name": "sent_as_pending_event",
+              "number": 5,
+              "label": 1,
+              "type": 8,
+              "type_name": "",
+              "json_name": "sentAsPendingEvent"
+            },
+            {
+              "name": "batch_start_time_ms",
+              "number": 6,
+              "label": 1,
+              "type": 3,
+              "type_name": "",
+              "json_name": "batchStartTimeMs"
+            },
+            {
+              "name": "event_time_ms",
+              "number": 7,
+              "label": 1,
+              "type": 3,
+              "type_name": "",
+              "json_name": "eventTimeMs"
+            },
+            {
+              "name": "configuration",
+              "number": 8,
+              "label": 1,
+              "type": 9,
+              "type_name": "",
+              "json_name": "configuration"
+            },
+            {
+              "name": "experiment_variant",
+              "number": 9,
+              "label": 1,
+              "type": 9,
+              "type_name": "",
+              "json_name": "experimentVariant"
+            },
+            {
+              "name": "mutation_count",
+              "number": 10,
+              "label": 1,
+              "type": 3,
+              "type_name": "",
+              "json_name": "mutationCount"
+            },
+            {
+              "name": "expected_mutation_count",
+              "number": 11,
+              "label": 1,
+              "type": 3,
+              "type_name": "",
+              "json_name": "expectedMutationCount"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "schema_format": "floggfy.protobuf-field-map.v1",
+  "descriptor_reference": "https://github.com/protocolbuffers/protobuf/blob/main/src/google/protobuf/descriptor.proto",
+  "request_message": "spotify.event_sender.proto.PublishEventsRequest",
+  "payload_fragment": "message",
+  "event_aliases": [
+    {
+      "event_type": "EventSenderInternalError2NonAuth",
+      "message": "spotify.event_sender.proto.EventSenderInternalError2NonAuth"
+    },
+    {
+      "event_type": "EventSenderStats2NonAuth",
+      "message": "spotify.event_sender.proto.EventSenderStats2NonAuth"
+    },
+    {
+      "event_type": "EventSenderCanaryNonAuth",
+      "message": "spotify.event_sender.proto.EventSenderCanaryNonAuth"
+    }
+  ],
+  "context_aliases": [
+    {
+      "event_type": "context_application_desktop",
+      "message": "spotify.event_sender.proto.ApplicationDesktop"
+    },
+    {
+      "event_type": "context_device_desktop",
+      "message": "spotify.event_sender.proto.DeviceDesktop"
+    },
+    {
+      "event_type": "context_client_context_id",
+      "message": "spotify.event_sender.proto.ClientContextId"
+    },
+    {
+      "event_type": "context_client_id",
+      "message": "spotify.event_sender.proto.ClientId"
+    },
+    {
+      "event_type": "context_installation_id",
+      "message": "spotify.event_sender.proto.InstallationId"
+    },
+    {
+      "event_type": "context_monotonic_clock",
+      "message": "spotify.event_sender.proto.MonotonicClock"
+    },
+    {
+      "event_type": "context_sdk",
+      "message": "spotify.event_sender.proto.Sdk"
+    },
+    {
+      "event_type": "context_time",
+      "message": "spotify.event_sender.proto.Time"
+    }
+  ]
+}

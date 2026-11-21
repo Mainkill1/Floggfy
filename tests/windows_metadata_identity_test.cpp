@@ -142,7 +142,16 @@ int main(int argc,char** argv){
         unidentified_sequence,unidentified_diagnostic)==history::ClientMediaRead::Unavailable&&
         "malformed unidentified markers must fail closed");
     const auto options=history::CollectorOptions();
-    assert(options==L"window.__floggfyConfig={metadata:true,lyrics:true,neverPause:false,autoSkip:false,debug:false,connect:false,networking:false};");
+    assert(options==L"window.__floggfyConfig={metadata:true,lyrics:true,"
+                    L"fetchMissingMetadata:true,fetchMissingArtwork:true,fetchMissingLyrics:true,"
+                    L"neverPause:false,autoSkip:false,debug:false,connect:false,networking:false};");
+    auto disabled_fallbacks=history::GetSettings();
+    disabled_fallbacks.read_spotify_disk_cache=disabled_fallbacks.fetch_missing_metadata=false;
+    disabled_fallbacks.fetch_missing_artwork=disabled_fallbacks.fetch_missing_lyrics=false;
+    assert(history::BuildCollectorOptions(disabled_fallbacks)==
+        L"window.__floggfyConfig={metadata:true,lyrics:true,fetchMissingMetadata:false,"
+        L"fetchMissingArtwork:false,fetchMissingLyrics:false,neverPause:false,autoSkip:false,"
+        L"debug:false,connect:false,networking:false};");
     FILETIME utc;GetSystemTimeAsFileTime(&utc);
     const auto sampled=((uint64_t(utc.dwHighDateTime)<<32)|utc.dwLowDateTime)-116444736000000000ULL;
     auto timeline_payload=L"FLOGGFY_TIMELINE_V1:v=1&title=App&artist=Artist&album=Album&uri=spotify:track:0000000000000000000001&duration=180&position=0&paused=0&buffering=0&local=1&sampled_ms="+std::to_wstring(sampled/10000);
@@ -169,6 +178,8 @@ int main(int argc,char** argv){
     wchar_t invalid_timeline[]=L"FLOGGFY_TIMELINE_V1:v=1&unavailable=timeline-fields";
     timeline={invalid_timeline,wcslen(invalid_timeline),nullptr};assert(history::CurrentTimeline(&timeline));
     assert(history::TryReadClientMedia(client_media,observed,client_sequence,diagnostic)==history::ClientMediaRead::Unavailable);
+    // Isolate this cache-miss case from the preceding pinned timeline snapshot.
+    history::cache=history::MetadataCache{};
     // App URI is authoritative even when cached recordings share every label.
     history::RichMetadata wrong_uri;wrong_uri.title="Identity";wrong_uri.artist="Artist";wrong_uri.album="Album";wrong_uri.duration=180;
     wrong_uri.uri="spotify:track:0000000000000000000002";wrong_uri.fields["TITLE"]="Wrong recording";
@@ -191,6 +202,21 @@ int main(int argc,char** argv){
     auto playing=history::ReadPlaybackQuality();
     assert(playing.title[0]==L'N' && playing.level==history::PlaybackLevel::Lossless);
     assert(playing.identity==history::PlaybackIdentity("spotify:track:0000000000000000000001"));
+    // A descriptive item stays usable for folder lookup even when buffering
+    // makes the capture timeline unavailable (including after a restart).
+    history::Media destination;
+    assert(history::ReadCurrentItemMedia(destination));
+    assert(destination.title==L"Next" && destination.artist==L"Artist" && destination.album==L"Album");
+    assert(destination.spotify_uri=="spotify:track:0000000000000000000001" && destination.duration==200);
+    wchar_t buffering_message[]=L"FLOGGFY_TIMELINE_V1:v=1&blocked=buffering";
+    history::String buffering{buffering_message,wcslen(buffering_message),nullptr};
+    assert(history::CurrentTimeline(&buffering));
+    assert(history::ReadCurrentItemMedia(destination));
+    assert(history::PlaybackIdentity(destination.PlaybackKey())==playing.identity);
+    const auto fresh_item_time=history::current_item_updated;
+    history::current_item_updated=GetTickCount64()-4000;
+    assert(!history::ReadCurrentItemMedia(destination));
+    history::current_item_updated=fresh_item_time;
     wchar_t episode_message[]=L"FLOGGFY_PLAYBACK_V1:v=1&title=Episode&uri=spotify:episode:0000000000000000000001&duration=4030&playback_quality=high";
     current={episode_message,wcslen(episode_message),nullptr};
     assert(history::CurrentPlayback(&current));
@@ -206,11 +232,14 @@ int main(int argc,char** argv){
     assert(history::CurrentPlayback(&current));
     playing=history::ReadPlaybackQuality();
     assert(playing.identity!=previous.identity && playing.title[0]==L'E');
+    assert(history::ReadCurrentItemMedia(destination));
+    assert(destination.spotify_uri=="spotify:episode:0000000000000000000002");
     assert(playing.format==history::PlaybackFormat::Unknown && playing.level==history::PlaybackLevel::Unknown);
     wchar_t clear_message[]=L"FLOGGFY_PLAYBACK_V1:v=1";
     current={clear_message,wcslen(clear_message),nullptr};
     assert(history::CurrentPlayback(&current));
     assert(history::ReadPlaybackQuality().title[0]==0);
+    assert(!history::ReadCurrentItemMedia(destination));
 
     // Current quality is a fresh exact cached identity, not a historical setting.
     history::Media media; media.title=L"Song";media.artist=L"Artist";media.album=L"Album";media.duration=200;

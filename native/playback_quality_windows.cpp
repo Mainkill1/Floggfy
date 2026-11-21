@@ -20,6 +20,7 @@ void PublishPlaybackQuality(const PlaybackQualitySnapshot &value) {
 void PublishClientPlaybackQuality(const PlaybackQualitySnapshot &value) {
   AcquireSRWLockExclusive(&snapshot_lock);
   client = value;
+  client.SetPlaybackInstance({});
   client_updated = GetTickCount64();
   ReleaseSRWLockExclusive(&snapshot_lock);
 }
@@ -42,8 +43,10 @@ PlaybackQualitySnapshot ReadPlaybackQuality() {
     if(value.decoder_bound)return value;
     if (actual.level != PlaybackLevel::Unknown) {
       const bool lossless = actual.level == PlaybackLevel::Lossless || actual.level == PlaybackLevel::Lossless24;
+      const bool lossy_codec = value.format == PlaybackFormat::Ogg ||
+          value.format == PlaybackFormat::Mp3 || value.format == PlaybackFormat::Aac;
       if ((value.format == PlaybackFormat::Flac && !lossless) ||
-          (value.format == PlaybackFormat::Ogg && lossless) ||
+          (lossy_codec && lossless) ||
           (value.format == PlaybackFormat::Flac && actual.level == PlaybackLevel::Lossless24 && value.bits != 24)) return actual;
       value.level = actual.level;
     }

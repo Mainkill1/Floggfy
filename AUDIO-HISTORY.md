@@ -22,8 +22,11 @@ runtime helper.
 
 `SpotifyHistory.ini` is included with the release and is created beside
 `version.dll` on first launch when missing.
-The top-left menu contains **To Disk** with Downloads, Save Location, FLAC, Ogg,
-Podcasts, Lyrics and optional Capture Speed and Never Pause controls.
+The top-left **To Disk** menu keeps Downloads, Latest Downloads, song details
+and optional Capture Speed/Never Pause controls together. **Allowed Formats**
+contains Ogg, FLAC, AAC, Podcasts and Include Lyrics (last). **Misc** contains
+Save Location, Auto Skip Downloaded, Block Updates and the optional Network Kill Switch. **Fallbacks** contains
+Windows Playback Fallback.
 Checkbox labels and capture switches change immediately when clicked. INI
 persistence runs in a background worker.
 
@@ -34,40 +37,114 @@ every two seconds, and waits for an outstanding command to settle before retryin
 Changing the menu toggle preserves current capture buffers. Restart after INI edits.
 
 ```ini
+;
+; Floggfy Configuration File
+; Options configured to be hidden or INI only can be unsafe to use
+;
 [To Disk]
 Downloads=1
+; Enable or Disable the To Disk menu drop down.
 Menu=1
-NeverPause=-1
-NetworkPatch=0
+; Blank uses Windows %USERPROFILE%\Music\Spotify
+; Custom paths must be absolute. Example: C:\Spotify
 Save Location=
-SaveUnmatched=1
-Flac=1
+; Allowed Download Formats (original streams, no conversion)
+; AAC is usually low quality; disabled by default.
 Ogg=1
+Flac=1
+Aac=0
+; Podcast support is not heavily validated. Should be fine?
 Podcasts=1
-CaptureSpeed=1
+; Metadata (lyrics and updates require Metadata=1)
 Metadata=1
 Lyrics=1
-UpdateExistingMetadata=1
+; Never Pause: -1=hidden, 0=off, 1=on.
+NeverPause=-1
+; Skip songs that are found to be already downloaded.
+AutoSkipDownloaded=0
+; Speeds: 1, 2, 4, 8, 10. Acceleration can cause choppy playback and throttling.
+; 0 is same as 1, -1 hides it from the menu.
+; Accelerated use may trigger account restrictions.
+CaptureSpeed=-1
+
+[Fallbacks]
+; Look for missing track metadata in Spotify's disk cache.
+ReadSpotifyDiskCache=1
+; Request missing track and album tags from Spotify.
+FetchMissingMetadata=1
+; Allow artwork requests that can use the network.
+FetchMissingArtwork=1
+; Request missing lyrics when Include Lyrics is enabled.
+FetchMissingLyrics=1
+; Use Windows media state if Spotify's app playback tracking is unavailable.
+WindowsPlaybackFallback=0
+
+[Debug]
+; Logging: 0=off, 1=finished/warnings/failures, 2=activity, 4=diagnostics.
+; Logs use Save Location; each is capped at 5 MiB.
 LogLevel=1
-DumpStreams=0
-DebugConnect=1
+; These diagnostic switches require LogLevel=4.
+DebugConnect=0
+; Extra network observations; adds an optional hook.
 DebugNetworking=0
+; Callback and worker timing; adds diagnostic overhead.
 DebugHookDiagnostics=0
+; Saves raw streams and matching metadata to Save Location\DumpStreams; restart required.
+DumpStreams=0
 
 [Matcher]
+; New media starts before retiring an unmatched stream (1-100).
 MaxMatchQueue=5
+; Time offset tolerance in milliseconds (0-120000).
 TimeOffsetToleranceMs=10000
-DurationToleranceMs=250
+; Duration tolerance in milliseconds (0-2000).
+DurationToleranceMs=25
+; Save complete unidentified streams in Unmatched after MaxMatchQueue new starts.
+SaveUnmatched=1
 
 [History]
+; RAM limit in MiB (8-1024).
 MaxBufferedMiB=512
+; Max MiB scanned per song looking for missing metadata
+MetadataCacheReadMiB=256
+
+[Telemetry]
+; Logs blocked request details and payloads to Save Location\Floggfy-telemetry.log
+BlockTelemetry=0
+BlockEventReports=1
+BlockPlaybackReports=1
+BlockGrowthAnalytics=1
+BlockSentry=1
+BlockCrashReports=1
+BlockInternalLogging=1
+BlockTrackErrors=1
+BlockAITelemetry=1
+; Requires BlockTelemetry=1. Takes effect after restarting Spotify.
+; Deletes known pending-tracking.pb queues at startup and normal exit; blocks their known tracking destinations.
+BlockQueuedTelemetry=1
+DumpTelemetry=0
+
+[Misc]
+; Block updates by denying access to the local Spotify Update folder.
+BlockUpdates=0
+; Work around Spotify falsely reporting no internet. AKA NCIS patch.
+NetworkPatch=0
+; Nuke all networking abilities (AKA Offline mode only with no telemetry)
+; -1 hidden from menu, 0 disabled, 1 enabled
+NetworkKillSwitch=0
+; Fill missing tags, artwork and lyrics in existing recordings.
+UpdateExistingMetadata=1
+; Adds the track number infront of songs
+TrackNumberInFilename=0
+; Remove old number prefixes; requires TrackNumberInFilename=0.
+ConvertNumberedFilenames=0
 ```
 
 - **Downloads:** master switch. Start the next track from its beginning after
   enabling capture; enabling halfway through a track cannot recover earlier audio.
 - **Menu:** set `0` and restart Spotify to disable menu integration. Configured
   capture and any explicitly enabled network patch operate independently.
-- **NetworkPatch:** INI-only, default `0`; missing keys also disable the patch.
+- **NetworkPatch:** `[Misc]`, INI-only, default `0`; missing keys also disable the patch.
   Set `1` and fully restart Spotify to enable the legacy NLM compatibility hooks.
   Disabled startup skips import discovery, IAT/vtable changes and hook retries;
   audio capture, metadata and menu startup remain independent. The option is
@@ -76,23 +153,48 @@ MaxBufferedMiB=512
   INI content. Ordinary menu saves preserve existing restart-only entries
   (`NetworkPatch`, `DumpStreams`, `SaveUnmatched`, matcher settings and debug switches),
   including edits made after startup; only missing keys receive defaults.
+- **BlockUpdates:** `[Misc]`, default `0`. The Misc checkbox denies the current
+  Windows user read/write access to `%LOCALAPPDATA%\Spotify\Update`. Enabled
+  startup verifies and repairs the restriction. Disabling restores permissions
+  from the parent Spotify folder; no old ACL snapshot is kept. The restriction
+  remains on disk after Spotify exits. Disable it before removing Floggfy if
+  updates should resume. This targets the desktop update folder, not updates
+  through other paths or accounts.
+- **NetworkKillSwitch:** `[Misc]`, default `0` shows the control off. `-1` hides it and
+  disables its hooks; `1` shows it on. Menu changes apply live. It blocks
+  covered IPv4/IPv6 Winsock operations in processes loading Floggfy, including
+  functional traffic needed for login, playback and online metadata. Already
+  queued I/O is not cancelled; uninjected processes, external DNS services,
+  provider pointers obtained before hook startup, direct native I/O and cached
+  Registered I/O (RIO) paths remain outside coverage. This is not a firewall
+  guarantee. If hooks are unavailable, the menu shows **Unavailable**.
+- **ReadSpotifyDiskCache** searches Spotify's stored track metadata within the
+  MetadataCacheReadMiB limit. Defaults to on.
+- **FetchMissingMetadata** enables Spotify requests for missing track and album tags.
+  Defaults to on.
+- **FetchMissingArtwork** enables artwork requests that can use the network.
+  Available artwork can still be reused, including direct reads from Spotify's image cache.
+  Defaults to on.
+- **FetchMissingLyrics** enables Spotify lyrics requests when **Include Lyrics**
+  is enabled. Turning it off still lets **Include Lyrics** save available lyrics.
+  Defaults to on.
+- **WindowsPlaybackFallback:** `[Fallbacks]`, default `0`, also available in the menu. Enable the Windows
+  media-session observer only when Spotify's app playback tracking is unavailable.
 - **Save Location:** empty defaults to the Windows Music known folder's `Spotify`
   subfolder, including redirected Music folders. A custom directory is accepted.
 - **FLAC/Ogg:** select which original source formats to retain. Enabling FLAC does
   not convert Vorbis playback into lossless audio. Spotify must supply FLAC.
-- **Capture Speed:** `1`, `2`, `4`, `8` or `10`; default `1`. Accelerated capture
+- **Capture Speed:** default `-1` hides the menu and uses 1x. `0` or `1` shows
+  the menu at 1x; `2`, `4`, `8` and `10` select faster recording. Accelerated capture
   shortens the decoded PCM output span only after Spotify has consumed the full
   compressed input span, so saved bytes are not resampled or transcoded. It is
   intended for muted, unattended capture. Live sound can be choppy, Spotify's
   progress display may not track real time, and changing speed invalidates the
   current track so it must be replayed from the beginning. If the decoded-output
   hook is unavailable or becomes invalid, Floggfy safely falls back to `1x`.
-  `CaptureSpeedLimit` is a restart-only visibility switch: `0` hides the menu and
-  disables acceleration. It defaults to `0`; a missing value also disables it.
-  Any valid nonzero value enables the menu and
-  every supported choice when the decoded-output hook is available.
-- **AAC:** INI-only, default `0`. Set `AAC=1` and restart to capture supported
-  low-quality SpAC/AAC streams as M4A. Downloads still controls all saving.
+- **AAC:** default `0`; the **Allowed Formats** toggle enables capture of new
+  SpAC/AAC streams as M4A when supported. Start playback from the beginning after
+  enabling it. Downloads still controls all saving.
 - **Podcasts:** menu/INI toggle, default `1`. When enabled, complete identified
   `spotify:episode:` items retain their original MP3, Ogg, FLAC, or enabled AAC
   stream under `Podcasts\<Show>`. No PCM recording or transcoding is used.
@@ -104,15 +206,16 @@ MaxBufferedMiB=512
   Bounds the relative start-time offset for conservative metadata matching;
   `0` requires exact playback IDs. Exact IDs can match outside this window when
   native ownership evidence belongs to the capture lifecycle.
-- **DurationToleranceMs:** `[Matcher]`, default `250`, range 0–2000 ms. Allows
+- **DurationToleranceMs:** `[Matcher]`, default `25`, range 0–2000 ms. Allows
   small differences between measured audio length and metadata duration.
   Neither timing setting can make incomplete audio valid. Restart after edits;
   legacy `TimingToleranceSeconds` migrates to milliseconds when the new key is absent.
-- **SaveUnmatched:** `[To Disk]`, default `1`. At unmatched retirement, save only
+- **SaveUnmatched:** `[Matcher]`, default `1`. At unmatched retirement, save only
   complete, codec-validated supported audio under `Save Location\Unmatched`,
   with its audio extension and a JSON correlation sidecar. Incomplete or corrupt
   preloads are discarded. Set `0` to discard unmatched audio too. Failed complete
-  writes retain their bytes for retry. Raw `DumpStreams` output remains separate.
+  writes retain their bytes for retry. Existing `[To Disk]` values migrate to
+  `[Matcher]`. Raw `DumpStreams` output remains separate.
 - **Metadata:** enriches tracks using existing client state, cached metadata, and Spotify's authenticated track/album services. Set 0 and restart to disable its hooks.
 - **UpdateExistingMetadata:** default on. Set 0 to disable metadata-only changes
   to existing files, including lyrics and artwork upgrades. New audio saves and
@@ -121,7 +224,7 @@ MaxBufferedMiB=512
   existing client service, even with the lyrics panel closed. Set 0 in the INI or
   use the menu toggle to stop lyric discovery, cancel pending lyric work, and
   disable lyric enrichment while retaining other metadata and artwork.
-- **LogLevel:** default `1`; `0` disables logging, `1` records newly finished
+- **LogLevel:** `[Debug]`, default `1`; `0` disables logging, `1` records newly finished
   tracks plus warnings/failures, `2` also records visible lifecycle activity,
   and `4` enables the main diagnostic lane. `Floggfy.log` contains general
   activity and outcomes; troubleshooting detail goes to
@@ -137,7 +240,7 @@ MaxBufferedMiB=512
   and metadata pushes, pops and pending counts, plus matched, saved, skipped and
   unmatched outcomes, at most once per second. These counters observe retained
   records and publication; they never authorize a match or save.
-- **DumpStreams:** default `0`; set `1` and restart for forensic capture,
+- **DumpStreams:** `[Debug]`, default `0`; set `1` and restart for forensic capture,
   independently of LogLevel, download switches and format filters. It writes
   continuous consumed decoder input to `Save Location\DumpStreams\<UTC start
   timestamp>\`, with timestamped `.bin` files and matching `.jsonl` metadata
@@ -149,18 +252,18 @@ MaxBufferedMiB=512
   offsets include known omitted input. Unknown loss makes logical offsets null.
   Dumps survive ordinary recording rejection and are retained until deleted.
   A clean stop adds `session_end`; its absence indicates an interrupted session.
-- **DebugConnect:** default `1`; requires `LogLevel=4`. Enables cached
+- **DebugConnect:** `[Debug]`, default `0`; requires `LogLevel=4`. Enables cached
   Connect target observations and passive local action requests. `0` opts out of
   those observations even with deep networking enabled. No discovery, playback
   transfer or extra network request is performed. Basic playback identification
   remains independent of this diagnostic option and of `Metadata`.
-- **DebugNetworking:** default `0`; requires `LogLevel=4`. Enables the
+- **DebugNetworking:** `[Debug]`, default `0`; requires `LogLevel=4`. Enables the
   read-only decoded Connect observer and allowlisted enrichment I/O observations
   in `Floggfy-networking.log`. No raw payloads, media, credentials, URLs or
   real device identifiers are written. Receipt is distinct from command execution;
   unobserved traffic and initiators remain unknown. This optional decoded-message
   hook is independent of `NetworkPatch` and the `DebugConnect` cached-state option.
-- **DebugHookDiagnostics:** default `0`; requires `LogLevel=4` and is independent
+- **DebugHookDiagnostics:** `[Debug]`, default `0`; requires `LogLevel=4` and is independent
   of `DebugNetworking`. It writes `Floggfy-hook-diagnostics.log` with callback
   and queue-lock profiling, interval timing
   drains, slow/pending menu and startup spans, and capture-worker progress checks.
@@ -170,8 +273,8 @@ MaxBufferedMiB=512
   change capture acceptance. There are no dumps or additional suspension hooks.
   Launcher Windows Debug APIs remain required for startup/DLL-load synchronization.
 
-All debug keys retain their defaults and require a full Spotify restart after
-INI edits. `NetworkPatch` remains a separate startup option.
+Debug settings live under `[Debug]` and require a full Spotify restart after
+INI edits. `NetworkPatch` remains a separate `[Misc]` startup option.
 
 | Effective settings | `Floggfy.log` | Main diagnostics | Networking | Hook diagnostics |
 | --- | --- | --- | --- | --- |
@@ -191,16 +294,23 @@ normal queue slots. One worker drains bounded batches fairly. Records retain the
 enqueue-time timestamps; per-queue omission summaries report contention/overflow
 without globally deduplicating real events.
 
-- **MaxBufferedMiB:** 8–1024 MiB, default 512, limits compressed capture allocations.
+- **MaxBufferedMiB:** `[History]`, 8–1024 MiB, default 512, limits compressed capture allocations.
   There is also an approximately 16 MiB event queue sized for bounded 10x
   transition bursts, artwork, and a temporary
   completed-file buffer during native tagging. Oversized tracks are discarded.
 
-The four restart-only switches above accept only an unquoted `1` (surrounding
+- **MetadataCacheReadMiB:** `[History]`, default `256`, range 1–4096 MiB. Limits
+  disk reads for missing cached metadata per lookup; background reads have no fixed
+  time cutoff.
+- **Telemetry:** `[Telemetry]` keeps `BlockTelemetry=0` as its master switch, with
+  separate category toggles and `DumpTelemetry=0` for readable blocked-request
+  logs. See [privacy settings and testing](docs/telemetry-testing.md).
+
+`DebugConnect`, `DebugNetworking`, `DebugHookDiagnostics` and `NetworkPatch`
+accept only an unquoted `1` (surrounding
 spaces/tabs are allowed). `0`, blank, malformed and duplicate entries disable
 the corresponding observation/patch; invalid existing entries are not rewritten
-by menu saves. Missing keys use their documented defaults (`DebugConnect=1`,
-the other three `0`). Changes still require a full restart. Preservation applies
+by menu saves. All four default to `0`. Changes still require a full restart. Preservation applies
 to the INI text read for that save; simultaneous writes from an external editor
 are not a cross-process transaction.
 
@@ -495,8 +605,8 @@ event times retain the existing observation guards. These checks protect metadat
 evidence; source bytes and codec validation establish audio completeness.
 
 When app observations are unavailable or incompatible, the default behavior is
-to keep playback verification unavailable. Set `Windows Playback Fallback=1` in
-`[To Disk]` to opt into public Windows media sessions on a dedicated observer
+to keep playback verification unavailable. Set `WindowsPlaybackFallback=1` in
+`[Fallbacks]` to opt into public Windows media sessions on a dedicated observer
 thread. An empty first Spotify session no longer masks another usable session,
 and a disconnected session manager is recreated. Windows fallback also requires
 Spotify's **Settings > Display > Show desktop overlay when using media keys** to
@@ -546,7 +656,7 @@ matching recording, rather than scanning directories or maintaining another cach
    and replay the track from its beginning. If menu integration crashes or
    disappears, set **Menu=0** and restart. Configure Downloads, FLAC, Ogg and
    `CaptureSpeed` directly in the INI.
-3. Set **LogLevel=4** temporarily. Inspect `Floggfy.log` and
+3. Set **LogLevel=4** under `[Debug]` temporarily. Inspect `Floggfy.log` and
    `Floggfy-diagnostics.log` in the configured save root. Check `media-session`
    lines for the selected source,
    failure stage, reason and HRESULT. `source=spotify` works independently of
@@ -636,9 +746,9 @@ not add a Latest Downloads entry. There is no bulk library scan.
 ## Optional low-quality AAC streams
 
 Spotify may supply SpAC AAC rather than Vorbis at low quality. `AAC=0` leaves this
-capture path disabled by default, including its optional native hooks. `AAC=1`
-uses the existing bounded capture/publication workers; it adds no codec-specific worker or menu
-control. Dynamic capability discovery verifies the reader constructor, input
+capture path disabled by default. `AAC=1` uses the existing bounded
+capture/publication workers; it adds no codec-specific worker. Dynamic capability
+discovery verifies the reader constructor, input
 method and vtable; an unavailable AAC capability leaves FLAC/Ogg support active.
 
 SpAC pages use Ogg-like lacing, a different checksum and AAC-specific setup data.

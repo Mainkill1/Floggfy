@@ -46,3 +46,19 @@ The metadata poll task uses the public cef_task_t/cef_post_task ABI from
 https://github.com/chromiumembedded/cef/blob/8219561/include/cef_task.h and
 https://github.com/chromiumembedded/cef/blob/cf671c072925b27823a61181152f4f288e8e4306/include/cef_task.h .
 The UI queue has at most one outstanding task, with transferred CEF ownership.
+
+Telemetry interception additionally audits CEF's 6778 generated C API/glue:
+
+- https://github.com/chromiumembedded/cef/blob/6778/include/capi/cef_request_capi.h
+- https://github.com/chromiumembedded/cef/blob/6778/include/capi/cef_client_capi.h
+- https://github.com/chromiumembedded/cef/blob/6778/include/capi/cef_request_handler_capi.h
+- https://github.com/chromiumembedded/cef/blob/6778/include/capi/cef_resource_request_handler_capi.h
+- https://github.com/chromiumembedded/cef/blob/6778/libcef_dll/cpptoc/urlrequest_cpptoc.cc
+- https://github.com/chromiumembedded/cef/blob/6778/libcef_dll/ctocpp/request_handler_ctocpp.cc
+
+The member self pointer is borrowed; refptr callback parameters are transferred.
+Cancellation consumes the same references as forwarding, and request strings are
+freed with cef_string_userfree_utf16_free. Existing clients and nonnull handlers
+retain their original object identity. Null handlers can receive a locally owned
+public handler. Only documented prefix slots are used; missing capabilities leave
+requests untouched and coverage partial. No CEF binary is redistributed.

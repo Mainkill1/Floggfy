@@ -5,6 +5,7 @@
 #include <memory>
 #include "media_diagnostics.h"
 namespace history {
+struct MetadataRecord;
 enum class MediaSource { Windows,Spotify };
 struct Media {
     std::wstring title, artist, album, album_artist, app, genre;
@@ -15,6 +16,7 @@ struct Media {
     int playback_status = -1; // Raw Windows status; unknown for other providers.
     MediaSource source=MediaSource::Windows;
     std::string spotify_uri,playback_instance;
+    std::shared_ptr<MetadataRecord> metadata; // Retained by matcher and save jobs; no I/O.
     bool explicit_skip=false; // Validated local skip action attached to a transition.
     bool explicit_control=false; // Any observed local playback control, including seeks.
     bool prior_control=false; // A control on the prior instance acknowledged by this Ready successor.

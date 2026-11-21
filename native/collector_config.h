@@ -25,6 +25,9 @@ inline std::wstring BuildCollectorOptions(const Settings& settings,const AutoSki
     }
     return std::wstring(L"window.__floggfyConfig={metadata:")+(settings.metadata?L"true":L"false")+
         L",lyrics:"+(settings.lyrics?L"true":L"false")+
+        L",fetchMissingMetadata:"+(settings.fetch_missing_metadata?L"true":L"false")+
+        L",fetchMissingArtwork:"+(settings.fetch_missing_artwork?L"true":L"false")+
+        L",fetchMissingLyrics:"+(settings.fetch_missing_lyrics?L"true":L"false")+
         L",neverPause:"+(settings.never_pause==1?L"true":L"false")+
         L",autoSkip:"+(settings.auto_skip_downloaded?L"true":L"false")+command+
         L",debug:"+(debug?L"true":L"false")+

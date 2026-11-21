@@ -27,6 +27,8 @@ g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/spotify_hook_discovery_test.cpp n
 build/spotify-hook-discovery-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/playback_identity_bridge_test.cpp native/playback_identity_bridge.cpp -o build/playback-identity-bridge-test
 build/playback-identity-bridge-test
+g++ -std=c++17 -O0 -Wall -Wextra -Werror -finstrument-functions tests/playback_identity_cache_test.cpp -o build/playback-identity-cache-test
+build/playback-identity-cache-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/recording_counters_test.cpp -o build/recording-counters-test
 build/recording-counters-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/decoder_ownership_test.cpp native/decoder_ownership.cpp -o build/decoder-ownership-test
@@ -58,6 +60,11 @@ build/rich-metadata-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/bounded_queue_test.cpp -o build/bounded-queue-test
 build/bounded-queue-test
 node tests/metadata_collector_test.js
+node tests/artwork_collector_test.js
+python3 tests/artwork_codecs_build_test.py
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/artwork_reply_test.cpp native/artwork_reply.cpp -o build/artwork-reply-test
+build/artwork-reply-test
+node tests/collector_owned_metadata_test.js
 node tests/auto_skip_collector_test.js
 node tests/never_pause_collector_test.js
 
@@ -78,7 +85,12 @@ build/recording-file-test
 
 g++ -std=c++17 -O2 -Wall -Wextra -Werror -I native/vendor/libogg/include \
  tests/metadata_update_test.cpp native/metadata_update_core.cpp native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp native/mp3_stream.cpp build/minimp4-native-test.o native/vorbis_headers.cpp build/vorbis-headers-stb-test.o native/flac_history_core.cpp native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/ogg-framing-test.o -o build/metadata-update-test
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/marked_protocol_test.cpp -o build/marked-protocol-test
+build/marked-protocol-test
 build/metadata-update-test
+g++ -std=c++17 -O2 -Wall -Wextra -Werror -I native/vendor/libogg/include \
+ tests/marked_recording_test.cpp native/marked_recording.cpp native/metadata_update_core.cpp native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp native/mp3_stream.cpp build/minimp4-native-test.o native/vorbis_headers.cpp build/vorbis-headers-stb-test.o native/flac_history_core.cpp native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/ogg-framing-test.o -o build/marked-recording-test
+build/marked-recording-test
 
 # Supported AAC packets retain their configuration, timing and original bytes.
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/mp3_stream_test.cpp native/mp3_stream.cpp -o build/mp3-stream-test
@@ -100,3 +112,15 @@ node tests/collector_native_boundary_test.js --transition | build/client-playbac
 node tests/collector_native_boundary_test.js --reused-transition | build/client-playback-test --reused-transition-stdin
 node tests/collector_native_boundary_test.js --terminal | build/client-playback-test --terminal-stdin
 node tests/collector_playback_test.js
+
+# Exact telemetry routes preserve functional requests on shared domains.
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/telemetry_policy_test.cpp -o build/telemetry-policy-test
+build/telemetry-policy-test
+node tests/telemetry_producers_test.js
+
+# Optional telemetry payload decoding remains portable and bounded.
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/telemetry_decode_test.cpp native/telemetry_decode.cpp native/telemetry_inflate.cpp -o build/telemetry-decode-test
+build/telemetry-decode-test
+
+# Bundled image conversion has no operating-system codec dependency.
+bash test-artwork-image.sh

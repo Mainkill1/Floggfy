@@ -125,6 +125,22 @@ int main() {
   assert(replay.Snapshot().format == PlaybackFormat::Flac);
   replay.Media("a", L"Current", 70, 200, 304); // Forward seek also retires the previous association.
   assert(replay.Snapshot().format == PlaybackFormat::Unknown);
+  // An exact same-song instance change can arrive before the timeline resets.
+  PlaybackQualityTracker exact_replay;
+  exact_replay.Media("a", L"Current", 0, 200, 100, true, "first-play");
+  exact_replay.Ogg(1, first.data(), first.size(), 100);
+  exact_replay.Ogg(1, end.data(), end.size(), 101);
+  exact_replay.Media("a", L"Current", 1, 200, 101, true, "first-play");
+  assert(exact_replay.Snapshot().format==PlaybackFormat::Ogg);
+  exact_replay.Media("a", L"Current", 2, 200, 102, true, "second-play");
+  exact_replay.Media("a", L"Current", 5, 200, 105, true, "second-play");
+  q=exact_replay.Snapshot();
+  assert(q.identity==PlaybackIdentity("a")&&q.format==PlaybackFormat::Unknown);
+  assert(!q.MatchesPlaybackInstance("second-play")); // Timing is menu-only evidence.
+  exact_replay.FlacBegin(2, 102.5);
+  exact_replay.FlacBytes(2, header.data(), header.size(), 100000);
+  q=exact_replay.Snapshot();
+  assert(q.format==PlaybackFormat::Flac&&!q.MatchesPlaybackInstance("second-play"));
   // Native next-track read-ahead can precede the old title's timeline reset.
   PlaybackQualityTracker transition;
   transition.Media("a", L"Old", 199, 200, 299);

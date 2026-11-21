@@ -25,8 +25,10 @@ bool PlaybackInstance(const std::string& instance) noexcept {
 
 bool ShouldAutoSkipDownloaded(const PlaybackQualitySnapshot& current,
                               std::uint64_t expected_identity,
+                              std::string_view expected_playback_instance,
                               const Quality& existing) noexcept {
-    if(!expected_identity || current.identity!=expected_identity ||
+    if(current.display_only || !expected_identity || current.identity!=expected_identity ||
+       !current.MatchesPlaybackInstance(expected_playback_instance) ||
        current.format==PlaybackFormat::Unknown || !current.rate || !current.channels ||
        !existing.rate || !existing.channels ||
        (existing.codec==Codec::Flac&&!existing.bits))return false;

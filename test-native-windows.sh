@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd -- "$(dirname -- "$0")"
+bash build-artwork-codecs.sh x86_64-w64-mingw32-gcc ar build/artwork-codecs-windows
 # Run from WSL. Use Windows TEMP unless a destination is explicitly supplied.
 if [[ $# -gt 0 ]]; then
     floggfy_test_root="$1"
@@ -18,15 +19,17 @@ x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vendor/minimp4/minim
 x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vorbis_headers_stb.c -o build/windows-tests/vorbis-headers-stb.o
 python3 - <<'PY'
 from pathlib import Path
-script=Path('native/metadata_collector.js').read_text()
+script=Path('native/marked_playlist_sort.js').read_text()+'\n'+Path('native/marked_playlist.js').read_text()+'\n'+Path('native/artwork_collector.js').read_text()+'\n'+Path('native/metadata_collector.js').read_text()
 Path('build/metadata_script.h').write_text('static constexpr wchar_t metadata_script[]=LR"FLOGGFY('+script+')FLOGGFY";\n')
+privacy=Path('native/telemetry_producers.js').read_text()
+Path('build/telemetry_script.h').write_text('static constexpr wchar_t telemetry_script[]=LR"FLOGGFY('+privacy+')FLOGGFY";\n')
 PY
 for source in buffer hook trampoline hde/hde64; do
     x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c \
         "native/vendor/minhook/src/$source.c" -o "build/windows-tests/minhook-${source//\//-}.o"
 done
 x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/windows-tests/history-ogg.o
-common=(-std=c++17 -O2 -Wall -Wextra -Werror -static-libgcc -static-libstdc++)
+common=(tests/marked_catalog_stub.cpp -std=c++17 -O2 -Wall -Wextra -Werror -static-libgcc -static-libstdc++)
 x86_64-w64-mingw32-g++ "${common[@]}" -ffunction-sections -fdata-sections tests/recording_metadata_test.cpp \
  native/media_session.cpp -Wl,--gc-sections -lole32 -luuid -lruntimeobject -o "$floggfy_test_root/recording-metadata-test.exe"
 "$floggfy_test_root/recording-metadata-test.exe"
@@ -36,9 +39,9 @@ x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/wind
  native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp build/windows-tests/history-ogg.o \
  -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-history-test.exe"
 x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/windows-tests/metadata-ogg.o
-x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_metadata_identity_test.cpp -I native/vendor/libogg/include \
- native/rich_metadata.cpp native/cached_metadata.cpp native/cached_metadata_windows.cpp native/history_settings.cpp native/async_log.cpp \
- native/media_session.cpp native/auto_skip.cpp native/library_layout.cpp native/album_artwork.cpp native/playback_quality_windows.cpp native/playback_quality.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/windows-tests/metadata-ogg.o build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 \
+x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_metadata_identity_test.cpp native/telemetry_filter.cpp native/telemetry_decode.cpp native/telemetry_inflate.cpp -I native/vendor/libogg/include \
+ native/rich_metadata.cpp native/artwork_reply.cpp native/cached_metadata.cpp native/cached_metadata_windows.cpp native/cached_artwork_windows.cpp native/artwork_image.cpp native/history_settings.cpp native/async_log.cpp \
+ native/media_session.cpp native/auto_skip.cpp native/library_layout.cpp native/album_artwork.cpp native/playback_quality_windows.cpp native/playback_quality.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/windows-tests/metadata-ogg.o build/windows-tests/minhook-*.o build/artwork-codecs-windows/libwebpdecoder.a -lole32 -luuid -lshell32 \
  -lruntimeobject -lwinhttp -o "$floggfy_test_root/windows-metadata-identity-test.exe"
 "$floggfy_test_root/windows-history-test.exe"
 "$floggfy_test_root/windows-metadata-identity-test.exe"
@@ -49,6 +52,14 @@ x86_64-w64-mingw32-g++ "${common[@]}" tests/cached_metadata_test.cpp native/cach
 "$floggfy_test_root/cached-metadata-test.exe" "$(wslpath -w "$floggfy_test_root/cache-fixtures")"
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_cached_metadata_test.cpp native/cached_metadata.cpp native/cached_metadata_windows.cpp native/rich_metadata.cpp -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-cached-metadata-test.exe"
 "$floggfy_test_root/windows-cached-metadata-test.exe" "$(wslpath -w "$floggfy_test_root/cache-users")"
+x86_64-w64-mingw32-g++ "${common[@]}" tests/artwork_image_test.cpp native/artwork_image.cpp native/image_info.cpp build/artwork-codecs-windows/libwebpdecoder.a -o "$floggfy_test_root/artwork-image-test.exe"
+"$floggfy_test_root/artwork-image-test.exe" "$(wslpath -w "$floggfy_test_root/artwork-alpha.png")"
+python3 tests/check_artwork_png.py "$floggfy_test_root/artwork-alpha.png"
+x86_64-w64-mingw32-g++ "${common[@]}" tests/artwork_image_allocation_test.cpp native/image_info.cpp build/artwork-codecs-windows/libwebpdecoder.a -o "$floggfy_test_root/artwork-image-allocation-test.exe"
+"$floggfy_test_root/artwork-image-allocation-test.exe"
+mkdir -p "$floggfy_test_root/artwork-cache"
+x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_cached_artwork_test.cpp native/image_info.cpp native/artwork_image.cpp build/artwork-codecs-windows/libwebpdecoder.a -lole32 -luuid -o "$floggfy_test_root/windows-cached-artwork-test.exe"
+"$floggfy_test_root/windows-cached-artwork-test.exe" "$(wslpath -w "$floggfy_test_root/artwork-cache")"
 
 x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/windows-tests/ogg-framing.o
 quality_sources=(native/playback_quality.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/image_info.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/windows-tests/ogg-framing.o)
@@ -89,9 +100,13 @@ x86_64-w64-mingw32-g++ "${common[@]}" tests/album_artwork_test.cpp native/album_
 floggfy_settings_test_root="$floggfy_test_root/settings-defaults"
 mkdir -p "$floggfy_settings_test_root"
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_settings_test.cpp -lole32 -luuid -lshell32 -o "$floggfy_settings_test_root/windows-settings-test.exe"
-for scenario in new missing zero legacy-zero lyrics-zero updates-zero aac-one podcasts-one podcasts-zero buffer-1024 buffer-over buffer-under auto-skip-one auto-skip-invalid auto-skip-padded never-pause-hidden never-pause-off never-pause-on never-pause-invalid never-pause-padded never-pause-duplicate speed-10 speed-10-limit-10 speed-10-limit-over speed-2-limit-3 speed-4-limit-3 speed-10-limit-zero speed-10-limit-one speed-10-limit-invalid speed-10-limit-padded speed-invalid speed-padded fallback-one fallback-zero fallback-invalid fallback-padded fallback-blank fallback-leading-space fallback-trailing-space fallback-tab fallback-word fallback-duplicate; do
+for scenario in new missing metadata-cache-custom metadata-cache-invalid metadata-cache-zero metadata-cache-over zero legacy-zero lyrics-zero updates-zero aac-one podcasts-one podcasts-zero buffer-1024 buffer-over buffer-under auto-skip-one auto-skip-invalid auto-skip-padded never-pause-hidden never-pause-off never-pause-on never-pause-invalid never-pause-padded never-pause-duplicate speed-zero speed-10 speed-10-limit-10 speed-10-limit-over speed-2-limit-3 speed-4-limit-3 speed-10-limit-zero speed-10-limit-one speed-10-limit-invalid speed-10-limit-padded speed-invalid speed-padded fallback-one fallback-zero fallback-invalid fallback-padded fallback-blank fallback-leading-space fallback-trailing-space fallback-tab fallback-word fallback-duplicate fallback-options; do
     "$floggfy_settings_test_root/windows-settings-test.exe" "$scenario"
 done
+
+x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_settings_sections_test.cpp -lole32 -luuid -lshell32 -o "$floggfy_settings_test_root/windows-settings-sections-test.exe"
+"$floggfy_settings_test_root/windows-settings-sections-test.exe"
+bash test-update-blocker.sh
 
 bash test-artwork-policy.sh
 
@@ -106,14 +121,18 @@ x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_settings_unicode_test.cpp -l
 "$floggfy_settings_test_root/windows-settings-unicode-test.exe"
 
 # Deliberately blocked enrichment must not delay the metadata heartbeat.
-x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_metadata_liveness_test.cpp \
- native/rich_metadata.cpp native/cached_metadata.cpp native/auto_skip.cpp native/library_layout.cpp native/history_settings.cpp native/async_log.cpp \
+x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_metadata_liveness_test.cpp native/telemetry_filter.cpp native/telemetry_decode.cpp native/telemetry_inflate.cpp \
+ native/rich_metadata.cpp native/artwork_reply.cpp native/artwork_image.cpp native/cached_metadata.cpp native/auto_skip.cpp native/library_layout.cpp native/history_settings.cpp native/async_log.cpp \
  native/media_session.cpp native/image_info.cpp native/playback_quality_windows.cpp native/playback_quality.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp native/ogg_history_core.cpp build/windows-tests/metadata-ogg.o build/windows-tests/minhook-*.o \
- -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_test_root/windows-metadata-liveness-test.exe"
+ build/artwork-codecs-windows/libwebpdecoder.a -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_test_root/windows-metadata-liveness-test.exe"
 "$floggfy_test_root/windows-metadata-liveness-test.exe"
 "$floggfy_test_root/windows-metadata-liveness-test.exe" --ambiguous-refresh
 "$floggfy_test_root/windows-metadata-liveness-test.exe" --ambiguous-delayed
 "$floggfy_test_root/windows-metadata-liveness-test.exe" --artwork-revision
+"$floggfy_test_root/windows-metadata-liveness-test.exe" --fallbacks
+"$floggfy_test_root/windows-metadata-liveness-test.exe" --alternate-artwork
+"$floggfy_test_root/windows-metadata-liveness-test.exe" --delayed-artwork
+"$floggfy_test_root/windows-metadata-liveness-test.exe" --grant-refresh
 
 # Publication tests include real process termination and conflicting path races.
 x86_64-w64-mingw32-g++ "${common[@]}" -municode -DFLOGGFY_PUBLICATION_TEST -I native/vendor/libogg/include \

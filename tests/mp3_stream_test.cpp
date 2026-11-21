@@ -53,7 +53,57 @@ static std::string field(const Tags& tags,const char* name) {
     for(const auto& item:tags.fields)if(item.first==name)return item.second;
     return {};
 }
+static size_t frame_count(const std::vector<uint8_t>& bytes,size_t audio_offset,const char* id) {
+    size_t count=0;
+    for(size_t at=10;at<audio_offset;) {
+        check(audio_offset-at>=10,"complete output ID3 frame header");
+        const size_t size=(size_t(bytes[at+4])<<21)|(size_t(bytes[at+5])<<14)|
+                          (size_t(bytes[at+6])<<7)|bytes[at+7];
+        check(size<=audio_offset-at-10,"complete output ID3 frame payload");
+        if(!memcmp(bytes.data()+at,id,4))++count;
+        at+=10+size;
+    }
+    return count;
+}
 int main() {
+    {
+        const auto bytes=source();
+        const std::vector<std::vector<std::pair<std::string,std::string>>> dates{
+            {{"YEAR","1999"},{"DATE","2024-07-23"}},
+            {{"DATE","2024-07-23"},{"YEAR","1999"}},
+            {{"YEAR","2024"}},
+            {{"DATE",""},{"YEAR","2024"}},
+            {{"DATE","2024-07-23"},{"DATE","2024-07-23"},{"YEAR","2024"}}
+        };
+        for(size_t i=0;i<dates.size();++i) {
+            Tags tags;tags.fields=dates[i];
+            tags.fields.insert(tags.fields.end(),{{"TITLE","Episode"},{"CUSTOM","one"},{"CUSTOM","TDRC two"}});
+            std::vector<uint8_t> owned;std::string error;Mp3Info info;Tags inspected;
+            check(MakeOwnedMp3(bytes.data(),bytes.size(),tags,owned,error)&&
+                  InspectOwnedMp3(owned.data(),owned.size(),info,inspected,error),"date fixture round trip");
+            check(frame_count(owned,info.audio_offset,"TDRC")==1,"DATE and YEAR produce exactly one TDRC frame");
+            check(field(inspected,"DATE")==((i==2||i==3)?"2024":"2024-07-23"),
+                  "full DATE takes precedence regardless of order; absent or empty DATE falls back to YEAR");
+            check(info.audio_size==bytes.size()-53&&!memcmp(owned.data()+info.audio_offset,bytes.data()+53,info.audio_size),
+                  "date selection preserves every compressed audio byte");
+            check(inspected.fields.size()==4&&field(inspected,"TITLE")=="Episode"&&
+                  inspected.fields[2]==std::make_pair(std::string("CUSTOM"),std::string("one"))&&
+                  inspected.fields[3]==std::make_pair(std::string("CUSTOM"),std::string("TDRC two")),
+                  "date selection preserves duplicate custom tags and title");
+            if(i==2) {
+                for(auto& item:inspected.fields)if(item.first=="DATE")item.second="2024-07-23";
+                inspected.fields.emplace_back("YEAR","2024");
+                std::vector<uint8_t> upgraded;Tags reread;Mp3Info updated;
+                check(MakeOwnedMp3(owned.data(),owned.size(),inspected,upgraded,error)&&
+                      InspectOwnedMp3(upgraded.data(),upgraded.size(),updated,reread,error),"owned year-only MP3 date rewrite");
+                check(frame_count(upgraded,updated.audio_offset,"TDRC")==1&&field(reread,"DATE")=="2024-07-23",
+                      "rewriting an owned year-only MP3 retains one full-date frame");
+                check(reread.fields.size()==4&&reread.fields[2]==inspected.fields[2]&&reread.fields[3]==inspected.fields[3]&&
+                      updated.audio_size==info.audio_size&&!memcmp(upgraded.data()+updated.audio_offset,owned.data()+info.audio_offset,info.audio_size),
+                      "date rewrite preserves custom tags and compressed audio");
+            }
+        }
+    }
     // Literal encoder offsets: CRC protection does not move the Xing marker.
     for(const auto fixture: {std::array<unsigned,5>{0xfa,0x90,417,0,36},
                             {0xfb,0x90,417,0xc0,21},

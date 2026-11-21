@@ -13,7 +13,7 @@ for source in buffer hook trampoline hde/hde64; do
 done
 x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vorbis_headers_stb.c -o build/capture-association/vorbis.o
 x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/capture-association/ogg.o
-x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -static-libgcc -static-libstdc++ \
+x86_64-w64-mingw32-g++ tests/marked_catalog_stub.cpp -std=c++17 -O2 -Wall -Wextra -Werror -static-libgcc -static-libstdc++ \
     -I native/vendor/libogg/include tests/windows_quality_observer_test.cpp \
     native/auto_skip.cpp native/decoder_ownership.cpp native/playback_quality_windows.cpp native/playback_quality.cpp native/media_session.cpp \
     native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp native/ogg_history_core.cpp native/image_info.cpp \

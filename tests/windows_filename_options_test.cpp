@@ -104,39 +104,39 @@ Media MediaFor(const std::wstring& title) {
 void TrackStartChecks(const std::wstring& root) {
     SetNaming(false,false);auto media=MediaFor(L"Track start A");auto c=CatalogFor(media);
     const auto title=OutputPath(root,c,L".flac"),old=Numbered(title);const auto bytes=Tagged(c,L".flac");WriteBytes(old,bytes);
-    PublishCurrentDestination(media,GetSettings());assert(!TakeFilenameCheck()&&!MissingFile(old)&&MissingFile(title));
+    PublishCurrentDestination(media,GetSettings());QueueFilenameCheck(media,GetSettings());assert(!TakeFilenameCheck()&&!MissingFile(old)&&MissingFile(title));
     SetNaming(false,true);RecordRecentDownload(L"Existing row",old,bytes.size());
-    PublishCurrentDestination(media,GetSettings());auto first=TakeFilenameCheck();assert(first);
+    PublishCurrentDestination(media,GetSettings());QueueFilenameCheck(media,GetSettings());auto first=TakeFilenameCheck();assert(first);
     // A superseding track cancels the old request before any rename.
     auto next=MediaFor(L"Track start B");const auto next_c=CatalogFor(next);
     const auto next_title=OutputPath(root,next_c,L".flac"),next_old=Numbered(next_title);
     const auto next_bytes=Tagged(next_c,L".flac");WriteBytes(next_old,next_bytes);
     AcquireSRWLockExclusive(&filename_check_lock);
-    PublishCurrentDestination(next,GetSettings()); // Lost try-lock must still cancel A.
+    PublishCurrentDestination(next,GetSettings());QueueFilenameCheck(next,GetSettings()); // Lost try-lock must still cancel A.
     ReleaseSRWLockExclusive(&filename_check_lock);
     ProcessFilenameCheck(*first);
     assert(!MissingFile(old)&&MissingFile(title));
     assert(!TakeFilenameCheck());
-    PublishCurrentDestination(next,GetSettings()); // Same B intent retries submission.
+    PublishCurrentDestination(next,GetSettings());QueueFilenameCheck(next,GetSettings()); // Same B intent retries submission.
     auto pending=TakeFilenameCheck();assert(pending);ProcessFilenameCheck(*pending);
     assert(MissingFile(next_old)&&ReadBytes(next_title)==next_bytes);
-    PublishCurrentDestination(next,GetSettings());assert(!TakeFilenameCheck()); // No heartbeat disk loop.
-    PublishCurrentDestination(media,GetSettings());pending=TakeFilenameCheck();assert(pending);ProcessFilenameCheck(*pending);
+    PublishCurrentDestination(next,GetSettings());QueueFilenameCheck(next,GetSettings());assert(!TakeFilenameCheck()); // No heartbeat disk loop.
+    PublishCurrentDestination(media,GetSettings());QueueFilenameCheck(media,GetSettings());pending=TakeFilenameCheck();assert(pending);ProcessFilenameCheck(*pending);
     assert(MissingFile(old)&&ReadBytes(title)==bytes); // No completed listen/capture was needed.
     std::vector<RecentDownload> rows;assert(ReadRecentDownloads(rows)&&rows.size()==1&&rows[0].path==title&&rows[0].bytes==bytes.size());
     assert(DeleteFileW(WindowsPath(title).c_str())&&DeleteFileW(WindowsPath(next_title).c_str()));
 
     media=MediaFor(L"Queue check");c=CatalogFor(media);const auto queue_title=OutputPath(root,c,L".flac"),queue_old=Numbered(queue_title);
     WriteBytes(queue_old,Tagged(c,L".flac"));SaveJob one,two;assert(saves.Push(std::move(one))&&saves.Push(std::move(two)));
-    PublishCurrentDestination(media,GetSettings());pending=TakeFilenameCheck();assert(pending);
+    PublishCurrentDestination(media,GetSettings());QueueFilenameCheck(media,GetSettings());pending=TakeFilenameCheck();assert(pending);
     SaveJob retained;assert(saves.Pop(retained)&&saves.Pop(retained)&&!saves.Pop(retained)); // Check uses no audio slots.
     CancelFilenameChecks();ProcessFilenameCheck(*pending);assert(!MissingFile(queue_old)&&MissingFile(queue_title));
-    PublishCurrentDestination(media,GetSettings());pending=TakeFilenameCheck();assert(pending);ProcessFilenameCheck(*pending);
+    PublishCurrentDestination(media,GetSettings());QueueFilenameCheck(media,GetSettings());pending=TakeFilenameCheck();assert(pending);ProcessFilenameCheck(*pending);
     assert(MissingFile(queue_old)&&!MissingFile(queue_title)&&DeleteFileW(WindowsPath(queue_title).c_str()));
     auto raw_a=MediaFor(L"Raw/A"),raw_b=MediaFor(L"Raw:A");
     assert(OutputPath(root,CatalogFor(raw_a),L".flac")==OutputPath(root,CatalogFor(raw_b),L".flac"));
-    PublishCurrentDestination(raw_a,GetSettings());auto raw_first=TakeFilenameCheck();assert(raw_first&&raw_first->catalog.spotify_uri.empty());
-    PublishCurrentDestination(raw_b,GetSettings());auto raw_second=TakeFilenameCheck();assert(raw_second&&raw_second->catalog.title==raw_b.title);
+    PublishCurrentDestination(raw_a,GetSettings());QueueFilenameCheck(raw_a,GetSettings());auto raw_first=TakeFilenameCheck();assert(raw_first&&raw_first->catalog.spotify_uri.empty());
+    PublishCurrentDestination(raw_b,GetSettings());QueueFilenameCheck(raw_b,GetSettings());auto raw_second=TakeFilenameCheck();assert(raw_second&&raw_second->catalog.title==raw_b.title);
     assert(raw_first->serial!=raw_second->serial);CancelFilenameChecks();
 
     const auto late=Identity(L"Late settings cancellation");
@@ -216,6 +216,8 @@ void PublicationModes(const std::wstring& root) {
 }
 namespace history {
 std::uint64_t MetadataRevision(){return 0;}
+bool ReadCurrentItemMedia(Media&){return false;}
+void RetainMetadata(Media&) {}
 std::string ReadClientPlaybackQuality(const Media&){return {};}
 void EnrichCatalog(const Media& media,Catalog& c){c.disc=2;c.spotify_uri=media.title==L"Raw/A"||media.title==L"Raw:A"?"":"spotify:track:"+Utf8(media.title);}
 void EnrichTags(const Media&,Tags&) {}
@@ -226,10 +228,10 @@ int wmain() {
     const std::wstring exe=executable,directory=exe.substr(0,exe.find_last_of(L'\\'));
     const auto ini=directory+L"\\SpotifyHistory.ini",root=directory+L"\\Music-\u97f3\u697d";
     assert(CreateDefaultIni(ini));
-    assert(GetPrivateProfileIntW(L"To Disk",L"TrackNumberInFilename",9,ini.c_str())==0);
-    assert(GetPrivateProfileIntW(L"To Disk",L"ConvertNumberedFilenames",9,ini.c_str())==0);
-    assert(WritePrivateProfileStringW(L"To Disk",L"TrackNumberInFilename",nullptr,ini.c_str()));
-    assert(WritePrivateProfileStringW(L"To Disk",L"ConvertNumberedFilenames",nullptr,ini.c_str()));
+    assert(GetPrivateProfileIntW(L"Misc",L"TrackNumberInFilename",9,ini.c_str())==0);
+    assert(GetPrivateProfileIntW(L"Misc",L"ConvertNumberedFilenames",9,ini.c_str())==0);
+    assert(WritePrivateProfileStringW(L"Misc",L"TrackNumberInFilename",nullptr,ini.c_str()));
+    assert(WritePrivateProfileStringW(L"Misc",L"ConvertNumberedFilenames",nullptr,ini.c_str()));
     Settings missing;assert(ReadFilenameOptions(missing,ini)&&!missing.track_number_in_filename&&!missing.convert_numbered_filenames);
     for(unsigned bits=0;bits<4;++bits) {
         assert(WritePrivateProfileStringW(L"To Disk",L"TrackNumberInFilename",bits&1?L"1":L"0",ini.c_str()));
@@ -239,9 +241,10 @@ int wmain() {
     }
     assert(WritePrivateProfileStringW(L"Other",L"Keep",L"\u97f3\u697d",ini.c_str()));
     assert(WritePrivateProfileStringW(L"To Disk",L"Save Location",root.c_str(),ini.c_str()));
-    for(const auto* key:{L"Menu",L"Log",L"UpdateExistingMetadata"})assert(WritePrivateProfileStringW(L"To Disk",key,L"0",ini.c_str()));
+    for(const auto* key:{L"Menu",L"Log"})assert(WritePrivateProfileStringW(L"To Disk",key,L"0",ini.c_str()));
+    assert(WritePrivateProfileStringW(L"Misc",L"UpdateExistingMetadata",L"0",ini.c_str()));
     InitSettings(nullptr);assert(GetSettings().track_number_in_filename&&!GetSettings().convert_numbered_filenames&&FlushSettings(5000));
-    assert(GetPrivateProfileIntW(L"To Disk",L"ConvertNumberedFilenames",9,ini.c_str())==0);
+    assert(GetPrivateProfileIntW(L"Misc",L"ConvertNumberedFilenames",9,ini.c_str())==0);
     wchar_t kept[16];assert(GetPrivateProfileStringW(L"Other",L"Keep",L"",kept,16,ini.c_str())==2&&std::wstring(kept)==L"\u97f3\u697d");
     assert(GetSettings().root==root);
     save_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(save_event);

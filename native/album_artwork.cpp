@@ -125,6 +125,9 @@ static bool Fetch(const std::string& url,std::vector<uint8_t>& bytes){
     (void)url;(void)bytes;return false;
 #endif
 }
+bool DownloadAlbumArtwork(const std::string& url,std::vector<uint8_t>& bytes){
+    return IsAlbumArtworkUrl(url)&&Fetch(url,bytes);
+}
 static AlbumArtworkCache& Cache(){static AlbumArtworkCache cache(Fetch);return cache;}
 std::uint64_t AlbumArtworkRevision() noexcept {return Cache().Revision();}
 bool CacheAlbumArtwork(const std::string& uri,const std::string& url){return Cache().Cache(uri,url);}

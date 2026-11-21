@@ -32,7 +32,7 @@ bool RichMetadata::Matches(const std::string& t,const std::string& a,const std::
  return title==t&&artist==a&&album==al&&std::fabs(duration-d)<=1.0;
 }
 static bool ParseMetadata(const std::string& input,RichMetadata& out,std::string& error,bool playback) {
- static const std::set<std::string> allowed={"v","artwork_url","playback_quality","title","artist","album","uri","album_uri","duration","ARTIST","ALBUMARTIST","DATE","YEAR","GENRE","LYRICS","TRACKNUMBER","DISCNUMBER","DISCTOTAL","TRACKTOTAL","ISRC","LABEL","ORGANIZATION","PUBLISHER","COPYRIGHT","PHONOGRAMCOPYRIGHT","COMPOSER","REMIXER","CONDUCTOR","LANGUAGE","COMMENT","SPOTIFY_URI","SPOTIFY_ALBUM_URI"};
+ static const std::set<std::string> allowed={"v","artwork_url","artwork_urls","metadata_source","playback_quality","title","artist","album","uri","album_uri","duration","ARTIST","ALBUMARTIST","DATE","YEAR","GENRE","LYRICS","TRACKNUMBER","DISCNUMBER","DISCTOTAL","TRACKTOTAL","ISRC","LABEL","ORGANIZATION","PUBLISHER","COPYRIGHT","PHONOGRAMCOPYRIGHT","COMPOSER","REMIXER","CONDUCTOR","LANGUAGE","COMMENT","SPOTIFY_URI","SPOTIFY_ALBUM_URI"};
  auto fail=[&](const char* e){error=e; return false;};
  if(input.size()>131072) return fail("metadata too large");
  std::map<std::string,std::string> kv;
@@ -46,7 +46,8 @@ static bool ParseMetadata(const std::string& input,RichMetadata& out,std::string
  }
  const bool episode=kv["uri"].rfind("spotify:episode:",0)==0;
  const bool track=kv["uri"].rfind("spotify:track:",0)==0;
- const bool labels=(playback&&episode)||(!kv["artist"].empty()&&!kv["album"].empty());
+ (void)playback;
+ const bool labels=episode||(!kv["artist"].empty()&&!kv["album"].empty());
  if(kv["v"]!="1"||kv["title"].empty()||(!track&&!episode)||!labels) return fail("missing identity");
  const auto album_uri=!kv["album_uri"].empty()?kv["album_uri"]:kv["SPOTIFY_ALBUM_URI"];
  if((!album_uri.empty()&&(!track||!ValidSpotifyAlbumUri(album_uri)))||
@@ -55,6 +56,18 @@ static bool ParseMetadata(const std::string& input,RichMetadata& out,std::string
  char* last=nullptr; double d=strtod(kv["duration"].c_str(),&last);
  if(!last||*last||!std::isfinite(d)||d<=0||d>86400) return fail("invalid duration");
  RichMetadata m; m.title=kv["title"];m.artist=kv["artist"];m.album=kv["album"];m.uri=kv["uri"];m.album_uri=album_uri;m.duration=d;m.artwork_url=kv["artwork_url"];
+ if(kv["metadata_source"]=="online")m.metadata_source="online";
+ const auto references=kv["artwork_urls"];
+ for(size_t start=0;start<references.size();) {
+  auto end=references.find('\n',start);if(end==std::string::npos)end=references.size();
+  auto reference=references.substr(start,end-start);
+  if(m.artwork_urls.size()>=8)break;
+  const std::string prefix="https://i.scdn.co/image/";
+  if(reference.size()==prefix.size()+40&&reference.compare(0,prefix.size(),prefix)==0&&
+     std::all_of(reference.begin()+prefix.size(),reference.end(),[](char c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');})&&
+     std::find(m.artwork_urls.begin(),m.artwork_urls.end(),reference)==m.artwork_urls.end())m.artwork_urls.push_back(std::move(reference));
+  start=end+1;
+ }
  const std::set<std::string> levels={"low","normal","high","very_high","lossless","lossless_24","hifi"};
  if(levels.count(kv["playback_quality"]))m.playback_quality=kv["playback_quality"];
  for(auto& entry:kv) if(entry.first[0]>='A'&&entry.first[0]<='Z'&&!entry.second.empty()) m.fields.insert(entry);
@@ -63,17 +76,33 @@ static bool ParseMetadata(const std::string& input,RichMetadata& out,std::string
 }
 bool ParseRichMetadata(const std::string& input,RichMetadata& out,std::string& error) {return ParseMetadata(input,out,error,false);}
 bool ParsePlaybackMetadata(const std::string& input,RichMetadata& out,std::string& error) {return ParseMetadata(input,out,error,true);}
-void MetadataCache::Put(const RichMetadata& m) {
- records_.erase(std::remove_if(records_.begin(),records_.end(),[&](const auto& r){return r.uri==m.uri;}),records_.end());
- records_.push_back(m); while(records_.size()>24) records_.pop_front();
+std::shared_ptr<MetadataRecord> MetadataCache::Pin(const RichMetadata& m) {
+ for(const auto& record:records_)if(record->value.uri==m.uri)return record;
+ auto record=std::make_shared<MetadataRecord>();record->value=m;
+ records_.push_back(record);
+ // Unowned history is only a bounded hand-off window for renderer messages
+ // preceding playback observations. Pinned recording/job records cannot expire.
+ size_t unowned=0;
+ for(const auto& item:records_)if(item.use_count()==1)++unowned;
+ for(auto it=records_.begin();it!=records_.end()&&unowned>24;)
+  if(it->use_count()==1){it=records_.erase(it);--unowned;}else ++it;
+ return record;
+}
+void MetadataCache::Put(const RichMetadata& m) {Pin(m)->value=m;}
+std::vector<std::shared_ptr<MetadataRecord>> MetadataCache::Pinned() const {
+ std::vector<std::shared_ptr<MetadataRecord>> pinned;
+ for(const auto& record:records_)if(record.use_count()>1)pinned.push_back(record);
+ return pinned;
 }
 const RichMetadata* MetadataCache::FindUri(const std::string& uri) const {
- for(const auto& record:records_)if(record.uri==uri)return &record;
+ for(const auto& record:records_)if(record->value.uri==uri)return &record->value;
  return nullptr;
 }
 const RichMetadata* MetadataCache::Find(const std::string& t,const std::string& a,const std::string& al,double d) const {
  const RichMetadata* result=nullptr;
- for(const auto& r:records_) if(r.Matches(t,a,al,d)) {if(result&&result->uri!=r.uri) return nullptr;result=&r;}
+ for(const auto& record:records_) {const auto& r=record->value;
+  if(r.Matches(t,a,al,d)) {if(result&&result->uri!=r.uri)return nullptr;result=&r;}
+ }
  return result;
 }
 }

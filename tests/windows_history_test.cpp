@@ -24,7 +24,7 @@ int main() {
           "generated INI loads complete default switches");
     check(defaults.save_location.empty() && defaults.max_buffered_mib==512 && defaults.podcasts,
           "generated INI uses default Music location, 512 MiB buffer and enabled podcasts");
-    check(defaults.capture_speed==1 && CaptureSpeed()==1 && defaults.capture_speed_limit==0,
+    check(defaults.capture_speed==-1 && CaptureSpeed()==1 && !CaptureSpeedAvailable(1),
           "capture speed starts at 1x with the speed menu and acceleration disabled");
     check(SetSaveLocation(dir+L"\\History-test-logs"),"test logging stays beside temporary fixtures");
     check(GetPrivateProfileIntW(L"History",L"StopAfter",UINT(-1),ini.c_str())==UINT(-1),"generated INI omits history limit");
@@ -56,11 +56,11 @@ int main() {
     SetCaptureAccelerationAvailable(true);
     check(!SetCaptureSpeed(4) && CaptureSpeed()==1 && CaptureEpoch()==epoch,
           "default INI rejects acceleration even after capability activation");
-    check(SetCaptureSpeed(1) && CaptureEpoch()==epoch,"speed changes do not advance capture epoch");
+    check(!SetCaptureSpeed(1) && CaptureEpoch()==epoch,"hidden speed setting rejects menu changes");
     check(FlushSettings(5000),"background settings persisted");
     check(GetPrivateProfileIntW(L"To Disk",L"Downloads",9,ini.c_str())==0,"INI persists disabled setting");
-    check(GetPrivateProfileIntW(L"To Disk",L"CaptureSpeed",0,ini.c_str())==1,"INI persists the selected startup speed");
-    check(GetPrivateProfileIntW(L"To Disk",L"CaptureSpeedLimit",9,ini.c_str())==0,
+    check(int(GetPrivateProfileIntW(L"To Disk",L"CaptureSpeed",0,ini.c_str()))==-1,"INI persists the selected startup speed");
+    check(GetPrivateProfileIntW(L"To Disk",L"CaptureSpeedLimit",9,ini.c_str())==9,
           "generated INI disables the capture speed menu by default");
     auto root=dir+L"\\Pending-"+std::to_wstring(GetCurrentProcessId()); epoch=GetSettings().capture_epoch;
     check(SetSaveLocation(root) && GetSettings().root==root,"save directory persistence");

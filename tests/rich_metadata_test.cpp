@@ -23,6 +23,9 @@ int main() {
  assert(ParseRichMetadata(episode_payload,m,e));
  assert(m.uri=="spotify:episode:0000000000000000000005"&&m.artist=="Show"&&m.album=="Show");
  assert(m.fields.at("SPOTIFY_URI")==m.uri&&m.fields.at("PUBLISHER")=="Show");
+ assert(ParseRichMetadata("v=1&title=Episode&uri=spotify%3Aepisode%3A123&duration=4030&DATE=2025-09-10",m,e));
+ assert(m.artist.empty()&&m.album.empty()&&m.fields.at("DATE")=="2025-09-10");
+ assert(ParseRichMetadata(episode_payload,m,e));
  MetadataCache episode_cache;episode_cache.Put(m);
  assert(episode_cache.FindUri(m.uri)&&episode_cache.Find("Episode","Show","Show",4030));
  assert(!ParsePlaybackMetadata("v=1&title=Episode&uri=spotify%3Ashow%3A123&duration=4030",m,e));
@@ -39,5 +42,18 @@ int main() {
  assert(ParseRichMetadata("v=1&title=Song&artist=Artist&album=Album&duration=200&uri=spotify%3Atrack%3A0000000000000000000001&album_uri=spotify%3Aalbum%3A0000000000000000000002&SPOTIFY_ALBUM_URI=spotify%3Aalbum%3A0000000000000000000002",m,e));
  assert(m.fields.at("SPOTIFY_ALBUM_URI")==album_uri);
  assert(!ParseRichMetadata("v=1&title=Song&artist=Artist&album=Album&duration=200&uri=spotify%3Atrack%3A0000000000000000000001&album_uri=spotify%3Aalbum%3Ashort",m,e));
+ // Matcher/save ownership survives registry pressure and receives later updates.
+ RichMetadata owned=m;owned.uri="spotify:track:owned";
+ auto pin=cache.Pin(owned);const auto original=pin.get();
+ for(int i=0;i<80;++i){auto other=m;other.uri="spotify:track:later"+std::to_string(i);cache.Put(other);}
+ assert(cache.FindUri(owned.uri)&&cache.Pin(owned).get()==original);
+ owned.fields["DATE"]="2025-09-10";cache.Put(owned);
+ assert(pin->value.fields.at("DATE")=="2025-09-10");
+ std::weak_ptr<MetadataRecord> weak=pin;pin.reset();
+ for(int i=0;i<30;++i){auto other=m;other.uri="spotify:track:cleanup"+std::to_string(i);cache.Put(other);}
+ assert(weak.expired());
+ const std::string image="https://i.scdn.co/image/"+std::string(40,'a');
+ assert(ParseRichMetadata("v=1&title=Episode&uri=spotify%3Aepisode%3Ax&duration=20&artwork_urls="+image+"%0Ahttps%3A%2F%2Fexample.com%2Fimage",m,e));
+ assert(m.artwork_urls.size()==1&&m.artwork_urls.front()==image);
  std::cout<<"PASS: bounded UTF-8 metadata, identity matching and ambiguity rejection\n";
 }

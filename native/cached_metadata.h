@@ -24,6 +24,11 @@ bool DecodeCachedAlbum(const CachedRecords &, const std::string &uri,
                        std::map<std::string, std::string> &);
 bool MergeCachedMetadata(const CachedTrackMetadata &, RichMetadata &);
 // Windows implementation; called only from the metadata worker.
-bool ReadStoredMetadata(const std::wstring &users_root, RichMetadata &);
+struct StoredMetadataRead {
+  std::uint64_t read_bytes = 0, budget_bytes = 0;
+  const char* reason = "missing-record";
+};
+bool ReadStoredMetadata(const std::wstring &users_root, RichMetadata &,
+                        StoredMetadataRead* result = nullptr);
 void EnrichStoredMetadata(RichMetadata &);
 } // namespace history

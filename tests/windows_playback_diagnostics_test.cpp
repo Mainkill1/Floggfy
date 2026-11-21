@@ -262,7 +262,7 @@ void ReplayCapturedMp3(const wchar_t* raw_path,const wchar_t* metadata_path) {
 
     constexpr uintptr_t decoder=0x9870;const auto epoch=CaptureEpoch();CaptureBuffers buffers;
     std::array<unsigned char,0x100> owner{};std::array<unsigned char,0x200> provider{};
-    std::array<unsigned char,0xa00> state{};const auto provider_ptr=reinterpret_cast<uintptr_t>(provider.data());
+    std::array<unsigned char,playback_identity::kPlayerStateSearchBytes> state{};const auto provider_ptr=reinterpret_cast<uintptr_t>(provider.data());
     const auto state_ptr=reinterpret_cast<uintptr_t>(state.data());
     memcpy(owner.data()+0x70,&decoder,sizeof(decoder));memcpy(owner.data()+0x78,&provider_ptr,sizeof(provider_ptr));
     memcpy(provider.data()+0x1e8,&state_ptr,sizeof(state_ptr));
@@ -277,6 +277,7 @@ void ReplayCapturedMp3(const wchar_t* raw_path,const wchar_t* metadata_path) {
             assert(offset==input_end&&instance.size()==32);
             for(unsigned index=0;index<16;++index)state[0x9b8+index]=
                 static_cast<unsigned char>((HexNibble(instance[index*2])<<4)|HexNibble(instance[index*2+1]));
+            assert(playback_identity_bridge.SetExpected(instance,playback_markers+1));
             assert(PlaybackPumpHook(owner.data(),nullptr,nullptr)==17);drain();last_marker=offset;++playback_markers;
         } else if(line.find("\"kind\":\"input\"")!=std::string::npos) {
             const auto offset=std::size_t(JsonUnsigned(line,"offset"));const auto bytes=std::size_t(JsonUnsigned(line,"bytes"));
@@ -329,7 +330,7 @@ void ReplayCapturedQuality(const wchar_t* raw_path,const wchar_t* metadata_path,
     decoded_sink_target=reinterpret_cast<void*>(0x1000);playback_pump_target=reinterpret_cast<void*>(0x2000);
     original_playback_pump=[](void*,void*,void*)->int{return 17;};playback_pump_decoder_offset=0x70;
     std::array<unsigned char,0x100> owner{};std::array<unsigned char,0x200> provider{};
-    std::array<unsigned char,0xa00> state{};
+    std::array<unsigned char,playback_identity::kPlayerStateSearchBytes> state{};
     const auto provider_ptr=reinterpret_cast<uintptr_t>(provider.data()),state_ptr=reinterpret_cast<uintptr_t>(state.data());
     memcpy(owner.data()+0x70,&decoder,sizeof(decoder));memcpy(owner.data()+0x78,&provider_ptr,sizeof(provider_ptr));
     memcpy(provider.data()+0x1e8,&state_ptr,sizeof(state_ptr));
@@ -344,11 +345,14 @@ void ReplayCapturedQuality(const wchar_t* raw_path,const wchar_t* metadata_path,
     activity.calls=1;activity.produced_floats=80;activity.first=100.01;activity.last=100.02;tracker.ObserveDecoded(activity);
     Media current;const auto generation=ObserveRecordingMetadata(media,buffers,current,100.1);
     std::array<playback_identity::Match,playback_identity::kObservationCapacity> matches{};
-    const auto match_count=SetExpectedPlaybackIdentity(current,generation,matches);
+    SetExpectedPlaybackIdentity(current,generation);
+    const auto match_count=playback_identity_bridge.QueryMatches(current.playback_instance,
+        generation,CaptureEpoch(),matches.data(),matches.size());
     assert(match_count&&"full native playback field must match metadata without treating its pointer prefix as ID bytes");
     assert(BindDirectReadyCapture(buffers,current,generation,100.1,matches,match_count));
     assert(PlaybackPumpHook(owner.data(),nullptr,nullptr)==17);
-    assert(playback_id_payload_offset.load()>=0&&"captured prefix must be resolved from metadata rather than hardcoded");
+    assert(playback_identity_bridge.Location().status==playback_identity::LocationStatus::Verified&&
+        playback_id_state_offset.load()>=0&&"native field location must be discovered from metadata");
     PlaybackQualityTracker quality;quality.Media(current.PlaybackKey(),current.title,0,current.duration,100.1);
     const auto snapshot=BoundPlaybackQuality(buffers,current,generation,quality.Snapshot());
     assert(snapshot.decoder_bound&&snapshot.format==PlaybackFormat::Mp3&&snapshot.rate==44100&&snapshot.channels==2);
@@ -1212,7 +1216,7 @@ void ReadyDurationCorroboratesDecoder() {
     Media ready;ready.source=MediaSource::Windows;
     ready.duration=232.498;ready.playing=true;
     const auto playback=BindReadyCapture(
-        buffers,ready,2,100.5,0,"spotify:track:new");
+        buffers,ready,2,100.5,"spotify:track:new");
     const auto binding=tracker.Binding(buffers.active[1]->capture_token);
     assert(playback&&binding.state==ownership::OwnershipState::Bound&&
            binding.listen_generation==2&&binding.playback_token==playback);
@@ -1585,6 +1589,108 @@ void MatcherToleranceAndLogs() {
     }
     history::settings=prior;playback_pump_target=pump;
 }
+void CalibratedPlaybackBoundarySurvivesIdentityLock() {
+    const auto prior_pump=original_playback_pump;const auto prior_decoder_offset=playback_pump_decoder_offset;
+    const auto prior_field_offset=playback_id_state_offset.load();const auto prior_queue=queue;const auto prior_event=event;
+    const auto prior_head=head,prior_tail=tail,prior_count=count;
+    queue=new Slot[capacity];event=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(event);
+    head=tail=count=0;ResetMp3Probes();
+    constexpr uintptr_t decoder=0x9870;
+    std::array<unsigned char,0x100> owner{};std::array<unsigned char,0x200> source{};
+    std::array<unsigned char,0x1000> state{};
+    const auto source_address=reinterpret_cast<uintptr_t>(source.data()),state_address=reinterpret_cast<uintptr_t>(state.data());
+    memcpy(owner.data()+0x70,&decoder,sizeof(decoder));memcpy(owner.data()+0x78,&source_address,sizeof(source_address));
+    memcpy(source.data()+0x1e8,&state_address,sizeof(state_address));
+    playback_identity::Instance first{},next{};
+    assert(playback_identity::ParseInstance("00112233445566778899aabbccddeeff",first));
+    assert(playback_identity::ParseInstance("102132435465768798a9bacbdcedfe0f",next));
+    QueueMp3Playback(decoder,CaptureEpoch(),first.bytes,Now());assert(count==0);
+    memcpy(state.data()+0xa08,next.bytes.data(),next.bytes.size());
+    playback_pump_decoder_offset=0x70;playback_id_state_offset=0xa08;
+    original_playback_pump=[](void*,void*,void*)->int {
+        assert(GetLastError()==1234&&count==1&&queue[head].kind==AudioEventKind::Mp3Boundary&&
+            "native processing must see the new decoder generation even while the identity bridge is locked");
+        SetLastError(4321);return 17;
+    };
+    AcquireSRWLockExclusive(&playback_identity_lock);SetLastError(1234);
+    const auto result=PlaybackPumpHook(owner.data(),nullptr,nullptr);const auto error=GetLastError();
+    ReleaseSRWLockExclusive(&playback_identity_lock);
+    assert(result==17&&error==4321);Slot slot{};assert(Pop(slot)&&slot.kind==AudioEventKind::Mp3Boundary&&!Pop(slot));
+    delete[] queue;CloseHandle(event);queue=prior_queue;event=prior_event;head=prior_head;tail=prior_tail;count=prior_count;
+    ResetMp3Probes();original_playback_pump=prior_pump;playback_pump_decoder_offset=prior_decoder_offset;
+    playback_id_state_offset=prior_field_offset;
+}
+void CompletedRecordingFallsBackWithoutNativeIdentity() {
+    const auto prior=history::settings;const auto pump=playback_pump_target;
+    playback_pump_target=reinterpret_cast<void*>(0x2000);
+    history::settings.matcher_time_offset_ms=10000;history::settings.matcher_duration_ms=250;
+    const char* id="00112233445566778899aabbccddeeff";
+    const char* other_id="102132435465768798a9bacbdcedfe0f";
+    for(unsigned scenario=0;scenario<13;++scenario) {
+        ResetPlaybackIdentityBridge();diagnostic_lines.clear();
+        ownership::DecoderOwnershipTracker tracker;tracker.Reset(0);
+        CaptureBuffers buffers;buffers.ownership_tracker=&tracker;
+        ownership::DecodedActivity output{};output.calls=1;output.produced_floats=2048;
+        // Two unresolved successors produce the same adjacency conflict as the
+        // real '911' failure, without providing any contradictory native ID.
+        tracker.BeginCapture(ownership::DecoderCodec::Flac,0x7700,0,90,0,1);
+        output.owner=0x7700;output.first=output.last=90.1;output.sequence=2;tracker.ObserveDecoded(output);
+        auto capture=CompleteFlacCapture(100,100.3);capture->decoder_owner=0x8800;
+        capture->capture_token=tracker.BeginCapture(ownership::DecoderCodec::Flac,0x8800,0,100,0,3);
+        output.owner=0x8800;output.first=output.last=100.05;output.sequence=4;
+        if(scenario!=11)tracker.ObserveDecoded(output);
+        auto successor=CompleteFlacCapture(100.2,0);successor->decoder_owner=0x9900;
+        successor->flac.total_samples=44100;successor->flac_source.complete=false;
+        successor->capture_token=tracker.BeginCapture(ownership::DecoderCodec::Flac,0x9900,0,100.2,0,5);
+        output.owner=0x9900;output.first=output.last=100.21;output.sequence=6;tracker.ObserveDecoded(output);
+        tracker.CompleteCapture(capture->capture_token,100.3,7);
+        if(scenario==11)assert(tracker.Binding(capture->capture_token).state==ownership::OwnershipState::AwaitingOutput);
+        else assert(tracker.Binding(capture->capture_token).reason==ownership::OwnershipReason::AmbiguousSuccessor);
+        const auto duration=capture->Duration();const auto token=capture->capture_token;
+        if(scenario==1){capture->flac_source.complete=false;capture->finished=0;}
+        if(scenario==6)tracker.AbortCapture(token,ownership::CaptureAbortReason::DecoderError);
+        if(scenario==9)++capture->bytes; // Complete flag cannot substitute for buffer validation.
+        buffers.ready.push_back(std::move(capture));buffers.active[0x9900]=std::move(successor);
+        Media current;const auto generation=ObserveRecordingMetadata(RecordingMedia(id,duration),buffers,current,100.12);
+        if(scenario==2||scenario==12) {
+            auto competitor=CompleteFlacCapture(100.1,0);competitor->capture_token=999;
+            if(scenario==12) {
+                competitor->decoder_owner=0xaa00;
+                competitor->capture_token=tracker.BeginCapture(ownership::DecoderCodec::Flac,0xaa00,0,100.1,0,8);
+                tracker.AbortCapture(competitor->capture_token,ownership::CaptureAbortReason::DecoderError);
+            }
+            competitor->flac_source.complete=false;buffers.active[0xaa00]=std::move(competitor);
+        }
+        if(scenario==3)ObserveRecordingMetadata(RecordingMedia(other_id,duration),buffers,current,100.15);
+        if(scenario==4||scenario==5) {
+            playback_identity::Instance native{};assert(playback_identity::ParseInstance(scenario==4?other_id:id,native));
+            std::array<unsigned char,32> field{};std::copy(native.bytes.begin(),native.bytes.end(),field.begin());
+            playback_identity_bridge.Observe(0x9000,0x8800,0,1,field.data(),field.size(),
+                playback_identity::SnapshotRole::PlayerPlaybackId,scenario==4?100.1:99);
+        }
+        if(scenario==7)buffers.retired_evidence.RememberMetadata({999,100,duration});
+        if(scenario==8)buffers.retired_evidence.RememberCapture({999,100,duration});
+        if(scenario==10) {
+            std::array<unsigned char,32> field{};field[0]=0xff;
+            for(unsigned n=0;n<=playback_identity::kObservationCapacity;++n)
+                playback_identity_bridge.Observe(0x10000+n,0x20000+n,0,n+1,field.data(),field.size(),
+                    playback_identity::SnapshotRole::PlayerPlaybackId,100.1);
+            assert(playback_identity_bridge.ObservationLost());
+        }
+        AssociateRetainedRecordings(buffers);
+        assert(bool(buffers.ready[0]->association)==(scenario==0)&&
+            "complete unique evidence must recover only when native identity is unavailable, not contradictory");
+        if(scenario==9)assert(Contains("buffer-byte-count-mismatch"));
+        if(scenario==0) {
+            assert(!buffers.ready[0]->exact_identity&&buffers.ready[0]->association->generation==generation);
+            assert(Contains("matched-unique-evidence")&&Contains("native-unavailable-complete-source"));
+            ScheduleStreamPublications(buffers,0,101);SaveJob saved;
+            assert(saves.Pop(saved)&&!saved.unmatched&&saved.capture->association->generation==generation);
+            const auto reserved=saved.reserved;saved.capture.reset();publishing_reserved.fetch_sub(reserved);
+        }
+    }
+    ResetPlaybackIdentityBridge();history::settings=prior;playback_pump_target=pump;
+}
 void RetirementCannotManufactureMatch() {
     const auto prior=history::settings;const auto pump=playback_pump_target;playback_pump_target=nullptr;
     history::settings.matcher_max_queue=5;
@@ -1734,7 +1840,6 @@ void LateDurationContradictionStaysRejected() {
 void NativeIdentityUsesRecordingLifetime() {
     const auto prior_sink=decoded_sink_target,prior_pump=playback_pump_target;
     const auto prior_layout=decoder_ownership_layout;const auto prior_available=decoder_ownership_layout_available;
-    const auto prior_offset=playback_id_payload_offset.load();
     decoded_sink_target=reinterpret_cast<void*>(0x1000);playback_pump_target=reinterpret_cast<void*>(0x2000);
     decoder_ownership_layout={};decoder_ownership_layout.ogg_capture_to_decoder=-136;decoder_ownership_layout_available=true;
     const char* a="00112233445566778899aabbccddeeff";
@@ -1825,9 +1930,9 @@ void NativeIdentityUsesRecordingLifetime() {
     ObserveRecordingMetadata(RecordingMedia(b,1,false),buffers,current,101);
     const auto generation=ObserveRecordingMetadata(RecordingMedia(a,1,true),buffers,current,102);
     observe(a,102.1,1);AssociateRetainedRecordings(buffers);
-    assert(buffers.history.Current()->metadata.generation==generation&&playback_id_payload_offset.load()==8&&
-        "resuming an existing record must learn the current native layout, not the last inserted identity");
-    ResetPlaybackIdentityBridge();playback_id_payload_offset=prior_offset;
+    assert(buffers.history.Current()->metadata.generation==generation&&
+        "resuming an existing record must retain the current metadata generation");
+    ResetPlaybackIdentityBridge();
     decoded_sink_target=prior_sink;playback_pump_target=prior_pump;
     decoder_ownership_layout=prior_layout;decoder_ownership_layout_available=prior_available;
 }
@@ -1947,6 +2052,8 @@ void CaptureLogEvent(LogKind kind,const char*,const std::string& message){
     if(!LoggingEnabled()||(kind==LogKind::Diagnostic&&!DebugLoggingEnabled()))return;
     diagnostic_lines.push_back(message);if(kind==LogKind::Failure)++failure_events;
 }
+bool ReadCurrentItemMedia(Media&){return false;}
+void RetainMetadata(Media&){}
 std::string ReadClientPlaybackQuality(const Media&){return {};}
 void EnrichCatalog(const Media&,Catalog&){}
 void EnrichTags(const Media&,Tags&){}
@@ -1970,10 +2077,11 @@ int wmain(int argc,wchar_t** argv) {
     if(argc==2&&!wcscmp(argv[1],L"--review-mp3-prefix")){Mp3BoundaryDoesNotProveCompleteness();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--review-save-progress")){IndependentSaveProgress();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--review-native-identity")){NativeIdentityUsesRecordingLifetime();return 0;}
+    if(argc==2&&!wcscmp(argv[1],L"--review-native-fallback")){CompletedRecordingFallsBackWithoutNativeIdentity();return 0;}
+    if(argc==2&&!wcscmp(argv[1],L"--review-identity-lock")){CalibratedPlaybackBoundarySurvivesIdentityLock();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--flac-restart-metadata")){RestartedFlacKeepsMetadataClaim();return 0;}
     if(argc==4&&!wcscmp(argv[1],L"--dump-ogg-listen-replay")) {ReplayCapturedOggListen(argv[2],argv[3]);return 0;}
     if(argc==6&&!wcscmp(argv[1],L"--dump-quality-replay")) {ReplayCapturedQuality(argv[2],argv[3],argv[4],argv[5]);return 0;}
-    playback_id_payload_offset=0;
     if(argc==4&&!wcscmp(argv[1],L"--dump-replay")) {ReplayCapturedMp3(argv[2],argv[3]);return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--queue-epoch")) {ProductionCaptureQueueLossEpochs();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--stream-dump")) {DumpStreamHooks();return 0;}
@@ -1986,7 +2094,7 @@ int wmain(int argc,wchar_t** argv) {
     if(argc==2&&(!wcscmp(argv[1],L"--podcast-reuse")||!wcscmp(argv[1],L"--pause-continuity")||
         !wcscmp(argv[1],L"--podcast-end"))) {StreamOwnedCompletion();UnmatchedRetention();return 0;}
     assert(argc==1);
-    FlacInputCompletesWithoutDecodedCallbacks();FlacRepeatedInputCompletesWithoutDecodedCallbacks();CompletedSourceQueueLossCannotRelabel();NativeIdentityUsesRecordingLifetime();PrefetchCannotSupplyCurrentIdentity();MatcherToleranceAndLogs();RetirementCannotManufactureMatch();RetiredMetadataCannotManufactureMatch();MatcherCandidateInventory();LateDurationContradictionStaysRejected();ReleaseAuditHonorsBudget();
+    FlacInputCompletesWithoutDecodedCallbacks();FlacRepeatedInputCompletesWithoutDecodedCallbacks();CompletedSourceQueueLossCannotRelabel();NativeIdentityUsesRecordingLifetime();CalibratedPlaybackBoundarySurvivesIdentityLock();CompletedRecordingFallsBackWithoutNativeIdentity();PrefetchCannotSupplyCurrentIdentity();MatcherToleranceAndLogs();RetirementCannotManufactureMatch();RetiredMetadataCannotManufactureMatch();MatcherCandidateInventory();LateDurationContradictionStaysRejected();ReleaseAuditHonorsBudget();
     CaptureJournalRoundTrip();RestartedFlacKeepsMetadataClaim();Mp3BoundaryDoesNotProveCompleteness();IndependentSaveProgress();
     RecordingQueueCounters();StreamOwnedCompletion();UnmatchedRetention();UnmatchedWriterRejectsPartial();UnmatchedArchiveRetry();UnmatchedArchiveRetry(true);
     Connectivity();PodcastCatalog();PublicationLogging();ReadyUpgradesPreboundPlaybackGeneration();

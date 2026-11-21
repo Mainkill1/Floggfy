@@ -13,7 +13,8 @@ async function scenario(enabled){
   console:{info:x=>output.push(x)},encodeURIComponent};
  vm.runInNewContext(script,context);
  const poll=()=>context.window.__floggfyPoll();
- for(let i=0;i<5;i++)poll();assert.equal(sends,2);
+ for(let i=0;i<5;i++)poll();assert.equal(sends,0);
+ context.window.__floggfyEnrich(state.item.uri,{metadata:true,album:true,lyrics:true});assert.equal(sends,2);
  const lines=()=>output.filter(x=>x.startsWith('FLOGGFY_NETWORK_V1:'));
  assert.equal(lines().length,enabled?2:0);
  const response={status:200,body:{album:{gid:'0123456789abcdef0123456789abcdef'},PRIVATE_TOKEN:'SECRET'}};
@@ -36,4 +37,30 @@ async function scenario(enabled){
  }else assert.equal(lines().length,0);
  assert.equal(getters,0);
 }
-(async()=>{await scenario(false);await scenario(true);console.log('PASS: enrichment I/O summaries, correlation, safe status/latency, default opt-out and no idle spam');})().catch(e=>{console.error(e);process.exitCode=1;});
+async function liveFallbacks(){
+ const output=[],sends=[];let now=10;
+ const config={metadata:true,lyrics:true,fetchMissingMetadata:false,fetchMissingLyrics:false};
+ const uri='spotify:track:0000000000000000000001';
+ const item={uri,metadata:{title:'Song',artist_name:'Artist',album_title:'Album',duration:'100000'}};
+ const player={getState:()=>({isPaused:false,item})};
+ const builder={build(){let path;return {withHost(){return this;},withPath(value){path=value;return this;},withQueryParameters(){return this;},
+  send(){return new Promise((resolve,reject)=>sends.push({path,resolve,reject}));}};}};
+ const registry={_map:new Map([[Symbol('PlayerAPI'),{instance:player}],[Symbol('RequestBuilder'),{instance:builder}]])};
+ const main={__reactContainer$test:{memoizedProps:{registry}}};
+ const window={__floggfyConfig:config};
+ const poll=()=>window.__floggfyPoll();
+ const flush=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
+ vm.runInNewContext(script,{window,document:{querySelector:()=>main},performance:{now:()=>now},console:{info:x=>output.push(x)},encodeURIComponent});
+ window.__floggfyEnrich(uri,{metadata:true,album:true,lyrics:true});poll();assert.equal(sends.length,0);
+ config.fetchMissingMetadata=true;poll();assert.equal(sends.length,1);assert(sends[0].path.includes('/track/'));
+ config.fetchMissingMetadata=false;poll();
+ sends[0].resolve({status:200,body:{album:{gid:'0123456789abcdef0123456789abcdef'},external_id:[{type:'isrc',id:'TESTISRC'}]}});
+ await flush();poll();assert.equal(sends.length,1);
+ assert(output.some(line=>line.startsWith('FLOGGFY_METADATA_V1:')&&line.includes('TESTISRC')));
+ config.fetchMissingLyrics=true;poll();assert.equal(sends.length,2);assert(sends[1].path.includes('/color-lyrics/'));
+ config.fetchMissingLyrics=false;sends[1].reject({status:503});await flush();
+ now=10000;poll();assert.equal(sends.length,2);
+ config.fetchMissingLyrics=true;poll();assert.equal(sends.length,3);assert(sends[2].path.includes('/color-lyrics/'));
+ config.fetchMissingMetadata=true;poll();assert.equal(sends.length,4);assert(sends[3].path.includes('/album/'));
+}
+(async()=>{await liveFallbacks();await scenario(false);await scenario(true);console.log('PASS: enrichment I/O summaries, correlation, safe status/latency, default opt-out and no idle spam');})().catch(e=>{console.error(e);process.exitCode=1;});
