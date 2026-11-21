@@ -13,7 +13,6 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <unordered_map>
 
 namespace history {
 namespace {
@@ -268,13 +267,16 @@ void Changed(std::uint64_t epoch, Mutation result) {
 }
 
 std::optional<Row> Refresh(Database& db, const fs::path& root, const fs::path& relative,
-                           std::uint64_t epoch, std::uint64_t scan, const Row* cached = nullptr,
+                           std::uint64_t epoch, std::uint64_t scan, Row* cached = nullptr,
                            ScanStats* stats = nullptr) {
     if (!Current(epoch, scan)) return {};
-    const auto key = cached ? cached->path : relative.u8string();
     if (stats) ++stats->scanned;
     Stamp stamp;
     const auto status = ReadStamp(root, relative, stamp);
+    if (cached && status == FileStatus::Available && stamp == cached->stamp && ValidMarkedDate(cached->date))
+        return std::move(*cached);
+
+    auto key = cached ? std::move(cached->path) : relative.u8string();
     // Prune when a path is observed missing or excluded. Access failures retain its evidence.
     if (status == FileStatus::Missing && Current(epoch, scan)) {
         const auto result = db.Erase(key);
@@ -289,7 +291,6 @@ std::optional<Row> Refresh(Database& db, const fs::path& root, const fs::path& r
         WarnFile("could not access recording", key);
     }
     if (status != FileStatus::Available) return {};
-    if (cached && stamp == cached->stamp && ValidMarkedDate(cached->date)) return *cached;
 
     const auto path = (root / relative).native();
     MarkedRecording record;
@@ -333,7 +334,7 @@ std::optional<Row> Refresh(Database& db, const fs::path& root, const fs::path& r
         }
         return {};
     }
-    Row row{key, std::move(record.uri), std::move(record.saved_utc), stamp};
+    Row row{std::move(key), std::move(record.uri), std::move(record.saved_utc), stamp};
     const auto result = db.Upsert(row);
     Changed(epoch, result);
     if (stats) {
@@ -431,33 +432,35 @@ void AnswerQuery(Database& db, bool available, const fs::path& root, const Query
     }
     MarkedQueryReply reply;
     reply.request = query.request;
-    std::unordered_map<std::string, std::string> latest;
-    for (const auto& uri : query.uris) latest.try_emplace(uri);
-    for (const auto& uri : query.uris) {
+    std::vector<std::string> dates(query.uris.size());
+    for (std::size_t i = 0; i < query.uris.size(); ++i) {
+        const auto& uri = query.uris[i];
         std::string after;
         for (;;) {
             if (!QueryCurrent(epoch, query.sequence)) return;
-            const auto rows = db.Rows(uri, after);
+            auto rows = db.Rows(uri, after);
             if (!rows) {
                 ReleaseFailedQuery(epoch, query.sequence);
                 Warn("could not read saved dates; query can be retried");
                 return;
             }
-            for (const auto& cached : *rows) {
+            const bool has_next_page = rows->size() == kRowsPerPage;
+            if (has_next_page) after = rows->back().path;  // Refresh consumes the cached row.
+            for (auto& cached : *rows) {
                 if (!QueryCurrent(epoch, query.sequence)) return;
-                const auto row = Refresh(db, root, fs::u8path(cached.path), epoch, 0, &cached);
+                const auto path = fs::u8path(cached.path);
+                auto row = Refresh(db, root, path, epoch, 0, &cached);
                 if (!row) continue;
-                const auto date = latest.find(row->uri);
-                if (date != latest.end() && date->second < row->date) date->second = row->date;
+                // A re-read may find that this path now belongs to another requested track.
+                const auto slot = row->uri == uri ? i : static_cast<std::size_t>(
+                    std::find(query.uris.begin(), query.uris.end(), row->uri) - query.uris.begin());
+                if (slot < dates.size() && dates[slot] < row->date) dates[slot] = std::move(row->date);
             }
-            if (rows->size() < kRowsPerPage) break;
-            after = rows->back().path;
+            if (!has_next_page) break;
         }
     }
-    for (const auto& uri : query.uris) {
-        auto& date = latest.at(uri);
-        if (!date.empty()) reply.dates.emplace_back(uri, std::move(date));
-    }
+    for (std::size_t i = 0; i < dates.size(); ++i)
+        if (!dates[i].empty()) reply.dates.emplace_back(query.uris[i], std::move(dates[i]));
     auto& state = Shared();
     {
         std::lock_guard<std::mutex> lock(state.mutex);

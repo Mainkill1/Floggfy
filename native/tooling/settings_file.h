@@ -1,5 +1,6 @@
 #pragma once
 #include "windows_handle.h"
+#include "windows_file_write.h"
 #include <windows.h>
 #include <cstdint>
 #include <cstring>
@@ -45,21 +46,17 @@ inline bool Read(const std::wstring& path,std::wstring& text,bool& unicode) {
     }
     return true;
 }
-inline std::vector<unsigned char> Encode(const std::wstring& text) {
-    std::vector<unsigned char> bytes(2+text.size()*2);bytes[0]=0xff;bytes[1]=0xfe;
-    if(!text.empty())std::memcpy(bytes.data()+2,text.data(),text.size()*2);
-    return bytes;
-}
 inline bool Write(const std::wstring& path,const std::wstring& text,bool create=false) {
     if(text.size()>max_text_units)return false;
-    const auto bytes=Encode(text);
+    constexpr unsigned char bom[]={0xff,0xfe};
     static volatile LONG sequence=0;
     const auto staged=path+L".settings-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(InterlockedIncrement(&sequence));
     bool ok=false;
     {
         Handle file(CreateFileW(staged.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr));
         if(file.value==INVALID_HANDLE_VALUE)return false;
-        DWORD written=0;ok=WriteFile(file.value,bytes.data(),DWORD(bytes.size()),&written,nullptr)&&written==bytes.size()&&FlushFileBuffers(file.value);
+        ok=WriteAllBytes(file.value,bom,sizeof(bom))&&
+           WriteAllBytes(file.value,text.data(),text.size()*sizeof(wchar_t))&&FlushFileBuffers(file.value);
     }
     if(ok)ok=create ? MoveFileExW(staged.c_str(),path.c_str(),MOVEFILE_WRITE_THROUGH)!=0 :
                      ReplaceFileW(path.c_str(),staged.c_str(),nullptr,0,nullptr,nullptr)!=0;

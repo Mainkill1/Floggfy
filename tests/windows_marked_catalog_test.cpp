@@ -90,7 +90,9 @@ bool ReadMarkedRecording(const std::wstring& path, MarkedRecording& record, std:
     }
     std::ifstream in{fs::path(path)};
     if (!std::getline(in, record.saved_utc)) return false;
-    record.uri = uri;
+    std::string replacement_uri;
+    std::getline(in, replacement_uri);
+    record.uri = history::ValidSpotifyTrackUri(replacement_uri) ? replacement_uri : uri;
     record.complete = record.owned = true;
     return true;
 }
@@ -148,6 +150,14 @@ int main() {
     assert(history::QueueMarkedQuery("locked_query", {uri}));
     WaitFor([&] { return history::TakeMarkedReply(locked); });
     assert(locked.request == "locked_query" && locked.dates.size() == 1 && locked.dates[0].second == late);
+
+    Write(b, late + "\n" + missing_uri);
+    assert(history::QueueMarkedQuery("replaced", {missing_uri, uri}));
+    history::MarkedQueryReply replaced;
+    WaitFor([&] { return history::TakeMarkedReply(replaced); });
+    assert(replaced.dates.size() == 2);
+    assert(replaced.dates[0] == std::make_pair(std::string(missing_uri), late));
+    assert(replaced.dates[1] == std::make_pair(uri, early));
 
     fs::remove(b);
     assert(Query() == early);

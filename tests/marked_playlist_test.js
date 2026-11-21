@@ -376,8 +376,13 @@ testObserverAndLinks().then(() => console.log("marked playlist tests passed"))
         ++scopeReads;
         yield* Set.prototype.values.call(this);
     };
+    const indicatorChanges = new window.MutationObserver(() => {});
+    indicatorChanges.observe(nativeHeader, {attributeFilter: ["aria-sort"]});
+    indicatorChanges.observe(nativeArrow, {attributeFilter: ["style"]});
     poll();
     assert.equal(scopeReads,0,"fresh completed lookup does not traverse the playlist on a heartbeat");
+    assert.equal(indicatorChanges.takeRecords().length,0,"steady Saved sorting leaves hidden native indicators alone");
+    indicatorChanges.disconnect();
     control.apply = fixtureApply;
     assert.equal(control.applied.get(ids[299]).utc,"2026-11-21T18:00:00Z");
     assert.equal(button.getAttribute("aria-busy"),"false");

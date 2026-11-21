@@ -206,29 +206,42 @@
         mounted.delete(row);
     }
 
-    function restoreNativeSortIndicators() {
+    const nativeHeaderSelector = '[role="columnheader"]:not([data-floggfy-saved-column])';
+
+    function nativeSortArrows(cell) {
+        return [...cell.querySelectorAll('svg[aria-hidden="true"]')]
+            .filter(icon => icon.style.getPropertyValue("--encore-icon-fill").includes("--text-bright-accent"));
+    }
+
+    function restoreNativeSortIndicators(keepInHeader) {
         for (const [cell, previous] of nativeSortIndicators) {
-            if (cell.getAttribute("aria-sort") === "none") cell.setAttribute("aria-sort", previous.order);
+            const order = cell.getAttribute("aria-sort");
+            if (order === "none" && keepInHeader?.contains(cell) && cell.matches(nativeHeaderSelector)) {
+                const arrows = nativeSortArrows(cell);
+                if (arrows.length === previous.icons.length &&
+                    arrows.every((icon, i) => icon === previous.icons[i][0] && icon.style.visibility === "hidden"))
+                    continue;
+            }
+            if (order === "none") cell.setAttribute("aria-sort", previous.order);
             for (const [icon, value, priority] of previous.icons) {
                 if (icon.style.visibility === "hidden") {
                     if (value) icon.style.setProperty("visibility", value, priority);
                     else icon.style.removeProperty("visibility");
                 }
             }
+            nativeSortIndicators.delete(cell);
         }
-        nativeSortIndicators.clear();
     }
 
     function updateNativeSortIndicators(header, sorted) {
-        restoreNativeSortIndicators();
+        restoreNativeSortIndicators(sorted ? header : null);
         if (!sorted) return;
         // Some views always retain a native default sort. Saved owns the visible
         // order until reset; do not leave that default's arrow/ARIA claiming it.
-        for (const cell of header.querySelectorAll('[role="columnheader"]:not([data-floggfy-saved-column])')) {
+        for (const cell of header.querySelectorAll(nativeHeaderSelector)) {
             const order = cell.getAttribute("aria-sort");
             if (order !== "ascending" && order !== "descending") continue;
-            const icons = [...cell.querySelectorAll('svg[aria-hidden="true"]')]
-                .filter(icon => icon.style.getPropertyValue("--encore-icon-fill").includes("--text-bright-accent"))
+            const icons = nativeSortArrows(cell)
                 .map(icon => [icon, icon.style.visibility, icon.style.getPropertyPriority("visibility")]);
             nativeSortIndicators.set(cell, {order, icons});
             cell.setAttribute("aria-sort", "none");
