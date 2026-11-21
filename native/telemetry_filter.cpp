@@ -41,6 +41,7 @@ void ConfigureCategories(const history::Settings& options) noexcept {
  set(Rule::Sentry,options.block_sentry);set(Rule::Playback,options.block_playback_reports);
  set(Rule::Growth,options.block_growth_analytics);set(Rule::Crash,options.block_crash_reports);
  set(Rule::TrackError,options.block_track_errors);set(Rule::AITelemetry,options.block_ai_telemetry);
+ set(Rule::QueuedTracking,options.block_queued_telemetry);
  category_mask.store(mask,std::memory_order_release);
 }
 bool Selected(Rule rule) noexcept {return (category_mask.load(std::memory_order_acquire)&(1u<<static_cast<unsigned>(rule)))!=0;}
@@ -536,7 +537,8 @@ void ObserveRendererCount(std::wstring_view status) noexcept {
  constexpr Category categories[]={
   {L"event_reports",Rule::Gabo},{L"internal_logging",Rule::Logging},{L"sentry",Rule::Sentry},
   {L"playback_reports",Rule::Playback},{L"growth_analytics",Rule::Growth},{L"crash_reports",Rule::Crash},
-  {L"track_errors",Rule::TrackError},{L"ai_telemetry",Rule::AITelemetry}
+  {L"track_errors",Rule::TrackError},{L"ai_telemetry",Rule::AITelemetry},
+  {L"queued_telemetry",Rule::QueuedTracking}
  };
  const auto separator=status.find(L'=');if(separator==status.npos)return;
  const auto name=status.substr(0,separator),amount=status.substr(separator+1);
@@ -633,7 +635,7 @@ void DrainStatus() noexcept {
     :"Telemetry suppression native hooks are unsupported; overall coverage remains partial and unverified.");
   history::QueueDiagnostic(line);
   std::snprintf(line,sizeof(line),"privacy renderer fetch=%u xhr=%u beacon=%u cosmos=%u seen=%u early=0",unsigned(bool(renderer_hooks&1)),unsigned(bool(renderer_hooks&2)),unsigned(bool(renderer_hooks&4)),unsigned(bool(renderer_hooks&8)),unsigned(bool(renderer_hooks&16)));history::QueueDiagnostic(line);
-  if(changed){std::snprintf(line,sizeof(line),"privacy categories event_reports=%u playback_reports=%u growth_analytics=%u sentry=%u crash_reports=%u internal_logging=%u track_errors=%u ai_telemetry=%u",unsigned(Selected(Rule::Gabo)),unsigned(Selected(Rule::Playback)),unsigned(Selected(Rule::Growth)),unsigned(Selected(Rule::Sentry)),unsigned(Selected(Rule::Crash)),unsigned(Selected(Rule::Logging)),unsigned(Selected(Rule::TrackError)),unsigned(Selected(Rule::AITelemetry)));history::QueueDiagnostic(line);}
+  if(changed){std::snprintf(line,sizeof(line),"privacy categories event_reports=%u playback_reports=%u growth_analytics=%u sentry=%u crash_reports=%u internal_logging=%u track_errors=%u ai_telemetry=%u queued_telemetry=%u",unsigned(Selected(Rule::Gabo)),unsigned(Selected(Rule::Playback)),unsigned(Selected(Rule::Growth)),unsigned(Selected(Rule::Sentry)),unsigned(Selected(Rule::Crash)),unsigned(Selected(Rule::Logging)),unsigned(Selected(Rule::TrackError)),unsigned(Selected(Rule::AITelemetry)),unsigned(Selected(Rule::QueuedTracking)));history::QueueDiagnostic(line);}
   for(unsigned i=1;i<kRules;++i){
    const auto native=blocked[i].load(),js=renderer_blocked[i].load();if(!native&&!js)continue;
    std::snprintf(line,sizeof(line),"privacy blocked rule=%s count=%llu native=%llu renderer=%llu",RuleName(static_cast<Rule>(i)),native+js,native,js);history::QueueDiagnostic(line);

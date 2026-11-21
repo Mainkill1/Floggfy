@@ -1,6 +1,7 @@
 // Standalone test includes the adapter to exercise a private synthetic directory.
 #include "../native/cached_artwork_windows.cpp"
 #include "artwork_fixture.h"
+#include "../native/image_info.h"
 #include <cassert>
 #include <fstream>
 #include <iostream>
@@ -41,10 +42,7 @@ int main(int argc,char** argv){
  save();std::copy(png.begin(),png.end(),blocks.begin()+8192+256);Save(root/L"data_1",blocks);
  assert(history::ReadDirectory(root,url,out,reason)&&out==png);
  Bytes webp={0x52,0x49,0x46,0x46,0x22,0,0,0,0x57,0x45,0x42,0x50,0x56,0x50,0x38,0x20,0x16,0,0,0,0x30,1,0,0x9d,1,0x2a,1,0,1,0,0x0e,0xc0,0xfe,0x25,0xa4,0,3,0x70,0,0,0,0};
- const auto sta=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);assert(SUCCEEDED(sta));
- const bool converted=history::Normalize(webp,reason);
- if(converted){history::ImageInfo info;assert(history::ReadImageInfo(webp,info)&&info.mime=="image/png"&&info.width==1&&info.height==1);}
- else assert(reason=="cache-image-decoder-unavailable");
- CoUninitialize();
+ const bool converted=history::NormalizeArtworkImage(webp,reason);assert(converted);
+ history::ImageInfo info;assert(history::ReadImageInfo(webp,info)&&info.mime=="image/png"&&info.width==1&&info.height==1);
  std::cout<<"PASS: exact partition key, external/internal bodies, shared reads, corruption, dirty entry, bounds, unsupported layout; WebP conversion="<<converted<<"\n";
 }

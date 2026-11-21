@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <iphlpapi.h>
 #include <netlistmgr.h>
+#include <shlobj.h>
 #include <cstdio>
 #include <cstring>
 #include "audio_history.h"
@@ -13,14 +14,19 @@
 #include "hook_init_state.h"
 #include "hook_startup_minhook.h"
 #include "history_settings.h"
+#include "marked_catalog.h"
 #include "async_log.h"
 #include "hook_diagnostics.h"
 #include "metadata_bridge.h"
 #include "telemetry_filter.h"
 #include "telemetry_crash.h"
+#include "telemetry_queue.h"
+#include "telemetry_queue_exit.h"
 #include "pe_imports.h"
 #include "to_disk_menu.h"
 #include "startup_ready.h"
+#include "network_kill_switch.h"
+#include "update_blocker.h"
 
 // Spotify-local proxy. All version APIs go to the original System32 DLL.
 // The connectivity repair and optional native history stay inside Spotify.
@@ -358,15 +364,84 @@ static void DrainCrashStatus() {
     Log(line);
 }
 
+// Helpers do not initialize the settings writer or logger. Report setup failure
+// directly, without creating another owner of SpotifyHistory.ini.
+static void LogHelperNetworkFailure() noexcept {
+    OutputDebugStringW(L"Floggfy: Network Kill Switch hooks unavailable in Spotify helper; coverage is partial.\n");
+    try {
+        wchar_t module[32768]{};
+        const DWORD length=GetModuleFileNameW(proxy_module,module,32768);
+        if(!length||length>=32768)return;
+        std::wstring ini=module;const auto slash=ini.find_last_of(L'\\');
+        if(slash==std::wstring::npos)return;
+        ini.resize(slash+1);ini+=L"SpotifyHistory.ini";
+        const int legacy_log=GetPrivateProfileIntW(L"To Disk",L"LogLevel",1,ini.c_str());
+        if(GetPrivateProfileIntW(L"Debug",L"LogLevel",legacy_log,ini.c_str())==0)return;
+        wchar_t raw[2048]{},expanded[4096]{};
+        GetPrivateProfileStringW(L"To Disk",L"Save Location",L"",raw,2048,ini.c_str());
+        std::wstring root;
+        if(raw[0]) {
+            const DWORD size=ExpandEnvironmentStringsW(raw,expanded,4096);
+            if(!size||size>4096)return;
+            root=expanded;
+        } else {
+            PWSTR music=nullptr;
+            if(FAILED(SHGetKnownFolderPath(FOLDERID_Music,0,nullptr,&music)))return;
+            root=music;CoTaskMemFree(music);root+=L"\\Spotify";
+        }
+        SYSTEMTIME t{};GetSystemTime(&t);char line[320];
+        std::snprintf(line,sizeof(line),"%04u-%02u-%02uT%02u:%02u:%02uZ warning pid=%lu Network Kill Switch hooks unavailable in Spotify helper; coverage is partial\r\n",
+            t.wYear,t.wMonth,t.wDay,t.wHour,t.wMinute,t.wSecond,GetCurrentProcessId());
+        if(history::EnsureDirectory(root))
+            for(unsigned attempt=0;attempt<3;++attempt) {
+                if(history::WriteCappedLog(root+L"\\Floggfy.log",line))break;
+                Sleep(20);
+            }
+    } catch(...) {/* A failed diagnostic must not terminate a Spotify helper. */}
+}
+
 static DWORD WINAPI StartupMonitor(LPVOID) {
     wchar_t path[MAX_PATH];
     DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH);
     wchar_t* name = length && length < MAX_PATH ? wcsrchr(path, L'\\') : nullptr;
     spotify_main = name && !_wcsicmp(name + 1, L"Spotify.exe") && !wcsstr(GetCommandLineW(), L"--type=");
-    if (!spotify_main) return 0;
+    if (!spotify_main) {
+        // CEF helpers and the crash uploader have independent Winsock state.
+        // Only Spotify's own executables participate in the shared switch.
+        if(name&&(!_wcsicmp(name+1,L"Spotify.exe")||!_wcsicmp(name+1,L"crashpad_handler.exe")||
+                  !_wcsicmp(name+1,L"SpotifyLauncher.exe")||!_wcsicmp(name+1,L"spotify_cli.exe")||
+                  !_wcsicmp(name+1,L"save-to-spotify.exe")))
+            if(!network::Initialize(proxy_module,false,-1))LogHelperNetworkFailure();
+        return 0;
+    }
 
     history::InitSettings(proxy_module);
     const auto startup_settings=history::GetSettings();
+    if(startup_settings.block_telemetry&&startup_settings.block_queued_telemetry) {
+        if(!privacy::InstallRoamingQueueExitCleanup(true,startup_settings.root+L"\\Floggfy.log",startup_settings.log_level))
+            history::LogEvent(history::LogKind::Warning,"privacy-queue","Normal-exit queue cleanup hook unavailable; startup cleanup remains active.");
+        const auto cleanup=privacy::ClearRoamingTrackingQueues(true);
+        char line[320];
+        std::snprintf(line,sizeof(line),"Queued telemetry startup cleanup: removed=%u bytes=%llu failed=%u skipped=%u win32_error=%lu; known pending-tracking.pb files only; in-memory queues and other network stacks remain unverified",
+            cleanup.removed,static_cast<unsigned long long>(cleanup.bytes),cleanup.failed,cleanup.skipped,cleanup.last_error);
+        history::LogEvent(cleanup.failed||cleanup.skipped?history::LogKind::Warning:history::LogKind::Activity,"privacy-queue",line);
+    }
+    history::ConfigureMarkedCatalog(startup_settings.root,startup_settings.marked_when_downloaded);
+    if(!updates::Initialize(startup_settings.block_updates)) {
+        char line[180];
+        std::snprintf(line,sizeof(line),"Block Updates startup validation failed; requested=%u actual=%u win32_error=%lu",
+            unsigned(startup_settings.block_updates),unsigned(updates::Blocked()),updates::LastError());
+        history::LogEvent(history::LogKind::Warning,"warning",line);
+    } else {
+        Log(updates::Blocked() ? "BlockUpdates=1; Update folder read/write deny verified" :
+                                "BlockUpdates=0; Update folder blocking disabled");
+    }
+    if(!network::Initialize(proxy_module,true,startup_settings.network_kill_switch))
+        history::LogEvent(history::LogKind::Warning,"warning","Network Kill Switch hooks unavailable; network blocking is not active in this process.");
+    else
+        Log(startup_settings.network_kill_switch<0 ? "NetworkKillSwitch=-1; network kill hooks disabled" :
+            network::Enabled() ? "NetworkKillSwitch=1; Winsock hooks active in this process; queued I/O and uninjected processes are outside coverage" :
+                                 "NetworkKillSwitch=0; Winsock hooks ready, networking allowed");
     // Attach this independent launch guard as early as the settings allow.
     // Do not wait for CEF: it cannot cover the separate crash reporter process.
     if(privacy::PrepareCrash(startup_settings.block_telemetry&&startup_settings.block_crash_reports))

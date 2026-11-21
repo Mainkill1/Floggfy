@@ -31,13 +31,15 @@ struct MetadataRecord {
  RichMetadata value;
  bool local_attempted=false,queued=false;
  unsigned online_requested=0; // metadata=1, album=2, lyrics=4.
- std::string artwork_attempted;
+ std::vector<std::string> cached_artwork_attempted,native_artwork_attempted;
+ std::string online_artwork_attempted;
 };
 class MetadataCache {
  std::deque<std::shared_ptr<MetadataRecord>> records_;
 public:
  std::shared_ptr<MetadataRecord> Pin(const RichMetadata&);
  void Put(const RichMetadata&);
+ std::vector<std::shared_ptr<MetadataRecord>> Pinned() const;
  const RichMetadata* FindUri(const std::string&) const;
  const RichMetadata* Find(const std::string&,const std::string&,const std::string&,double) const;
 };

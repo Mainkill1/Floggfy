@@ -86,7 +86,9 @@ static void CheckOwnedMetadata() {
  Media media;media.spotify_uri=first.uri;media.title=L"Episode";media.duration=200;
  cache.Put(sparse);media.metadata=cache.Pin(sparse);
  for(int i=0;i<80;++i){auto other=first;other.uri="spotify:episode:other"+std::to_string(i);cache.Put(other);}
+ settings.fetch_missing_artwork=false;
  Tags tags;const auto reads=artwork_reads;EnrichTags(media,tags);
+ settings.fetch_missing_artwork=true;
  assert(tags.cover==artwork->bytes&&artwork_reads==reads&&ArtworkSource(tags)=="spotify-client");
  auto corrected=sparse;corrected.artwork.reset();corrected.artwork_url="https://i.scdn.co/image/"+std::string(40,'b');corrected.artwork_urls={corrected.artwork_url};
  MergeAvailableFields(first,corrected);assert(!corrected.artwork);
@@ -97,10 +99,65 @@ static void CheckOwnedMetadata() {
  track.album_uri="spotify:album:0000000000000000000007";track.fields["ISRC"]="test";track.fields["LABEL"]="Label";
  assert(OnlineNeeds(track,false)==0&&OnlineNeeds(track,true)==4);
  track.album_uri.clear();track.fields.erase("LABEL");assert((OnlineNeeds(track,false)&3)==3); // Missing album ID authorizes its prerequisite.
- const auto owner=cache.Pin(track);QueueOnlineEnrichment(owner,track,false);
- const auto before=owner->online_requested;QueueOnlineEnrichment(owner,track,true);
- assert(!(before&4)&&(owner->online_requested&4)); // Enabling lyrics remains effective.
- while(!online_enrichment.empty())OnlineEnrichmentScript();
+ const auto owner=cache.Pin(track);
+ settings.fetch_missing_metadata=false;settings.fetch_missing_lyrics=false;
+ QueueOnlineEnrichment(owner);
+ assert(owner->online_requested==0&&online_enrichment.empty());
+ settings.fetch_missing_metadata=true;
+ QueueOnlineEnrichment(owner);
+ assert(owner->online_requested==3&&online_enrichment.size()==1);
+ settings.fetch_missing_metadata=false; // Toggled after queuing, before the renderer grant.
+ assert(OnlineEnrichmentScript().empty()&&owner->online_requested==0);
+ settings.fetch_missing_lyrics=true;
+ QueueOnlineEnrichment(owner);
+ assert(owner->online_requested==4&&online_enrichment.size()==1);
+ assert(OnlineEnrichmentScript().find(L"metadata:false,album:false,lyrics:true")!=std::wstring::npos);
+ settings.fetch_missing_metadata=true;
+}
+
+static void CheckNativeArtworkReplies() {
+ using namespace history;
+ RichMetadata track;track.uri="spotify:track:0000000000000000000001";
+ track.artwork_url="https://i.scdn.co/image/"+std::string(40,'a');track.artwork_urls={track.artwork_url};
+ ArtworkReply reply;reply.id="7";reply.uri=track.uri;reply.reference=track.artwork_url;
+ reply.status="ready";reply.source=2;reply.bytes=artwork_fixture::png();
+ std::string reason;
+ const auto* owned_bytes=reply.bytes.data();
+ assert(!ApplyNativeArtworkReply(track,reply,"8",reason)&&!track.artwork);
+ assert(reply.bytes.data()==owned_bytes&&reply.bytes==artwork_fixture::png());
+ auto wrong=reply;wrong.uri="spotify:track:0000000000000000000002";
+ assert(!ApplyNativeArtworkReply(track,wrong,"7",reason)&&!track.artwork);
+ assert(wrong.bytes==artwork_fixture::png());
+ wrong=reply;wrong.reference="https://i.scdn.co/image/"+std::string(40,'b');
+ assert(!ApplyNativeArtworkReply(track,wrong,"7",reason)&&!track.artwork);
+ assert(wrong.bytes==artwork_fixture::png());
+ wrong=reply;wrong.bytes={1,2,3};assert(!ApplyNativeArtworkReply(track,wrong,"7",reason)&&!track.artwork);
+ wrong=reply;wrong.status="unavailable";wrong.reason="cache-miss";
+ assert(!ApplyNativeArtworkReply(track,wrong,"7",reason)&&!track.artwork&&reason=="cache-miss");
+ assert(wrong.bytes==artwork_fixture::png());
+ assert(ApplyNativeArtworkReply(track,reply,"7",reason));
+ assert(track.artwork->bytes.data()==owned_bytes&&reply.bytes.empty());
+ assert(reply.source==2&&reply.reference==track.artwork_url);
+ assert(track.artwork->bytes==artwork_fixture::png()&&track.artwork->reference==track.artwork_url);
+ auto owner=cache.Pin(track);owner->value=track;
+ // A delayed native result belongs to the old recording, never the new cover.
+ auto current=track;current.artwork.reset();current.artwork_url="https://i.scdn.co/image/"+std::string(40,'b');current.artwork_urls={current.artwork_url};
+ owner->value=current;PublishEnrichment(owner,track);assert(!owner->value.artwork);
+ PublishArtwork(owner,track);assert(!owner->value.artwork&&"an obsolete in-flight image cannot replace the current cover");
+ owner->value.artwork_url=track.artwork_url;owner->value.artwork_urls=track.artwork_urls;
+ PublishArtwork(owner,track);assert(owner->value.artwork==track.artwork);
+ // A reply arriving after its request ended must not occupy the next slot.
+ native_artwork_event=CreateEventW(nullptr,TRUE,FALSE,nullptr);assert(native_artwork_event);
+ native_artwork_pending={"9",{},L"test-script",false};
+ assert(NativeArtworkScript()==L"test-script"&&NativeArtworkScript().empty());
+ auto enqueue=[](std::wstring payload){String value{payload.data(),payload.size(),nullptr};return EnqueueNativeArtwork(&value);};
+ assert(enqueue(L"FLOGGFY_ARTWORK_V1:id=8&uri=spotify:track:0000000000000000000001&source=0&status=unavailable&reason=timeout"));
+ assert(!native_artwork_pending.received&&native_artwork_pending.reply.empty());
+ assert(enqueue(L"FLOGGFY_ARTWORK_V1:id=9&uri=spotify:track:0000000000000000000001&source=0&status=unavailable&reason=cache-miss"));
+ assert(native_artwork_pending.received&&WaitForSingleObject(native_artwork_event,0)==WAIT_OBJECT_0);
+ const auto accepted=native_artwork_pending.reply;
+ assert(enqueue(L"FLOGGFY_ARTWORK_V1:id=9&malformed=second-reply"));assert(native_artwork_pending.reply==accepted);
+ native_artwork_pending={};CloseHandle(native_artwork_event);native_artwork_event=nullptr;
 }
 
 // No settings or logger threads are started. These tests exercise the real
@@ -207,7 +264,7 @@ static void CheckPublication(const std::wstring& root,bool flac) {
  assert(DeleteFileW(path.c_str()));
 }
 int main() {
- CheckClientArtwork();CheckOwnedMetadata();
+ CheckClientArtwork();CheckOwnedMetadata();CheckNativeArtworkReplies();
  wchar_t temp[MAX_PATH];assert(GetTempPathW(MAX_PATH,temp));
  const auto root=std::wstring(temp)+L"Floggfy-artwork-policy-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64());
  assert(CreateDirectoryW(root.c_str(),nullptr));

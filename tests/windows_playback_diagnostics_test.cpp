@@ -345,7 +345,9 @@ void ReplayCapturedQuality(const wchar_t* raw_path,const wchar_t* metadata_path,
     activity.calls=1;activity.produced_floats=80;activity.first=100.01;activity.last=100.02;tracker.ObserveDecoded(activity);
     Media current;const auto generation=ObserveRecordingMetadata(media,buffers,current,100.1);
     std::array<playback_identity::Match,playback_identity::kObservationCapacity> matches{};
-    const auto match_count=SetExpectedPlaybackIdentity(current,generation,matches);
+    SetExpectedPlaybackIdentity(current,generation);
+    const auto match_count=playback_identity_bridge.QueryMatches(current.playback_instance,
+        generation,CaptureEpoch(),matches.data(),matches.size());
     assert(match_count&&"full native playback field must match metadata without treating its pointer prefix as ID bytes");
     assert(BindDirectReadyCapture(buffers,current,generation,100.1,matches,match_count));
     assert(PlaybackPumpHook(owner.data(),nullptr,nullptr)==17);
@@ -1214,7 +1216,7 @@ void ReadyDurationCorroboratesDecoder() {
     Media ready;ready.source=MediaSource::Windows;
     ready.duration=232.498;ready.playing=true;
     const auto playback=BindReadyCapture(
-        buffers,ready,2,100.5,0,"spotify:track:new");
+        buffers,ready,2,100.5,"spotify:track:new");
     const auto binding=tracker.Binding(buffers.active[1]->capture_token);
     assert(playback&&binding.state==ownership::OwnershipState::Bound&&
            binding.listen_generation==2&&binding.playback_token==playback);
@@ -2050,6 +2052,8 @@ void CaptureLogEvent(LogKind kind,const char*,const std::string& message){
     if(!LoggingEnabled()||(kind==LogKind::Diagnostic&&!DebugLoggingEnabled()))return;
     diagnostic_lines.push_back(message);if(kind==LogKind::Failure)++failure_events;
 }
+bool ReadCurrentItemMedia(Media&){return false;}
+void RetainMetadata(Media&){}
 std::string ReadClientPlaybackQuality(const Media&){return {};}
 void EnrichCatalog(const Media&,Catalog&){}
 void EnrichTags(const Media&,Tags&){}

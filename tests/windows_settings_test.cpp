@@ -45,7 +45,7 @@ int main(int argc,char** argv) {
   }
   assert(std::string(history::default_ini).find("MetadataCacheReadMiB=256")!=std::string::npos);
   assert(argc==2);
-  assert(history::Settings{}.downloads&&history::Settings{}.update_existing_metadata&&!history::Settings{}.auto_skip_downloaded&&!history::Settings{}.aac&&history::Settings{}.podcasts&&!history::Settings{}.windows_playback_fallback&&history::Settings{}.capture_speed==1&&history::Settings{}.capture_speed_limit==0&&history::Settings{}.log_level==1);
+  assert(history::Settings{}.downloads&&history::Settings{}.update_existing_metadata&&!history::Settings{}.auto_skip_downloaded&&!history::Settings{}.aac&&history::Settings{}.podcasts&&!history::Settings{}.windows_playback_fallback&&history::Settings{}.capture_speed==-1&&history::Settings{}.log_level==1);
   assert(history::Settings{}.never_pause==-1&&!history::Settings{}.dump_streams);
   for(const auto& fixture:std::array<std::pair<std::wstring,bool>,6>{{
       {L"",false},{L"DumpStreams=0\r\n",false},{L"DumpStreams=1\r\n",true},
@@ -67,6 +67,9 @@ int main(int argc,char** argv) {
       if(duplicate){text+=L"Windows Playback Fallback=";text+=duplicate;text+=L"\r\n";}
       return history::settings_file::Write(path,text,true);
     };
+    if(scenario=="fallback-options") assert(history::settings_file::Write(path,
+      L"[To Disk]\r\nFetchMissingArtwork=1\r\n[Fallbacks]\r\nReadSpotifyDiskCache=0\r\n"
+      L"FetchMissingMetadata=1\r\nFetchMissingArtwork=0\r\nFetchMissingLyrics=0\r\n",true));
     if(scenario=="fallback-blank") assert(fallback_fixture(L""));
     else if(scenario=="fallback-leading-space") assert(fallback_fixture(L" 1"));
     else if(scenario=="fallback-trailing-space") assert(fallback_fixture(L"1 "));
@@ -121,7 +124,7 @@ int main(int argc,char** argv) {
     if(scenario=="zero") assert(WritePrivateProfileStringW(L"To Disk",L"Downloads",L"0",path.c_str()));
     if(scenario=="legacy-zero") assert(WritePrivateProfileStringW(L"History",L"Enabled",L"0",path.c_str()));
     if(scenario.rfind("speed-",0)==0) {
-      const wchar_t* speed=scenario=="speed-2-limit-3"?L"2":scenario=="speed-4-limit-3"?L"4":L"10";
+      const wchar_t* speed=scenario=="speed-zero"?L"0":scenario=="speed-2-limit-3"?L"2":scenario=="speed-4-limit-3"?L"4":L"10";
       assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeed",speed,path.c_str()));
     }
     if(scenario=="speed-10-limit-10") assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeedLimit",L"10",path.c_str()));
@@ -140,6 +143,10 @@ int main(int argc,char** argv) {
   }
   history::InitSettings(nullptr);
   auto s=history::GetSettings();
+  assert(s.read_spotify_disk_cache==(scenario!="fallback-options"));
+  assert(s.fetch_missing_metadata);
+  assert(s.fetch_missing_artwork==(scenario!="fallback-options"));
+  assert(s.fetch_missing_lyrics==(scenario!="fallback-options"));
   assert(s.metadata_cache_read_mib==(scenario=="metadata-cache-custom"?512u:256u));
   assert(s.block_telemetry==(scenario=="blocking-legacy-one"||scenario=="blocking-category-zero"));
   assert(s.dump_telemetry==(scenario=="blocking-legacy-one"));
@@ -147,35 +154,28 @@ int main(int argc,char** argv) {
     if(flag.default_value)assert((s.*(flag.member))==(scenario!="blocking-category-zero"));
   assert(s.downloads==(scenario!="zero" && scenario!="legacy-zero"));
   assert(s.max_buffered_mib==(scenario=="buffer-1024"||scenario=="buffer-over"?1024u:scenario=="buffer-under"?8u:512u));
-  const bool speed_disabled=!(scenario=="speed-10-limit-10"||scenario=="speed-10-limit-over"||
-    scenario=="speed-2-limit-3"||scenario=="speed-4-limit-3"||scenario=="speed-10-limit-one");
-  const auto expected_speed=speed_disabled?1u:
-    scenario=="speed-2-limit-3"?2u:scenario=="speed-4-limit-3"?4u:
-    scenario.rfind("speed-10",0)==0||scenario=="speed-10"?10u:1u;
-  const auto expected_limit=speed_disabled?0u:1u;
+  const bool speed_shown=scenario.rfind("speed-",0)==0&&scenario!="speed-invalid"&&scenario!="speed-padded";
+  const int expected_speed=!speed_shown?-1:scenario=="speed-zero"?0:
+    scenario=="speed-2-limit-3"?2:scenario=="speed-4-limit-3"?4:10;
   assert(s.capture_speed==expected_speed);
-  assert(s.capture_speed_limit==expected_limit&&history::CaptureSpeedLimit()==expected_limit);
-  assert(history::CaptureSpeedAvailable(1));
+  assert(history::CaptureSpeedAvailable(1)==speed_shown);
   assert(!history::CaptureSpeedAvailable(2));
   history::SetCaptureAccelerationAvailable(true);
-  assert(history::CaptureSpeedAvailable(2)==(expected_limit!=0));
-  assert(history::CaptureSpeedAvailable(4)==(expected_limit!=0));
-  assert(history::CaptureSpeedAvailable(8)==(expected_limit!=0));
-  assert(history::CaptureSpeedAvailable(10)==(expected_limit!=0));
+  for(const unsigned speed:{2u,4u,8u,10u})assert(history::CaptureSpeedAvailable(speed)==speed_shown);
   assert(!history::CaptureSpeedAvailable(3));
   history::SetCaptureAccelerationAvailable(false);
   assert(s.windows_playback_fallback==(scenario=="fallback-one"));
   const auto expected_log=scenario=="log-0"?0u:
-    scenario=="log-2"?2u:scenario=="log-4"?4u:1u;
+    scenario=="log-4"?4u:scenario=="log-2"?2u:1u;
   assert(s.log_level==expected_log&&history::LogLevel()==expected_log);
-  assert(history::CaptureSpeed()==s.capture_speed);
+  assert(history::CaptureSpeed()==unsigned(std::max(1,s.capture_speed)));
   if(scenario=="new") {
     assert(GetPrivateProfileIntW(L"To Disk",L"Downloads",9,path.c_str())==1);
     assert(GetPrivateProfileIntW(L"To Disk",L"AAC",9,path.c_str())==0);
     assert(GetPrivateProfileIntW(L"To Disk",L"Podcasts",9,path.c_str())==1);
-    assert(GetPrivateProfileIntW(L"To Disk",L"CaptureSpeedLimit",9,path.c_str())==0);
-    assert(GetPrivateProfileIntW(L"To Disk",L"Windows Playback Fallback",9,path.c_str())==0);
-    assert(GetPrivateProfileIntW(L"To Disk",L"UpdateExistingMetadata",9,path.c_str())==1);
+    assert(GetPrivateProfileIntW(L"To Disk",L"CaptureSpeedLimit",9,path.c_str())==9);
+    assert(GetPrivateProfileIntW(L"Fallbacks",L"WindowsPlaybackFallback",9,path.c_str())==0);
+    assert(GetPrivateProfileIntW(L"Misc",L"UpdateExistingMetadata",9,path.c_str())==1);
     assert(GetPrivateProfileIntW(L"To Disk",L"AutoSkipDownloaded",9,path.c_str())==0);
     HANDLE file=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,0,nullptr);
     assert(file!=INVALID_HANDLE_VALUE);unsigned char bom[2]{};DWORD count=0;
@@ -225,19 +225,19 @@ int main(int argc,char** argv) {
   assert(!history::GetSettings().lyrics);
   assert(history::FlushSettings(5000));
   if(scenario=="new"||scenario=="missing"||scenario=="metadata-cache-custom")
-    assert(GetPrivateProfileIntW(L"To Disk",L"MetadataCacheReadMiB",0,path.c_str())==s.metadata_cache_read_mib);
-  assert(GetPrivateProfileIntW(L"To Disk",L"LogLevel",99,path.c_str())==expected_log);
-  assert(GetPrivateProfileIntW(L"To Disk",L"CaptureSpeed",0,path.c_str())==s.capture_speed);
+    assert(GetPrivateProfileIntW(L"History",L"MetadataCacheReadMiB",0,path.c_str())==s.metadata_cache_read_mib);
+  assert(GetPrivateProfileIntW(L"Debug",L"LogLevel",99,path.c_str())==expected_log);
+  assert(int(GetPrivateProfileIntW(L"To Disk",L"CaptureSpeed",0,path.c_str()))==s.capture_speed);
   assert(GetPrivateProfileIntW(L"To Disk",L"Lyrics",9,path.c_str())==0);
   assert(history::SetLyrics(true) && history::FlushSettings(5000));
   assert(GetPrivateProfileIntW(L"To Disk",L"Lyrics",9,path.c_str())==1);
   assert(history::GetSettings().update_existing_metadata==(scenario!="updates-zero"));
-  assert(GetPrivateProfileIntW(L"To Disk",L"UpdateExistingMetadata",9,path.c_str())==(scenario=="updates-zero"?0:1));
+  assert(GetPrivateProfileIntW(L"Misc",L"UpdateExistingMetadata",9,path.c_str())==(scenario=="updates-zero"?0:1));
   const auto generation=history::GetSettings().generation;
   assert(history::SetUpdateExistingMetadata(!s.update_existing_metadata));
   assert(history::CaptureEpoch()==epoch&&history::GetSettings().generation>generation);
   assert(history::SetUpdateExistingMetadata(s.update_existing_metadata)&&history::FlushSettings(5000));
-  assert(GetPrivateProfileIntW(L"To Disk",L"UpdateExistingMetadata",9,path.c_str())==(scenario=="updates-zero"?0:1));
+  assert(GetPrivateProfileIntW(L"Misc",L"UpdateExistingMetadata",9,path.c_str())==(scenario=="updates-zero"?0:1));
   const auto auto_skip_generation=history::GetSettings().generation;
   assert(history::SetAutoSkipDownloaded(!s.auto_skip_downloaded));
   assert(history::CaptureEpoch()==epoch&&history::GetSettings().generation>auto_skip_generation);
@@ -246,7 +246,7 @@ int main(int argc,char** argv) {
   assert(history::GetSettings().aac==s.aac);
   assert(GetPrivateProfileIntW(L"To Disk",L"AAC",9,path.c_str())==(s.aac?1:0));
   assert(GetPrivateProfileIntW(L"To Disk",L"Podcasts",9,path.c_str())==(s.podcasts?1:0));
-  assert(GetPrivateProfileIntW(L"To Disk",L"Windows Playback Fallback",9,path.c_str())==(s.windows_playback_fallback?1:0));
+  assert(GetPrivateProfileIntW(L"Fallbacks",L"WindowsPlaybackFallback",9,path.c_str())==(s.windows_playback_fallback?1:0));
   std::wstring persisted;bool unicode=false;assert(history::settings_file::Read(path,persisted,unicode));
   assert(!history::settings_file::Find(persisted,L"BlockTelemetry").present);
   assert(!history::settings_file::Find(persisted,L"DumpTelemetry").present);
@@ -254,19 +254,19 @@ int main(int argc,char** argv) {
     const auto value=history::settings_file::Find(persisted,flag.key,L"[Telemetry]");
     assert(value.present&&!value.duplicate&&value.value==(s.*(flag.member)?L"1":L"0"));
   }
-  const auto persisted_log=history::settings_file::Find(persisted,L"LogLevel");
+  const auto persisted_log=history::settings_file::Find(persisted,L"LogLevel",L"[Debug]");
   assert(persisted_log.present&&!persisted_log.duplicate&&persisted_log.value==std::to_wstring(expected_log));
   assert(!history::settings_file::Find(persisted,L"Log").present);
   assert(!history::settings_file::Find(persisted,L"DebugLog").present);
-  const std::wstring fallback_key=L"Windows Playback Fallback=";
+  const std::wstring fallback_key=L"WindowsPlaybackFallback=";
   const auto fallback_at=persisted.find(fallback_key);assert(fallback_at!=std::wstring::npos);
   assert(persisted.find(fallback_key,fallback_at+fallback_key.size())==std::wstring::npos);
   if(scenario=="fallback-duplicate") {
-    auto value=history::settings_file::Find(persisted,L"Windows Playback Fallback");
+    auto value=history::settings_file::Find(persisted,L"WindowsPlaybackFallback",L"[Fallbacks]");
     assert(value.present&&!value.duplicate&&value.value==L"0");
     assert(history::SetWindowsPlaybackFallback(true)&&history::FlushSettings(5000));
     assert(history::settings_file::Read(path,persisted,unicode));
-    value=history::settings_file::Find(persisted,L"Windows Playback Fallback");
+    value=history::settings_file::Find(persisted,L"WindowsPlaybackFallback",L"[Fallbacks]");
     assert(value.present&&!value.duplicate&&value.value==L"1");
     history::Settings reloaded;assert(!history::ReadWindowsPlaybackFallback(reloaded,path)&&reloaded.windows_playback_fallback);
   }

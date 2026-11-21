@@ -1,7 +1,7 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const path='native/telemetry_producers.js';
 const script=fs.existsSync(path)?fs.readFileSync(path,'utf8'):'';
-const defaults={block_telemetry:true,block_event_reports:true,block_playback_reports:true,block_growth_analytics:true,block_sentry:true,block_crash_reports:true,block_internal_logging:true,block_track_errors:true,block_ai_telemetry:true};
+const defaults={block_telemetry:true,block_event_reports:true,block_playback_reports:true,block_growth_analytics:true,block_sentry:true,block_crash_reports:true,block_internal_logging:true,block_track_errors:true,block_ai_telemetry:true,block_queued_telemetry:true};
 function boot(options={},window={}){
  const output=[],cancelled=[];
  const context=vm.createContext({window,__floggfyPrivacyOptions:{...defaults,...options},URL,Request,Headers,Blob,File,TextEncoder,btoa,Event,DOMException,queueMicrotask,console:{log:line=>output.push(line)},clearInterval:id=>cancelled.push(id)});
@@ -130,7 +130,13 @@ const routes=[
  ['crash_reports','https://crashdump.spotify.com:443/upload'],
  ['internal_logging','sp://logging/v3/events'],
  ['track_errors','https://spclient.wg.spotify.com/track-error/v1/errors'],
- ['ai_telemetry','https://spclient.wg.spotify.com/v1/telemetry/sandbox']
+ ['ai_telemetry','https://spclient.wg.spotify.com/v1/telemetry/sandbox'],
+ ['queued_telemetry','https://aet.spotify.com/event'],
+ ['queued_telemetry','https://lciapi.ninthdecimal.com/event'],
+ ['queued_telemetry','https://tracker.samplicio.us/event'],
+ ['queued_telemetry','https://tpt.dotomi.com/event'],
+ ['queued_telemetry','https://aes.us-east.3px.axp.amazon-adsystem.com/event'],
+ ['queued_telemetry','https://aax-events-cell02-cf.us-east.3px.axp.amazon-adsystem.com/event']
 ];
 async function requestGuards(){
  const fixture=networkWindow(),b=boot({},fixture.window),w=b.window;
@@ -140,6 +146,12 @@ async function requestGuards(){
   assert(b.output.includes('FLOGGFY_PRIVACY_COUNT_V1:'+category+'=1'));
  }
  assert.equal(fixture.calls.length,0,'blocked APIs never reach native send');
+ for(const [,url] of routes.filter(([category])=>category==='queued_telemetry')){
+  const host=new URL(url).host;
+  for(const allowed of ['https://'+host+'.invalid/event','https://child.'+host+'/event','https://'+host+'@unrelated.example/event','sp://'+host+'/event']){
+   assert.equal((await w.fetch(allowed)).ok,true);
+  }
+ }
  for(const url of ['https://spclient.wg.spotify.com/melody/v1/license_url','https://accounts.spotify.com/login','https://spclient.wg.spotify.com/metadata/4/track/id','https://spclient.wg.spotify.com/color-lyrics/v2/track/id','https://spclient.wg.spotify.com/track-error/v1/errors-extra','https://example.com/melody/v1/msg/batch','sp://logging/v4/events','https://o22381.ingest.sentry.io/api/999/envelope/']){
   assert.equal((await w.fetch(url)).ok,true);assert.equal(w.navigator.sendBeacon(url),true);
  }
@@ -191,6 +203,7 @@ async function requestGuards(){
   if(category==='event_reports'){await item.instance.send('restored');assert.equal(item.state.queue.length,1);await assert.rejects(disabled.window.fetch(routes[1][1]),error=>error.name==='TypeError');}
  }
  const off=networkWindow(),originalFetch=off.window.fetch,originalSend=off.window.sendCosmosRequest,disabled=boot({block_telemetry:false},off.window),producer=sender();disabled.observe(registry(producer.instance));
+ assert.equal((await off.window.fetch('https://aet.spotify.com/event')).ok,true);
  assert.strictEqual(off.window.fetch,originalFetch);assert.strictEqual(off.window.sendCosmosRequest,originalSend);await producer.instance.send('restored');assert.equal(producer.state.queue.length,1);
  console.log('PASS: renderer category selection, request failures, XHR cancellation, Cosmos callbacks, late discovery and native forwarding');
 }

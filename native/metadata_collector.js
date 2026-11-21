@@ -332,7 +332,8 @@
   for(const [uri,entry] of serviceCache){
    const id=uri.slice(14);
    for(const kind of ['metadata','album','lyrics']){
-    const r=entry[kind];if(!r.granted||(kind==='lyrics'&&config.lyrics===false))continue;
+    const r=entry[kind];if(!r.granted)continue;
+    if(kind==='lyrics'?(config.lyrics===false||config.fetchMissingLyrics===false):config.fetchMissingMetadata===false)continue;
     if(r.data||r.done||r.pending||r.attempts>=2||now<(r.retryAt||0)||activeRequests>=4)continue;
     const albumUri=own(entry.snapshot,'album_uri');
     const albumId=text(own(own(entry.metadata.data,'album'),'gid'))||(/^spotify:album:[A-Za-z0-9]{22}$/.test(albumUri||'')?hexId(albumUri.slice(14)):undefined);if(kind==='album'&&!/^[a-f0-9]{32}$/.test(albumId||''))continue;
@@ -370,9 +371,13 @@
   const current=key&&own(main,key);
   if(current!==root||!queue.length||walked>=8000){root=current;queue=current?[current]:[];seen=new Set();walked=0;}
   const clock=()=>performance.now(),deadline=clock()+4;
+  const config=options();
+  const observeArtwork=config.metadata===true&&config.fetchMissingArtwork!==false?own(window,'__floggfyArtworkObserve'):undefined;
+  const priority=['memoizedProps','value','registry','platform','props','dependencies','firstContext','memoizedValue','child','sibling'];
   while(queue.length&&walked<8000&&clock()<deadline){
    const o=queue.pop();if(!object(o)||seen.has(o))continue;
    seen.add(o);walked++;
+   if(typeof observeArtwork==='function')try{observeArtwork(o);}catch{}
    // getState is the PlayerAPI's local snapshot accessor. No other client
    // methods are called (including registry.resolve and query fetchers).
    const snapshot=method(o,'getState');
@@ -392,7 +397,6 @@
    }}catch{}
    if(own(o,'uri')||own(o,'trackUri')||own(o,'queryKey'))remember(o);
    try{let count=0;for(const v of Map.prototype.values.call(o)){if(++count>80||queue.length>=8192)break;if(object(v))queue.push(v);}}catch{}
-   const priority=['memoizedProps','value','registry','platform','props','dependencies','firstContext','memoizedValue','child','sibling'];
    const keys=Object.keys(o).slice(0,80).sort((a,b)=>{
     const x=priority.indexOf(a),y=priority.indexOf(b);return (x<0?99:x)-(y<0?99:y);
    });

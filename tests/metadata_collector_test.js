@@ -93,6 +93,17 @@ assert.equal(requests,0);assert.equal(resolutions,0);assert.equal(getters,0);
 assert(!/AuthorizationAPI|registry\.resolve\(|\.fetchQuery\(|_accessToken/.test(script));
 console.log('PASS: cached metadata, exact track association, cache updates, missing fields, zero requests/service resolutions/accessor reads');
 
+// Graph discovery follows the live artwork preference without stopping metadata scans.
+let artworkObservations=0;
+const discoveryWindow={__floggfyConfig:{metadata:true,fetchMissingArtwork:false},
+ __floggfyArtworkObserve:()=>{++artworkObservations;}};
+vm.runInNewContext(script,{...context,window:discoveryWindow});
+assert.equal(artworkObservations,0,'disabled artwork must skip observer probes');
+discoveryWindow.__floggfyConfig.fetchMissingArtwork=true;
+for(let i=0;i<20&&!artworkObservations;i++)discoveryWindow.__floggfyPoll();
+assert(artworkObservations>0,'enabling artwork must resume discovery');
+
+
 // Current Spotify normalizes lyrics to data.lyrics [{start,end,text}].
 const normalizedOut=[];
 const normalizedContext={...context,window:{Spicetify:{Player:player}},console:{info:x=>normalizedOut.push(x)}};

@@ -89,6 +89,11 @@ std::shared_ptr<MetadataRecord> MetadataCache::Pin(const RichMetadata& m) {
  return record;
 }
 void MetadataCache::Put(const RichMetadata& m) {Pin(m)->value=m;}
+std::vector<std::shared_ptr<MetadataRecord>> MetadataCache::Pinned() const {
+ std::vector<std::shared_ptr<MetadataRecord>> pinned;
+ for(const auto& record:records_)if(record.use_count()>1)pinned.push_back(record);
+ return pinned;
+}
 const RichMetadata* MetadataCache::FindUri(const std::string& uri) const {
  for(const auto& record:records_)if(record->value.uri==uri)return &record->value;
  return nullptr;

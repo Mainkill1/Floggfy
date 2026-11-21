@@ -296,7 +296,8 @@ int main(int argc,char** argv){
   {privacy::Rule::Growth,&history::Settings::block_growth_analytics,L"https://www.spotify.com/api/growth-events/wwwanalytics"},
   {privacy::Rule::Crash,&history::Settings::block_crash_reports,L"https://crashdump.spotify.com/"},
   {privacy::Rule::TrackError,&history::Settings::block_track_errors,L"https://spclient.wg.spotify.com/track-error/v1/errors"},
-  {privacy::Rule::AITelemetry,&history::Settings::block_ai_telemetry,L"https://spclient.wg.spotify.com/v1/telemetry/sandbox"}
+  {privacy::Rule::AITelemetry,&history::Settings::block_ai_telemetry,L"https://spclient.wg.spotify.com/v1/telemetry/sandbox"},
+  {privacy::Rule::QueuedTracking,&history::Settings::block_queued_telemetry,L"https://aet.spotify.com/event"}
  };
  for(const auto& item:categories){
   history::Settings options;options.*(item.field)=false;privacy::ConfigureCategories(options);

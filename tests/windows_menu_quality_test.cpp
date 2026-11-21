@@ -1,6 +1,8 @@
 // Exercise the production CEF menu boundary with a model implementing the
 // required public prefix. No Spotify binaries or private media are needed.
 #include "../native/playback_quality_windows.cpp"
+#include "../native/history_settings.h"
+#include "../native/async_log.h"
 #include <windows.h>
 #include <shlobj.h>
 #include <shellapi.h>
@@ -45,6 +47,39 @@ static HANDLE WINAPI RunClickWorker(LPSECURITY_ATTRIBUTES,SIZE_T,LPTHREAD_START_
   if(thread)entry(value);
   return thread;
 }
+static bool network_available=true,network_enabled=false,network_change_succeeds=true;
+static bool network_setting_succeeds=true;
+static unsigned network_set_calls=0,network_fail_on_call=0;
+namespace network {
+bool Available() {return network_available;}
+bool Enabled() {return network_enabled;}
+bool SetEnabled(bool enabled) {
+  ++network_set_calls;
+  if(!network_available||!network_change_succeeds||network_set_calls==network_fail_on_call)return false;
+  network_enabled=enabled;return true;
+}
+}
+static bool updates_available=true,updates_blocked=false,updates_change_succeeds=true,updates_setting_succeeds=true;
+static unsigned updates_set_calls=0,updates_fail_on_call=0;
+static DWORD updates_error=ERROR_SUCCESS;
+namespace updates {
+bool Available(){return updates_available;}
+bool Blocked(){return updates_blocked;}
+DWORD LastError(){return updates_error;}
+bool SetBlocked(bool blocked){
+  ++updates_set_calls;
+  if(!updates_available||!updates_change_succeeds||updates_set_calls==updates_fail_on_call){updates_error=ERROR_ACCESS_DENIED;return false;}
+  updates_blocked=blocked;updates_error=ERROR_SUCCESS;return true;
+}
+}
+static std::vector<std::string> menu_log_lines;
+namespace history {void LogMenuEvent(LogKind kind,const char* event,const std::string& detail){menu_log_lines.push_back(detail);LogEvent(kind,event,detail);}}
+#define LogEvent LogMenuEvent
+static unsigned location_picker_calls=0;
+namespace history {bool SetBlockUpdatesForMenuTest(bool);bool SetNetworkKillSwitchForMenuTest(bool);void PickSaveLocationForMenuTest(HWND){++location_picker_calls;}}
+#define PickSaveLocation PickSaveLocationForMenuTest
+#define SetNetworkKillSwitch SetNetworkKillSwitchForMenuTest
+#define SetBlockUpdates SetBlockUpdatesForMenuTest
 #define GetFileAttributesW FileAttributes
 #define SHParseDisplayName ParseItem
 #define SHOpenFolderAndSelectItems ShowItem
@@ -56,6 +91,10 @@ static HANDLE WINAPI RunClickWorker(LPSECURITY_ATTRIBUTES,SIZE_T,LPTHREAD_START_
 #define ReadRecentDownloads ReadRecentDownloadsForMenuTest
 #define VirtualQuery CountQuery
 #include "../native/to_disk_menu.cpp"
+#undef LogEvent
+#undef PickSaveLocation
+#undef SetNetworkKillSwitch
+#undef SetBlockUpdates
 #undef VirtualQuery
 #undef GetFileAttributesW
 #undef SHParseDisplayName
@@ -76,6 +115,8 @@ static void SetSongFile(std::uint64_t identity,const std::wstring& file) {
   published_song_id=identity;published_song_file=file;published_song_generation=history::GetSettings().generation;
 }
 namespace history {
+bool SetBlockUpdatesForMenuTest(bool enabled){return updates_setting_succeeds&&SetBlockUpdates(enabled);}
+bool SetNetworkKillSwitchForMenuTest(bool enabled) {return network_setting_succeeds&&SetNetworkKillSwitch(enabled);}
 bool ReadSongDestinationForMenuTest(std::uint64_t identity,unsigned generation,std::wstring& file) {
   if(identity!=published_song_id || generation!=published_song_generation || published_song_file.empty())return false;
   file=published_song_file;return true;
@@ -239,18 +280,26 @@ int main(int argc,char** argv) {
   wchar_t module[2048];assert(GetModuleFileNameW(nullptr,module,2048));
   std::wstring ini=module;ini=ini.substr(0,ini.find_last_of(L'\\'))+L"\\SpotifyHistory.ini";
   DeleteFileW(ini.c_str());
-  history::Settings speed_opt_out;speed_opt_out.capture_speed_limit=0;
+  history::Settings speed_opt_out;speed_opt_out.capture_speed=-1;
   assert(!ShowCaptureSpeed(speed_opt_out));
   history::Settings speed_default;
   assert(!ShowCaptureSpeed(speed_default));
+  speed_opt_out.capture_speed=0;assert(ShowCaptureSpeed(speed_opt_out));
+  speed_opt_out.capture_speed=1;assert(ShowCaptureSpeed(speed_opt_out));
   Model default_speed;Init(default_speed);
   default_speed.entries={{1,5,L"First"},{2,5,L"Second"},{3,5,L"Third"}};
   Populate(&default_speed.api);
   assert(default_speed.child);
   assert(Index(&default_speed.child->api,28471)<0);
+  auto& default_misc=*default_speed.child->extra_children.at(misc_root_id);
+  assert(default_misc.entries.size()==6);
+  const auto default_kill_index=Index(&default_misc.api,network_kill_id);
+  assert(default_kill_index>=0&&!default_misc.entries[default_kill_index].checked);
+  assert(default_speed.child->extra_children.at(fallbacks_root_id)->entries.size()==5);
   const auto default_speed_child=default_speed.child->extra_children.find(speed_root_id);
   assert(default_speed_child==default_speed.child->extra_children.end());
-  assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeedLimit",L"1",ini.c_str()));
+  assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeed",L"0",ini.c_str()));
+  if(never_pause_hidden)assert(WritePrivateProfileStringW(L"Misc",L"NetworkKillSwitch",L"-1",ini.c_str()));
   assert(WritePrivateProfileStringW(L"To Disk",L"Podcasts",L"0",ini.c_str()));
   const auto test_log_root=ini.substr(0,ini.find_last_of(L'\\'))+L"\\Menu-test-logs";
   assert(WritePrivateProfileStringW(L"To Disk",L"Save Location",test_log_root.c_str(),ini.c_str()));
@@ -258,7 +307,7 @@ int main(int argc,char** argv) {
   history::InitSettings(nullptr);
   assert(history::GetSettings().root==test_log_root);
   assert(history::SetLyrics(true));
-  assert(history::SetCaptureSpeed(1));
+  assert(history::GetSettings().capture_speed==0&&history::CaptureSpeed()==1);
   history::PlaybackQualitySnapshot initial;
   initial.rate = 44100;
   history::PublishPlaybackQuality(initial);
@@ -288,19 +337,38 @@ int main(int argc,char** argv) {
   Populate(&root.api);
   assert(root.child);
   auto &child = *root.child;
-  assert(Index(&child.api,28490)==Index(&child.api,location_id)+1);
+  assert(root.entries.back().label==L"To Disk");
+  assert(child.entries[0].id==project_id&&child.entries[0].label==L"Floggfy - v1.4");
+  assert(child.entries[0].type==1&&!child.entries[0].enabled&&!child.entries[0].checked);
+  assert(child.entries[1].type==4&&child.entries[2].id==downloads_id);
+  assert(Index(&child.api,recent_id)==Index(&child.api,downloads_id)+1);
   assert(child.entries[Index(&child.api,28490)].label==L"Latest Downloads");
   assert(!child.entries[Index(&child.api,recent_id)].visible);
   assert(child.child && child.child->refs==1);
   assert(!child.child->entries[0].enabled);
   assert(filesystem_calls==0 && shell_calls==0 && recent_reads==0);
-  assert(child.entries[Index(&child.api,lyrics_id)].checked);
-  assert(Index(&child.api,auto_skip_id)==Index(&child.api,lyrics_id)+1);
-  assert(!child.entries[Index(&child.api,auto_skip_id)].checked);
-  assert(child.entries[Index(&child.api,auto_skip_id)].label==L"Auto Skip Downloaded (Disabled)");
-  assert(!child.entries[Index(&child.api,podcasts_id)].checked);
-  assert(child.entries[Index(&child.api,podcasts_id)].label==L"Podcasts (Disabled)");
-  assert(child.entries.size() == (never_pause_hidden?14u:15u)); // Nine controls, separator, four quality rows.
+  auto& formats=*child.extra_children.at(formats_root_id);
+  auto& misc=*child.extra_children.at(misc_root_id);
+  auto& fallbacks=*child.extra_children.at(fallbacks_root_id);
+  assert(formats.entries.size()==5&&formats.refs==1);
+  assert(formats.entries[0].id==ogg_id&&formats.entries[1].id==flac_id&&formats.entries[2].id==aac_id&&formats.entries[3].id==podcasts_id);
+  assert(!formats.entries[2].checked&&!formats.entries[3].checked);
+  assert(formats.entries[2].label==L"AAC"&&formats.entries[3].label==L"Podcasts");
+  assert(misc.entries.size()==(never_pause_hidden?5u:6u)&&misc.refs==1);
+  assert(misc.entries[0].id==location_id&&misc.entries[0].type==1);
+  assert(misc.entries[1].id==auto_skip_id&&!misc.entries[1].checked);
+  assert(misc.entries[4].id==block_updates_id&&misc.entries[4].enabled&&!misc.entries[4].checked&&misc.entries[4].label==L"Block Updates");
+  assert(formats.entries.back().id==lyrics_id&&formats.entries.back().checked&&formats.entries.back().label==L"Include Lyrics");
+  assert(Index(&misc.api,lyrics_id)<0);
+  assert(fallbacks.entries.size()==5&&fallbacks.refs==1);
+  assert(fallbacks.entries[0].label==L"Read Spotify Disk Cache"&&fallbacks.entries[0].checked);
+  assert(fallbacks.entries[1].label==L"Fetch Missing Metadata"&&fallbacks.entries[1].checked);
+  assert(fallbacks.entries[2].label==L"Fetch Missing Artwork"&&fallbacks.entries[2].checked);
+  assert(fallbacks.entries[3].label==L"Fetch Missing Lyrics"&&fallbacks.entries[3].checked);
+  assert(fallbacks.entries[4].id==windows_fallback_id&&!fallbacks.entries[4].checked);
+  assert((Index(&misc.api,network_kill_id)<0)==never_pause_hidden);
+  for(int id:{location_id,ogg_id,flac_id,aac_id,podcasts_id,lyrics_id,auto_skip_id,windows_fallback_id,block_updates_id})assert(Index(&child.api,id)<0);
+  assert(child.entries.size()==(never_pause_hidden?13u:14u));
   const auto speed_child=child.extra_children.find(speed_root_id);
   assert(speed_child!=child.extra_children.end()&&speed_child->second->entries.size()==5);
   assert(speed_child->second->entries[0].checked);
@@ -313,7 +381,9 @@ int main(int argc,char** argv) {
   type_calls=0;
   Populate(&root.api);
   assert(type_calls==0); // Existing insertion is not rescanned or repopulated.
-  assert(child.entries.size() == (never_pause_hidden?14u:15u) && child.refs == 1);
+  assert(std::count_if(child.entries.begin(),child.entries.end(),[](const Entry& entry){return entry.id==project_id;})==1);
+  assert(child.entries[0].id==project_id&&child.entries[1].type==4&&child.entries[2].id==downloads_id);
+  assert(child.entries.size() == (never_pause_hidden?13u:14u) && child.refs == 1);
   capability_queries=type_calls=index_calls=0;
   original_add_submenu=AddChild;
   Model unrelated;Init(unrelated);unrelated.submenu=true;
@@ -337,9 +407,9 @@ int main(int argc,char** argv) {
     Populate(&translated.api);
     assert(translated.child && translated.entries.size()==4);
     assert(translated.entries.back().label==L"To Disk");
-    assert(translated.child->entries.size()==(never_pause_hidden?14u:15u) && translated.child->refs==1);
+    assert(translated.child->entries.size()==(never_pause_hidden?13u:14u) && translated.child->refs==1);
     Populate(&translated.api);
-    assert(translated.entries.size()==4 && translated.child->entries.size()==(never_pause_hidden?14u:15u));
+    assert(translated.entries.size()==4 && translated.child->entries.size()==(never_pause_hidden?13u:14u));
   }
   // The client changes first while SMTC still publishes the previous song.
   history::PlaybackQualitySnapshot actual;
@@ -371,6 +441,132 @@ int main(int argc,char** argv) {
   original.format = OriginalFormat;
   Wrapped wrapped;
   wrapped.original = &original;
+  const auto messages_before_heading=message_calls,folders_before_heading=folder_opens;
+  Retain(&child.api.base);Execute(&wrapped.api,&child.api,project_id,0);
+  assert(message_calls==messages_before_heading&&folder_opens==folders_before_heading);
+  assert(child.refs==1&&original_commands==0&&!child.entries[0].enabled);
+  Retain(&misc.api.base);Execute(&wrapped.api,&misc.api,location_id,0);
+  assert(location_picker_calls==1&&misc.refs==1);
+  const auto fallback_epoch=history::CaptureEpoch();
+  Retain(&fallbacks.api.base);Execute(&wrapped.api,&fallbacks.api,windows_fallback_id,0);
+  assert(history::GetSettings().windows_playback_fallback&&fallbacks.entries[4].checked&&fallbacks.refs==1);
+  Retain(&fallbacks.api.base);Execute(&wrapped.api,&fallbacks.api,windows_fallback_id,0);
+  assert(!history::GetSettings().windows_playback_fallback&&!fallbacks.entries[4].checked&&history::CaptureEpoch()==fallback_epoch);
+  const wchar_t* fallback_keys[]={L"ReadSpotifyDiskCache",L"FetchMissingMetadata",L"FetchMissingArtwork",L"FetchMissingLyrics"};
+  for(unsigned i=0;i<4;++i) {
+    const int command=fallbacks.entries[i].id;
+    Retain(&fallbacks.api.base);Execute(&wrapped.api,&fallbacks.api,command,0);
+    assert(!fallbacks.entries[i].checked&&fallbacks.refs==1&&history::CaptureEpoch()==fallback_epoch);
+    assert(history::FlushSettings(5000)&&GetPrivateProfileIntW(L"Fallbacks",fallback_keys[i],9,ini.c_str())==0);
+    Retain(&fallbacks.api.base);Execute(&wrapped.api,&fallbacks.api,command,0);
+    assert(fallbacks.entries[i].checked&&history::CaptureEpoch()==fallback_epoch);
+    assert(history::FlushSettings(5000)&&GetPrivateProfileIntW(L"Fallbacks",fallback_keys[i],9,ini.c_str())==1);
+  }
+  assert(!history::AACEnabled());
+  Retain(&formats.api.base);Execute(&wrapped.api,&formats.api,aac_id,0);
+  assert(history::GetSettings().aac&&history::AACEnabled()&&formats.entries[2].checked&&formats.entries[2].label==L"AAC"&&formats.refs==1);
+  assert(history::FlushSettings(5000)&&GetPrivateProfileIntW(L"To Disk",L"AAC",0,ini.c_str())==1);
+  Retain(&formats.api.base);Execute(&wrapped.api,&formats.api,aac_id,0);
+  assert(!history::GetSettings().aac&&!history::AACEnabled()&&!formats.entries[2].checked&&formats.refs==1);
+  // Misc controls persist the feature flag and show scan state when reused.
+  {
+    auto click_marked=[&](int id){Retain(&misc.api.base);Execute(&wrapped.api,&misc.api,id,0);assert(misc.refs==1);};
+    assert(history::GetSettings().marked_when_downloaded);
+    assert(misc.entries[Index(&misc.api,marked_id)].label==L"Marked When Downloaded");
+    assert(misc.entries[Index(&misc.api,marked_rebuild_id)].label==L"Marked DB Rebuild");
+    click_marked(marked_rebuild_id);
+    assert(history::MarkedRebuildRunning());
+    assert(misc.entries[Index(&misc.api,marked_rebuild_id)].checked);
+    click_marked(marked_id);
+    assert(!history::GetSettings().marked_when_downloaded&&!history::MarkedRebuildRunning());
+    assert(!misc.entries[Index(&misc.api,marked_rebuild_id)].enabled);
+    assert(history::FlushSettings(5000));
+    assert(GetPrivateProfileIntW(L"Misc",L"MarkedWhenDownloaded",9,ini.c_str())==0);
+    click_marked(marked_id);
+    click_marked(marked_rebuild_id);
+    assert(history::ToggleMarkedRebuild()); // Background completion/cancel before reopened menu.
+    Retain(&misc.api.base);WillShow(&wrapped.api,&misc.api);
+    assert(!misc.entries[Index(&misc.api,marked_rebuild_id)].checked);
+    assert(history::FlushSettings(5000));
+    assert(GetPrivateProfileIntW(L"Misc",L"MarkedWhenDownloaded",9,ini.c_str())==1);
+  }
+  for(int id:{formats_root_id,misc_root_id,fallbacks_root_id}){Retain(&child.api.base);Execute(&wrapped.api,&child.api,id,0);}
+  assert(original_commands==0&&child.refs==1);
+  {
+    auto click_updates=[&]{Retain(&misc.api.base);Execute(&wrapped.api,&misc.api,block_updates_id,0);assert(misc.refs==1);};
+    auto& entry=misc.entries[Index(&misc.api,block_updates_id)];
+    const auto epoch=history::CaptureEpoch();
+    click_updates();
+    assert(updates_blocked&&history::GetSettings().block_updates&&entry.checked&&entry.label==L"Block Updates");
+    assert(history::CaptureEpoch()==epoch&&history::FlushSettings(5000));
+    assert(GetPrivateProfileIntW(L"Misc",L"BlockUpdates",0,ini.c_str())==1);
+    click_updates();assert(!updates_blocked&&!history::GetSettings().block_updates&&!entry.checked);
+    updates_change_succeeds=false;
+    const auto messages_before=message_calls;
+    click_updates();
+    assert(!updates_blocked&&!history::GetSettings().block_updates&&!entry.checked&&message_calls==messages_before+1);
+    assert(updates_error==ERROR_ACCESS_DENIED);
+    assert(std::find(menu_log_lines.begin(),menu_log_lines.end(),"Block Updates failed stage=apply error=5 active=0")!=menu_log_lines.end());
+    updates_change_succeeds=true;updates_setting_succeeds=false;
+    const auto calls_before=updates_set_calls;
+    click_updates();
+    assert(updates_set_calls==calls_before+2&&!updates_blocked&&!history::GetSettings().block_updates&&!entry.checked);
+    updates_fail_on_call=updates_set_calls+2;
+    click_updates();
+    assert(updates_blocked&&!history::GetSettings().block_updates&&entry.checked); // Failed rollback must show actual protection.
+    assert(std::find(menu_log_lines.begin(),menu_log_lines.end(),"Block Updates failed stage=rollback error=5 active=1")!=menu_log_lines.end());
+    updates_fail_on_call=0;updates_setting_succeeds=true;
+    click_updates();assert(!updates_blocked&&!entry.checked);
+    updates_available=false;updates_error=ERROR_PATH_NOT_FOUND;
+    Model unavailable;Init(unavailable);unavailable.entries={{1,5,L"First"},{2,5,L"Second"},{3,5,L"Third"}};
+    Populate(&unavailable.api);
+    auto& unavailable_misc=*unavailable.child->extra_children.at(misc_root_id);
+    const auto& unavailable_entry=unavailable_misc.entries[Index(&unavailable_misc.api,block_updates_id)];
+    assert(!unavailable_entry.enabled&&!unavailable_entry.checked&&unavailable_entry.label==L"Block Updates (Unavailable)");
+    const auto calls_unavailable=updates_set_calls;
+    click_updates();
+    assert(updates_set_calls==calls_unavailable&&!updates_blocked&&!history::GetSettings().block_updates);
+    assert(std::find(menu_log_lines.begin(),menu_log_lines.end(),"Block Updates failed stage=unavailable error=3 active=0")!=menu_log_lines.end());
+    updates_available=true;updates_error=ERROR_SUCCESS;
+    assert(history::CaptureEpoch()==epoch);
+  }
+  if(never_pause_hidden){
+    const auto messages_before=message_calls,calls_before=network_set_calls;
+    Retain(&child.api.base);Execute(&wrapped.api,&child.api,network_kill_id,0);
+    assert(history::GetSettings().network_kill_switch==-1&&message_calls==messages_before&&network_set_calls==calls_before);
+  }
+  if(!never_pause_hidden){
+    auto click_kill=[&]{Retain(&misc.api.base);Execute(&wrapped.api,&misc.api,network_kill_id,0);assert(misc.refs==1);};
+    const auto epoch=history::CaptureEpoch();
+    click_kill();
+    assert(network_enabled&&history::GetSettings().network_kill_switch==1&&misc.entries[Index(&misc.api,network_kill_id)].checked);
+    assert(history::CaptureEpoch()==epoch);
+    click_kill();
+    assert(!network_enabled&&history::GetSettings().network_kill_switch==0&&!misc.entries[Index(&misc.api,network_kill_id)].checked);
+    network_change_succeeds=false;
+    click_kill();
+    assert(!network_enabled&&history::GetSettings().network_kill_switch==0&&!misc.entries[Index(&misc.api,network_kill_id)].checked);
+    network_change_succeeds=true;network_setting_succeeds=false;
+    const auto calls_before=network_set_calls;
+    click_kill();
+    assert(network_set_calls==calls_before+2); // Apply succeeded, rejected persistence rolls back.
+    assert(!network_enabled&&history::GetSettings().network_kill_switch==0&&!misc.entries[Index(&misc.api,network_kill_id)].checked);
+    network_fail_on_call=network_set_calls+2;
+    click_kill();
+    assert(network_enabled&&history::GetSettings().network_kill_switch==0&&misc.entries[Index(&misc.api,network_kill_id)].checked); // Reflect actual protection if rollback fails.
+    network_fail_on_call=0;network_setting_succeeds=true;
+    click_kill();assert(!network_enabled&&!misc.entries[Index(&misc.api,network_kill_id)].checked);
+    network_available=false;
+    Model unavailable;Init(unavailable);unavailable.entries={{1,5,L"First"},{2,5,L"Second"},{3,5,L"Third"}};
+    Populate(&unavailable.api);
+    auto& unavailable_misc=*unavailable.child->extra_children.at(misc_root_id);
+    const auto& unavailable_kill=unavailable_misc.entries[Index(&unavailable_misc.api,network_kill_id)];
+    assert(!unavailable_kill.enabled&&!unavailable_kill.checked&&unavailable_kill.label==L"Network Kill Switch (Unavailable)");
+    const auto calls_while_unavailable=network_set_calls;
+    click_kill();
+    assert(network_set_calls==calls_while_unavailable&&!network_enabled&&history::GetSettings().network_kill_switch==0);
+    network_available=true;
+  }
   history::SetCaptureAccelerationAvailable(true);
   auto& speed_menu=*child.extra_children.at(speed_root_id);
   const auto capture_epoch=history::CaptureEpoch();
@@ -640,7 +836,7 @@ int main(int argc,char** argv) {
   q.format=history::PlaybackFormat::Unknown;history::PublishPlaybackQuality(q);
   build_root();assert(!child.entries[quality_index+2].visible && !child.entries[quality_index+3].visible);
   assert(child.entries[quality_index].visible && child.entries[quality_index+1].visible);
-  assert(child.entries.size()==(never_pause_hidden?14u:15u) && child.refs==1 && root.refs==1);
+  assert(child.entries.size()==(never_pause_hidden?13u:14u) && child.refs==1 && root.refs==1);
   actual.level=history::PlaybackLevel::Unknown;q.level=actual.level;
   history::PublishClientPlaybackQuality(actual);history::PublishPlaybackQuality(q);
   build_root();assert(!child.entries[quality_index+1].visible); // No Quality: Unavailable placeholder.
@@ -657,17 +853,17 @@ int main(int argc,char** argv) {
     Execute(&wrapped.api, &child.api, child.entries[i].id, 0);
   }
   assert(original_commands == 0 && child.refs == 1);
-  Retain(&child.api.base);Execute(&wrapped.api,&child.api,podcasts_id,0);
+  Retain(&formats.api.base);Execute(&wrapped.api,&formats.api,podcasts_id,0);
   assert(history::GetSettings().podcasts);
-  assert(child.entries[Index(&child.api,podcasts_id)].checked);
-  assert(child.entries[Index(&child.api,podcasts_id)].label==L"Podcasts (Enabled)");
-  Retain(&child.api.base);Execute(&wrapped.api,&child.api,podcasts_id,0);
+  assert(formats.entries[Index(&formats.api,podcasts_id)].checked);
+  assert(formats.entries[Index(&formats.api,podcasts_id)].label==L"Podcasts");
+  Retain(&formats.api.base);Execute(&wrapped.api,&formats.api,podcasts_id,0);
   assert(!history::GetSettings().podcasts);
-  Retain(&child.api.base);Execute(&wrapped.api,&child.api,lyrics_id,0);
+  Retain(&formats.api.base);Execute(&wrapped.api,&formats.api,lyrics_id,0);
   assert(!history::GetSettings().lyrics);
-  assert(!child.entries[Index(&child.api,lyrics_id)].checked);
-  assert(child.entries[Index(&child.api,lyrics_id)].label==L"Lyrics (Disabled)");
-  Retain(&child.api.base);Execute(&wrapped.api,&child.api,lyrics_id,0);
+  assert(!formats.entries[Index(&formats.api,lyrics_id)].checked);
+  assert(formats.entries[Index(&formats.api,lyrics_id)].label==L"Include Lyrics");
+  Retain(&formats.api.base);Execute(&wrapped.api,&formats.api,lyrics_id,0);
   assert(history::GetSettings().lyrics && history::FlushSettings(5000));
   const auto never_pause_epoch=history::CaptureEpoch();
   if(never_pause_hidden) {
@@ -678,18 +874,18 @@ int main(int argc,char** argv) {
     const auto row=Index(&child.api,28471);assert(row>=0&&!child.entries[row].checked);
     Retain(&child.api.base);Execute(&wrapped.api,&child.api,28471,0);
     assert(history::GetSettings().never_pause==1&&child.entries[row].checked);
-    assert(child.entries[row].label==L"Never Pause (Enabled)");
+    assert(child.entries[row].label==L"Never Pause");
     Retain(&child.api.base);Execute(&wrapped.api,&child.api,28471,0);
     assert(history::GetSettings().never_pause==0&&!child.entries[row].checked);
-    assert(child.entries[row].label==L"Never Pause (Disabled)");
+    assert(child.entries[row].label==L"Never Pause");
   }
   assert(history::CaptureEpoch()==never_pause_epoch&&history::FlushSettings(5000));
   const auto auto_skip_epoch=history::CaptureEpoch();
-  Retain(&child.api.base);Execute(&wrapped.api,&child.api,auto_skip_id,0);
+  Retain(&misc.api.base);Execute(&wrapped.api,&misc.api,auto_skip_id,0);
   assert(history::GetSettings().auto_skip_downloaded&&history::CaptureEpoch()==auto_skip_epoch);
-  assert(child.entries[Index(&child.api,auto_skip_id)].checked);
-  assert(child.entries[Index(&child.api,auto_skip_id)].label==L"Auto Skip Downloaded (Enabled)");
-  Retain(&child.api.base);Execute(&wrapped.api,&child.api,auto_skip_id,0);
+  assert(misc.entries[Index(&misc.api,auto_skip_id)].checked);
+  assert(misc.entries[Index(&misc.api,auto_skip_id)].label==L"Auto Skip Downloaded");
+  Retain(&misc.api.base);Execute(&wrapped.api,&misc.api,auto_skip_id,0);
   assert(!history::GetSettings().auto_skip_downloaded&&history::FlushSettings(5000));
   Retain(&child.api.base);
   Closed(&wrapped.api,&child.api);
@@ -712,6 +908,7 @@ int main(int argc,char** argv) {
   assert(original_add_submenu&&menu_init.TryBegin(GetTickCount64()+1000));menu_prepared=true;
   FinalizeToDiskMenu(false);assert(menu_init.State()==hooks::InitState::Unsupported);
   assert(child.child->refs==1 && child.refs==1 && root.refs==1);
+  std::puts("PASS: disabled first-row Floggfy heading, separator, duplicate-free population and no-op command ownership");
   std::puts("PASS: bounded recent labels escape mnemonics, sanitize controls, preserve Unicode pairs and full stored titles");
   std::puts("PASS: session downloads hidden until populated; stable labels and shell targets, ten-item cap, busy snapshot retention, missing-file notice");
   std::puts("PASS: menu preparation can retry; failed activation preserves trampoline state");

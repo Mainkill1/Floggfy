@@ -3,6 +3,7 @@
 #include <cassert>
 #include <atomic>
 #include <new>
+#include "artwork_fixture.h"
 static thread_local bool fail_allocation=false;
 void* operator new(std::size_t bytes){if(fail_allocation){fail_allocation=false;throw std::bad_alloc();}if(auto p=HeapAlloc(GetProcessHeap(),0,bytes?bytes:1))return p;throw std::bad_alloc();}
 void operator delete(void* p) noexcept {if(p)HeapFree(GetProcessHeap(),0,p);}
@@ -11,7 +12,8 @@ namespace {
 HANDLE blocked=nullptr,release_enrichment=nullptr;
 std::atomic<unsigned> polls{0},enrichments{0};
 std::atomic<std::uint64_t> artwork_revision{0};
-bool exact_uri_test=false;
+bool exact_uri_test=false,fallback_test=false;
+std::atomic<unsigned> cache_reads{0},network_reads{0};
 HANDLE second_enrichment_started=nullptr;
 int Post(int,history::Task* task){
  ++polls;task->execute(task);task->base.release(&task->base);
@@ -27,7 +29,7 @@ void Send(const wchar_t* year){
 namespace history {
 void EnrichStoredMetadata(RichMetadata& metadata){
  const auto pass=enrichments.fetch_add(1);
- if(pass==0){SetEvent(blocked);WaitForSingleObject(release_enrichment,10000);}
+ if(pass==0&&!fallback_test){SetEvent(blocked);WaitForSingleObject(release_enrichment,10000);}
  if(exact_uri_test){
   if(pass==1)SetEvent(second_enrichment_started);
   metadata.fields["COMMENT"]=metadata.uri;
@@ -38,9 +40,14 @@ void EnrichStoredMetadata(RichMetadata& metadata){
 }
 std::uint64_t AlbumArtworkRevision() noexcept {return artwork_revision.load();}
 bool CacheAlbumArtwork(const std::string&,const std::string&){return false;}
-bool IsAlbumArtworkUrl(const std::string&){return false;}
-bool DownloadAlbumArtwork(const std::string&,std::vector<uint8_t>&){assert(false&&"liveness fixtures never authorize artwork I/O");return false;}
-bool ReadCachedArtwork(const std::string&,std::vector<uint8_t>&,std::string& reason){reason="test-missing";return false;}
+bool IsAlbumArtworkUrl(const std::string& url){return fallback_test&&url.rfind("https://i.scdn.co/image/",0)==0;}
+bool DownloadAlbumArtwork(const std::string&,std::vector<uint8_t>&){
+ assert(fallback_test);++network_reads;return false;
+}
+bool ReadCachedArtwork(const std::string& url,std::vector<uint8_t>& bytes,std::string& reason){
+ if(fallback_test){++cache_reads;if(url.back()=='a'){bytes=artwork_fixture::png();return true;}}
+ reason="test-missing";return false;
+}
 bool GetAlbumArtwork(const std::string&,std::vector<uint8_t>&,std::string&){return false;}
 }
 namespace {
@@ -80,6 +87,123 @@ void CreateBarriers(){
 void StopEnrichment(){
  history::enrichment_running=false;SetEvent(history::enrichment_event);
  assert(WaitForSingleObject(history::enrichment_thread,5000)==WAIT_OBJECT_0);
+}
+void LiveEnrichmentFallbacks(){
+ using namespace history;
+ fallback_test=true;InitSettings(nullptr);
+ const auto epoch=CaptureEpoch();
+ assert(SetReadSpotifyDiskCache(false)&&SetFetchMissingMetadata(false)&&
+        SetFetchMissingArtwork(false)&&SetFetchMissingLyrics(false));
+ assert(CaptureEpoch()==epoch&&FlushSettings(5000));
+ auto first=Seed(uri_a),second=Seed(uri_b);
+ first.fields["LYRICS"]="already available";
+ first.artwork_url="https://i.scdn.co/image/"+std::string(40,'a');
+ second.artwork_url="https://i.scdn.co/image/"+std::string(40,'b');
+ auto first_owner=cache.Pin(first),second_owner=cache.Pin(second);
+ message_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);
+ metadata_running=true;
+ HANDLE worker=CreateThread(nullptr,0,MetadataWorker,nullptr,0,nullptr);assert(worker);
+ SendSparse(uri_a,L"2025");WaitTag(uri_a,"LYRICS","already available");
+ SendSparse(uri_b,L"2025");WaitIdle(first_owner);WaitIdle(second_owner);
+ const auto deadline=GetTickCount64()+5000;
+ while(cache_reads.load()!=2){assert(GetTickCount64()<deadline);Sleep(5);}
+ WaitIdle(first_owner);WaitIdle(second_owner);
+ {
+  SharedSrw guard(cache_lock);
+  assert(first_owner->value.artwork&&first_owner->value.artwork->bytes==artwork_fixture::png());
+  assert(!second_owner->value.artwork&&second_owner->native_artwork_attempted.empty());
+  assert(!first_owner->local_attempted&&!second_owner->local_attempted&&online_enrichment.empty());
+ }
+ for(unsigned i=0;i<10;++i){QueueEnrichment(first_owner);QueueEnrichment(second_owner);}
+ assert(cache_reads.load()==2&&network_reads.load()==0&&enrichments.load()==0);
+ assert(SetReadSpotifyDiskCache(true)&&SetFetchMissingArtwork(true)&&CaptureEpoch()==epoch);
+ const auto resumed=GetTickCount64()+5000;
+ while(network_reads.load()!=1||enrichments.load()!=2){assert(GetTickCount64()<resumed);Sleep(5);}
+ WaitIdle(first_owner);WaitIdle(second_owner);
+ assert(Tag(uri_a,"LYRICS")=="already available"&&cache_reads.load()==2);
+ const auto revision=EnrichmentEnableRevision();
+ assert(SetFetchMissingMetadata(true)&&SetFetchMissingLyrics(true)&&FlushSettings(5000));
+ assert(EnrichmentEnableRevision()==revision+2);
+ const auto grants_deadline=GetTickCount64()+5000;
+ for(;;){
+  {SharedSrw guard(cache_lock);
+   if(first_owner->online_requested==3&&second_owner->online_requested==7)break;
+  }
+  assert(GetTickCount64()<grants_deadline);Sleep(5);
+ }
+ metadata_running=false;SetEvent(message_event);
+ assert(WaitForSingleObject(worker,5000)==WAIT_OBJECT_0);CloseHandle(worker);
+ StopEnrichment();
+}
+std::string CoverReference(char id){
+ return "https://i.scdn.co/image/"+std::string(40,id);
+}
+void VerifyReviewRegressions(const char* check){
+ using namespace history;
+ fallback_test=true;
+ InitSettings(nullptr);
+ assert(SetReadSpotifyDiskCache(false)&&SetFetchMissingMetadata(false)&&
+        SetFetchMissingArtwork(false)&&SetFetchMissingLyrics(false));
+ const auto a=CoverReference('b'),b=CoverReference('a'),other=CoverReference('c');
+ assert(StartEnrichmentWorker());
+ if(!strcmp(check,"--alternate-artwork")){
+  auto first=Seed(uri_a);
+  first.artwork_url=a;first.artwork_urls={a};
+  auto owner=cache.Pin(first);
+  QueueEnrichment(owner);WaitIdle(owner);
+  assert(cache_reads.load()==1&&!owner->value.artwork);
+  first.artwork_urls={a,other};
+  {ExclusiveSrw guard(cache_lock);cache.Put(first);}
+  QueueEnrichment(owner);WaitIdle(owner);
+  assert(cache_reads.load()==3&&"changed candidates must retry cached artwork");
+  first.artwork_urls={other,a,a};
+  {ExclusiveSrw guard(cache_lock);cache.Put(first);}
+  QueueEnrichment(owner);WaitIdle(owner);
+  assert(cache_reads.load()==3&&"reordered or repeated candidates must not retry");
+  first.artwork_urls={a,b};
+  {ExclusiveSrw guard(cache_lock);cache.Put(first);}
+  QueueEnrichment(owner);WaitIdle(owner);
+  assert(owner->value.artwork&&owner->value.artwork->reference==b&&network_reads.load()==0);
+  assert(owner->native_artwork_attempted.empty()&&"native fetching remains disabled");
+ }
+ if(!strcmp(check,"--delayed-artwork")){
+  assert(SetFetchMissingMetadata(true)&&SetFetchMissingArtwork(true)&&SetFetchMissingLyrics(true));
+  auto first=Seed(uri_b);first.artwork_url=a;first.artwork_urls={a};
+  auto owner=cache.Pin(first);
+  Frame frame{};
+  {ExclusiveSrw guard(frame_lock);polling_frame=&frame;}
+  QueueEnrichment(owner);
+  const auto deadline=GetTickCount64()+5000;
+  while(NativeArtworkScript().empty()){assert(GetTickCount64()<deadline);Sleep(5);}
+  // A current client snapshot replaces both the fields and the preferred cover
+  // while the actual native-image reply slot is still waiting.
+  first.artwork_url=b;first.artwork_urls={b};
+  first.album_uri="spotify:album:0000000000000000000007";
+  first.fields["DATE"]="2027";first.fields["ISRC"]="fresh-isrc";first.fields["LABEL"]="fresh-label";first.fields["LYRICS"]="fresh words";
+  {ExclusiveSrw guard(cache_lock);cache.Put(first);}
+  {ExclusiveSrw guard(frame_lock);polling_frame=nullptr;} // No further native replies.
+  std::string reply;
+  {SharedSrw guard(native_artwork_lock);reply="FLOGGFY_ARTWORK_V1:id="+native_artwork_pending.id;}
+  reply+="&uri="+first.uri+"&source=0&status=unavailable&reason=cache-miss";
+  std::wstring wide(reply.begin(),reply.end());String value{wide.data(),wide.size(),nullptr};
+  assert(EnqueueNativeArtwork(&value));
+  StopEnrichment();
+  assert(network_reads.load()==0&&"a delayed reply must not authorize obsolete CDN work");
+  assert(online_enrichment.empty()&&owner->online_requested==0&&"newer fields already satisfy online needs");
+  assert(owner->value.artwork&&owner->value.artwork->reference==b&&Tag(uri_b,"DATE")=="2027");
+ }
+ if(!strcmp(check,"--grant-refresh")){
+  assert(SetFetchMissingMetadata(true)&&SetFetchMissingLyrics(true));
+  auto sparse=Seed("spotify:track:0000000000000000000003");
+  auto owner=cache.Pin(sparse);
+  QueueOnlineEnrichment(owner);
+  assert(owner->online_requested==7&&online_enrichment.size()==1);
+  auto current=sparse;current.fields["ISRC"]="live";current.fields["LABEL"]="live";
+  current.fields["LYRICS"]="live lyrics";current.artwork_url=b;current.album_uri="spotify:album:0000000000000000000008";
+  {ExclusiveSrw guard(cache_lock);cache.Put(current);}
+  assert(OnlineEnrichmentScript().empty()&&owner->online_requested==0&&"UI dispatch must recheck already satisfied grants");
+ }
+ if(strcmp(check,"--delayed-artwork"))StopEnrichment();
 }
 void SparseUriRefreshKeepsOwnFields(){
  CreateBarriers();history::cache.Put(Seed(uri_a));history::cache.Put(Seed(uri_b));
@@ -137,6 +261,12 @@ int main(int argc,char** argv){
    artwork_revision.fetch_add(1);
    assert(history::MetadataRevision()>before&&"publication freshness must observe artwork immediately");
   }
+  else if(!strcmp(argv[1],"--fallbacks")){
+   LiveEnrichmentFallbacks();
+   puts("PASS: disabled fallbacks preserve cached artwork and lyrics; re-enable resumes pinned records");
+   return 0;
+  }
+  else if(!strcmp(argv[1],"--alternate-artwork")||!strcmp(argv[1],"--delayed-artwork")||!strcmp(argv[1],"--grant-refresh"))VerifyReviewRegressions(argv[1]);
   else if(!strcmp(argv[1],"--ambiguous-refresh"))SparseUriRefreshKeepsOwnFields();
   else if(!strcmp(argv[1],"--ambiguous-delayed"))DelayedUriEnrichmentKeepsNewerLiveFields();
   else assert(false);

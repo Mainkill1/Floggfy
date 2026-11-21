@@ -21,6 +21,7 @@ RC1 settings under `[To Disk]` and interim `[Blocking]` values migrate to
 | `BlockInternalLogging` | Cosmos logging v1, v2 and v3 |
 | `BlockTrackErrors` | Track-error reports |
 | `BlockAITelemetry` | Known AI sandbox/turn-termination telemetry paths |
+| `BlockQueuedTelemetry` | Startup/normal-exit cleanup of known pending tracking files and filtering of their observed tracking destinations |
 
 URL policy uses these narrow destinations:
 
@@ -34,12 +35,33 @@ URL policy uses these narrow destinations:
 | crashdump.spotify.com | Crash uploads |
 | sp://logging | /v1, /v2 and /v3 and children |
 | o22381.ingest.sentry.io | /api/114855 and children |
+| aet.spotify.com, lciapi.ninthdecimal.com, tracker.samplicio.us, tpt.dotomi.com | All HTTP(S) paths on these exact tracking hosts |
+| aes.us-east.3px.axp.amazon-adsystem.com, aax-events-cell02-cf.us-east.3px.axp.amazon-adsystem.com | All HTTP(S) paths on these exact advertising-event hosts |
+
+`BlockQueuedTelemetry=1` requires `BlockTelemetry=1`. At startup and normal exit it removes
+only `%APPDATA%\Spotify\Users\*-user\pending-tracking.pb`. These files contained
+48 queued tracking records with the six destinations above in the inspected
+profile. Cleanup does not read or log their contents. Reparse points are skipped;
+locked files produce a warning rather than a forced deletion. Counts and bytes
+removed are logged at activity level, with failures/skips reported at warning
+level. There is no recurring disk scan or cleanup of browser databases, music,
+artwork, account settings or crash databases.
+
+Deleting a file does not erase an already-loaded in-memory queue. Covered request
+hooks also reject attempts to send to these destinations, but early uploads and
+other native networking stacks remain unverified. Spotify can recreate queue
+files during a session. Normal-exit cleanup runs through the Windows ExitProcess
+hook before DLL teardown, outside DllMain; closing to the tray is not an exit.
+Crashes, forced termination, writes during later DLL teardown and uninjected
+processes remain outside that shutdown hook. Startup cleanup provides another
+opportunity on the next launch. This option does not promise that all persisted telemetry
+is gone or that disabling protection later cannot permit an upload.
 
 The Gabo route is identified in [spotify-adblock's policy](https://github.com/abba23/spotify-adblock/blob/main/config.toml).
 The Sentry host/project and EventSender/UBI objects were verified in the installed
 Spotify 1.3.9.2055 V8 snapshot. [Spicetify's producer patches](https://github.com/spicetify/cli/blob/main/src/preprocess/preprocess.go)
-are a reference for preserving return contracts; Floggfy does not modify installed
-Spotify files or change endpoints into nonexistent paths.
+are a reference for preserving return contracts; Floggfy does not patch installed
+Spotify application code or change endpoints into nonexistent paths.
 
 Native filtering handles standalone `cef_urlrequest_create` and observed browser
 resource callbacks before forwarding. These are separate entry points. Known

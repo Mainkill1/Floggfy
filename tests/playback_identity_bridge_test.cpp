@@ -21,6 +21,14 @@ std::array<unsigned char, kMaximumSnapshotBytes> Snapshot(const Instance& instan
     return bytes;
 }
 
+std::optional<Match> QuerySingle(const DiagnosticBridge& bridge,const char* id,
+                                 std::uint64_t generation,unsigned epoch) {
+    std::array<Match,kObservationCapacity> matches{};
+    const auto count=bridge.QueryMatches(id,generation,epoch,matches.data(),matches.size());
+    assert(count<=1);
+    return count?std::optional<Match>(matches[0]):std::nullopt;
+}
+
 bool CopyMemory(const void* source,void* destination,std::size_t size) noexcept {
     std::memcpy(destination,source,size);
     return true;
@@ -86,7 +94,7 @@ int main() {
         assert(ReadPlaybackInstance(owner.data(),current_client_path,CopyMemory,through_player,&field));
         DiagnosticBridge layout;assert(layout.SetExpected(kFirst,1));
         assert(layout.Observe(0x1000,0x2000,0,1,field.data(),field.size(),SnapshotRole::PlayerPlaybackId));
-        const auto match=layout.TakeMatch();assert(match&&match->offset==payload_offset);
+        const auto match=QuerySingle(layout,kFirst,1,0);assert(match&&match->offset==payload_offset);
         assert(ReadPlaybackInstance(owner.data(),current_client_path,CopyMemory,through_player,&field,match->offset));
         assert(through_player.bytes==first.bytes);
         assert(!ReadPlaybackInstance(owner.data(),current_client_path,CopyMemory,through_player,&field,kPlayerFieldBytes));
@@ -105,9 +113,9 @@ int main() {
         assert(ReadPlaybackInstance(owner.data(),learned,CopyMemory,through_player,&field));
         DiagnosticBridge layout;
         // Native evidence can arrive before the corresponding metadata.
-        assert(!layout.Observe(0x1000,0x2000,0,1,field.data(),field.size(),SnapshotRole::PlayerPlaybackId));
+        assert(layout.Observe(0x1000,0x2000,0,1,field.data(),field.size(),SnapshotRole::PlayerPlaybackId));
         assert(layout.SetExpected(kFirst,1));
-        const auto learned_match=layout.TakeMatch();assert(learned_match&&learned_match->offset==0);
+        const auto learned_match=QuerySingle(layout,kFirst,1,0);assert(learned_match&&learned_match->offset==0);
         // A preload with a different ID at the learned location stays readable.
         Instance next{};assert(ParseInstance(kSecond,next));
         std::memcpy(state.data()+location,next.bytes.data(),next.bytes.size());
@@ -142,7 +150,7 @@ int main() {
         state.fill(0);
         assert(discovery.SetExpected(kFirst,1));
         assert(discovery.Location().status==LocationStatus::Verified&&discovery.Location().offset==0xa08);
-        const auto late=discovery.TakeMatch();
+        const auto late=QuerySingle(discovery,kFirst,1,3);
         assert(late&&late->observed_at==10.5&&late->ObservedDuring(10,11)&&!late->ObservedDuring(11,12));
         assert(discovery.HasPlayerIdentity(0x2000,3,10,11));
         assert(!discovery.HasPlayerIdentity(0x2000,3,11,12));
@@ -152,16 +160,16 @@ int main() {
         Instance next{};assert(ParseInstance(kSecond,next));
         std::array<unsigned char,kPlayerFieldBytes> preload{};
         std::copy(next.bytes.begin(),next.bytes.end(),preload.begin());
-        assert(!discovery.Observe(0x3000,0x4000,3,2,preload.data(),preload.size(),SnapshotRole::PlayerPlaybackId,11.5));
+        assert(discovery.Observe(0x3000,0x4000,3,2,preload.data(),preload.size(),SnapshotRole::PlayerPlaybackId,11.5));
         assert(discovery.Location().offset==0xa08);
         assert(discovery.SetExpected(kSecond,2));
-        const auto next_match=discovery.TakeMatch();assert(next_match&&next_match->decoder==0x4000&&next_match->observed_at==11.5);
+        const auto next_match=QuerySingle(discovery,kSecond,2,3);assert(next_match&&next_match->decoder==0x4000&&next_match->observed_at==11.5);
         discovery.Reset();assert(discovery.Location().status==LocationStatus::WaitingMetadata);
         state.fill(0);std::memcpy(state.data()+0x100,first.bytes.data(),first.bytes.size());
         std::memcpy(state.data()+0xa08,first.bytes.data(),first.bytes.size());
         discovery.ObservePlayerState(0x1000,0x2000,3,3,state,12);
         assert(discovery.SetExpected(kFirst,3));
-        assert(discovery.Location().status==LocationStatus::Ambiguous&&!discovery.TakeMatch());
+        assert(discovery.Location().status==LocationStatus::Ambiguous&&!QuerySingle(discovery,kFirst,3,3));
     }
     {
         DiagnosticBridge delayed_initialization;assert(delayed_initialization.SetExpected(kFirst,1));
@@ -178,7 +186,7 @@ int main() {
         std::memcpy(state.data()+0xa08,first.bytes.data(),first.bytes.size());
         delayed_initialization.ObservePlayerState(1,2,0,102,state,41);
         assert(delayed_initialization.Location().status==LocationStatus::Verified);
-        const auto initialized=delayed_initialization.TakeMatch();assert(initialized&&initialized->observed_at==41);
+        const auto initialized=QuerySingle(delayed_initialization,kFirst,1,0);assert(initialized&&initialized->observed_at==41);
         assert(!delayed_initialization.HasPlayerIdentity(2,0,10,40));
     }
 
@@ -194,62 +202,61 @@ int main() {
     assert(!bridge.NeedsObservation(0x1000, 0x2000, 3));
     assert(bridge.NeedsObservation(0x1000, 0x3000, 3));
     assert(bridge.NeedsObservation(0x1000, 0x2000, 4));
-    auto match = bridge.TakeMatch();
+    auto match = QuerySingle(bridge,kFirst,7,3);
     assert(match && match->owner == 0x1000 && match->decoder == 0x2000);
     assert(match->epoch == 3 && match->sequence == 10 && match->metadata_generation == 7);
     assert(match->owner_generation == 1 && match->representation == Representation::RawBytes);
     assert(match->offset == 0x128);
-    assert(!bridge.TakeMatch());
+    assert(QuerySingle(bridge,kFirst,7,3)->sequence==10); // Queries retain evidence.
 
     DiagnosticBridge decoder_snapshot;
     assert(decoder_snapshot.SetExpected(kFirst, 12));
     std::array<unsigned char,kMaximumSnapshotBytes> owner_empty{};
-    assert(!decoder_snapshot.Observe(0xa000,0xb000,0,1,owner_empty.data(),owner_empty.size(),
+    assert(decoder_snapshot.Observe(0xa000,0xb000,0,1,owner_empty.data(),owner_empty.size(),
                                      SnapshotRole::Owner));
     assert(decoder_snapshot.NeedsObservation(0xa000,0xb000,0,SnapshotRole::Decoder));
     assert(decoder_snapshot.Observe(0xa000,0xb000,0,2,raw.data(),raw.size(),
                                     SnapshotRole::Decoder));
-    match=decoder_snapshot.TakeMatch();
+    match=QuerySingle(decoder_snapshot,kFirst,12,0);
     assert(match&&match->role==SnapshotRole::Decoder&&match->offset==0x128);
 
     // Spotify can keep the playback-pump/decoder pair alive while a DJ stage
     // hands off to music. Soggfy read PlaybackId on every callback; retain the
     // changed value while deduplicating an unchanged one.
     DiagnosticBridge changing_identity;
-    assert(!changing_identity.Observe(0xa100,0xb100,0,1,raw.data(),raw.size(),
+    assert(changing_identity.Observe(0xa100,0xb100,0,1,raw.data(),raw.size(),
                                       SnapshotRole::PlayerPlaybackId));
     assert(!changing_identity.Observe(0xa100,0xb100,0,2,raw.data(),raw.size(),
                                       SnapshotRole::PlayerPlaybackId));
     Instance handoff{};assert(ParseInstance(kSecond,handoff));
     auto changed=Snapshot(handoff,0x128);
-    assert(!changing_identity.Observe(0xa100,0xb100,0,3,changed.data(),changed.size(),
+    assert(changing_identity.Observe(0xa100,0xb100,0,3,changed.data(),changed.size(),
                                       SnapshotRole::PlayerPlaybackId));
     assert(changing_identity.SetExpected(kSecond,14));
-    match=changing_identity.TakeMatch();
+    match=QuerySingle(changing_identity,kSecond,14,0);
     assert(match&&match->sequence==3&&match->owner==0xa100&&match->decoder==0xb100);
-    assert(!changing_identity.TakeMatch());
+    assert(QuerySingle(changing_identity,kFirst,14,0)->sequence==1); // Duplicate snapshot was not retained.
 
     // One Spotify playback can drive an interstitial decoder and its music
     // decoder. Preserve both exact owner matches so media-kind policy can
     // exclude the wrong codec without discarding the valid stream.
     DiagnosticBridge shared_playback;
-    assert(!shared_playback.Observe(0xc000,0xd000,0,1,raw.data(),raw.size(),
+    assert(shared_playback.Observe(0xc000,0xd000,0,1,raw.data(),raw.size(),
                                     SnapshotRole::PlayerPlaybackId));
-    assert(!shared_playback.Observe(0xe000,0xf000,0,2,raw.data(),raw.size(),
+    assert(shared_playback.Observe(0xe000,0xf000,0,2,raw.data(),raw.size(),
                                     SnapshotRole::PlayerPlaybackId));
     assert(shared_playback.SetExpected(kFirst,13));
-    const auto shared_first=shared_playback.TakeMatch();
-    const auto shared_second=shared_playback.TakeMatch();
-    assert(shared_first&&shared_second&&!shared_playback.TakeMatch());
-    assert(shared_first->owner==0xc000&&shared_second->owner==0xe000);
-    assert(shared_first->metadata_generation==13&&shared_second->metadata_generation==13);
+    std::array<Match,kObservationCapacity> shared{};
+    assert(shared_playback.QueryMatches(kFirst,13,0,shared.data(),shared.size())==2);
+    assert(shared[0].owner==0xc000&&shared[1].owner==0xe000);
+    assert(shared[0].metadata_generation==13&&shared[1].metadata_generation==13);
 
     // Metadata can arrive after the first decoder callback; retained bounded
     // evidence must still resolve the exact instance.
     DiagnosticBridge metadata_late;
-    assert(!metadata_late.Observe(0x6000, 0x7000, 5, 50, raw.data(), raw.size()));
+    assert(metadata_late.Observe(0x6000, 0x7000, 5, 50, raw.data(), raw.size()));
     assert(metadata_late.SetExpected(kFirst, 10));
-    match = metadata_late.TakeMatch();
+    match = QuerySingle(metadata_late,kFirst,10,5);
     assert(match && match->owner == 0x6000 && match->decoder == 0x7000);
     assert(match->metadata_generation == 10 && match->sequence == 50);
 
@@ -257,7 +264,7 @@ int main() {
     // playback ID before decoded output makes its capture bindable, so the
     // same retained observation must still be available on the next pass.
     DiagnosticBridge retryable;
-    assert(!retryable.Observe(0x6100,0x7100,6,51,raw.data(),raw.size(),
+    assert(retryable.Observe(0x6100,0x7100,6,51,raw.data(),raw.size(),
                               SnapshotRole::PlayerPlaybackId));
     std::array<Match,kObservationCapacity> queried{};
     assert(retryable.QueryMatches(kFirst,20,6,queried.data(),queried.size())==1);
@@ -276,7 +283,7 @@ int main() {
     // An address can be reused while late metadata still needs an older
     // snapshot. Time belongs to the observation, not to the metadata query.
     DiagnosticBridge lifecycles;
-    assert(!lifecycles.Observe(0x6200,0x7200,6,60,raw.data(),raw.size(),
+    assert(lifecycles.Observe(0x6200,0x7200,6,60,raw.data(),raw.size(),
                               SnapshotRole::PlayerPlaybackId,90.0));
     assert(lifecycles.QueryMatches(kFirst,21,6,queried.data(),queried.size())==1);
     assert(queried[0].observed_at==90.0&&queried[0].ObservedDuring(80.0,100.0));
@@ -289,7 +296,7 @@ int main() {
     assert(lifecycles.NeedsObservation(0x6200,0x7200,6,SnapshotRole::PlayerPlaybackId,
                                       raw.data(),raw.size(),100.0));
     assert(lifecycles.NeedsObservation(0x6200,0x7200,6,SnapshotRole::PlayerPlaybackId,100.0));
-    assert(!lifecycles.Observe(0x6200,0x7200,6,61,raw.data(),raw.size(),
+    assert(lifecycles.Observe(0x6200,0x7200,6,61,raw.data(),raw.size(),
                               SnapshotRole::PlayerPlaybackId,100.1,100.0));
     assert(!lifecycles.NeedsObservation(0x6200,0x7200,6,SnapshotRole::PlayerPlaybackId,
                                        raw.data(),raw.size(),100.0));
@@ -307,7 +314,7 @@ int main() {
     assert(initial_epoch.SetExpected(kFirst, 1));
     assert(initial_epoch.NeedsObservation(0x8000, 0x9000, 0));
     assert(initial_epoch.Observe(0x8000, 0x9000, 0, 1, raw.data(), raw.size()));
-    match = initial_epoch.TakeMatch();
+    match = QuerySingle(initial_epoch,kFirst,1,0);
     assert(match && match->epoch == 0);
 
     // The same owner with a replacement decoder is a new owner generation.
@@ -316,7 +323,7 @@ int main() {
     assert(bridge.SetExpected(kSecond, 8));
     auto ascii = Snapshot(second, 0x220, true);
     assert(bridge.Observe(0x1000, 0x3000, 3, 20, ascii.data(), ascii.size()));
-    match = bridge.TakeMatch();
+    match = QuerySingle(bridge,kSecond,8,3);
     assert(match && match->decoder == 0x3000 && match->owner_generation == 2);
     assert(match->representation == Representation::AsciiHex && match->offset == 0x220);
 
@@ -326,7 +333,7 @@ int main() {
     auto reused = Snapshot(third, 0x128);
     assert(bridge.SetExpected(kThird, 9));
     assert(bridge.Observe(0x1000, 0x2000, 4, 30, reused.data(), reused.size()));
-    match = bridge.TakeMatch();
+    match = QuerySingle(bridge,kThird,9,4);
     assert(match && match->epoch == 4 && match->owner_generation == 3);
 
     // Two occurrences are ambiguous and must not produce an identity observation.
@@ -334,18 +341,37 @@ int main() {
     std::memcpy(duplicate.data() + 0x300, first.bytes.data(), first.bytes.size());
     DiagnosticBridge ambiguous;
     assert(ambiguous.SetExpected(kFirst, 11));
-    assert(!ambiguous.Observe(0x4000, 0x5000, 4, 40, duplicate.data(), duplicate.size()));
-    assert(!ambiguous.TakeMatch());
+    assert(ambiguous.Observe(0x4000, 0x5000, 4, 40, duplicate.data(), duplicate.size()));
+    assert(!QuerySingle(ambiguous,kFirst,11,4));
+
+    // An unsupported player layout can outlive the startup calibration ring.
+    // Retiring unverified raw guesses is not loss of established ID evidence.
+    {
+        DiagnosticBridge uncalibrated;
+        std::array<unsigned char,kPlayerStateSearchBytes> unknown{};
+        for(size_t i=0;i<40;++i) {
+            assert(uncalibrated.SetExpected(kFirst,i+1));
+            uncalibrated.ObservePlayerState(0x1000+i,0x2000+i,0,i+1,unknown,100+i);
+            assert(uncalibrated.Location().status==LocationStatus::NotFound);
+            assert(!uncalibrated.ObservationLost());
+        }
+        assert(uncalibrated.CalibrationRetirements()==24);
+        std::memcpy(unknown.data()+0xa08,first.bytes.data(),first.bytes.size());
+        uncalibrated.ObservePlayerState(0x9000,0xa000,0,41,unknown,141);
+        assert(uncalibrated.Location().status==LocationStatus::Verified);
+        auto recovered=QuerySingle(uncalibrated,kFirst,40,0);
+        assert(recovered&&recovered->decoder==0xa000&&recovered->observed_at==141);
+    }
 
     // Fixed storage reports loss instead of silently overwriting evidence.
     DiagnosticBridge bounded;
     for (size_t index = 0; index < kObservationCapacity; ++index) {
         std::array<unsigned char, kMaximumSnapshotBytes> empty{};
-        assert(!bounded.Observe(0x10000 + index, 0x20000 + index, 1, index + 1,
+        assert(bounded.Observe(0x10000 + index, 0x20000 + index, 1, index + 1,
                                 empty.data(), empty.size()));
     }
     std::array<unsigned char, kMaximumSnapshotBytes> empty{};
-    assert(!bounded.Observe(0x9999, 0xaaaa, 1, 99, empty.data(), empty.size()));
+    assert(bounded.Observe(0x9999, 0xaaaa, 1, 99, empty.data(), empty.size()));
     assert(bounded.ObservationLost());
 
     // A long-running Spotify process must not permanently disable direct
@@ -358,16 +384,16 @@ int main() {
         prior[0]=static_cast<unsigned char>(index+1);
         assert(long_session.NeedsObservation(0x30000+index,0x40000+index,1,
             SnapshotRole::PlayerPlaybackId,prior.data(),prior.size()));
-        assert(!long_session.Observe(0x30000+index,0x40000+index,1,index+1,
+        assert(long_session.Observe(0x30000+index,0x40000+index,1,index+1,
             prior.data(),prior.size(),SnapshotRole::PlayerPlaybackId));
     }
     assert(long_session.NeedsObservation(0x50000,0x60000,1,
         SnapshotRole::PlayerPlaybackId,changed.data(),changed.size()));
-    assert(!long_session.Observe(0x50000,0x60000,1,kObservationCapacity+1,
+    assert(long_session.Observe(0x50000,0x60000,1,kObservationCapacity+1,
         changed.data(),changed.size(),SnapshotRole::PlayerPlaybackId));
     assert(long_session.ObservationLost());
     assert(long_session.SetExpected(kSecond,15));
-    match=long_session.TakeMatch();
+    match=QuerySingle(long_session,kSecond,15,1);
     assert(match&&match->owner==0x50000&&match->decoder==0x60000&&
            match->sequence==kObservationCapacity+1);
 }

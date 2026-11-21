@@ -103,7 +103,7 @@ int main() {
     assert(history::SetSaveLocation(unicode_path)&&history::SetLyrics(true)&&history::FlushSettings(5000));
     std::wstring text;bool unicode=false;assert(history::settings_file::Read(path,text,unicode)&&unicode);
     assert(text.find(L"; preserve unknown configuration comment")!=std::wstring::npos&&text.find(L"[Unknown]\r\nKeep=original")!=std::wstring::npos);
-    assert(GetPrivateProfileIntW(L"To Disk",L"UpdateExistingMetadata",9,path.c_str())==0);
+    assert(GetPrivateProfileIntW(L"Misc",L"UpdateExistingMetadata",9,path.c_str())==0);
     wchar_t location[32768];GetPrivateProfileStringW(L"To Disk",L"Save Location",L"",location,32768,path.c_str());assert(std::wstring(location)==unicode_path);
     CheckRedundantNotification(path);
     WIN32_FIND_DATAW data{};HANDLE stages=FindFirstFileW((path+L".settings-*").c_str(),&data);assert(stages==INVALID_HANDLE_VALUE);

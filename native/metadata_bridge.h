@@ -11,6 +11,9 @@ bool PrepareMetadataCollector(HMODULE cef);
 void FinalizeMetadataCollector(bool applied);
 // RAM-only identity enrichment; never reads storage or fetches artwork.
 void RetainMetadata(Media&);
+// Fresh descriptive footer item, independent of capture timeline readiness.
+// RAM-only; never use this snapshot as evidence of audio playback or completion.
+bool ReadCurrentItemMedia(Media&);
 void EnrichCatalog(const Media&,Catalog&);
 void EnrichTags(const Media&,Tags&);
 // Includes immediately visible artwork content and cache availability changes.

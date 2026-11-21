@@ -25,15 +25,19 @@ PlaybackQualityTracker::Begin(uintptr_t context, PlaybackFormat format, double t
   return c;
 }
 void PlaybackQualityTracker::Media(const std::string &key, const std::wstring &title,
-                                   double position, double duration, double time, bool playing) {
+                                   double position, double duration, double time, bool playing,
+                                   const std::string &playback_instance) {
   if (key.empty() || title.empty() || !std::isfinite(position) || !std::isfinite(duration) ||
       !std::isfinite(time) || position < 0 || duration <= 0 || duration > 86400) {
     identity_.clear();
+    playback_instance_.clear();
     title_.clear();
     playing_ = false;
     return;
   }
-  const bool same = identity_ == key && std::fabs(duration_ - duration) <= 1.0;
+  const bool same_song = identity_ == key;
+  const bool new_instance = same_song && playback_instance_ != playback_instance;
+  const bool same = same_song && std::fabs(duration_ - duration) <= 1.0;
   if (!same) {
     // A title change completes a separate SMTC timeline/title update. The prior
     // track's replay floor must not discard a next-track decoder buffered earlier.
@@ -44,13 +48,13 @@ void PlaybackQualityTracker::Media(const std::string &key, const std::wstring &t
   const double expected = last_position_ + (playing_ ? std::max(0.0, elapsed) : 0);
   const bool discontinuity = same && (elapsed < 0 || position < last_position_ - 1.5 ||
                                      position > expected + 3);
-  if (discontinuity) {
+  if (discontinuity || new_instance) {
     // Retire old decoder instances. New callbacks may precede this SMTC poll,
     // but instances already present at the previous poll cannot prove a restart.
     generation_floor_ = last_time_;
     settle_until_ = time + 2; // SMTC title and timeline can update separately.
   }
-  if (!same || discontinuity ||
+  if (!same || discontinuity || new_instance ||
       (playing && !playing_ && Snapshot().format == PlaybackFormat::Unknown)) {
     start_ = time - std::min(position, duration);
     arrival_ = time;
@@ -59,6 +63,7 @@ void PlaybackQualityTracker::Media(const std::string &key, const std::wstring &t
   last_time_ = time;
   playing_ = playing;
   identity_ = key;
+  playback_instance_ = playback_instance;
   title_ = title.substr(0, 190);
   duration_ = duration;
 }

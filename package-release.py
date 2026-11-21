@@ -7,7 +7,7 @@ from pathlib import Path
 import zipfile
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--version', default='1.3')
+parser.add_argument('--version', default='1.4')
 version = parser.parse_args().version
 if not version or any(c not in '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.-' for c in version):
     parser.error('version must contain only ASCII letters, digits, dots and hyphens')
@@ -32,6 +32,14 @@ for vendor in ['minhook', 'libogg', 'cef', 'soggfy', 'stb']:
         root / 'native' / 'vendor' / vendor / 'LICENSE.txt').read_bytes()
 payloads['third-party/minimp4/LICENSE'] = (
     root / 'native' / 'vendor' / 'minimp4' / 'LICENSE').read_bytes()
+for vendor, names in {
+    'libwebp': ['COPYING', 'PATENTS', 'AUTHORS', 'README.floggfy.md'],
+    'sqlite': ['README.md', 'sqlite3.h'],
+    'stb_image_write': ['README.floggfy.md', 'stb_image_write.h'],
+}.items():
+    for name in names:
+        payloads[f'third-party/{vendor}/{name}'] = (
+            root / 'native' / 'vendor' / vendor / name).read_bytes()
 # Keep the inflate decoder's license with the binary distribution.
 for name in ['puff.h', 'UPSTREAM.md']:
     payloads[f'third-party/puff/{name}'] = (

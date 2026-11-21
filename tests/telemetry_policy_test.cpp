@@ -39,6 +39,20 @@ int main(){
     assert(std::string(privacy::RuleName(Rule::Gabo))=="gabo");
     assert(std::string(privacy::RuleName(Rule::TrackError))=="track_error");
     assert(std::string(privacy::RuleName(Rule::AITelemetry))=="ai_telemetry");
+    for(const wchar_t* host:{
+        L"aet.spotify.com",
+        L"lciapi.ninthdecimal.com",
+        L"tracker.samplicio.us",
+        L"tpt.dotomi.com",
+        L"aes.us-east.3px.axp.amazon-adsystem.com",
+        L"aax-events-cell02-cf.us-east.3px.axp.amazon-adsystem.com"}) {
+        const std::wstring exact=std::wstring(L"https://")+host;
+        assert(std::string(privacy::RuleName(Classify(exact+L":443/event")))=="queued_telemetry");
+        assert(Classify(exact+L".invalid/event")==Rule::Allow);
+        assert(Classify(std::wstring(L"https://child.")+host+L"/event")==Rule::Allow);
+        assert(Classify(exact+L"@unrelated.example/event")==Rule::Allow);
+        assert(Classify(std::wstring(L"sp://")+host+L"/event")==Rule::Allow);
+    }
     const wchar_t nul[]=L"https://spclient.wg.spotify.com\0.evil.invalid/gabo-receiver-service/";
     assert(Classify({nul,sizeof(nul)/sizeof(*nul)-1})==Rule::Allow);
     std::wstring long_url(5000,L'x');assert(Classify(long_url)==Rule::Allow);

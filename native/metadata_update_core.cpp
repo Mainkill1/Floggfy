@@ -1,6 +1,9 @@
 #include "metadata_update_core.h"
 #include "aac_stream.h"
 #include "flac_history_core.h"
+#include "marked_recording.h"
+#include "recording_limits.h"
+#include <cstring>
 #include <algorithm>
 #include <set>
 namespace history {
@@ -78,10 +81,23 @@ struct MetadataPlan {
     bool picture=false;
     bool Needed() const {return picture || !delta.fields.empty();}
 };
-MetadataPlan PlanMetadata(const RecordingFile& existing,const Tags& incoming) {
+
+constexpr const char* saved_key="HISTORY_SAVED_UTC";
+bool MissingSavedDate(const RecordingFile& existing) {
+    return existing.complete && existing.owned &&
+           std::none_of(existing.tags.fields.begin(),existing.tags.fields.end(),
+                        [](const auto& field){return Upper(field.first)==saved_key;});
+}
+MetadataPlan PlanMetadata(const RecordingFile& existing,const Tags& incoming,bool fill_saved_date) {
     MetadataPlan plan;
     if(!existing.complete || !existing.owned)return plan;
-    auto& delta=plan.delta;std::set<std::string> populated;
+    auto& delta=plan.delta;
+    if(fill_saved_date && MissingSavedDate(existing)) {
+        const auto candidate=Value(incoming,saved_key);
+        if(ValidMarkedDate(candidate))delta.fields.emplace_back(saved_key,candidate);
+    }
+    if(existing.quality.codec==Codec::Mp3)return plan;
+    std::set<std::string> populated;
     for(const auto& field:existing.tags.fields)if(Words(field.second))populated.insert(Upper(field.first));
     for(const auto& field:incoming.fields) {
         const auto key=Upper(field.first);
@@ -160,6 +176,35 @@ bool FillFlac(const std::vector<uint8_t>& source,const Tags& delta,const std::ve
     }
     output.insert(output.end(),source.begin()+audio,source.end());return true;
 }
+// Append one UTF-8 ID3v2.4 TXXX frame, preserving existing artwork, unknown
+// frames, padding and audio bytes. Only the variant emitted by this app is edited.
+bool FillMp3Date(const std::vector<uint8_t>& source,const std::string& date,std::vector<uint8_t>& output) {
+    if(source.size()<10 || source.size()>kMaximumRecordingBytes ||
+       std::memcmp(source.data(),"ID3\x04\x00\x00",6))return false;
+    uint32_t tag_size=0;
+    for(size_t at=6;at<10;++at) {
+        if(source[at]&128)return false;
+        tag_size=(tag_size<<7)|source[at];
+    }
+    if(tag_size>source.size()-10)return false;
+    auto syncsafe=[](uint32_t n){return std::vector<uint8_t>{
+        uint8_t((n>>21)&127),uint8_t((n>>14)&127),uint8_t((n>>7)&127),uint8_t(n&127)};};
+    const std::string key(saved_key);
+    std::vector<uint8_t> frame={'T','X','X','X'};
+    const auto body_size=syncsafe(uint32_t(key.size()+date.size()+2));
+    frame.insert(frame.end(),body_size.begin(),body_size.end());
+    frame.insert(frame.end(),{0,0,3});
+    frame.insert(frame.end(),key.begin(),key.end());
+    frame.push_back(0);
+    frame.insert(frame.end(),date.begin(),date.end());
+    if(tag_size+frame.size()>comment_limit || frame.size()>kMaximumRecordingBytes-source.size())return false;
+    const auto size=syncsafe(uint32_t(tag_size+frame.size()));
+    output.assign(source.begin(),source.begin()+6);
+    output.insert(output.end(),size.begin(),size.end());
+    output.insert(output.end(),frame.begin(),frame.end());
+    output.insert(output.end(),source.begin()+10,source.end());
+    return true;
+}
 bool SameQuality(const Quality& a,const Quality& b) {
     return a.codec==b.codec && a.rate==b.rate && a.channels==b.channels && a.bits==b.bits && a.bitrate==b.bitrate;
 }
@@ -205,14 +250,16 @@ bool ReplaceFlacPictures(const std::vector<uint8_t>& incoming,
     return true;
 }
 }
-bool NeedsRecordingMetadata(const RecordingFile& existing,const Tags& incoming) {return PlanMetadata(existing,incoming).Needed();}
+bool NeedsRecordingMetadata(const RecordingFile& existing,const Tags& incoming,bool backfill_saved_date) {
+    return (backfill_saved_date && MissingSavedDate(existing)) || PlanMetadata(existing,incoming,false).Needed();
+}
 MetadataUpdate FillRecordingMetadata(const std::vector<uint8_t>& source,const Tags& incoming,
     const Catalog& catalog,std::vector<uint8_t>& output,std::string& error) {
     output.clear();error.clear();RecordingFile existing;
     if(!InspectRecording(source.data(),source.size(),existing) || !existing.complete || !existing.owned || !MatchesRecording(existing,catalog)) {
         error="recording is not complete, owned and identity matched";return MetadataUpdate::Invalid;
     }
-    auto plan=PlanMetadata(existing,incoming);
+    auto plan=PlanMetadata(existing,incoming,true);
     if(!plan.Needed())return MetadataUpdate::Unchanged;
     auto& delta=plan.delta;std::vector<uint8_t> picture;
     if(plan.picture) {
@@ -220,10 +267,13 @@ MetadataUpdate FillRecordingMetadata(const std::vector<uint8_t>& source,const Ta
         delta.cover=incoming.cover;delta.mime=incoming.mime;
     }
     const bool updated=existing.quality.codec==Codec::Flac ? FillFlac(source,delta,picture,output,error) :
-        existing.quality.codec==Codec::Aac ? TagAacM4a(source,delta,output,error) : TagOgg(source,delta,output,error);
+        existing.quality.codec==Codec::Aac ? TagAacM4a(source,delta,output,error) :
+        existing.quality.codec==Codec::Mp3 ? FillMp3Date(source,Value(delta,saved_key),output) :
+        TagOgg(source,delta,output,error);
     RecordingFile result;
     if(!updated || !InspectRecording(output.data(),output.size(),result) || !result.complete || !result.owned ||
-       !MatchesRecording(result,catalog) || !SameQuality(existing.quality,result.quality)) {
+       !MatchesRecording(result,catalog) || !SameQuality(existing.quality,result.quality) ||
+       (!Value(delta,saved_key).empty() && Value(delta,saved_key)!=Value(result.tags,saved_key))) {
         if(error.empty())error="updated recording validation failed";
         output.clear();return MetadataUpdate::Invalid;
     }
@@ -243,7 +293,7 @@ bool PreserveUpgradeMetadata(const std::vector<uint8_t>& source,const std::vecto
         error="upgrade metadata requires complete owned matching recordings";
         return false;
     }
-    const auto plan=PlanMetadata(old,next.tags);
+    const auto plan=PlanMetadata(old,next.tags,false);
     if(next.quality.codec==Codec::Aac) {
         error="AAC renditions do not have a verified audio quality upgrade order";
         return false;

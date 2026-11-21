@@ -10,9 +10,13 @@
 #include "cached_metadata.h"
 #include "album_artwork.h"
 #include "cached_artwork_windows.h"
+#include "artwork_image.h"
+#include "artwork_reply.h"
 #include "image_info.h"
 #include "history_settings.h"
 #include "collector_config.h"
+#include "marked_catalog.h"
+#include "marked_protocol.h"
 #include "async_log.h"
 #include "srw_guard.h"
 #include "vendor/minhook/include/MinHook.h"
@@ -24,7 +28,23 @@
 #include <cstdio>
 #include <cstring>
 #include <new>
+#include <utility>
 namespace history {
+namespace {
+SRWLOCK current_item_lock=SRWLOCK_INIT;
+Media current_item;
+ULONGLONG current_item_updated=0;
+void PublishCurrentItem(Media media) {
+ ExclusiveSrw guard(current_item_lock);
+ current_item=std::move(media);current_item_updated=GetTickCount64();
+}
+}
+bool ReadCurrentItemMedia(Media& media) {
+ if(!TryAcquireSRWLockShared(&current_item_lock))return false;
+ struct Unlock {~Unlock(){ReleaseSRWLockShared(&current_item_lock);}} unlock;
+ if(!current_item_updated || GetTickCount64()-current_item_updated>3000 || current_item.title.empty())return false;
+ media=current_item;return true;
+}
 static std::wstring MetadataWide(const std::string& text) {
  if(text.empty()||text.size()>4096)return {};
  const auto length=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,text.data(),int(text.size()),nullptr,0);
@@ -78,13 +98,17 @@ static std::wstring CollectorOptions() {
  return BuildCollectorOptions(GetSettings(),ReadAutoSkipRequest());
 }
 static std::wstring OnlineEnrichmentScript();
+static std::wstring NativeArtworkScript();
+static std::wstring MarkedPlaylistScript();
 static void PollExecute(Task*) {
  Frame* frame=nullptr;
  {SharedSrw guard(frame_lock);frame=polling_frame;if(frame)frame->base.add(&frame->base);}
  struct Finish {Frame* frame;~Finish(){Release(frame);poll_pending=false;}} finish{frame};
  try {
   if(!frame || !reinterpret_cast<int(*)(Frame*)>(frame->methods[0])(frame))return;
-  const auto code_text=CollectorOptions()+L"if(window.__floggfyPoll)window.__floggfyPoll();"+OnlineEnrichmentScript();
+  const auto artwork=NativeArtworkScript();
+  const auto enrichment=OnlineEnrichmentScript();
+  const auto code_text=CollectorOptions()+L"if(window.__floggfyPoll)window.__floggfyPoll();"+artwork+enrichment+MarkedPlaylistScript();
   String code={const_cast<wchar_t*>(code_text.c_str()),code_text.size(),nullptr};
   const wchar_t name[]=L"floggfy-metadata.js";String source={const_cast<wchar_t*>(name),wcslen(name),nullptr};
   reinterpret_cast<void(*)(Frame*,const String*,const String*,int)>(frame->methods[14])(frame,&code,&source,1);
@@ -125,7 +149,7 @@ static SRWLOCK enrichment_lock=SRWLOCK_INIT;
 static std::deque<EnrichmentJob> enrichment_jobs;
 static HANDLE enrichment_event=nullptr,enrichment_thread=nullptr;
 static std::atomic<bool> enrichment_running{false};
-struct OnlineEnrichment {std::shared_ptr<MetadataRecord> owner;RichMetadata snapshot;unsigned needs=0;};
+struct OnlineEnrichment {std::shared_ptr<MetadataRecord> owner;std::string uri;unsigned needs=0;};
 static std::deque<OnlineEnrichment> online_enrichment; // Protected by cache_lock.
 static bool HasField(const RichMetadata& metadata,const char* key) {
  const auto found=metadata.fields.find(key);return found!=metadata.fields.end()&&!found->second.empty();
@@ -137,6 +161,10 @@ static bool IsTrackUri(const std::string& uri) {
 static bool NeedsStoredMetadata(const RichMetadata& metadata) {
  return IsTrackUri(metadata.uri)&&(!HasField(metadata,"DATE")||!HasField(metadata,"ISRC")||
         !HasField(metadata,"LABEL")||metadata.album_uri.empty());
+}
+static bool ReferencesArtwork(const RichMetadata& data,const std::string& reference) {
+ return reference==data.artwork_url||
+        std::find(data.artwork_urls.begin(),data.artwork_urls.end(),reference)!=data.artwork_urls.end();
 }
 static void MergeAvailableFields(const RichMetadata& available,RichMetadata& live) {
  if(available.uri!=live.uri)return;
@@ -153,9 +181,7 @@ static void MergeAvailableFields(const RichMetadata& available,RichMetadata& liv
  if(live.artwork_url.empty())live.artwork_url=available.artwork_url;
  if(live.artwork_urls.empty()&&live.artwork_url==available.artwork_url)live.artwork_urls=available.artwork_urls;
  if(live.metadata_source=="online"&&live.playback_quality.empty()&&!available.playback_quality.empty()){live.playback_quality=available.playback_quality;live.quality_time=available.quality_time;}
- if(!live.artwork&&available.artwork&&
-    (available.artwork->reference==live.artwork_url||
-     std::find(live.artwork_urls.begin(),live.artwork_urls.end(),available.artwork->reference)!=live.artwork_urls.end()))live.artwork=available.artwork;
+ if(!live.artwork&&available.artwork&&ReferencesArtwork(live,available.artwork->reference))live.artwork=available.artwork;
 }
 static void MergeSnapshot(const RichMetadata& previous,RichMetadata& incoming) {
  if(incoming.metadata_source=="online") {
@@ -177,6 +203,121 @@ static std::wstring JsString(const std::string& utf8) {
  }
  return result+L"\"";
 }
+static std::wstring MarkedPlaylistScript() {
+ const auto settings=GetSettings();
+ ConfigureMarkedCatalog(settings.root,settings.marked_when_downloaded);
+ std::wstring script;
+ MarkedQueryReply reply;
+ if(settings.marked_when_downloaded&&TakeMarkedReply(reply)) {
+  script=L"if(window.__floggfyMarkedReply)window.__floggfyMarkedReply({request:"+JsString(reply.request)+
+      L",revision:"+std::to_wstring(reply.revision)+L",dates:[";
+  bool first=true;
+  for(const auto& item:reply.dates) {
+   if(!first)script+=L",";
+   first=false;
+   script+=L"["+JsString(item.first)+L","+JsString(item.second)+L"]";
+  }
+  script+=L"]});";
+ }
+ script+=L"if(window.__floggfyMarkedPoll)window.__floggfyMarkedPoll(";
+ script+=settings.marked_when_downloaded?L"true,":L"false,";
+ return script+std::to_wstring(MarkedCatalogRevision())+L");";
+}
+// The enrichment worker owns one image request. CEF callbacks only copy its
+// bounded reply; parsing, image decoding and publication stay on that worker.
+struct NativeArtworkPending {
+ std::string id,reply;
+ std::wstring script;
+ bool received=false,deferred=false;
+};
+static SRWLOCK native_artwork_lock=SRWLOCK_INIT;
+static NativeArtworkPending native_artwork_pending;
+static HANDLE native_artwork_event=nullptr;
+static uint64_t next_native_artwork=0;
+static std::wstring NativeArtworkScript() {
+ ExclusiveSrw guard(native_artwork_lock);
+ if(native_artwork_pending.script.empty())return {};
+ const auto preferences=GetSettings();
+ if(!preferences.metadata||!preferences.fetch_missing_artwork){
+  native_artwork_pending.script.clear();
+  native_artwork_pending.deferred=true;
+  SetEvent(native_artwork_event);
+  return {};
+ }
+ return std::exchange(native_artwork_pending.script,{});
+}
+static bool EnqueueNativeArtwork(const String* value) {
+ constexpr wchar_t prefix[]=L"FLOGGFY_ARTWORK_V1:";
+ constexpr size_t n=sizeof(prefix)/sizeof(*prefix)-1;
+ if(!value||!value->str||value->length<n||wmemcmp(value->str,prefix,n))return false;
+ // Even malformed reserved messages must never leak image bytes to logs.
+ if(value->length<=n||value->length>n+kArtworkReplyMaxPayloadBytes)return true;
+ try {
+  std::string expected;
+  {SharedSrw guard(native_artwork_lock);if(native_artwork_pending.id.empty()||native_artwork_pending.received)return true;expected="id="+native_artwork_pending.id+"&";}
+  if(value->length-n<expected.size())return true;
+  for(size_t i=0;i<expected.size();++i)if(value->str[n+i]!=wchar_t(expected[i]))return true;
+  std::string reply;reply.reserve(value->length-n);
+  for(size_t i=n;i<value->length;++i){if(value->str[i]>127)return true;reply+=char(value->str[i]);}
+  {ExclusiveSrw guard(native_artwork_lock);
+   if(native_artwork_pending.received||expected!="id="+native_artwork_pending.id+"&")return true;
+   native_artwork_pending.reply=std::move(reply);native_artwork_pending.received=true;
+   SetEvent(native_artwork_event);
+  }
+ }catch(...){QueueDiagnostic("metadata source=native-artwork status=unavailable reason=reply-allocation-failed");}
+ return true;
+}
+static bool ApplyNativeArtworkReply(RichMetadata& data,ArtworkReply& reply,const std::string& id,std::string& reason) {
+ if(reply.id!=id||reply.uri!=data.uri){reason="reply-identity-mismatch";return false;}
+ if(reply.status!="ready"){reason=reply.reason;return false;}
+ if(!IsAlbumArtworkUrl(reply.reference)||!ReferencesArtwork(data,reply.reference)){
+  reason="reply-reference-mismatch";return false;
+ }
+ auto bytes=std::move(reply.bytes);ImageInfo info;
+ if(!NormalizeArtworkImage(bytes,reason)||!ReadImageInfo(bytes,info))return false;
+ auto image=std::make_shared<MetadataArtwork>();image->reference=reply.reference;
+ image->mime=info.mime;image->bytes=std::move(bytes);data.artwork=std::move(image);
+ reason="validated";return true;
+}
+// Return false when dispatch was deferred by a live setting change.
+static bool AttemptNativeArtwork(RichMetadata& data) {
+ {SharedSrw guard(frame_lock);if(!polling_frame)return true;}
+ const auto& references=data.artwork_urls;
+ if(!native_artwork_event)native_artwork_event=CreateEventW(nullptr,TRUE,FALSE,nullptr);
+ if(!native_artwork_event)return true;
+ const auto id=std::to_string(++next_native_artwork);
+ const auto started=GetTickCount64();
+ std::wstring urls=L"[";for(const auto& url:references){if(urls.size()>1)urls+=L",";urls+=JsString(url);}urls+=L"]";
+ const auto unavailable="id="+id+"&uri="+data.uri+"&source=0&status=unavailable&reason=collector-unavailable";
+ auto script=L"if(window.__floggfyArtwork)window.__floggfyArtwork("+JsString(id)+L","+JsString(data.uri)+L","+urls+
+  L");else console.info("+JsString("FLOGGFY_ARTWORK_V1:"+unavailable)+L");";
+ ResetEvent(native_artwork_event);
+ {ExclusiveSrw guard(native_artwork_lock);
+  const auto preferences=GetSettings();
+  if(!preferences.metadata||!preferences.fetch_missing_artwork)return false;
+  native_artwork_pending={id,{},std::move(script)};
+ }
+ if(message_event)SetEvent(message_event);
+ char line[384];snprintf(line,sizeof(line),"metadata uri=%s source=native-artwork status=requested request=%s candidates=%zu",data.uri.c_str(),id.c_str(),references.size());QueueDiagnostic(line);
+ const auto wait=WaitForSingleObject(native_artwork_event,8500);
+ std::string response;
+ {ExclusiveSrw guard(native_artwork_lock);
+  const bool deferred=native_artwork_pending.deferred;
+  response=std::move(native_artwork_pending.reply);native_artwork_pending={};
+  if(deferred)return false;
+ }
+ ArtworkReply reply;std::string reason=wait==WAIT_TIMEOUT?"timeout":"reply-unavailable";
+ bool ready=false;
+ if(!GetSettings().metadata)reason="metadata-disabled";
+ else if(!response.empty()&&ParseArtworkReply(response,reply,reason)) {
+  std::string().swap(response); // Release the encoded envelope before image conversion.
+  ready=ApplyNativeArtworkReply(data,reply,id,reason);
+ }
+ const char* origin=reply.source==1?"local-file":reply.source==2?"cache":reply.source==3?"network":"unknown";
+ snprintf(line,sizeof(line),"metadata uri=%s source=native-artwork status=%s request=%s origin=%s image_id=%s reason=%s bytes=%zu elapsed_ms=%llu",data.uri.c_str(),
+     ready?"ready":"unavailable",id.c_str(),origin,reply.reference.empty()?"none":reply.reference.c_str()+24,reason.c_str(),ready?data.artwork->bytes.size():0,GetTickCount64()-started);QueueDiagnostic(line);
+ return reason!="disabled";
+}
 static unsigned OnlineNeeds(const RichMetadata& data,bool lyrics) {
  if(!IsTrackUri(data.uri))return 0;
  const bool album=!HasField(data,"LABEL")||data.artwork_url.empty();
@@ -184,49 +325,67 @@ static unsigned OnlineNeeds(const RichMetadata& data,bool lyrics) {
         (album?2u:0u)|
         ((lyrics&&!HasField(data,"LYRICS"))?4u:0u);
 }
+static unsigned AllowedOnlineNeeds(const Settings& preferences) {
+ if(!preferences.metadata)return 0;
+ return (preferences.fetch_missing_metadata?3u:0u)|
+        (preferences.lyrics&&preferences.fetch_missing_lyrics?4u:0u);
+}
 static std::wstring OnlineEnrichmentScript() {
- OnlineEnrichment request;
- {ExclusiveSrw guard(cache_lock);if(online_enrichment.empty())return {};request=std::move(online_enrichment.front());online_enrichment.pop_front();}
- const auto preferences=GetSettings();
- if(!preferences.metadata) {ExclusiveSrw guard(cache_lock);request.owner->online_requested&=~request.needs;return {};}
- if(!preferences.lyrics) {ExclusiveSrw guard(cache_lock);request.owner->online_requested&=~4u;request.needs&=~4u;}
- if(!request.needs)return {};
- const auto& m=request.snapshot;
+ RichMetadata m;
+ unsigned needs=0;
+ {ExclusiveSrw guard(cache_lock);
+  if(online_enrichment.empty())return {};
+  const auto& request=online_enrichment.front();
+  const auto& live=request.owner->value;
+  const auto preferences=GetSettings();
+  if(live.uri==request.uri)needs=request.needs&OnlineNeeds(live,preferences.lyrics)&AllowedOnlineNeeds(preferences);
+  if(needs){
+   m.uri=live.uri;m.title=live.title;m.artist=live.artist;m.album=live.album;m.duration=live.duration;
+   m.album_uri=live.album_uri;m.artwork_url=live.artwork_url;m.artwork_urls=live.artwork_urls;
+  }
+  request.owner->online_requested&=~(request.needs&~needs);
+  online_enrichment.pop_front();
+ }
+ if(!needs)return {};
  std::string artwork_urls;for(const auto& url:m.artwork_urls){if(!artwork_urls.empty())artwork_urls+='\n';artwork_urls+=url;}
  const auto truth=[](bool value){return value?L"true":L"false";};
  // Only one request grant per UI tick; the collector owns asynchronous sends.
  return L"if(window.__floggfyEnrich)window.__floggfyEnrich("+JsString(m.uri)+
-  L",{metadata:"+truth(request.needs&1)+L",album:"+truth(request.needs&2)+L",lyrics:"+truth(request.needs&4)+
+  L",{metadata:"+truth(needs&1)+L",album:"+truth(needs&2)+L",lyrics:"+truth(needs&4)+
   L"},{uri:"+JsString(m.uri)+L",title:"+JsString(m.title)+L",artist:"+JsString(m.artist)+
   L",album:"+JsString(m.album)+L",duration:"+std::to_wstring(m.duration)+L",album_uri:"+JsString(m.album_uri)+
   L",artwork_url:"+JsString(m.artwork_url)+L",artwork_urls:"+JsString(artwork_urls)+L",SPOTIFY_URI:"+JsString(m.uri)+L"});";
 }
-static void QueueOnlineEnrichment(const std::shared_ptr<MetadataRecord>& owner,const RichMetadata& data,bool lyrics) {
+static void QueueOnlineEnrichment(const std::shared_ptr<MetadataRecord>& owner) {
  ExclusiveSrw guard(cache_lock);
- const unsigned needs=OnlineNeeds(data,lyrics)&~owner->online_requested;
+ const auto& data=owner->value;
+ const auto preferences=GetSettings();
+ const unsigned needs=OnlineNeeds(data,preferences.lyrics)&AllowedOnlineNeeds(preferences)&~owner->online_requested;
  if(!needs)return;
  for(auto it=online_enrichment.begin();it!=online_enrichment.end();)
   if(it->owner.use_count()==2){it->owner->online_requested&=~it->needs;it=online_enrichment.erase(it);}else ++it;
- online_enrichment.push_back({owner,data,needs});owner->online_requested|=needs;
+ online_enrichment.push_back({owner,data.uri,needs});owner->online_requested|=needs;
  char line[320];snprintf(line,sizeof(line),"metadata uri=%s source=online status=requested reason=missing-after-local date=%u isrc=%u label=%u artwork=%u lyrics=%u",data.uri.c_str(),
      unsigned(!HasField(data,"DATE")),unsigned(!HasField(data,"ISRC")),unsigned(!HasField(data,"LABEL")),unsigned(data.artwork_url.empty()),unsigned((needs&4)!=0));QueueDiagnostic(line);
 }
 static void ResolveArtwork(RichMetadata& data,bool online) {
- auto references=data.artwork_urls;
- if(references.empty()&&!data.artwork_url.empty())references.push_back(data.artwork_url);
- std::string reason="missing-reference";
+ const auto& references=data.artwork_urls;
+ size_t attempt=0;
  for(const auto& url:references) {
-  if(!IsAlbumArtworkUrl(url))continue;
+  ++attempt;
+  std::string reason=online?"download-failed":"cache-miss";
   std::vector<uint8_t> bytes;ImageInfo info;
   const bool found=online?DownloadAlbumArtwork(url,bytes):ReadCachedArtwork(url,bytes,reason);
-  if(found&&ReadImageInfo(bytes,info)) {
+  const bool valid=found&&ReadImageInfo(bytes,info);
+  if(found)reason=valid?"validated":"image-invalid";
+  // Keep every candidate's outcome: a later miss must not hide an earlier
+  // cached image that failed conversion. Image IDs contain no request secrets.
+  char line[384];snprintf(line,sizeof(line),"metadata uri=%s source=%s status=%s candidate=%zu/%zu image_id=%s reason=%s bytes=%zu width=%u height=%u",data.uri.c_str(),
+      online?"online-artwork":"local-artwork",valid?"ready":"unavailable",attempt,references.size(),url.c_str()+24,reason.c_str(),bytes.size(),info.width,info.height);QueueDiagnostic(line);
+  if(valid) {
    auto image=std::make_shared<MetadataArtwork>();image->reference=url;image->mime=info.mime;image->bytes=std::move(bytes);data.artwork=std::move(image);
-   char line[220];snprintf(line,sizeof(line),"metadata uri=%s source=%s status=ready field=artwork bytes=%zu",data.uri.c_str(),online?"online-artwork":"local-artwork",data.artwork->bytes.size());QueueDiagnostic(line);return;
+   return;
   }
-  if(online)break; // One preferred-size online fallback, never one request per size.
- }
- if(!online&&!references.empty()) {
-  char line[256];snprintf(line,sizeof(line),"metadata uri=%s source=local-artwork status=unavailable reason=%s",data.uri.c_str(),reason.c_str());QueueDiagnostic(line);
  }
 }
 static void PublishEnrichment(const std::shared_ptr<MetadataRecord>& owner,const RichMetadata& data) {
@@ -237,6 +396,47 @@ static void PublishEnrichment(const std::shared_ptr<MetadataRecord>& owner,const
  const bool changed=!SameRecordingMetadata(owner->value,merged);
  owner->value=std::move(merged);
  if(changed)metadata_revision.fetch_add(1,std::memory_order_release);
+}
+static std::vector<std::string> ArtworkCandidates(const RichMetadata& data) {
+ std::vector<std::string> candidates;
+ for(const auto& url:data.artwork_urls) {
+  if(IsAlbumArtworkUrl(url)&&std::find(candidates.begin(),candidates.end(),url)==candidates.end())candidates.push_back(url);
+  if(candidates.size()==8)break;
+ }
+ if(candidates.empty()&&IsAlbumArtworkUrl(data.artwork_url))candidates.push_back(data.artwork_url);
+ return candidates;
+}
+static bool ArtworkCandidatesChanged(const std::vector<std::string>& candidates,const std::vector<std::string>& attempted) {
+ return !std::is_permutation(candidates.begin(),candidates.end(),attempted.begin(),attempted.end());
+}
+enum class ArtworkStage { Native,Cached,Online };
+static RichMetadata BeginArtwork(const std::shared_ptr<MetadataRecord>& owner,ArtworkStage stage) {
+ ExclusiveSrw guard(cache_lock);
+ const auto preferences=GetSettings();
+ const auto& live=owner->value;
+ if(!preferences.metadata||live.artwork||live.artwork_url.empty()||
+    (stage!=ArtworkStage::Cached&&!preferences.fetch_missing_artwork))return {};
+ auto candidates=ArtworkCandidates(live);
+ const bool cached_pending=ArtworkCandidatesChanged(candidates,owner->cached_artwork_attempted);
+ const bool native_pending=ArtworkCandidatesChanged(candidates,owner->native_artwork_attempted);
+ if(stage==ArtworkStage::Online) {
+  // A replacement reference may have arrived during a local lookup.
+  if(cached_pending||native_pending||!IsAlbumArtworkUrl(live.artwork_url)||owner->online_artwork_attempted==live.artwork_url)return {};
+  candidates={live.artwork_url};
+ }else if(stage==ArtworkStage::Cached?!cached_pending:!native_pending)return {};
+ RichMetadata work;
+ work.uri=live.uri;work.artwork_url=live.artwork_url;work.artwork_urls=std::move(candidates);
+ if(stage==ArtworkStage::Cached)owner->cached_artwork_attempted=work.artwork_urls;
+ if(stage==ArtworkStage::Online)owner->online_artwork_attempted=work.artwork_url;
+ return work;
+}
+static void PublishArtwork(const std::shared_ptr<MetadataRecord>& owner,const RichMetadata& work) {
+ if(!work.artwork)return;
+ ExclusiveSrw guard(cache_lock);
+ auto& live=owner->value;
+ if(live.uri!=work.uri||live.artwork||!ReferencesArtwork(live,work.artwork->reference))return;
+ live.artwork=work.artwork;
+ metadata_revision.fetch_add(1,std::memory_order_release);
 }
 static void QueueEnrichment(const std::shared_ptr<MetadataRecord>& record);
 static DWORD WINAPI EnrichmentWorker(LPVOID) {
@@ -250,32 +450,42 @@ static DWORD WINAPI EnrichmentWorker(LPVOID) {
    if(job.record.use_count()==2){job.record->queued=false;continue;}
   }
   auto owner=job.record;
+  bool processed=false;
   try {
-   auto preferences=GetSettings();
-   if(!preferences.metadata){ExclusiveSrw guard(cache_lock);owner->queued=false;continue;}
-   RichMetadata data;bool read_local=false,read_artwork=false;
+   RichMetadata local;bool read_local=false;
    {ExclusiveSrw guard(cache_lock);
-    data=owner->value;read_local=!owner->local_attempted&&NeedsStoredMetadata(data);owner->local_attempted=true;
-    read_artwork=!data.artwork&&!data.artwork_url.empty()&&owner->artwork_attempted!=data.artwork_url;
-    if(read_artwork)owner->artwork_attempted=data.artwork_url;
+    const auto preferences=GetSettings();
+    read_local=preferences.metadata&&preferences.read_spotify_disk_cache&&!owner->local_attempted&&NeedsStoredMetadata(owner->value);
+    if(read_local){local=owner->value;owner->local_attempted=true;}
    }
-   if(preferences.metadata) {
-    if(read_local)try{EnrichStoredMetadata(data);}catch(...){QueueDiagnostic("metadata source=local-cache status=failed reason=exception");}
-    PublishEnrichment(owner,data); // Local tags are ready even while artwork is pending.
-    preferences=GetSettings();
-    if(preferences.metadata&&read_artwork)ResolveArtwork(data,false);
-    PublishEnrichment(owner,data);
-    preferences=GetSettings();
-    if(preferences.metadata) {
-     QueueOnlineEnrichment(owner,data,preferences.lyrics);
-     if(read_artwork&&!data.artwork)ResolveArtwork(data,true);
+   if(read_local) {
+    try{EnrichStoredMetadata(local);}catch(...){QueueDiagnostic("metadata source=local-cache status=failed reason=exception");}
+    PublishEnrichment(owner,local); // Local tags are ready even while artwork is pending.
+   }
+   auto artwork=BeginArtwork(owner,ArtworkStage::Native);
+   if(!artwork.artwork_urls.empty()) {
+    if(AttemptNativeArtwork(artwork)){
+     ExclusiveSrw guard(cache_lock);
+     owner->native_artwork_attempted=std::move(artwork.artwork_urls);
     }
-    PublishEnrichment(owner,data);
+    PublishArtwork(owner,artwork);
    }
+   artwork=BeginArtwork(owner,ArtworkStage::Cached);
+   if(!artwork.artwork_urls.empty()){
+    ResolveArtwork(artwork,false);
+    PublishArtwork(owner,artwork);
+   }
+   QueueOnlineEnrichment(owner);
+   artwork=BeginArtwork(owner,ArtworkStage::Online);
+   if(!artwork.artwork_urls.empty()){
+    ResolveArtwork(artwork,true);
+    PublishArtwork(owner,artwork);
+   }
+   processed=true;
   }catch(...) {QueueDiagnostic("metadata enrichment failed; current client metadata retained");}
-  bool changed_reference=false;
-  {ExclusiveSrw guard(cache_lock);owner->queued=false;if(!GetSettings().metadata)owner->artwork_attempted.clear();changed_reference=!owner->value.artwork&&!owner->value.artwork_url.empty()&&owner->artwork_attempted!=owner->value.artwork_url;}
-  if(changed_reference&&GetSettings().metadata)QueueEnrichment(owner);
+  {ExclusiveSrw guard(cache_lock);owner->queued=false;}
+  // A renderer update or a live enable can arrive while this owner is queued.
+  if(processed)try{QueueEnrichment(owner);}catch(...){QueueDiagnostic("metadata fallback requeue failed; next client snapshot will retry");}
  }
  return 0;
 }
@@ -297,8 +507,16 @@ static void QueueEnrichment(const std::shared_ptr<MetadataRecord>& record) {
   const auto& data=record->value;
   const auto preferences=GetSettings();if(!preferences.metadata)return;
   if(!preferences.lyrics)record->online_requested&=~4u;
-  if(record->local_attempted&&!(OnlineNeeds(data,preferences.lyrics)&~record->online_requested)&&
-     (data.artwork||data.artwork_url.empty()||record->artwork_attempted==data.artwork_url))return;
+  const bool missing_local=preferences.read_spotify_disk_cache&&!record->local_attempted&&NeedsStoredMetadata(data);
+  const bool missing_online=(OnlineNeeds(data,preferences.lyrics)&AllowedOnlineNeeds(preferences)&~record->online_requested)!=0;
+  bool missing_artwork=false;
+  if(!data.artwork&&!data.artwork_url.empty()){
+   const auto candidates=ArtworkCandidates(data);
+   missing_artwork=ArtworkCandidatesChanged(candidates,record->cached_artwork_attempted)||
+    (preferences.fetch_missing_artwork&&(ArtworkCandidatesChanged(candidates,record->native_artwork_attempted)||
+      (IsAlbumArtworkUrl(data.artwork_url)&&record->online_artwork_attempted!=data.artwork_url)));
+  }
+  if(!missing_local&&!missing_online&&!missing_artwork)return;
   record->queued=true;
  }
  try {
@@ -314,7 +532,16 @@ static DWORD WINAPI MetadataWorker(LPVOID) {
  SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL);
  StartEnrichmentWorker();
  Message message;
+ auto enable_revision=EnrichmentEnableRevision();
  while(metadata_running.load(std::memory_order_acquire)) {
+  const auto current_revision=EnrichmentEnableRevision();
+  const bool fallback_enabled=current_revision!=enable_revision;
+  enable_revision=current_revision;
+  if(fallback_enabled)try {
+   std::vector<std::shared_ptr<MetadataRecord>> pending;
+   {SharedSrw guard(cache_lock);pending=cache.Pinned();}
+   for(const auto& owner:pending)QueueEnrichment(owner);
+  }catch(...) {QueueDiagnostic("metadata fallback refresh failed; next client snapshot will retry");}
   if(metadata_polling.load(std::memory_order_acquire))SchedulePoll();
   bool got=false;
   {ExclusiveSrw guard(message_lock);
@@ -383,14 +610,18 @@ static bool CurrentPlayback(const String* text) {
  // Bounded cached-state message only: no file reads, enrichment or API calls.
  try {
   PlaybackQualitySnapshot snapshot;
+  Media item;
   if(text->length<=n+4096) {
    std::string payload;payload.reserve(text->length-n);
    for(size_t i=n;i<text->length;++i) {
-    if(text->str[i]>127){PublishClientPlaybackQuality({});return true;}
+    if(text->str[i]>127){PublishCurrentItem({});PublishClientPlaybackQuality({});return true;}
     payload+=char(text->str[i]);
    }
    RichMetadata record;std::string error;
    if(ParsePlaybackMetadata(payload,record,error)) {
+    item.source=MediaSource::Spotify;item.spotify_uri=record.uri;
+    item.title=MetadataWide(record.title);item.artist=MetadataWide(record.artist);item.album=MetadataWide(record.album);
+    item.duration=record.duration;
     snapshot.identity=PlaybackIdentity(record.uri.empty()
         ? record.title+"\x1f"+record.artist+"\x1f"+record.album : record.uri);
     snapshot.level=ParsePlaybackLevel(record.playback_quality);
@@ -404,12 +635,22 @@ static bool CurrentPlayback(const String* text) {
     }
    }
   }
+  PublishCurrentItem(std::move(item));
   PublishClientPlaybackQuality(snapshot);
- }catch(...){PublishClientPlaybackQuality({});}
+ }catch(...){PublishCurrentItem({});PublishClientPlaybackQuality({});}
  return true;
 }
 static int Console(Display* self,Browser* b,int level,const String* text,const String* source,int line) {
  auto callback=metadata_callbacks.Enter();
+ constexpr std::wstring_view marked_prefix=L"FLOGGFY_MARKED_V1:";
+ if(text&&text->str&&text->length>=marked_prefix.size()&&
+    !wmemcmp(text->str,marked_prefix.data(),marked_prefix.size())) {
+  try {
+   std::string request;std::vector<std::string> uris;
+   if(ParseMarkedQuery({text->str,text->length},request,uris))QueueMarkedQuery(request,uris,SchedulePoll);
+  }catch(...) {/* Invalid or allocation-limited queries cannot escape CEF. */}
+  Release(b);return 1;
+ }
  constexpr wchar_t privacy_prefix[]=L"FLOGGFY_PRIVACY_V1:";
  constexpr size_t privacy_prefix_size=sizeof(privacy_prefix)/sizeof(*privacy_prefix)-1;
  if(text&&text->str&&text->length>=privacy_prefix_size&&
@@ -438,7 +679,7 @@ static int Console(Display* self,Browser* b,int level,const String* text,const S
   privacy::ObserveRendererDump({text->str+dump_prefix_size,text->length-dump_prefix_size});
   Release(b);return 1; // Payloads never fall through to ordinary console logs.
  }
- if(CurrentTimeline(text)||CurrentPlayback(text)){Release(b);return 1;}
+ if(EnqueueNativeArtwork(text)||CurrentTimeline(text)||CurrentPlayback(text)){Release(b);return 1;}
  if(text&&text->str&&QueueRendererDiagnostic({text->str,text->length})) {
   Release(b);return 1; // Reserved diagnostics never fall through to raw console logging.
  }
@@ -464,6 +705,7 @@ static void InjectPrivacy(Frame* frame) {
  option(L"block_internal_logging",settings.block_internal_logging);
  option(L"block_track_errors",settings.block_track_errors);
  option(L"block_ai_telemetry",settings.block_ai_telemetry);
+ option(L"block_queued_telemetry",settings.block_queued_telemetry);
  option(L"dump_telemetry",settings.dump_telemetry);
  script+=L"});";script+=telemetry_script;script+=L"})();";
  String code={script.data(),script.size(),nullptr};
@@ -482,7 +724,7 @@ static void Inject(Frame* frame) {
  if(!main||!main(frame))return;
  frame->base.add(&frame->base);Frame* old=nullptr;
  {ExclusiveSrw guard(frame_lock);old=polling_frame;polling_frame=frame;}Release(old);
- const auto code_text=CollectorOptions()+metadata_script;
+ const auto code_text=CollectorOptions()+metadata_script+MarkedPlaylistScript();
  String code={const_cast<wchar_t*>(code_text.c_str()),code_text.size(),nullptr};
  const wchar_t name[]=L"floggfy-metadata.js";String source={const_cast<wchar_t*>(name),wcslen(name),nullptr};
  reinterpret_cast<void(*)(Frame*,const String*,const String*,int)>(frame->methods[14])(frame,&code,&source,1);

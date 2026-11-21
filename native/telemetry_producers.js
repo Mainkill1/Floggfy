@@ -108,6 +108,14 @@
  // A zero master or category leaves its callers intact.
  function count(category){try{console.log('FLOGGFY_PRIVACY_COUNT_V1:'+category+'=1');}catch{}}
  const route=(path,root)=>path===root||path.startsWith(root+'/');
+ const queuedTrackingHosts=new Set([
+  'aet.spotify.com',
+  'lciapi.ninthdecimal.com',
+  'tracker.samplicio.us',
+  'tpt.dotomi.com',
+  'aes.us-east.3px.axp.amazon-adsystem.com',
+  'aax-events-cell02-cf.us-east.3px.axp.amazon-adsystem.com',
+ ]);
  function classify(url){
   if(typeof url!=='string'||!url.length||url.length>4096||/[\x00-\x20\x7f]/.test(url))return;
   const match=/^(https?|sp):\/\/([^/\\?#]*)([^?#]*)/i.exec(url);if(!match)return;
@@ -115,11 +123,13 @@
   const port=host.indexOf(':');
   if(port!==-1){const value=host.slice(port+1);if(!/^\d{1,5}$/.test(value)||+value<1||+value>65535)return;host=host.slice(0,port);}
   if(host.endsWith('.'))host=host.slice(0,-1);
+  const http=scheme==='http'||scheme==='https';
+  if(http&&queuedTrackingHosts.has(host))return 'queued_telemetry';
   const segments=[],decoded=match[3].replace(/%([0-9a-f]{2})/gi,(all,hex)=>{
    const c=String.fromCharCode(parseInt(hex,16));return /[a-z0-9._~\/\\-]/i.test(c)?c:all;
   }).replace(/\\/g,'/');
   for(const segment of decoded.split('/')){if(segment==='..')segments.pop();else if(segment&&segment!=='.')segments.push(segment);}
-  const path='/'+segments.join('/'),http=scheme==='http'||scheme==='https';
+  const path='/'+segments.join('/');
   const regional=/^([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)-spclient\.spotify\.com$/.exec(host);
   const spclient=http&&(host==='spclient.wg.spotify.com'||regional&&regional[1].length+8<=63);
   if(spclient&&route(path,'/gabo-receiver-service'))return 'event_reports';

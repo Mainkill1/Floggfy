@@ -1,8 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include "cached_artwork_windows.h"
-#include "image_info.h"
+#include "artwork_image.h"
 #include <windows.h>
-#include <wincodec.h>
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -89,44 +88,6 @@ bool Address(const std::filesystem::path& root,uint32_t addr,size_t size,std::ve
  std::vector<uint8_t> data(size);if(!file.Read(offset,data.data(),size))return false;out=std::move(data);return true;
 }
 bool Checksum(const std::vector<uint8_t>& b,size_t end){return b.size()>=end+4&&U32(b.data()+end)==Hash(b.data(),end);}
-template<class T> struct Com {
- T* p=nullptr;~Com(){if(p)p->Release();}T** Out(){return &p;}T* operator->()const{return p;}
-};
-bool Normalize(std::vector<uint8_t>& data,std::string& reason){
- ImageInfo info;if(ReadImageInfo(data,info))return true;
- if(data.size()<12||std::memcmp(data.data(),"RIFF",4)||std::memcmp(data.data()+8,"WEBP",4)||
-    uint64_t(U32(data.data()+4))+8!=data.size()){reason="cache-image-invalid";return false;}
- // WIC is optional: hosts without a WebP decoder retain normal publication.
- // Both encoded streams have fixed 4 MiB capacities; dimensions bound decoding.
- std::vector<uint8_t> png(kImageLimit);
- {
- const auto init=CoInitializeEx(nullptr,COINIT_MULTITHREADED);
- struct Apartment {HRESULT result;~Apartment(){if(SUCCEEDED(result))CoUninitialize();}} apartment{init};
- if(FAILED(init)&&init!=RPC_E_CHANGED_MODE){reason="cache-image-decoder-unavailable";return false;}
- Com<IWICImagingFactory> factory;Com<IWICStream> input,output;Com<IWICBitmapDecoder> decoder;
- Com<IWICBitmapFrameDecode> frame;Com<IWICBitmapEncoder> encoder;Com<IWICBitmapFrameEncode> target;
- Com<IWICFormatConverter> converter;
- if(FAILED(CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_IWICImagingFactory,reinterpret_cast<void**>(factory.Out())))||
-    FAILED(factory->CreateStream(input.Out()))||FAILED(input->InitializeFromMemory(data.data(),DWORD(data.size())))||
-    FAILED(factory->CreateDecoderFromStream(input.p,nullptr,WICDecodeMetadataCacheOnDemand,decoder.Out()))){reason="cache-image-decoder-unavailable";return false;}
- UINT width=0,height=0,frames=0;
- if(FAILED(decoder->GetFrameCount(&frames))||frames!=1||FAILED(decoder->GetFrame(0,frame.Out()))||
-    FAILED(frame->GetSize(&width,&height))||!width||!height||width>8192||height>8192||uint64_t(width)*height>8000000){reason="cache-image-dimensions-invalid";return false;}
- WICPixelFormatGUID format=GUID_WICPixelFormat32bppBGRA;
- if(FAILED(factory->CreateFormatConverter(converter.Out()))||
-    FAILED(converter->Initialize(frame.p,format,WICBitmapDitherTypeNone,nullptr,0,WICBitmapPaletteTypeCustom))||
-    FAILED(factory->CreateStream(output.Out()))||FAILED(output->InitializeFromMemory(png.data(),DWORD(png.size())))||
-    FAILED(factory->CreateEncoder(GUID_ContainerFormatPng,nullptr,encoder.Out()))||FAILED(encoder->Initialize(output.p,WICBitmapEncoderNoCache))||
-    FAILED(encoder->CreateNewFrame(target.Out(),nullptr))||FAILED(target->Initialize(nullptr))||
-    FAILED(target->SetSize(width,height))||FAILED(target->SetPixelFormat(&format))||format!=GUID_WICPixelFormat32bppBGRA||
-    FAILED(target->WriteSource(converter.p,nullptr))||FAILED(target->Commit())||FAILED(encoder->Commit())){reason="cache-image-conversion-failed";return false;}
- LARGE_INTEGER zero{};ULARGE_INTEGER end{};
- if(FAILED(output->Seek(zero,STREAM_SEEK_CUR,&end))||end.QuadPart>png.size()){reason="cache-image-conversion-failed";return false;}
- png.resize(size_t(end.QuadPart));
- if(!ReadImageInfo(png,info)||info.width!=width||info.height!=height){reason="cache-image-conversion-failed";return false;}
- } // Release every WIC object before replacing either stream's backing bytes.
- data=std::move(png);return true;
-}
 bool ReadDirectory(const std::filesystem::path& root,const std::string& url,std::vector<uint8_t>& bytes,std::string& reason){
  reason="cache-miss";if(!ValidUrl(url)){reason="invalid-url";return false;}
  File index(root/L"index");std::array<uint8_t,368> header{};
@@ -154,7 +115,7 @@ bool ReadDirectory(const std::filesystem::path& root,const std::string& url,std:
    if((ranking&0xff000000u)!=0x90000000u||!Address(root,ranking,36,node)||
       !Checksum(node,32)||U32(node.data()+24)!=addr||U32(node.data()+28)){reason="cache-entry-busy";return false;}
    if(!length||length>kImageLimit||!Address(root,body,length,data)){reason="cache-body-unavailable";return false;}
-   if(!Normalize(data,reason))return false;
+   if(!NormalizeArtworkImage(data,reason))return false;
    std::array<uint8_t,368> after{};std::array<uint8_t,4> bucket_after{};
    if(!Address(root,addr,256,again)||again!=entry||!Address(root,ranking,36,node_again)||node_again!=node||
       !index.Read(0,after.data(),after.size())||U32(after.data())!=U32(header.data())||

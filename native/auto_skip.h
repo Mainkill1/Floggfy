@@ -14,6 +14,7 @@ struct AutoSkipRequest {
 
 bool ShouldAutoSkipDownloaded(const PlaybackQualitySnapshot& current,
                               std::uint64_t expected_identity,
+                              std::string_view expected_playback_instance,
                               const Quality& existing) noexcept;
 std::uint32_t QueueAutoSkipRequest(const std::string& spotify_uri,
                                    const std::string& playback_instance,

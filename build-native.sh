@@ -2,14 +2,16 @@
 set -euo pipefail
 cd -- "$(dirname -- "$0")"
 mkdir -p build
+bash build-artwork-codecs.sh x86_64-w64-mingw32-gcc ar build/artwork-codecs-windows
 x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vendor/minimp4/minimp4.c -o build/minimp4.o
 python3 - <<'PY'
 from pathlib import Path
-script=Path('native/metadata_collector.js').read_text()
+script=Path('native/marked_playlist_sort.js').read_text()+'\n'+Path('native/marked_playlist.js').read_text()+'\n'+Path('native/artwork_collector.js').read_text()+'\n'+Path('native/metadata_collector.js').read_text()
 Path('build/metadata_script.h').write_text('static constexpr wchar_t metadata_script[]=LR"FLOGGFY('+script+')FLOGGFY";\n')
 privacy=Path('native/telemetry_producers.js').read_text()
 Path('build/telemetry_script.h').write_text('static constexpr wchar_t telemetry_script[]=LR"FLOGGFY('+privacy+')FLOGGFY";\n')
 PY
+x86_64-w64-mingw32-gcc -std=c11 -O2 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DQS=0 -c native/vendor/sqlite/sqlite3.c -o build/sqlite3.o
 for source in buffer hook trampoline hde/hde64; do
     x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c \
         "native/vendor/minhook/src/$source.c" -o "build/minhook-${source//\//-}.o"
@@ -20,11 +22,11 @@ x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vorbis_headers_stb.c
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -shared \
     -static-libgcc -static-libstdc++ \
     -Wl,--no-insert-timestamp,--dynamicbase,--nxcompat \
-    native/version_proxy.cpp native/telemetry_crash.cpp native/telemetry_filter.cpp native/telemetry_decode.cpp native/telemetry_inflate.cpp native/pe_imports.cpp native/spotify_hook_discovery.cpp native/connect_message.cpp native/connect_messages_windows.cpp native/audio_history.cpp native/playback_identity_bridge.cpp native/auto_skip.cpp native/decoder_ownership.cpp native/playback_quality.cpp native/playback_quality_windows.cpp native/ogg_history_core.cpp \
+    native/version_proxy.cpp native/update_blocker.cpp native/network_kill_switch.cpp native/telemetry_crash.cpp native/telemetry_queue.cpp native/telemetry_queue_exit.cpp native/telemetry_filter.cpp native/telemetry_decode.cpp native/telemetry_inflate.cpp native/pe_imports.cpp native/spotify_hook_discovery.cpp native/connect_message.cpp native/connect_messages_windows.cpp native/audio_history.cpp native/playback_identity_bridge.cpp native/auto_skip.cpp native/decoder_ownership.cpp native/playback_quality.cpp native/playback_quality_windows.cpp native/ogg_history_core.cpp \
     native/media_session.cpp native/image_info.cpp native/album_artwork.cpp native/ogg_tags.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/history_settings.cpp native/library_layout.cpp \
-    native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp native/mp3_stream.cpp build/minimp4.o native/vorbis_headers.cpp build/vorbis-headers-stb.o native/existing_quality.cpp native/file_publication.cpp native/metadata_update_core.cpp native/metadata_update_windows.cpp native/recent_downloads.cpp native/song_destination.cpp native/to_disk_menu.cpp native/rich_metadata.cpp native/cached_metadata.cpp native/cached_metadata_windows.cpp native/cached_artwork_windows.cpp native/metadata_bridge.cpp native/async_log.cpp native/version_exports.S native/version.def \
+    native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp native/mp3_stream.cpp build/minimp4.o native/vorbis_headers.cpp build/vorbis-headers-stb.o native/existing_quality.cpp native/file_publication.cpp native/metadata_update_core.cpp native/metadata_update_windows.cpp native/recent_downloads.cpp native/marked_recording.cpp native/marked_recording_windows.cpp native/marked_catalog.cpp build/sqlite3.o native/song_destination.cpp native/to_disk_menu.cpp native/rich_metadata.cpp native/artwork_reply.cpp native/cached_metadata.cpp native/cached_metadata_windows.cpp native/cached_artwork_windows.cpp native/artwork_image.cpp native/metadata_bridge.cpp native/async_log.cpp native/version_exports.S native/version.def \
     build/minhook-*.o build/ogg-framing.o -I native/vendor/libogg/include \
-    -o build/version.dll -lwindowscodecs -lole32 -luuid -liphlpapi -lws2_32 -lruntimeobject -lshell32 -lwinhttp
+    -o build/version.dll build/artwork-codecs-windows/libwebpdecoder.a -lole32 -luuid -liphlpapi -lws2_32 -lruntimeobject -lshell32 -lwinhttp -ladvapi32
 # PE rewriting by strip otherwise inserts the current time even though the
 # linker timestamp is disabled, producing a different DLL hash on every build.
 SOURCE_DATE_EPOCH=1 x86_64-w64-mingw32-strip --strip-unneeded build/version.dll

@@ -12,10 +12,10 @@ int RunAacContainerTests();
 int RunMediaSnapshotTests();
 namespace {
 bool extra_metadata=false;
-unsigned native_push_calls=0;
+unsigned native_push_calls=0,native_initialize_calls=0,native_destroy_calls=0;
 bool native_reject=false;
-void* NativeInitialize(void* context,bool){return context;}
-void* NativeDestroy(void* context,unsigned){return context;}
+void* NativeInitialize(void* context,bool){++native_initialize_calls;return context;}
+void* NativeDestroy(void* context,unsigned){++native_destroy_calls;return context;}
 void* NativePush(void*,void* status,const AacView*) {
     ++native_push_calls;const uint64_t value[]={native_reject?7u:0u,0x12345678};memcpy(status,value,sizeof(value));return status;
 }
@@ -220,6 +220,8 @@ void RealSample(const std::wstring& input,const std::wstring& output) {
 }
 namespace history {
 std::uint64_t MetadataRevision(){return 0;}
+void RetainMetadata(Media&) {}
+bool ReadCurrentItemMedia(Media&){return false;}
 std::string ReadClientPlaybackQuality(const Media&){return {};}
 void EnrichCatalog(const Media&,Catalog& catalog){if(catalog.spotify_uri.empty())catalog.spotify_uri="spotify:track:AAAAAAAAAAAAAAAAAAAAAA";}
 void EnrichTags(const Media&,Tags& tags) {
@@ -237,16 +239,37 @@ int wmain(int argc,wchar_t** argv) {
     const std::wstring exe(executable);const auto directory=exe.substr(0,exe.find_last_of(L'\\'));
     const auto ini=directory+L"\\SpotifyHistory.ini",root=directory+L"\\Music";
     assert(CreateDefaultIni(ini));assert(GetPrivateProfileIntW(L"To Disk",L"AAC",9,ini.c_str())==0);
-    assert(WritePrivateProfileStringW(L"To Disk",L"AAC",L"1",ini.c_str()));
     assert(WritePrivateProfileStringW(L"To Disk",L"Menu",L"0",ini.c_str()));
     assert(WritePrivateProfileStringW(L"To Disk",L"Log",L"0",ini.c_str()));
     assert(WritePrivateProfileStringW(L"To Disk",L"Save Location",root.c_str(),ini.c_str()));
-    InitSettings(nullptr);assert(GetSettings().aac&&AACEnabled());
+    InitSettings(nullptr);assert(!GetSettings().aac&&!AACEnabled());
+    // Prepared hooks must remain transparent while the default AAC=0 is active,
+    // even before any capture queue is allocated. The borrowed pointer must not
+    // be inspected by the disabled detour.
+    const auto initializes=native_initialize_calls,destroys=native_destroy_calls,pushes=native_push_calls;
+    auto* context=reinterpret_cast<void*>(0x1234);
+    assert(AacInitializeHook(context,false)==context);
+    assert(AacPushHook(context,status,reinterpret_cast<const AacView*>(1))==status);
+    assert(AacDestroyHook(context,0)==context);
+    assert(native_initialize_calls==initializes+1&&native_destroy_calls==destroys+1&&native_push_calls==pushes+1);
+    assert(count==0&&queue==nullptr);
+    const auto initial_epoch=CaptureEpoch();
+    assert(SetAAC(true)&&GetSettings().aac&&AACEnabled()&&CaptureEpoch()==initial_epoch+1);
     assert(SetDownloads(false)&&!AACEnabled());assert(SetDownloads(true)&&AACEnabled());
     assert(FlushSettings(5000)&&GetPrivateProfileIntW(L"To Disk",L"AAC",9,ini.c_str())==1);
     queue=static_cast<Slot*>(HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof(Slot)*capacity));assert(queue);
     event=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(event);
     TestPipeline(root);
+    // Disable and re-enable using the real menu setter. No hook replacement or
+    // restart occurs; a fresh stream follows the same capture/parser pipeline.
+    assert(SetAAC(false)&&!AACEnabled());
+    assert(count==0);const auto disabled_epoch=CaptureEpoch();
+    assert(AacInitializeHook(context,false)==context);
+    assert(AacPushHook(context,status,reinterpret_cast<const AacView*>(1))==status);
+    assert(AacDestroyHook(context,0)==context&&count==0);
+    assert(SetAAC(true)&&AACEnabled()&&CaptureEpoch()==disabled_epoch+1);
+    const auto resumed=Captured(spac_fixture::stream(29,true));
+    assert(ValidateFinalCapture(*resumed)==FinalCaptureValidation::Valid&&count==0);
     // Invalid native status, partial/oversized feeds, and epoch changes cannot
     // generate a ready recording. Integrity checks remain in the core cases.
     CaptureBuffers buffers;PlaybackQualityTracker quality;Slot begin{};
@@ -280,6 +303,6 @@ int wmain(int argc,wchar_t** argv) {
     assert(!invalid.initialize&&!invalid.push&&!invalid.destroy);
     CloseHandle(event);event=nullptr;HeapFree(GetProcessHeap(),0,queue);queue=nullptr;
     assert(FlushSettings(5000));
-    puts("PASS: optional AAC defaults off; hooks preserve native ABI; complete AAC publishes atomically as M4A; duplicate/preferred-file retention, identity collisions and metadata-only opt-out work");
+    puts("PASS: AAC defaults off and toggles live without disabled buffering; hooks preserve native ABI; complete AAC publishes atomically as M4A; duplicate/preferred-file retention, identity collisions and metadata-only opt-out work");
     return 0;
 }

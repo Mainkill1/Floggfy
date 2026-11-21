@@ -148,23 +148,6 @@ bool DiagnosticBridge::MatchObservation(const Observation& observation,const Ins
     return true;
 }
 
-bool DiagnosticBridge::ResolveExpected() noexcept {
-    if(!has_expected_)return false;
-    LocateExpected();
-    bool matched=false;
-    for(std::size_t index=0;index<observation_count_;++index) {
-        auto& observation=observations_[(observation_head_+index)%observations_.size()];
-        if(observation.reported_metadata_generation==metadata_generation_)continue;
-        Match candidate{};
-        if(!MatchObservation(observation,expected_,metadata_generation_,candidate))continue;
-        observation.reported_metadata_generation=metadata_generation_;
-        if(pending_match_count_<pending_matches_.size())
-            pending_matches_[pending_match_count_++]=candidate;
-        matched=true;
-    }
-    return matched;
-}
-
 bool DiagnosticBridge::NeedsPlayerState(std::uintptr_t owner,std::uintptr_t decoder,unsigned epoch,double now) const noexcept {
     if(!owner||!decoder||location_.status==LocationStatus::Verified)return false;
     double latest=-1;
@@ -189,23 +172,34 @@ void DiagnosticBridge::ObservePlayerState(std::uintptr_t owner,std::uintptr_t de
         }
     }
     if(!selected) {
-        if(player_state_count_==player_states_.size())observation_lost_=true;
+        // These are unverified calibration snapshots, not established ID
+        // observations. Expiring them must not disable the independent matcher
+        // forever on a layout that has never calibrated successfully.
+        if(player_state_count_==player_states_.size())++calibration_retirements_;
         else ++player_state_count_;
         selected=&player_states_[player_state_next_++%player_states_.size()];
     }
     auto& snapshot=*selected;snapshot.retry=retry;
     snapshot.owner=owner;snapshot.decoder=decoder;snapshot.epoch=epoch;
     snapshot.sequence=sequence;snapshot.metadata_generation=metadata_generation_;
+    readable_bytes=std::min(readable_bytes,bytes.size());
+    if(snapshot.readable_bytes!=readable_bytes||
+       std::memcmp(snapshot.bytes.data(),bytes.data(),readable_bytes))snapshot.location_cached=false;
     snapshot.observed_at=observed_at;snapshot.bytes=bytes;
-    snapshot.readable_bytes=std::min(readable_bytes,bytes.size());
-    if(has_expected_)ResolveExpected();
+    snapshot.readable_bytes=readable_bytes;
+    LocateExpected();
 }
 
 void DiagnosticBridge::LocateExpected() noexcept {
     if(!has_expected_||location_.status==LocationStatus::Verified||!player_state_count_)return;
     PlayerLocation found{LocationStatus::NotFound,0,0};
     for(std::size_t i=0;i<player_state_count_;++i) {
-        const auto candidate=LocateInState(player_states_[i].bytes,expected_,player_states_[i].readable_bytes);
+        auto& snapshot=player_states_[i];
+        if(!snapshot.location_cached) {
+            snapshot.location=LocateInState(snapshot.bytes,expected_,snapshot.readable_bytes);
+            snapshot.location_cached=true;
+        }
+        const auto candidate=snapshot.location;
         if(candidate.status==LocationStatus::Ambiguous) {location_=candidate;return;}
         if(candidate.status!=LocationStatus::Verified) {
             if(found.status!=LocationStatus::Verified&&candidate.status==LocationStatus::Unreadable)found=candidate;
@@ -248,12 +242,17 @@ bool DiagnosticBridge::HasPlayerIdentity(std::uintptr_t decoder,unsigned epoch,d
 
 bool DiagnosticBridge::SetExpected(std::string_view playback_instance,
                                    std::uint64_t metadata_generation) noexcept {
-    pending_match_count_=0;pending_match_next_=0;metadata_generation_=0;has_expected_=false;
-    if(!metadata_generation||!ParseInstance(playback_instance,expected_))return false;
+    metadata_generation_=0;has_expected_=false;
+    Instance expected{};
+    if(!metadata_generation||!ParseInstance(playback_instance,expected))return false;
+    if(expected.bytes!=expected_.bytes) {
+        for(auto& snapshot:player_states_)snapshot.location_cached=false;
+    }
+    expected_=expected;
     metadata_generation_=metadata_generation;has_expected_=true;
     if(location_.status==LocationStatus::WaitingMetadata&&!player_state_count_)
         location_.status=LocationStatus::WaitingState;
-    ResolveExpected();return true;
+    LocateExpected();return true;
 }
 
 bool DiagnosticBridge::NeedsObservation(std::uintptr_t owner,std::uintptr_t decoder,
@@ -322,8 +321,7 @@ bool DiagnosticBridge::Observe(std::uintptr_t owner,std::uintptr_t decoder,unsig
     observation.size=retained_size;
     std::memcpy(observation.bytes.data(),snapshot,observation.size);
     pending_observation_=ObservationInfo{owner,decoder,epoch,sequence,owner_generation,role,observed_at};
-    if(!has_expected_)return false;
-    return ResolveExpected();
+    return true;
 }
 
 std::size_t DiagnosticBridge::QueryMatches(std::string_view playback_instance,
@@ -345,17 +343,6 @@ std::size_t DiagnosticBridge::QueryMatches(std::string_view playback_instance,
 
 void DiagnosticBridge::Reset() noexcept {
     *this={};
-}
-
-std::optional<Match> DiagnosticBridge::TakeMatch() noexcept {
-    if(pending_match_next_>=pending_match_count_) {
-        pending_match_count_=0;pending_match_next_=0;return std::nullopt;
-    }
-    const auto match=pending_matches_[pending_match_next_++];
-    if(pending_match_next_==pending_match_count_) {
-        pending_match_count_=0;pending_match_next_=0;
-    }
-    return match;
 }
 
 std::optional<ObservationInfo> DiagnosticBridge::TakeObservation() noexcept {

@@ -2,9 +2,9 @@
 #include <array>
 #include <string_view>
 namespace privacy {
-enum class Rule {Allow,Gabo,Logging,Sentry,Playback,Growth,Crash,TrackError,AITelemetry,Count};
+enum class Rule {Allow,Gabo,Logging,Sentry,Playback,Growth,Crash,TrackError,AITelemetry,QueuedTracking,Count};
 inline const char* RuleName(Rule rule) noexcept {
-    switch(rule){case Rule::Gabo:return "gabo";case Rule::Logging:return "logging";case Rule::Sentry:return "sentry";case Rule::Playback:return "playback";case Rule::Growth:return "growth";case Rule::Crash:return "crash";case Rule::TrackError:return "track_error";case Rule::AITelemetry:return "ai_telemetry";default:return "none";}
+    switch(rule){case Rule::Gabo:return "gabo";case Rule::Logging:return "logging";case Rule::Sentry:return "sentry";case Rule::Playback:return "playback";case Rule::Growth:return "growth";case Rule::Crash:return "crash";case Rule::TrackError:return "track_error";case Rule::AITelemetry:return "ai_telemetry";case Rule::QueuedTracking:return "queued_telemetry";default:return "none";}
 }
 namespace detail {
 inline wchar_t Lower(wchar_t c) noexcept {return c>=L'A'&&c<=L'Z'?c+(L'a'-L'A'):c;}
@@ -51,6 +51,18 @@ inline Rule Classify(std::wstring_view url) noexcept {
         host=host.substr(0,port);
     }
     if(!host.empty()&&host.back()==L'.')host.remove_suffix(1);
+    if(http) {
+        constexpr std::wstring_view queued_tracking_hosts[]={
+            L"aet.spotify.com",
+            L"lciapi.ninthdecimal.com",
+            L"tracker.samplicio.us",
+            L"tpt.dotomi.com",
+            L"aes.us-east.3px.axp.amazon-adsystem.com",
+            L"aax-events-cell02-cf.us-east.3px.axp.amazon-adsystem.com",
+        };
+        for(const auto destination:queued_tracking_hosts)
+            if(detail::Equal(host,destination))return Rule::QueuedTracking;
+    }
     const bool spclient=http&&detail::Spclient(host);
     const bool logging=detail::Equal(scheme,L"sp")&&detail::Equal(host,L"logging");
     const bool sentry=http&&detail::Equal(host,L"o22381.ingest.sentry.io");
