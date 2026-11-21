@@ -15,6 +15,7 @@ using Bytes = std::string_view;
 using wire::Varint;
 using wire::Sized;
 constexpr size_t max_value = 131072;
+constexpr Bytes track_prefix = "spotify:track:", album_prefix = "spotify:album:";
 bool Wanted(Bytes key, Bytes uri) {
   constexpr Bytes prefix = "!xmeta#cache#";
   if (uri.empty() || key.substr(0, prefix.size()) != prefix)
@@ -112,54 +113,28 @@ int64_t Signed(const Message &m, unsigned key) {
 }
 std::string Text(const Message &m, unsigned key) {
   auto b = Data(m, key);
-  if (b.empty() || b.size() > 4096)
+  if (b.empty() || b.size() > 4096 || !MetadataTextValid(b))
     return {};
-  std::string s(b);
-  return MetadataTextValid(s) ? s : std::string{};
+  return std::string(b);
 }
-constexpr char alphabet[] = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-bool Id(const std::string &uri, const char *kind, std::array<uint8_t, 16> &gid) {
-  std::string prefix = std::string("spotify:") + kind + ":";
-  if (uri.size() != prefix.size() + 22 || uri.compare(0, prefix.size(), prefix) != 0)
-    return false;
-
-  gid.fill(0);
-  for (char c : uri.substr(prefix.size())) {
-    const char *found = std::find(alphabet, alphabet + 62, c);
-    if (found == alphabet + 62)
-      return false;
-    unsigned carry = unsigned(found - alphabet);
-    for (int i = 15; i >= 0; --i) {
-      carry += unsigned(gid[size_t(i)]) * 62;
-      gid[size_t(i)] = uint8_t(carry);
-      carry >>= 8;
-    }
-    if (carry)
-      return false;
-  }
-  return true;
-}
-bool SameId(Bytes value, const std::string &uri, const char *kind) {
-  std::array<uint8_t, 16> gid{};
-  return Id(uri, kind, gid) && value.size() == gid.size() &&
-         std::equal(gid.begin(), gid.end(), reinterpret_cast<const uint8_t *>(value.data()));
-}
-std::string AlbumUri(Bytes gid) {
-  if (gid.size() != 16)
+std::string UriFromGid(Bytes gid, Bytes prefix) {
+  static constexpr char alphabet[] = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  std::array<uint8_t, 16> digits;
+  if (gid.size() != digits.size())
     return {};
-  std::array<uint8_t, 16> n{};
-  std::copy(gid.begin(), gid.end(), n.begin());
-  std::string id(22, '0');
-  for (int i = 21; i >= 0; --i) {
+  std::copy(gid.begin(), gid.end(), digits.begin());
+  std::string uri(prefix);
+  uri.resize(prefix.size() + 22);
+  for (size_t i = uri.size(); i > prefix.size(); --i) {
     unsigned remainder = 0;
-    for (auto &byte : n) {
-      unsigned v = (remainder << 8) | byte;
-      byte = uint8_t(v / 62);
-      remainder = v % 62;
+    for (auto &byte : digits) {
+      unsigned value = (remainder << 8) | byte;
+      byte = uint8_t(value / 62);
+      remainder = value % 62;
     }
-    id[size_t(i)] = alphabet[remainder];
+    uri[i - 1] = alphabet[remainder];
   }
-  return "spotify:album:" + id;
+  return uri;
 }
 void Put(std::map<std::string, std::string> &out, const char *tag, const std::string &value) {
   if (!value.empty() && value.size() <= 4096 && MetadataTextValid(value))
@@ -179,14 +154,15 @@ void Add(std::vector<std::string> &values, const std::string &value) {
       std::find(values.begin(), values.end(), value) == values.end())
     values.push_back(value);
 }
+template <class Visitor> void VisitMessages(const Message &m, unsigned key, Visitor visit) {
+  Message nested;
+  for (const auto &f : m)
+    if (f.key == key && f.wire == 2 && Proto(f.bytes, nested))
+      visit(nested);
+}
 std::vector<std::string> Artists(const Message &m, unsigned key) {
   std::vector<std::string> names;
-  for (const auto &f : m)
-    if (f.key == key && f.wire == 2) {
-      Message artist;
-      if (Proto(f.bytes, artist))
-        Add(names, Text(artist, 2));
-    }
+  VisitMessages(m, key, [&](const Message &artist) { Add(names, Text(artist, 2)); });
   return names;
 }
 void AlbumFields(const Message &album, std::map<std::string, std::string> &out) {
@@ -216,17 +192,13 @@ void AlbumFields(const Message &album, std::map<std::string, std::string> &out) 
     }
   }
   std::vector<std::string> copyright, phonogram;
-  for (const auto &f : album)
-    if (f.key == 13 && f.wire == 2) {
-      Message notice;
-      if (Proto(f.bytes, notice)) {
-        auto text = Text(notice, 2);
-        if (Number(notice, 1) == 1)
-          Add(copyright, text);
-        else if (Number(notice, 1) == 0)
-          Add(phonogram, text);
-      }
-    }
+  VisitMessages(album, 13, [&](const Message &notice) {
+    const auto kind = Number(notice, 1);
+    if (kind == 1)
+      Add(copyright, Text(notice, 2));
+    else if (kind == 0)
+      Add(phonogram, Text(notice, 2));
+  });
   Put(out, "COPYRIGHT", Join(copyright));
   Put(out, "PHONOGRAMCOPYRIGHT", Join(phonogram));
 }
@@ -252,90 +224,79 @@ bool CollectMetadataLog(const std::vector<uint8_t>& bytes, CachedMetadataUris ur
 }
 bool DecodeCachedTrack(const CachedRecords &records, const std::string &uri,
                        CachedTrackMetadata &out) {
-  uint64_t latest = 0;
-  bool found = false;
+  if (!ValidSpotifyUri(uri, track_prefix))
+    return false;
+  std::optional<uint64_t> latest;
   CachedTrackMetadata result;
-  for (const auto &entry : records) {
-    const auto &r = entry.second;
+  for (const auto &[key, record] : records) {
     Message track, album;
-    if (!Payload(r, "spotify.metadata.Track", track) || !SameId(Data(track, 1), uri, "track") ||
+    if ((latest && record.sequence < *latest) || !Payload(record, "spotify.metadata.Track", track) ||
+        UriFromGid(Data(track, 1), track_prefix) != uri ||
         !Proto(Data(track, 3), album))
       continue;
     CachedTrackMetadata m;
     m.uri = uri;
     m.title = Text(track, 2);
     m.album = Text(album, 2);
-    m.album_uri = AlbumUri(Data(album, 1));
+    m.album_uri = UriFromGid(Data(album, 1), album_prefix);
     m.duration = double(Signed(track, 7)) / 1000;
     if (m.title.empty() || m.album.empty() || m.album_uri.empty() || !std::isfinite(m.duration) ||
         m.duration <= 0 || m.duration > 86400)
       continue;
     Put(m.fields, "ARTIST", Join(Artists(track, 4)));
     AlbumFields(album, m.fields);
-    for (const auto &f : track)
-      if (f.key == 10 && f.wire == 2) {
-        Message external;
-        if (Proto(f.bytes, external) && Text(external, 1) == "isrc")
-          Put(m.fields, "ISRC", Text(external, 2));
-      }
+    VisitMessages(track, 10, [&](const Message &external) {
+      if (Text(external, 1) == "isrc")
+        Put(m.fields, "ISRC", Text(external, 2));
+    });
     auto number = Signed(track, 5), disc = Signed(track, 6);
     if (number > 0 && number < 100000)
       Put(m.fields, "TRACKNUMBER", std::to_string(number));
     if (disc > 0 && disc < 100000)
       Put(m.fields, "DISCNUMBER", std::to_string(disc));
     std::vector<std::string> composer, remixer, conductor;
-    for (const auto &f : track)
-      if (f.key == 32 && f.wire == 2) {
-        Message role;
-        if (Proto(f.bytes, role)) {
-          auto name = Text(role, 2);
-          switch (Number(role, 3)) {
-          case 3:
-            Add(remixer, name);
-            break;
-          case 5:
-            Add(composer, name);
-            break;
-          case 6:
-            Add(conductor, name);
-            break;
-          default:
-            break;
-          }
-        }
+    VisitMessages(track, 32, [&](const Message &role) {
+      auto name = Text(role, 2);
+      switch (Number(role, 3)) {
+      case 3:
+        Add(remixer, name);
+        break;
+      case 5:
+        Add(composer, name);
+        break;
+      case 6:
+        Add(conductor, name);
+        break;
       }
+    });
     Put(m.fields, "COMPOSER", Join(composer));
     Put(m.fields, "REMIXER", Join(remixer));
     Put(m.fields, "CONDUCTOR", Join(conductor));
-    if (!found || r.sequence >= latest) {
-      latest = r.sequence;
-      result = std::move(m);
-      found = true;
-    }
+    latest = record.sequence;
+    result = std::move(m);
   }
-  if (found)
+  if (latest)
     out = std::move(result);
-  return found;
+  return latest.has_value();
 }
 bool DecodeCachedAlbum(const CachedRecords &records, const std::string &uri,
                        std::map<std::string, std::string> &out) {
-  uint64_t latest = 0;
-  bool found = false;
+  if (!ValidSpotifyUri(uri, album_prefix))
+    return false;
+  std::optional<uint64_t> latest;
   std::map<std::string, std::string> result;
-  for (const auto &entry : records) {
+  for (const auto &[key, record] : records) {
     Message album;
-    const auto &r = entry.second;
-    if (Payload(r, "spotify.metadata.Album", album) && SameId(Data(album, 1), uri, "album") &&
-        (!found || r.sequence >= latest)) {
-      result.clear();
-      AlbumFields(album, result);
-      found = true;
-      latest = r.sequence;
-    }
+    if ((latest && record.sequence < *latest) || !Payload(record, "spotify.metadata.Album", album) ||
+        UriFromGid(Data(album, 1), album_prefix) != uri)
+      continue;
+    result.clear();
+    AlbumFields(album, result);
+    latest = record.sequence;
   }
-  if (found)
+  if (latest)
     out = std::move(result);
-  return found;
+  return latest.has_value();
 }
 static std::vector<std::string> ArtistNames(const std::string &text) {
   std::vector<std::string> names;
@@ -358,29 +319,33 @@ static bool RicherArtists(const std::string &cached, const std::string &current)
            return std::find(proposed.begin(), proposed.end(), name) != proposed.end();
          });
 }
+static void MergeCachedFields(const std::map<std::string, std::string> &cached,
+                              std::map<std::string, std::string> &live) {
+  // Guest credits can enrich ARTIST. A populated ALBUMARTIST takes precedence.
+  for (const auto &[tag, value] : cached) {
+    auto &old = live[tag];
+    if (old.empty() || (tag == "ARTIST" && RicherArtists(value, old)) ||
+        (tag == "DATE" && value.size() > old.size() &&
+         Bytes(value).substr(0, 4) == Bytes(old).substr(0, 4)))
+      old = value;
+  }
+}
+void MergeCachedAlbum(const CachedRecords &records, CachedTrackMetadata &track) {
+  std::map<std::string, std::string> fields;
+  if (DecodeCachedAlbum(records, track.album_uri, fields))
+    MergeCachedFields(fields, track.fields);
+}
 bool MergeCachedMetadata(const CachedTrackMetadata &cached, RichMetadata &live) {
   if (cached.uri != live.uri || cached.title != live.title || cached.album != live.album ||
       std::fabs(cached.duration - live.duration) > 1.0)
     return false;
 
-  if (live.album_uri.empty() && ValidSpotifyUri(cached.album_uri,"spotify:album:"))
+  if (live.album_uri.empty() && ValidSpotifyUri(cached.album_uri, album_prefix))
     live.album_uri = cached.album_uri;
-  if (ValidSpotifyUri(live.album_uri,"spotify:album:"))
+  if (ValidSpotifyUri(live.album_uri, album_prefix))
     live.fields["SPOTIFY_ALBUM_URI"] = live.album_uri;
 
-  for (const auto &field : cached.fields) {
-    auto old = live.fields.find(field.first);
-    bool replace = old == live.fields.end() || old->second.empty();
-    // Guest credits can enrich ARTIST, but a longer album-artist list must not
-    // replace a populated current album artist.
-    if (!replace && field.first == "ARTIST")
-      replace = RicherArtists(field.second, old->second);
-    if (!replace && field.first == "DATE")
-      replace = old->second.substr(0, 4) == field.second.substr(0, 4) &&
-                field.second.size() > old->second.size();
-    if (replace)
-      live.fields[field.first] = field.second;
-  }
+  MergeCachedFields(cached.fields, live.fields);
   return true;
 }
 } // namespace history

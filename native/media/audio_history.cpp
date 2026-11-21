@@ -53,6 +53,7 @@
 #include <limits>
 #include <memory>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -132,10 +133,7 @@ struct CaptureQueueLossBatch {
     uint64_t reports=0;
     bool global=false;
 };
-std::array<CaptureQueueLossEntry,32> capture_queue_losses{};
-unsigned capture_queue_loss_count=0;
-uint64_t capture_queue_loss_reports=0;
-bool capture_queue_loss_global=false;
+CaptureQueueLossBatch capture_queue_losses;
 struct DecodedActivitySlot {
     uintptr_t context=0;
     uint64_t calls=0;
@@ -226,26 +224,28 @@ struct QueueGuard {
     QueueGuard& operator=(const QueueGuard&)=delete;
 };
 static void RecordCaptureQueueLossLocked(uintptr_t context,unsigned epoch,uint64_t generation=0) noexcept {
-    InterlockedIncrement(&dropped);++capture_queue_loss_reports;
-    if(capture_queue_loss_global)return;
-    if(!context) {capture_queue_loss_global=true;capture_queue_loss_count=0;return;}
-    for(unsigned i=0;i<capture_queue_loss_count;++i)
-        if(capture_queue_losses[i].context==context&&capture_queue_losses[i].epoch==epoch&&capture_queue_losses[i].mp3_generation==generation)return;
-    if(capture_queue_loss_count==capture_queue_losses.size()) {
-        capture_queue_loss_global=true;capture_queue_loss_count=0;return;
+    auto& batch=capture_queue_losses;
+    InterlockedIncrement(&dropped);++batch.reports;
+    if(batch.global)return;
+    if(context) {
+        for(unsigned i=0;i<batch.count;++i) {
+            const auto& prior=batch.entries[i];
+            if(prior.context==context&&prior.epoch==epoch&&prior.mp3_generation==generation)return;
+        }
+        if(batch.count<batch.entries.size()) {
+            batch.entries[batch.count++]={context,epoch,generation};
+            return;
+        }
     }
-    capture_queue_losses[capture_queue_loss_count++]={context,epoch,generation};
+    batch.global=true;batch.count=0;
 }
 static CaptureQueueLossBatch TakeCaptureQueueLosses() noexcept {
-    QueueGuard guard(false);CaptureQueueLossBatch result;
-    result.count=capture_queue_loss_count;result.global=capture_queue_loss_global;
-    result.reports=capture_queue_loss_reports;
-    for(unsigned i=0;i<result.count;++i)result.entries[i]=capture_queue_losses[i];
-    capture_queue_losses={};capture_queue_loss_count=0;capture_queue_loss_global=false;capture_queue_loss_reports=0;
-    return result;
+    QueueGuard guard(false);
+    if(!capture_queue_losses.count&&!capture_queue_losses.global)return {};
+    return std::exchange(capture_queue_losses,{});
 }
 static void ResetCaptureQueueLosses() noexcept {
-    QueueGuard guard(false);capture_queue_losses={};capture_queue_loss_count=0;capture_queue_loss_global=false;capture_queue_loss_reports=0;
+    QueueGuard guard(false);capture_queue_losses={};
     InterlockedExchange(&dropped,0);
 }
 static unsigned SlotsFor(size_t bytes) noexcept {
@@ -1153,6 +1153,10 @@ static FinalCaptureValidation CachedFinalValidation(const Capture& capture) {
     return FinalCaptureValidation(capture.final_validation);
 }
 static std::atomic<size_t> publishing_reserved{0},capture_reserved{0};
+static void ResizePublicationCharge(size_t previous,size_t current) {
+    if(current>previous)publishing_reserved.fetch_add(current-previous);
+    else if(previous>current)publishing_reserved.fetch_sub(previous-current);
+}
 static SRWLOCK memory_budget_lock=SRWLOCK_INIT;
 static thread_local unsigned memory_budget_depth=0;
 struct MemoryBudgetLock {
@@ -1257,6 +1261,9 @@ static double DeclaredCaptureDuration(const Capture& capture) {
         return double(capture.spac.info.total_samples)/capture.spac.info.rate;
     if(capture.stream.complete)return capture.Duration();
     return 0;
+}
+static bool DurationMismatch(double duration,double expected,unsigned tolerance_ms) {
+    return std::fabs(duration-expected)>tolerance_ms/1000.0+1e-6;
 }
 static const char* FlacReaderDetail(const char* reason) noexcept {
     if(!reason)return "reader reason unavailable";
@@ -1562,8 +1569,7 @@ static bool ReserveConstruction(Capture& capture,size_t incremental_peak) {
     // worker jobs keep their construction charge until ownership reconciles.
     if(accounted) {
         const auto required=owned+incremental_peak;
-        if(required>accounted)publishing_reserved.fetch_add(required-accounted);
-        else publishing_reserved.fetch_sub(accounted-required);
+        ResizePublicationCharge(accounted,required);
         capture.publication_reserved=required;
     }
     return true;
@@ -1600,26 +1606,30 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
         // Put outcome facts first so a long title cannot truncate quality/size.
         LogEvent(PublicationLogKind(status,newly_saved),event,detail+" | "+identity);return status;
     };
+    auto acknowledge=[&](bool& acknowledged,const std::wstring& path,
+                         const Quality& quality,size_t bytes,const char* event) {
+        if(!acknowledged) {
+            RecordRecentDownload(heard.media.artist+L" - "+heard.media.title,path,bytes);
+            const auto live=GetSettings();
+            if(live.marked_when_downloaded)QueueMarkedFile(live.root,path);
+            acknowledged=true;
+            RefreshSongDestination();
+        }
+        return finish(Publication::Saved,event,SavedAudioDetails(quality,bytes));
+    };
     if(c.format_receipt.committed) {
+        auto& receipt=c.format_receipt;
         size_t published=0;
-        const auto recovered=CompleteFormatUpgrade(c.format_receipt,&published,PublicationMemoryBudget::Admit,&inspection_budget);
+        const auto recovered=CompleteFormatUpgrade(receipt,&published,PublicationMemoryBudget::Admit,&inspection_budget);
         if(recovered==FilePublication::ResourceWait)return finish(Publication::Blocked,"deferred","upgrade recovery memory unavailable; committed recording retained");
         if(recovered==FilePublication::Failed)
             return finish(Publication::RetryIO,"deferred","committed format upgrade awaits verification/cleanup at its original destination");
-        if(c.format_receipt.acknowledged)return finish(Publication::Saved,"upgraded",SavedAudioDetails(c.format_receipt.quality,published));
-        RecordRecentDownload(heard.media.artist+L" - "+heard.media.title,c.format_receipt.destination,published);
-        {const auto live=GetSettings();if(live.marked_when_downloaded)QueueMarkedFile(live.root,c.format_receipt.destination);}
-        c.format_receipt.acknowledged=true;RefreshSongDestination();
-        return finish(Publication::Saved,"upgraded",SavedAudioDetails(c.format_receipt.quality,published));
+        return acknowledge(receipt.acknowledged,receipt.destination,receipt.quality,published,"upgraded");
     }
     if(c.publication_committed) {
         if(!VerifiedExistingPublication(c.committed_destination,c.publication_artifact.catalog))
             return finish(Publication::RetryIO,"deferred","committed recording awaits acknowledgement at its original destination");
-        if(c.publication_acknowledged)return finish(Publication::Saved,"finished",SavedAudioDetails(c.committed_quality,c.committed_bytes));
-        RecordRecentDownload(heard.media.artist+L" - "+heard.media.title,c.committed_destination,c.committed_bytes);
-        {const auto live=GetSettings();if(live.marked_when_downloaded)QueueMarkedFile(live.root,c.committed_destination);}
-        c.publication_acknowledged=true;RefreshSongDestination();
-        return finish(Publication::Saved,"finished",SavedAudioDetails(c.committed_quality,c.committed_bytes));
+        return acknowledge(c.publication_acknowledged,c.committed_destination,c.committed_quality,c.committed_bytes,"finished");
     }
     SYSTEMTIME t; GetSystemTime(&t); wchar_t stamp[64];
     swprintf(stamp,64,L"%04u-%02u-%02uT%02u:%02u:%02uZ",t.wYear,t.wMonth,t.wDay,t.wHour,t.wMinute,t.wSecond);
@@ -1689,7 +1699,6 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
             return finish(Publication::RetryIO,"failed","filename conversion failed; existing file retained");
     }
     const auto& destination=resolved.path;
-    const auto& existing_path=resolved.path;
     const auto& inspected=resolved.recording;
     // These are planning decisions, not write authorization. PublishBytes
     // revalidates under its existing handle reservation before any replacement.
@@ -1709,24 +1718,23 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
         const bool target_enabled=SourceFormatEnabled(target_codec,settings);
         if(settings.metadata && settings.update_existing_metadata && target_enabled && latest.generation==settings.generation &&
            latest.downloads && latest.metadata && latest.update_existing_metadata) {
-            const auto& path=existing_path;
             if(inspected.owned && inspected.complete && NeedsRecordingMetadata(inspected,tags,settings.marked_when_downloaded)) {
-                const auto result=UpdateRecordingMetadata(path,tags,catalog,settings.generation);
+                const auto result=UpdateRecordingMetadata(destination,tags,catalog,settings.generation);
                 if(result==FileMetadataUpdate::Updated) {
-                    if(settings.marked_when_downloaded)QueueMarkedFile(settings.root,path);
+                    if(settings.marked_when_downloaded)QueueMarkedFile(settings.root,destination);
                     RefreshSongDestination();
-                    if(!VerifiedExistingPublication(path,catalog))return finish(Publication::Replan,"deferred","existing recording changed before acknowledgement; source retained");
+                    if(!VerifiedExistingPublication(destination,catalog))return finish(Publication::Replan,"deferred","existing recording changed before acknowledgement; source retained");
                     return finish(Publication::AlreadyPresent,"updated","metadata and artwork updated; existing audio retained");
                 }
                 if(result==FileMetadataUpdate::Failed) {
-                    if(!VerifiedExistingPublication(path,catalog))return finish(Publication::Replan,"deferred","existing recording unavailable after metadata update; source retained");
+                    if(!VerifiedExistingPublication(destination,catalog))return finish(Publication::Replan,"deferred","existing recording unavailable after metadata update; source retained");
                     return finish(Publication::AlreadyPresent,"skipped","metadata update failed; verified existing audio retained");
                 }
             }
         }
         if(!PublicationStillCurrent(&permit))return finish(permit.rejected,"deferred","existing-recording plan changed; completed audio retained");
-        if(!VerifiedExistingPublication(existing_path,catalog))return finish(Publication::Replan,"deferred","existing recording changed before acknowledgement; source retained");
-        return finish(Publication::AlreadyPresent,"skipped",ExistingSkipReason(existing_path,quality,catalog,&inspected));
+        if(!VerifiedExistingPublication(destination,catalog))return finish(Publication::Replan,"deferred","existing recording changed before acknowledgement; source retained");
+        return finish(Publication::AlreadyPresent,"skipped",ExistingSkipReason(destination,quality,catalog,&inspected));
     }
     // Existing tags/art/lyrics are merged by PublishBytes while its exact old
     // object is locked. Do not take a separate stale preservation snapshot here.
@@ -1858,11 +1866,9 @@ static bool QueueReleaseAudit(Capture& capture,const char* reason,ReleaseExpecta
     capture.retained_reserved=capture.publication_reserved=0;
     job.capture->retained_reserved=0;job.capture->publication_reserved=reserved;
     capture_reserved.fetch_sub(retained);
-    if(reserved>=previous)publishing_reserved.fetch_add(reserved-previous);
-    else publishing_reserved.fetch_sub(previous-reserved);
+    ResizePublicationCharge(previous,reserved);
     if(!release_audits.Push(std::move(job))) {
-        if(reserved>=previous)publishing_reserved.fetch_sub(reserved-previous);
-        else publishing_reserved.fetch_add(previous-reserved);
+        ResizePublicationCharge(reserved,previous);
         capture=std::move(*job.capture);
         capture.retained_reserved=retained;capture.publication_reserved=previous;
         capture_reserved.fetch_add(retained);
@@ -2195,10 +2201,8 @@ static DWORD WINAPI SaveWorker(LPVOID) {
             const DWORD wait=deadline?DWORD(*deadline<=now?0:std::min<uint64_t>(200,*deadline-now)):200;
             WaitForSingleObject(save_event,wait);continue;
         }
-        std::string identity;
         auto result=Publication::RetryIO;
         try {
-            identity=Utf8(job.heard.media.artist)+" - "+Utf8(job.heard.media.title);
             result=job.unmatched?PublishUnmatched(job):Publish(*job.capture,job.heard,job.epoch);
         } catch(...) {
             TraceCaptureDisposition(*job.capture,"publication-retry","publication-exception");
@@ -2214,8 +2218,7 @@ static DWORD WINAPI SaveWorker(LPVOID) {
         {
             ExclusiveSrw guard(memory_budget_lock);
             const auto charged=job.capture->publication_reserved?job.capture->publication_reserved:job.reserved;
-            if(reserved>charged)publishing_reserved.fetch_add(reserved-charged);
-            else publishing_reserved.fetch_sub(charged-reserved);
+            ResizePublicationCharge(charged,reserved);
             job.capture->publication_reserved=reserved;
         }
         job.reserved=reserved;
@@ -2580,7 +2583,7 @@ static uint64_t BindReadyCapture(CaptureBuffers& buffers,const Media& media,
         const bool active_mp3_without_duration=!declared&&(episode||track)&&capture.mp3&&
             !capture.finished&&capture.bytes;
         if((!declared&&!active_ogg_without_duration&&!active_mp3_without_duration)||
-           (declared&&std::fabs(declared-media.duration)>GetSettings().matcher_duration_ms/1000.0+1e-6))return;
+           (declared&&DurationMismatch(declared,media.duration,GetSettings().matcher_duration_ms)))return;
         const auto binding=buffers.ownership_tracker->Binding(capture.capture_token);
         if(binding.state==ownership::OwnershipState::Bound) {
             if(binding.listen_generation==generation) {
@@ -2680,7 +2683,7 @@ static uint64_t BindDirectReadyCapture(
             if(!capture.CompleteCoverage()){report("inherited-id-awaiting-complete-coverage");return;}
             const auto duration=DeclaredCaptureDuration(capture);
             if(duration<=0){report("inherited-id-duration-unknown");return;}
-            if(std::fabs(duration-media.duration)>GetSettings().matcher_duration_ms/1000.0+1e-6)
+            if(DurationMismatch(duration,media.duration,GetSettings().matcher_duration_ms))
                 {report("inherited-id-duration-mismatch");return;}
         }
         const auto binding=buffers.ownership_tracker->Binding(capture.capture_token);
@@ -3358,10 +3361,16 @@ static bool UsableRecordingMetadata(const Media& media) {
         (media.source==MediaSource::Windows||media.spotify_uri.rfind("spotify:track:",0)==0||
          media.spotify_uri.rfind("spotify:episode:",0)==0);
 }
-static double EstimatedPlaybackStart(const RecordingMetadata& metadata) {
+static unsigned MatcherPlaybackSpeed(const RecordingMetadata& metadata) {
     const auto configured=CaptureSpeed();
-    const auto speed=configured>1?configured:std::max(1u,metadata.media.playback_speed);
-    return metadata.start-std::max(0.0,metadata.media.position)/speed;
+    return configured>1?configured:std::max(1u,metadata.media.playback_speed);
+}
+static double EstimatedPlaybackStart(const RecordingMetadata& metadata) {
+    return metadata.start-std::max(0.0,metadata.media.position)/MatcherPlaybackSpeed(metadata);
+}
+static bool DeclaredCaptureComplete(const Capture& capture) {
+    return capture.stream.complete||capture.flac_source.complete||
+        capture.spac.Complete()||capture.mp3_info.DeclaredComplete();
 }
 static MatcherDiagnosticBudget matcher_diagnostic_budget;
 static uint64_t matcher_snapshot_sequence=0,matcher_capture_sequence=0;
@@ -3405,16 +3414,18 @@ static void RecordMatcherDecision(Capture& capture,const RecordingMetadata& meta
     if(!DebugLoggingEnabled()&&!stream_dump::Enabled())return;
     capture.matcher_snapshot.RecordDecision(metadata.generation,reason,timing,duration);
 }
+enum class MatcherReport {StartWindow,Duration,MultipleStreams,MultipleMetadata,Matched,
+    RetiredStream,RetiredMetadata,NativeConflict,NativeLoss,WaitingForSource,InvalidSource,CompletedFallback,LiveQuality};
 static void ReportMatcher(Capture& capture,const RecordingMetadata& metadata,
-                          unsigned reason,const char* decision) {
+                          MatcherReport report,const char* decision) {
     if(!DebugLoggingEnabled()&&!stream_dump::Enabled())return;
     try {
+    const auto reason=1u<<unsigned(report);
     auto& reported=capture.matcher_reports[metadata.generation];
     if(reported&reason)return;
     reported|=reason;
     const auto preferences=GetSettings();
-    const auto configured=CaptureSpeed();
-    const auto speed=configured>1?configured:std::max(1u,metadata.media.playback_speed);
+    const auto speed=MatcherPlaybackSpeed(metadata);
     const auto start=EstimatedPlaybackStart(metadata);
     const auto end=start+metadata.media.duration/speed;
     char end_delta[32]="unknown",duration_delta[32]="unknown",source_duration[32]="unknown";
@@ -3433,10 +3444,304 @@ static void ReportMatcher(Capture& capture,const RecordingMetadata& metadata,
         (capture.born-metadata.start)*1000,(capture.born-start)*1000,
         end_delta,duration_delta,source_duration,metadata.media.duration,
         preferences.matcher_time_offset_ms,preferences.matcher_duration_ms,
-        capture.stream.complete||capture.flac_source.complete||capture.spac.Complete()||
-            capture.mp3_info.DeclaredComplete());
+        DeclaredCaptureComplete(capture));
     DecisionLog(line);
     } catch(...) { /* Debug logging cannot change capture or matching ownership. */ }
+}
+static void RecordMatcherOutcome(Capture& capture,const RecordingMetadata& metadata,MatcherReason reason,
+                                 MatcherReport report,bool timing=false,bool duration=false,const char* description=nullptr) {
+    RecordMatcherDecision(capture,metadata,reason,timing,duration);
+    ReportMatcher(capture,metadata,report,description?description:MatcherReasonName(reason));
+}
+static void DescribeMatcherCandidates(CaptureBuffers& buffers,const Settings& preferences) {
+    // Inventory once, then copy a bounded value view per capture. No second
+    // matcher or native binding is invoked by diagnostics.
+    std::array<MatcherCompetitor,16> inventory{};size_t kept=0,total=0;
+    buffers.ForEachCapture([&](Capture& capture) {
+        const auto id=MatcherCaptureId(capture);++total;
+        if(kept==inventory.size())return;
+        auto& entry=inventory[kept++];entry.capture_id=id;entry.associated=capture.association.has_value();
+        const auto duration=DeclaredCaptureDuration(capture);if(duration)entry.duration_ms=duration*1000;
+        entry.complete=DeclaredCaptureComplete(capture);
+    });
+    buffers.ForEachCapture([&](Capture& capture) {
+        auto& snapshot=capture.matcher_snapshot;snapshot={};
+        snapshot.inventory_evaluated=true;
+        snapshot.capture_id=MatcherCaptureId(capture);snapshot.epoch=capture.capture_epoch;
+        snapshot.codec=capture.Encoding().codec;
+        snapshot.source_bytes=capture.bytes;
+        const auto duration=DeclaredCaptureDuration(capture);
+        if(duration)snapshot.source_duration_ms=duration*1000;
+        if(capture.finished)snapshot.end_ms=capture.finished*1000;
+        snapshot.complete=DeclaredCaptureComplete(capture);
+        snapshot.subsequent_starts=buffers.history.Starts()>=capture.retention_start?
+            buffers.history.Starts()-capture.retention_start:0;
+        snapshot.retirement_threshold=preferences.matcher_max_queue;
+        snapshot.time_offset_tolerance_ms=preferences.matcher_time_offset_ms;
+        snapshot.duration_tolerance_ms=preferences.matcher_duration_ms;
+        snapshot.known_pruned_metadata=buffers.matcher_pruned_metadata;
+        snapshot.prior_history=buffers.matcher_pruned_metadata?MatcherPriorHistory::NotRetained:MatcherPriorHistory::Unknown;
+        snapshot.queue_dropped=uint64_t(InterlockedCompareExchange(&dropped,0,0));
+        if(buffers.ownership_tracker&&capture.capture_token) {
+            const auto binding=buffers.ownership_tracker->Binding(capture.capture_token);
+            snapshot.ownership_state=unsigned(binding.state);snapshot.ownership_reason=unsigned(binding.reason);
+        }
+        for(size_t i=0;i<kept;++i)if(inventory[i].capture_id!=snapshot.capture_id)
+            if(auto* entry=snapshot.AddCompetitor(inventory[i].capture_id))*entry=inventory[i];
+        snapshot.competitor_total=total?total-1:0;
+        for(const auto& record:buffers.history.Records()) {
+            const auto& metadata=record.metadata;auto* entry=snapshot.AddCandidate(metadata.generation);
+            if(!entry)continue;
+            entry->assigned=record.assigned;entry->usable=UsableRecordingMetadata(metadata.media);
+            entry->ownership_state=snapshot.ownership_state;entry->ownership_reason=snapshot.ownership_reason;
+            entry->first_seen_delta_ms=(capture.born-metadata.start)*1000;
+            entry->start_delta_ms=(capture.born-EstimatedPlaybackStart(metadata))*1000;
+            if(metadata.media.duration>0)entry->metadata_duration_ms=metadata.media.duration*1000;
+            if(duration) {entry->source_duration_ms=duration*1000;
+                if(metadata.media.duration>0)entry->duration_delta_ms=(duration-metadata.media.duration)*1000;}
+            if(capture.finished&&metadata.media.duration>0)
+                entry->end_delta_ms=(capture.finished-EstimatedPlaybackStart(metadata)-
+                    metadata.media.duration/MatcherPlaybackSpeed(metadata))*1000;
+            entry->path=playback_pump_target&&!metadata.media.playback_instance.empty()?MatcherPath::Native:MatcherPath::Weak;
+            if(record.assigned)entry->decision=MatcherReason::MetadataAssigned;
+            else if(!entry->usable)entry->decision=MatcherReason::MetadataUnusable;
+        }
+    });
+}
+static void AssociateNativeMatches(CaptureBuffers& buffers) {
+    if(!buffers.ownership_tracker)return;
+    for(const auto& record:buffers.history.Records()) {
+        const auto& metadata=record.metadata;
+        std::array<playback_identity::Match,playback_identity::kObservationCapacity> matches{};
+        AcquireSRWLockShared(&playback_identity_lock);
+        const auto count=playback_identity_bridge.QueryMatches(metadata.media.playback_instance,
+            metadata.generation,CaptureEpoch(),matches.data(),matches.size());
+        ReleaseSRWLockShared(&playback_identity_lock);
+        const auto playback=BindDirectReadyCapture(buffers,metadata.media,
+            metadata.generation,metadata.finish,matches,count);
+        if(playback)RememberBoundCaptureIdentity(buffers,metadata.media,metadata.generation,playback);
+    }
+}
+static bool CanMatchWithoutNativeIdentity(CaptureBuffers& buffers,Capture& capture,const RecordingMetadata& metadata) {
+    // An invalidated decoder is still a possible competitor above;
+    // rejection is not evidence that its metadata belongs elsewhere.
+    if(capture.decoder_owner&&buffers.ownership_tracker) {
+        const auto binding=buffers.ownership_tracker->Binding(capture.capture_token);
+        const bool unresolved_successor=binding.state==ownership::OwnershipState::Conflict&&
+            binding.reason==ownership::OwnershipReason::AmbiguousSuccessor;
+        const bool eligible=binding.state==ownership::OwnershipState::AwaitingPlaybackInstance||
+            binding.state==ownership::OwnershipState::Bound||unresolved_successor;
+        const bool conflicting_bound=binding.state==ownership::OwnershipState::Bound&&
+            ((binding.listen_generation&&binding.listen_generation!=metadata.generation)||
+             (binding.playback_token&&binding.playback_token!=buffers.ownership_tracker->PlaybackToken(metadata.media.playback_instance)));
+        if(!eligible||conflicting_bound) {
+            RecordMatcherDecision(capture,metadata,MatcherReason::OwnershipExcluded,true,true);return false;
+        }
+    }
+    AcquireSRWLockShared(&playback_identity_lock);
+    const bool observed=playback_identity_bridge.HasPlayerIdentity(capture.decoder_owner,
+        capture.capture_epoch,capture.born,capture.identity_closed_at);
+    ReleaseSRWLockShared(&playback_identity_lock);
+    if(observed) {
+        RecordMatcherOutcome(capture,metadata,MatcherReason::WaitingNativeIdentity,MatcherReport::NativeConflict,
+                             true,true,"native-identity-evidence-conflict");
+        return false;
+    }
+    // The same unique timing/duration result can describe live audio
+    // without assigning its metadata or relaxing publication checks.
+    // Require real decoded output; header-only preloads are not playback.
+    const auto* current_record=buffers.history.Current();
+    if(current_record&&current_record->metadata.generation==metadata.generation&&
+       !buffers.unidentified_interstitial_active&&capture.decoder_owner&&buffers.ownership_tracker) {
+        const auto binding=buffers.ownership_tracker->Binding(capture.capture_token);
+        if(binding.state==ownership::OwnershipState::AwaitingPlaybackInstance||
+           binding.state==ownership::OwnershipState::Bound) {
+            buffers.live_quality=capture.Encoding();
+            buffers.live_quality_generation=metadata.generation;
+            if(buffers.live_quality.rate)
+                ReportMatcher(capture,metadata,MatcherReport::LiveQuality,"live-quality-unique-evidence");
+        }
+    }
+    // Incomplete competitors participated above: excluding them before
+    // counting would manufacture uniqueness for a prefetched recording.
+    if(!(capture.finished>0&&capture.CompleteCoverage())) {
+        RecordMatcherOutcome(capture,metadata,MatcherReason::WaitingNativeIdentity,MatcherReport::WaitingForSource,
+                             true,true,"waiting-complete-source");
+        return false;
+    }
+    // A closed MP3 without a declared frame total additionally needs
+    // the already-unique duration evidence for final source validation.
+    const auto prior_mp3_duration=capture.mp3_bound_duration;
+    if(capture.mp3) {capture.mp3_bound_duration=metadata.media.duration;capture.final_validation=-1;}
+    if(CachedFinalValidation(capture)!=FinalCaptureValidation::Valid) {
+        if(capture.mp3) {capture.mp3_bound_duration=prior_mp3_duration;capture.final_validation=-1;}
+        RecordMatcherOutcome(capture,metadata,MatcherReason::OwnershipExcluded,MatcherReport::InvalidSource,
+                             true,true,capture.validation_reason);
+        return false;
+    }
+    ReportMatcher(capture,metadata,MatcherReport::CompletedFallback,"native-unavailable-complete-source");
+    return true;
+}
+static void AssociateTimingMatches(CaptureBuffers& buffers,const Settings& preferences,bool diagnostics) {
+    const auto& records=buffers.history.Records();
+    const auto compatible=[&](Capture& capture,const RecordingMetadata& metadata) {
+        if(!UsableRecordingMetadata(metadata.media)) {
+            RecordMatcherDecision(capture,metadata,MatcherReason::MetadataUnusable);return false;
+        }
+        if(!preferences.matcher_time_offset_ms) {
+            RecordMatcherDecision(capture,metadata,MatcherReason::WaitingNativeIdentity);return false;
+        }
+        if(std::fabs(capture.born-EstimatedPlaybackStart(metadata))*1000>preferences.matcher_time_offset_ms) {
+            RecordMatcherOutcome(capture,metadata,MatcherReason::OutsideStartWindow,MatcherReport::StartWindow,true);
+            return false;
+        }
+        const auto duration=DeclaredCaptureDuration(capture);
+        if(duration&&DurationMismatch(duration,metadata.media.duration,preferences.matcher_duration_ms)) {
+            RecordMatcherOutcome(capture,metadata,MatcherReason::DurationMismatch,MatcherReport::Duration,true,true);
+            return false;
+        }
+        RecordMatcherDecision(capture,metadata,MatcherReason::Pending,true,bool(duration));
+        return true;
+    };
+    // Weak matches require uniqueness in both collections, including unfinished
+    // competing streams. Attachment alone is not native identity evidence.
+    // When an attached hook supplies no identity, only a completed source may
+    // use this path; positive or lost native evidence must never become a guess.
+    for(const auto& record:records) {
+        const auto& metadata=record.metadata;
+        if(record.assigned||!UsableRecordingMetadata(metadata.media))continue;
+        if(buffers.LostActiveMatches(metadata)) {
+            if(diagnostics)buffers.ForEachCapture([&](Capture& capture){
+                RecordMatcherDecision(capture,metadata,MatcherReason::RetiredStreamEvidence);
+            });
+            continue;
+        }
+        const bool native_fallback=playback_pump_target&&!metadata.media.playback_instance.empty();
+        if(native_fallback) {
+            playback_identity::Match first;
+            AcquireSRWLockShared(&playback_identity_lock);
+            const auto count=playback_identity_bridge.QueryMatches(metadata.media.playback_instance,
+                metadata.generation,CaptureEpoch(),&first,1);
+            const bool lost=playback_identity_bridge.ObservationLost();
+            ReleaseSRWLockShared(&playback_identity_lock);
+            if(count||lost) {
+                if(diagnostics)buffers.ForEachCapture([&](Capture& capture) {
+                    RecordMatcherOutcome(capture,metadata,MatcherReason::WaitingNativeIdentity,
+                        lost?MatcherReport::NativeLoss:MatcherReport::NativeConflict,false,false,
+                        lost?"native-identity-observations-lost":"native-identity-evidence-conflict");
+                });
+                continue;
+            }
+        }
+        if(buffers.retired_evidence.BlocksMetadata(EstimatedPlaybackStart(metadata),
+            metadata.media.duration,preferences.matcher_time_offset_ms,preferences.matcher_duration_ms)) {
+            if(diagnostics)buffers.ForEachCapture([&](Capture& capture) {
+                RecordMatcherOutcome(capture,metadata,MatcherReason::RetiredStreamEvidence,MatcherReport::RetiredStream);
+            });
+            continue;
+        }
+        Capture* candidate=nullptr;size_t candidates=0;
+        buffers.ForEachCapture([&](Capture& capture) {
+            if(capture.association||capture.ambiguous||capture.fallback_ambiguous) {
+                RecordMatcherDecision(capture,metadata,MatcherReason::OwnershipExcluded);return;
+            }
+            if(!compatible(capture,metadata))return;
+            if(!native_fallback&&capture.decoder_owner&&buffers.ownership_tracker) {
+                const auto binding=buffers.ownership_tracker->Binding(capture.capture_token);
+                if(binding.state!=ownership::OwnershipState::AwaitingPlaybackInstance&&
+                   binding.state!=ownership::OwnershipState::Bound) {
+                    RecordMatcherDecision(capture,metadata,MatcherReason::OwnershipExcluded,true,bool(DeclaredCaptureDuration(capture)));return;
+                }
+            }
+            candidate=&capture;++candidates;
+        });
+        if(candidates!=1) {
+            if(diagnostics&&candidates>1)buffers.ForEachCapture([&](Capture& capture) {
+                if(!capture.association&&compatible(capture,metadata))
+                    RecordMatcherOutcome(capture,metadata,MatcherReason::AmbiguousStreams,MatcherReport::MultipleStreams,
+                                         true,bool(DeclaredCaptureDuration(capture)));
+            });
+            continue;
+        }
+        const auto alternatives=std::count_if(records.begin(),records.end(),[&](const auto& other) {
+            return !other.assigned&&compatible(*candidate,other.metadata);
+        });
+        const auto duration=DeclaredCaptureDuration(*candidate);
+        if(alternatives!=1) {
+            RecordMatcherOutcome(*candidate,metadata,MatcherReason::AmbiguousMetadata,MatcherReport::MultipleMetadata,true,bool(duration));
+            continue;
+        }
+        if(buffers.retired_evidence.BlocksCapture(candidate->born,duration,
+            preferences.matcher_time_offset_ms,preferences.matcher_duration_ms)) {
+            RecordMatcherOutcome(*candidate,metadata,MatcherReason::RetiredMetadataEvidence,MatcherReport::RetiredMetadata,true,bool(duration));
+            continue;
+        }
+        if(!duration) {RecordMatcherDecision(*candidate,metadata,MatcherReason::WaitingDuration,true);continue;}
+        if(native_fallback&&!CanMatchWithoutNativeIdentity(buffers,*candidate,metadata))continue;
+        if(!native_fallback&&candidate->decoder_owner&&buffers.ownership_tracker) {
+            const bool reconcile=buffers.unidentified_successor_uri==metadata.media.spotify_uri&&
+                buffers.unidentified_successor_instance==metadata.media.playback_instance;
+            const auto playback=BindReadyCapture(buffers,metadata.media,metadata.generation,
+                metadata.finish,{},reconcile);
+            if(!playback) {RecordMatcherDecision(*candidate,metadata,MatcherReason::BindingPending,true,true);continue;}
+            RememberBoundCaptureIdentity(buffers,metadata.media,metadata.generation,playback);
+        } else {
+            // This is a metadata/media association, not a claim of exact native
+            // ownership. Keep adjacency conflicts intact for later diagnostics.
+            candidate->association=metadata;candidate->listen_generation=metadata.generation;
+            candidate->retention_start=record.start_number;
+            buffers.history.MarkAssigned(metadata.generation,candidate->Encoding());
+            if(candidate->mp3) {candidate->mp3_bound_duration=metadata.media.duration;candidate->final_validation=-1;}
+        }
+    }
+}
+static void RefreshRetainedAssociations(CaptureBuffers& buffers,const Settings& preferences,bool diagnostics) {
+    buffers.ForEachCapture([&](Capture& capture) {
+        auto& association=capture.association;
+        const auto* latest=association?buffers.history.Find(association->generation):nullptr;
+        if(association&&!capture.exact_identity) {
+            if(latest)association=latest->metadata;
+            const auto declared=DeclaredCaptureDuration(capture);
+            if(declared&&DurationMismatch(declared,association->media.duration,preferences.matcher_duration_ms)) {
+                capture.fallback_ambiguous=true;
+                capture.retention_reason="weak association contradicted by updated metadata duration";
+            }
+        } else if(association&&!buffers.unidentified_successor_uri.empty()&&
+                  association->media.spotify_uri==buffers.unidentified_successor_uri&&
+                  association->media.playback_instance==buffers.unidentified_successor_instance) {
+            ClearUnidentifiedSuccessor(buffers);
+        }
+        if(diagnostics&&association) {
+            auto& snapshot=capture.matcher_snapshot;
+            snapshot.path=capture.exact_identity?MatcherPath::Native:MatcherPath::Weak;
+            snapshot.association_metadata_id=association->generation;snapshot.association_retained=latest!=nullptr;
+            if(buffers.ownership_tracker&&capture.capture_token) {
+                const auto binding=buffers.ownership_tracker->Binding(capture.capture_token);
+                snapshot.ownership_state=unsigned(binding.state);snapshot.ownership_reason=unsigned(binding.reason);
+            }
+            bool timing_evaluated=false,duration_evaluated=false;
+            const bool duration_conflict=!capture.exact_identity&&capture.fallback_ambiguous;
+            if(auto* entry=snapshot.FindCandidate(association->generation)) {
+                entry->path=snapshot.path;entry->ownership_state=snapshot.ownership_state;
+                entry->ownership_reason=snapshot.ownership_reason;
+                if(entry->decision==MatcherReason::Pending) {
+                    timing_evaluated=entry->timing_evaluated;duration_evaluated=entry->duration_evaluated;
+                }
+                if(capture.ambiguous||duration_conflict)entry->decision=MatcherReason::NotEvaluated;
+            }
+            if(capture.ambiguous)RecordMatcherDecision(capture,*association,MatcherReason::OwnershipExcluded);
+            else if(duration_conflict)
+                RecordMatcherOutcome(capture,*association,MatcherReason::DurationMismatch,MatcherReport::Duration,false,true);
+            else RecordMatcherOutcome(capture,*association,capture.exact_identity?MatcherReason::MatchedNative:MatcherReason::MatchedWeak,
+                                      MatcherReport::Matched,timing_evaluated,duration_evaluated);
+        }
+        const auto prune_reports=[&](auto& reports) {
+            for(auto report=reports.begin();report!=reports.end();)
+                if(!buffers.history.Find(report->first))report=reports.erase(report);else ++report;
+        };
+        prune_reports(capture.matcher_reports);prune_reports(capture.native_decisions);
+        if(diagnostics)EmitMatcherSnapshot(capture);
+    });
 }
 static void AssociateRetainedRecordings(CaptureBuffers& buffers,const Settings& preferences=GetSettings()) {
     buffers.live_quality_generation=0;buffers.live_quality={};
@@ -3456,292 +3761,10 @@ static void AssociateRetainedRecordings(CaptureBuffers& buffers,const Settings& 
             buffers.retired_evidence.RememberCapture({capture.capture_token,capture.born,DeclaredCaptureDuration(capture)});
     });
     const bool diagnostics=DebugLoggingEnabled()||stream_dump::Enabled();
-    if(diagnostics) {
-        // Inventory once, then copy a bounded value view per capture. No second
-        // matcher or native binding is invoked by diagnostics.
-        std::array<MatcherCompetitor,16> inventory{};size_t kept=0,total=0;
-        buffers.ForEachCapture([&](Capture& capture) {
-            const auto id=MatcherCaptureId(capture);++total;
-            if(kept==inventory.size())return;
-            auto& entry=inventory[kept++];entry.capture_id=id;entry.associated=capture.association.has_value();
-            const auto duration=DeclaredCaptureDuration(capture);if(duration)entry.duration_ms=duration*1000;
-            entry.complete=capture.stream.complete||capture.flac_source.complete||
-                capture.spac.Complete()||capture.mp3_info.DeclaredComplete();
-        });
-        buffers.ForEachCapture([&](Capture& capture) {
-            auto& snapshot=capture.matcher_snapshot;snapshot={};
-            snapshot.inventory_evaluated=true;
-            snapshot.capture_id=MatcherCaptureId(capture);snapshot.epoch=capture.capture_epoch;
-            snapshot.codec=capture.Encoding().codec;
-            snapshot.source_bytes=capture.bytes;
-            const auto duration=DeclaredCaptureDuration(capture);
-            if(duration)snapshot.source_duration_ms=duration*1000;
-            if(capture.finished)snapshot.end_ms=capture.finished*1000;
-            snapshot.complete=capture.stream.complete||capture.flac_source.complete||
-                capture.spac.Complete()||capture.mp3_info.DeclaredComplete();
-            snapshot.subsequent_starts=buffers.history.Starts()>=capture.retention_start?
-                buffers.history.Starts()-capture.retention_start:0;
-            snapshot.retirement_threshold=preferences.matcher_max_queue;
-            snapshot.time_offset_tolerance_ms=preferences.matcher_time_offset_ms;
-            snapshot.duration_tolerance_ms=preferences.matcher_duration_ms;
-            snapshot.known_pruned_metadata=buffers.matcher_pruned_metadata;
-            snapshot.prior_history=buffers.matcher_pruned_metadata?MatcherPriorHistory::NotRetained:MatcherPriorHistory::Unknown;
-            snapshot.queue_dropped=uint64_t(InterlockedCompareExchange(&dropped,0,0));
-            if(buffers.ownership_tracker&&capture.capture_token) {
-                const auto binding=buffers.ownership_tracker->Binding(capture.capture_token);
-                snapshot.ownership_state=unsigned(binding.state);snapshot.ownership_reason=unsigned(binding.reason);
-            }
-            for(size_t i=0;i<kept;++i)if(inventory[i].capture_id!=snapshot.capture_id)
-                if(auto* entry=snapshot.AddCompetitor(inventory[i].capture_id))*entry=inventory[i];
-            snapshot.competitor_total=total?total-1:0;
-            for(const auto& record:records) {
-                const auto& metadata=record.metadata;auto* entry=snapshot.AddCandidate(metadata.generation);
-                if(!entry)continue;
-                entry->assigned=record.assigned;entry->usable=UsableRecordingMetadata(metadata.media);
-                entry->ownership_state=snapshot.ownership_state;entry->ownership_reason=snapshot.ownership_reason;
-                entry->first_seen_delta_ms=(capture.born-metadata.start)*1000;
-                entry->start_delta_ms=(capture.born-EstimatedPlaybackStart(metadata))*1000;
-                if(metadata.media.duration>0)entry->metadata_duration_ms=metadata.media.duration*1000;
-                if(duration) {entry->source_duration_ms=duration*1000;
-                    if(metadata.media.duration>0)entry->duration_delta_ms=(duration-metadata.media.duration)*1000;}
-                if(capture.finished&&metadata.media.duration>0) {
-                    const auto configured=CaptureSpeed();const auto speed=configured>1?configured:std::max(1u,metadata.media.playback_speed);
-                    entry->end_delta_ms=(capture.finished-EstimatedPlaybackStart(metadata)-metadata.media.duration/speed)*1000;
-                }
-                entry->path=playback_pump_target&&!metadata.media.playback_instance.empty()?MatcherPath::Native:MatcherPath::Weak;
-                if(record.assigned)entry->decision=MatcherReason::MetadataAssigned;
-                else if(!entry->usable)entry->decision=MatcherReason::MetadataUnusable;
-            }
-        });
-    }
-    if(buffers.ownership_tracker) {
-        for(const auto& record:records) {
-            const auto& metadata=record.metadata;
-            std::array<playback_identity::Match,playback_identity::kObservationCapacity> matches{};
-            AcquireSRWLockShared(&playback_identity_lock);
-            const auto count=playback_identity_bridge.QueryMatches(metadata.media.playback_instance,
-                metadata.generation,CaptureEpoch(),matches.data(),matches.size());
-            ReleaseSRWLockShared(&playback_identity_lock);
-            const auto playback=BindDirectReadyCapture(buffers,metadata.media,
-                metadata.generation,metadata.finish,matches,count);
-            if(playback)RememberBoundCaptureIdentity(buffers,metadata.media,metadata.generation,playback);
-        }
-    }
-    const auto compatible=[&](Capture& capture,const RecordingMetadata& metadata) {
-        if(!UsableRecordingMetadata(metadata.media)) {
-            RecordMatcherDecision(capture,metadata,MatcherReason::MetadataUnusable);return false;
-        }
-        if(!preferences.matcher_time_offset_ms) {
-            RecordMatcherDecision(capture,metadata,MatcherReason::WaitingNativeIdentity);return false;
-        }
-        if(std::fabs(capture.born-EstimatedPlaybackStart(metadata))*1000>preferences.matcher_time_offset_ms) {
-            RecordMatcherDecision(capture,metadata,MatcherReason::OutsideStartWindow,true);
-            ReportMatcher(capture,metadata,1,"outside-start-window");return false;
-        }
-        const auto duration=DeclaredCaptureDuration(capture);
-        if(duration&&std::fabs(duration-metadata.media.duration)>preferences.matcher_duration_ms/1000.0+1e-6) {
-            RecordMatcherDecision(capture,metadata,MatcherReason::DurationMismatch,true,true);
-            ReportMatcher(capture,metadata,2,"duration-mismatch");return false;
-        }
-        RecordMatcherDecision(capture,metadata,MatcherReason::Pending,true,bool(duration));
-        return true;
-    };
-    // Weak matches require uniqueness in both collections, including unfinished
-    // competing streams. Attachment alone is not native identity evidence.
-    // When an attached hook supplies no identity, only a completed source may
-    // use this path; positive or lost native evidence must never become a guess.
-    for(const auto& record:records) {
-        if(record.assigned||!UsableRecordingMetadata(record.metadata.media))continue;
-        if(buffers.LostActiveMatches(record.metadata)) {
-            if(diagnostics)buffers.ForEachCapture([&](Capture& capture){
-                RecordMatcherDecision(capture,record.metadata,MatcherReason::RetiredStreamEvidence);
-            });
-            continue;
-        }
-        const bool native_fallback=playback_pump_target&&!record.metadata.media.playback_instance.empty();
-        if(native_fallback) {
-            playback_identity::Match first;
-            AcquireSRWLockShared(&playback_identity_lock);
-            const auto count=playback_identity_bridge.QueryMatches(record.metadata.media.playback_instance,
-                record.metadata.generation,CaptureEpoch(),&first,1);
-            const bool lost=playback_identity_bridge.ObservationLost();
-            ReleaseSRWLockShared(&playback_identity_lock);
-            if(count||lost) {
-                if(diagnostics)buffers.ForEachCapture([&](Capture& capture) {
-                    RecordMatcherDecision(capture,record.metadata,MatcherReason::WaitingNativeIdentity);
-                    ReportMatcher(capture,record.metadata,lost?512:256,
-                        lost?"native-identity-observations-lost":"native-identity-evidence-conflict");
-                });
-                continue;
-            }
-        }
-        if(buffers.retired_evidence.BlocksMetadata(EstimatedPlaybackStart(record.metadata),
-            record.metadata.media.duration,preferences.matcher_time_offset_ms,preferences.matcher_duration_ms)) {
-            if(diagnostics)buffers.ForEachCapture([&](Capture& capture){RecordMatcherDecision(capture,record.metadata,MatcherReason::RetiredStreamEvidence);
-                ReportMatcher(capture,record.metadata,32,"retired-stream-evidence");});
-            continue;
-        }
-        Capture* candidate=nullptr;size_t candidates=0;
-        buffers.ForEachCapture([&](Capture& capture) {
-            if(capture.association||capture.ambiguous||capture.fallback_ambiguous) {
-                RecordMatcherDecision(capture,record.metadata,MatcherReason::OwnershipExcluded);return;
-            }
-            if(!compatible(capture,record.metadata))return;
-            if(!native_fallback&&capture.decoder_owner&&buffers.ownership_tracker) {
-                const auto binding=buffers.ownership_tracker->Binding(capture.capture_token);
-                if(binding.state!=ownership::OwnershipState::AwaitingPlaybackInstance&&
-                   binding.state!=ownership::OwnershipState::Bound) {
-                    RecordMatcherDecision(capture,record.metadata,MatcherReason::OwnershipExcluded,true,bool(DeclaredCaptureDuration(capture)));return;
-                }
-            }
-            candidate=&capture;++candidates;
-        });
-        if(candidates!=1) {
-            if(diagnostics&&candidates>1)buffers.ForEachCapture([&](Capture& capture) {
-                if(!capture.association&&compatible(capture,record.metadata)) {
-                    RecordMatcherDecision(capture,record.metadata,MatcherReason::AmbiguousStreams,true,bool(DeclaredCaptureDuration(capture)));
-                    ReportMatcher(capture,record.metadata,4,"ambiguous-streams");
-                }
-            });
-            continue;
-        }
-        size_t metadata_candidates=0;
-        for(const auto& other:records)
-            if(!other.assigned&&compatible(*candidate,other.metadata))++metadata_candidates;
-        if(metadata_candidates!=1) {RecordMatcherDecision(*candidate,record.metadata,MatcherReason::AmbiguousMetadata,true,bool(DeclaredCaptureDuration(*candidate)));
-            ReportMatcher(*candidate,record.metadata,8,"ambiguous-metadata");continue;}
-        if(buffers.retired_evidence.BlocksCapture(candidate->born,DeclaredCaptureDuration(*candidate),
-            preferences.matcher_time_offset_ms,preferences.matcher_duration_ms)) {
-            RecordMatcherDecision(*candidate,record.metadata,MatcherReason::RetiredMetadataEvidence,true,bool(DeclaredCaptureDuration(*candidate)));
-            ReportMatcher(*candidate,record.metadata,64,"retired-metadata-evidence");continue;
-        }
-        if(!DeclaredCaptureDuration(*candidate)) {RecordMatcherDecision(*candidate,record.metadata,MatcherReason::WaitingDuration,true);continue;}
-        if(native_fallback) {
-            // An invalidated decoder is still a possible competitor above;
-            // rejection is not evidence that its metadata belongs elsewhere.
-            if(candidate->decoder_owner&&buffers.ownership_tracker) {
-                const auto binding=buffers.ownership_tracker->Binding(candidate->capture_token);
-                const bool unresolved_successor=binding.state==ownership::OwnershipState::Conflict&&
-                    binding.reason==ownership::OwnershipReason::AmbiguousSuccessor;
-                const bool eligible=binding.state==ownership::OwnershipState::AwaitingPlaybackInstance||
-                    binding.state==ownership::OwnershipState::Bound||unresolved_successor;
-                const bool conflicting_bound=binding.state==ownership::OwnershipState::Bound&&
-                    ((binding.listen_generation&&binding.listen_generation!=record.metadata.generation)||
-                     (binding.playback_token&&binding.playback_token!=buffers.ownership_tracker->PlaybackToken(record.metadata.media.playback_instance)));
-                if(!eligible||conflicting_bound) {
-                    RecordMatcherDecision(*candidate,record.metadata,MatcherReason::OwnershipExcluded,true,true);continue;
-                }
-            }
-            AcquireSRWLockShared(&playback_identity_lock);
-            const bool observed=playback_identity_bridge.HasPlayerIdentity(candidate->decoder_owner,
-                candidate->capture_epoch,candidate->born,candidate->identity_closed_at);
-            ReleaseSRWLockShared(&playback_identity_lock);
-            if(observed) {
-                RecordMatcherDecision(*candidate,record.metadata,MatcherReason::WaitingNativeIdentity,true,true);
-                ReportMatcher(*candidate,record.metadata,256,"native-identity-evidence-conflict");continue;
-            }
-            // The same unique timing/duration result can describe live audio
-            // without assigning its metadata or relaxing publication checks.
-            // Require real decoded output; header-only preloads are not playback.
-            const auto* current_record=buffers.history.Current();
-            if(current_record&&current_record->metadata.generation==record.metadata.generation&&
-               !buffers.unidentified_interstitial_active&&candidate->decoder_owner&&buffers.ownership_tracker) {
-                const auto binding=buffers.ownership_tracker->Binding(candidate->capture_token);
-                if(binding.state==ownership::OwnershipState::AwaitingPlaybackInstance||
-                   binding.state==ownership::OwnershipState::Bound) {
-                    buffers.live_quality=candidate->Encoding();
-                    buffers.live_quality_generation=record.metadata.generation;
-                    if(buffers.live_quality.rate)
-                        ReportMatcher(*candidate,record.metadata,8192,"live-quality-unique-evidence");
-                }
-            }
-            // Incomplete competitors participated above: excluding them before
-            // counting would manufacture uniqueness for a prefetched recording.
-            if(!(candidate->finished>0&&candidate->CompleteCoverage())) {
-                RecordMatcherDecision(*candidate,record.metadata,MatcherReason::WaitingNativeIdentity,true,true);
-                ReportMatcher(*candidate,record.metadata,1024,"waiting-complete-source");continue;
-            }
-            // A closed MP3 without a declared frame total additionally needs
-            // the already-unique duration evidence for final source validation.
-            const auto prior_mp3_duration=candidate->mp3_bound_duration;
-            if(candidate->mp3) {candidate->mp3_bound_duration=record.metadata.media.duration;candidate->final_validation=-1;}
-            if(CachedFinalValidation(*candidate)!=FinalCaptureValidation::Valid) {
-                if(candidate->mp3) {candidate->mp3_bound_duration=prior_mp3_duration;candidate->final_validation=-1;}
-                RecordMatcherDecision(*candidate,record.metadata,MatcherReason::OwnershipExcluded,true,true);
-                ReportMatcher(*candidate,record.metadata,2048,candidate->validation_reason);continue;
-            }
-            ReportMatcher(*candidate,record.metadata,4096,"native-unavailable-complete-source");
-        }
-        if(!native_fallback&&candidate->decoder_owner&&buffers.ownership_tracker) {
-            const bool reconcile=buffers.unidentified_successor_uri==record.metadata.media.spotify_uri&&
-                buffers.unidentified_successor_instance==record.metadata.media.playback_instance;
-            const auto playback=BindReadyCapture(buffers,record.metadata.media,record.metadata.generation,
-                record.metadata.finish,{},reconcile);
-            if(!playback) {RecordMatcherDecision(*candidate,record.metadata,MatcherReason::BindingPending,true,true);continue;}
-            RememberBoundCaptureIdentity(buffers,record.metadata.media,record.metadata.generation,playback);
-        } else {
-            // This is a metadata/media association, not a claim of exact native
-            // ownership. Keep adjacency conflicts intact for later diagnostics.
-            candidate->association=record.metadata;candidate->listen_generation=record.metadata.generation;
-            candidate->retention_start=record.start_number;
-            buffers.history.MarkAssigned(record.metadata.generation,candidate->Encoding());
-            if(candidate->mp3) {candidate->mp3_bound_duration=record.metadata.media.duration;candidate->final_validation=-1;}
-        }
-    }
-    buffers.ForEachCapture([&](Capture& capture) {
-        if(capture.association) {
-            if(!capture.exact_identity)
-                if(const auto* latest=buffers.history.Find(capture.association->generation))
-                    capture.association=latest->metadata;
-            const auto declared=DeclaredCaptureDuration(capture);
-            if(!capture.exact_identity&&declared&&std::fabs(declared-capture.association->media.duration)>
-                preferences.matcher_duration_ms/1000.0+1e-6) {
-                capture.fallback_ambiguous=true;
-                capture.retention_reason="weak association contradicted by updated metadata duration";
-            }
-            if(capture.exact_identity&&!buffers.unidentified_successor_uri.empty()&&
-               capture.association->media.spotify_uri==buffers.unidentified_successor_uri&&
-               capture.association->media.playback_instance==buffers.unidentified_successor_instance)
-                ClearUnidentifiedSuccessor(buffers);
-        }
-        if(diagnostics&&capture.association) {
-            capture.matcher_snapshot.path=capture.exact_identity?MatcherPath::Native:MatcherPath::Weak;
-            capture.matcher_snapshot.association_metadata_id=capture.association->generation;
-            capture.matcher_snapshot.association_retained=buffers.history.Find(capture.association->generation)!=nullptr;
-            if(buffers.ownership_tracker&&capture.capture_token) {
-                const auto binding=buffers.ownership_tracker->Binding(capture.capture_token);
-                capture.matcher_snapshot.ownership_state=unsigned(binding.state);
-                capture.matcher_snapshot.ownership_reason=unsigned(binding.reason);
-            }
-            bool timing_evaluated=false,duration_evaluated=false;
-            for(size_t i=0;i<capture.matcher_snapshot.metadata_count;++i)
-                if(capture.matcher_snapshot.metadata[i].metadata_id==capture.association->generation) {
-                    auto& entry=capture.matcher_snapshot.metadata[i];entry.path=capture.matcher_snapshot.path;
-                    entry.ownership_state=capture.matcher_snapshot.ownership_state;
-                    entry.ownership_reason=capture.matcher_snapshot.ownership_reason;
-                    if(entry.decision==MatcherReason::Pending) {
-                        timing_evaluated=entry.timing_evaluated;duration_evaluated=entry.duration_evaluated;
-                    }
-                    if(capture.ambiguous||(!capture.exact_identity&&capture.fallback_ambiguous))entry.decision=MatcherReason::NotEvaluated;
-                }
-            if(capture.ambiguous)RecordMatcherDecision(capture,*capture.association,MatcherReason::OwnershipExcluded);
-            else if(!capture.exact_identity&&capture.fallback_ambiguous) {
-                RecordMatcherDecision(capture,*capture.association,MatcherReason::DurationMismatch,false,true);
-                ReportMatcher(capture,*capture.association,2,"duration-mismatch");
-            } else {
-                RecordMatcherDecision(capture,*capture.association,capture.exact_identity?MatcherReason::MatchedNative:MatcherReason::MatchedWeak,
-                    timing_evaluated,duration_evaluated);
-                ReportMatcher(capture,*capture.association,16,
-                    capture.exact_identity?"matched-native-id":"matched-unique-evidence");
-            }
-        }
-        const auto prune_reports=[&](auto& reports) {
-            for(auto report=reports.begin();report!=reports.end();)
-                if(!buffers.history.Find(report->first))report=reports.erase(report);else ++report;
-        };
-        prune_reports(capture.matcher_reports);prune_reports(capture.native_decisions);
-        if(diagnostics)EmitMatcherSnapshot(capture);
-    });
+    if(diagnostics)DescribeMatcherCandidates(buffers,preferences);
+    AssociateNativeMatches(buffers);
+    AssociateTimingMatches(buffers,preferences,diagnostics);
+    RefreshRetainedAssociations(buffers,preferences,diagnostics);
 }
 static std::string UnmatchedCorrelation(const Capture& capture,const CaptureBuffers& buffers) {
     std::string text="{\"reason\":\"unresolved after configured subsequent media starts\",\"codec\":"+
@@ -3829,16 +3852,14 @@ static void ScheduleStreamPublications(CaptureBuffers& buffers,unsigned epoch,do
     for(auto item=buffers.ready.begin();item!=buffers.ready.end();) {
         auto& capture=**item;
         if(capture.association&&!capture.exact_identity&&
-           std::fabs(capture.Duration()-capture.association->media.duration)>
-               preferences.matcher_duration_ms/1000.0+1e-6) {
+           DurationMismatch(capture.Duration(),capture.association->media.duration,preferences.matcher_duration_ms)) {
             capture.fallback_ambiguous=true;
             capture.retention_reason="weak association contradicted by completed source duration";
-            for(size_t i=0;i<capture.matcher_snapshot.metadata_count;++i)
-                if(capture.matcher_snapshot.metadata[i].metadata_id==capture.association->generation)
-                    capture.matcher_snapshot.metadata[i].decision=MatcherReason::NotEvaluated;
+            if(auto* entry=capture.matcher_snapshot.FindCandidate(capture.association->generation))
+                entry->decision=MatcherReason::NotEvaluated;
             RecordMatcherDecision(capture,*capture.association,MatcherReason::DurationMismatch,false,true);
             EmitMatcherSnapshot(capture);
-            ReportMatcher(capture,*capture.association,2,"duration-mismatch");
+            ReportMatcher(capture,*capture.association,MatcherReport::Duration,"duration-mismatch");
         }
         if(capture.association&&UsableRecordingMetadata(capture.association->media)&&
            !capture.ambiguous&&(!capture.fallback_ambiguous||capture.exact_identity)&&

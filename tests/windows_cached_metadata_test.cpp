@@ -72,6 +72,7 @@ int main(int argc, char **argv) {
          live.fields.at("SPOTIFY_ALBUM_URI")==live.album_uri);
   CloseHandle(writer);
   assert(live.fields.at("ARTIST") == "Lead; Guest" && live.fields.at("DATE") == "2024-05-06");
+  assert(live.fields.at("ALBUMARTIST") == "Lead");
   assert(live.artist == "Lead" && !live.fields.count("PUBLISHER"));
   HANDLE log = CreateFileW(damaged.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
                            0, nullptr);

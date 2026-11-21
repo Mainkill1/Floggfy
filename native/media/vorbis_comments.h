@@ -1,39 +1,55 @@
 #pragma once
 #include "../tooling/binary.h"
 #include "ogg_tags.h"
+#include <cstring>
 #include <set>
 #include <string_view>
 
 namespace history {
-
-
 inline std::string CommentKey(std::string_view text) {
     std::string key(text);
     for(char& c:key) if(c>='a' && c<='z') c=char(c-'a'+'A');
     return key;
 }
 
-// FLAC and Vorbis share this body. Ogg's packet signature and framing bit
-// are checked by its caller. The visitor borrows each field from the source.
-template<class Visitor>
-bool ReadVorbisComments(const uint8_t* bytes,size_t size,std::string_view& vendor,Visitor visit) {
-    size_t at=0;
-    auto read=[&](std::string_view& text) {
-        if(size-at<4)return false;
-        const auto length=binary::ReadLittle32(bytes+at);at+=4;
-        if(length>size-at)return false;
-        text={reinterpret_cast<const char*>(bytes+at),length};at+=length;
+// Walk the shared FLAC/Vorbis layout without loading the vendor or fields.
+template<class Reader,class Visitor>
+bool ReadVorbisCommentRanges(uint64_t size,const Reader& get,Visitor visit,bool framed=false) {
+    uint64_t at=0;
+    const auto length=[&](uint32_t& value) {
+        uint8_t bytes[4];
+        if(size-at<sizeof(bytes) || !get(at,bytes,sizeof(bytes)))return false;
+        at+=sizeof(bytes);
+        value=binary::ReadLittle32(bytes);
         return true;
     };
-    if(!read(vendor) || size-at<4)return false;
-    const auto count=binary::ReadLittle32(bytes+at);at+=4;
-    if(count>100000 || count>(size-at)/4)return false;
-    for(uint32_t i=0;i<count;++i) {
-        std::string_view field;
-        if(!read(field))return false;
-        visit(field);
-    }
-    return at==size;
+    const auto field=[&](bool vendor) {
+        uint32_t bytes=0;
+        if(!length(bytes) || bytes>size-at || !visit(at,bytes,vendor))return false;
+        at+=bytes;
+        return true;
+    };
+    uint32_t count=0;
+    if(!field(true) || !length(count) || count>100000 || count>(size-at)/4)return false;
+    for(uint32_t i=0;i<count;++i)
+        if(!field(false))return false;
+    uint8_t framing=0;
+    return framed?size-at==1 && get(at,&framing,1) && framing==1:at==size;
+}
+
+// The contiguous reader lets its visitor borrow each field from the source.
+template<class Visitor>
+bool ReadVorbisComments(const uint8_t* bytes,size_t size,std::string_view& vendor,Visitor visit) {
+    const auto get=[&](uint64_t at,void* out,size_t length) {
+        std::memcpy(out,bytes+at,length);
+        return true;
+    };
+    return ReadVorbisCommentRanges(size,get,[&](uint64_t at,uint32_t length,bool is_vendor) {
+        const std::string_view field(reinterpret_cast<const char*>(bytes+at),length);
+        if(is_vendor)vendor=field;
+        else visit(field);
+        return true;
+    });
 }
 
 struct VorbisComments {

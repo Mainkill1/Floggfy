@@ -96,14 +96,16 @@ struct MatcherSnapshot {
         ++competitor_total;if(competitor_count==competitors.size())return nullptr;
         auto& item=competitors[competitor_count++];item.capture_id=id;return &item;
     }
+    MatcherCandidate* FindCandidate(uint64_t id) noexcept {
+        for(std::size_t i=0;i<metadata_count;++i)if(metadata[i].metadata_id==id)return &metadata[i];
+        return nullptr;
+    }
     void RecordDecision(uint64_t id,MatcherReason reason,bool timing=false,bool duration=false) noexcept {
-        for(std::size_t i=0;i<metadata_count;++i)if(metadata[i].metadata_id==id) {
-            auto& item=metadata[i];
-            if(item.decision!=MatcherReason::NotEvaluated&&item.decision!=MatcherReason::Pending&&
-               reason!=MatcherReason::MatchedNative&&reason!=MatcherReason::MatchedWeak)return;
-            item.decision=reason;item.timing_evaluated=timing;
-            item.duration_evaluated=duration;return;
-        }
+        auto* item=FindCandidate(id);
+        if(!item)return;
+        if(item->decision!=MatcherReason::NotEvaluated&&item->decision!=MatcherReason::Pending&&
+           reason!=MatcherReason::MatchedNative&&reason!=MatcherReason::MatchedWeak)return;
+        item->decision=reason;item->timing_evaluated=timing;item->duration_evaluated=duration;
     }
     void FinalizeSnapshot(MatcherReason reason) noexcept {terminal=reason;}
 };

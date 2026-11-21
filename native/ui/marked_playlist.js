@@ -21,7 +21,6 @@
     let sequence = 0;
     let scheduled = false;
     let context;
-    let observedGrid;
     let columnCount;
     let dates = new Map();
     let dateGeneration = 0;
@@ -182,11 +181,11 @@
             const template = style.getPropertyValue("--grid-template-columns").trim();
             const tracks = templateTracks(template);
             if (!/\[\s*last\s*\]/.test(template) || tracks.length !== cells.length) continue;
-            const extra = owned?.node === node && node.style.getPropertyValue(templateProperty) === owned.written ? 1 : 0;
+            const extra = owned?.node === node && node.style.getPropertyValue(templateProperty) === extendedTemplate ? 1 : 0;
             // Resolved CSSOM includes the appended track once the override is installed.
             const resolved = templateTracks(style.gridTemplateColumns).length;
             if (resolved !== cells.length + extra &&
-                !(extra && style.gridTemplateColumns === owned.written)) continue;
+                !(extra && style.gridTemplateColumns === extendedTemplate)) continue;
             if (cells.some(cell => getComputedStyle(cell).display === "none")) continue;
             return { node, count: cells.length, width: minimumWidth(tracks, style) };
         }
@@ -198,7 +197,7 @@
         if (!previous) return;
         previous.cell.remove();
         const style = previous.node.style;
-        if (style.getPropertyValue(templateProperty) === previous.written &&
+        if (style.getPropertyValue(templateProperty) === extendedTemplate &&
             style.getPropertyPriority(templateProperty) === "") {
             if (previous.template) style.setProperty(templateProperty, previous.template, previous.priority);
             else style.removeProperty(templateProperty);
@@ -284,7 +283,7 @@
         const { node, count } = gridLayout;
         let entry = mounted.get(row);
         if (entry && (entry.node !== node || entry.count !== count || entry.cell.parentElement !== node ||
-            node.style.getPropertyValue(templateProperty) !== entry.written)) {
+            node.style.getPropertyValue(templateProperty) !== extendedTemplate)) {
             removeRow(row);
             entry = undefined;
         }
@@ -298,8 +297,7 @@
             const template = node.style.getPropertyValue(templateProperty);
             const priority = node.style.getPropertyPriority(templateProperty);
             node.style.setProperty(templateProperty, extendedTemplate);
-            const written = node.style.getPropertyValue(templateProperty);
-            if (written !== extendedTemplate) return;
+            if (node.style.getPropertyValue(templateProperty) !== extendedTemplate) return;
             if (header && sortable) {
                 const button = document.createElement("button");
                 button.type = "button";
@@ -312,7 +310,7 @@
                 cell.append(button);
             }
             node.append(cell);
-            entry = { cell, node, count, template, priority, written };
+            entry = { cell, node, count, template, priority };
             mounted.set(row, entry);
         }
         if (header) {
@@ -456,12 +454,12 @@
                 if (!resetLayout()) return;
                 resetQuery();
             }
+            const previousGrid = context?.grid;
             context = match ? { section, uri, url: location.href, grid: match.grid } : undefined;
-        }
-        if (observedGrid !== match?.grid) {
-            resizeObserver?.disconnect();
-            observedGrid = match?.grid;
-            if (observedGrid) resizeObserver?.observe(observedGrid);
+            if (previousGrid !== context?.grid) {
+                resizeObserver?.disconnect();
+                if (context) resizeObserver?.observe(context.grid);
+            }
         }
         if (!match) return;
 
@@ -569,7 +567,6 @@
             observer.disconnect();
             document.removeEventListener("visibilitychange", schedule);
             resizeObserver?.disconnect();
-            observedGrid = undefined;
             context = undefined;
             releasePending = !resetLayout();
             resetQuery();

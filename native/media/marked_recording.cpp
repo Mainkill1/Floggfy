@@ -1,5 +1,7 @@
 #include "../tooling/binary.h"
 #include "marked_recording.h"
+#include "recording_formats.h"
+#include "vorbis_comments.h"
 #include <algorithm>
 #include <cstring>
 #include <map>
@@ -29,11 +31,6 @@ struct Input {
         return !length || read(at,dest,length);
     }
 };
-std::string Upper(std::string_view text) {
-    std::string key(text);
-    for(char& c:key)if(c>='a' && c<='z')c=char(c-'a'+'A');
-    return key;
-}
 bool Relevant(const std::string& key) {
     return key=="SPOTIFY_URI" || key=="HISTORY_SAVED_UTC" || key=="HISTORY_CAPTURE" ||
            key=="HISTORY_COMPLETE_STREAM" || key=="HISTORY_COMPLETE_LISTEN";
@@ -45,10 +42,8 @@ struct Fields {
         if(bytes>value_limit)return false;
         std::string value(size_t(bytes),'\0');
         if(bytes && !get(at,value.data(),value.size()))return false;
-        const auto existing=values.find(key);
-        if(existing!=values.end())return existing->second==value;
-        values.emplace(key,std::move(value));
-        return true;
+        const auto [existing,inserted]=values.try_emplace(key,std::move(value));
+        return inserted || existing->second==value;
     }
     std::string Value(const char* key) const {
         const auto i=values.find(key);
@@ -59,31 +54,15 @@ struct Fields {
 // irrelevant values (including base64 artwork comments and long lyrics).
 bool Comments(const MarkedReadAt& get,uint64_t size,Fields& fields,bool vorbis) {
     if(size>metadata_limit)return false;
-    uint64_t at=0;
-    auto length=[&](uint32_t& n) {
-        uint8_t bytes[4];
-        if(size-at<sizeof(bytes) || !get(at,bytes,sizeof(bytes)))return false;
-        at+=sizeof(bytes);
-        n=binary::ReadLittle32(bytes);
-        return true;
-    };
-    uint32_t vendor=0,count=0;
-    if(!length(vendor) || vendor>size-at)return false;
-    at+=vendor;
-    if(!length(count) || count>100000 || count>(size-at)/4)return false;
-    for(uint32_t i=0;i<count;++i) {
-        uint32_t bytes=0;
-        if(!length(bytes) || bytes>size-at)return false;
+    return ReadVorbisCommentRanges(size,get,[&](uint64_t at,uint32_t bytes,bool vendor) {
+        if(vendor)return true;
         char prefix[key_limit];
         const auto probe=std::min<size_t>(bytes,sizeof(prefix));
         if(probe && !get(at,prefix,probe))return false;
         const auto split=std::string_view(prefix,probe).find('=');
-        if(split!=std::string_view::npos &&
-           !fields.Set(get,at+split+1,bytes-split-1,Upper({prefix,split})))return false;
-        at+=bytes;
-    }
-    uint8_t framing=0;
-    return vorbis?size-at==1 && get(at,&framing,1) && framing==1:at==size;
+        return split==std::string_view::npos ||
+               fields.Set(get,at+split+1,bytes-split-1,CommentKey({prefix,split}));
+    },vorbis);
 }
 
 bool Flac(Input& input,Fields& fields) {
@@ -219,7 +198,7 @@ bool Mp3(Input& input,Fields& fields) {
             const auto split=std::string_view(prefix+1,probe-1).find('\0');
             if(split!=std::string_view::npos &&
                !fields.Set([&](uint64_t p,void* d,size_t n){return input.Get(p,d,n);},
-                           at+split+2,length-split-2,Upper({prefix+1,split})))return false;
+                           at+split+2,length-split-2,CommentKey({prefix+1,split})))return false;
         }
         at+=length;
     }
@@ -238,7 +217,7 @@ bool ReadBox(Input& input,uint64_t at,uint64_t end,Box& box) {
     uint64_t length=binary::ReadBig32(header),head=8;
     if(length==1) {
         if(end-at<16 || !input.Get(at+8,header,sizeof(header)))return false;
-        length=uint64_t(binary::ReadBig32(header))<<32|binary::ReadBig32(header+4);
+        length=binary::ReadBig64(header);
         head=16;
     } else if(!length)length=end-at;
     if(length<head || length>end-at)return false;
@@ -262,7 +241,7 @@ bool Freeform(Input& input,const Box& entry,Fields& fields) {
                 if(binary::ReadBig32(reinterpret_cast<const uint8_t*>(text))==0) {
                     std::string_view name(text+4,size_t(bytes)-4);
                     if(box.Is("mean"))itunes=name=="com.apple.iTunes";
-                    else key=Upper(name);
+                    else key=CommentKey(name);
                 }
             }
         }
@@ -317,18 +296,21 @@ bool ReadMarkedRecording(uint64_t bytes,const MarkedReadAt& read,MarkedRecording
     error.clear();
     Input input{bytes,read};
     uint8_t magic[8];
-    const char* capture=nullptr;
+    Codec codec=Codec::Vorbis;
     Fields fields;
     bool valid=false;
     if(input.Get(0,magic,sizeof(magic))) {
         if(!std::memcmp(magic,"fLaC",4)) {
-            capture="native compressed FLAC input";valid=Flac(input,fields);
+            codec=Codec::Flac;
+            valid=Flac(input,fields);
         } else if(!std::memcmp(magic,"OggS",4)) {
-            capture="native compressed Ogg pages";valid=Ogg(input,fields);
+            valid=Ogg(input,fields);
         } else if(!std::memcmp(magic,"ID3",3)) {
-            capture="native compressed MP3 input";valid=Mp3(input,fields);
+            codec=Codec::Mp3;
+            valid=Mp3(input,fields);
         } else if(!std::memcmp(magic+4,"ftyp",4)) {
-            capture="native compressed SpAC AAC packets";valid=Mp4(input,0,bytes,0,fields);
+            codec=Codec::Aac;
+            valid=Mp4(input,0,bytes,0,fields);
         }
     }
     if(!valid) {
@@ -343,7 +325,7 @@ bool ReadMarkedRecording(uint64_t bytes,const MarkedReadAt& read,MarkedRecording
     auto uri=fields.Value("SPOTIFY_URI");
     if(!ValidSpotifyTrackUri(uri))uri.clear();
     const bool complete=fields.Value("HISTORY_COMPLETE_STREAM")=="1" || fields.Value("HISTORY_COMPLETE_LISTEN")=="1";
-    const bool owned=complete && fields.Value("HISTORY_CAPTURE")==capture;
+    const bool owned=complete && MatchesRecordingCapture(codec,fields.Value("HISTORY_CAPTURE"));
     out={std::move(uri),std::move(saved),bytes,0,complete,owned};
     return true;
 }

@@ -31,6 +31,7 @@ bool CollectMetadataLog(const std::vector<std::uint8_t> &, CachedMetadataUris,
 bool DecodeCachedTrack(const CachedRecords &, const std::string &uri, CachedTrackMetadata &);
 bool DecodeCachedAlbum(const CachedRecords &, const std::string &uri,
                        std::map<std::string, std::string> &);
+void MergeCachedAlbum(const CachedRecords &, CachedTrackMetadata &);
 bool MergeCachedMetadata(const CachedTrackMetadata &, RichMetadata &);
 // Windows implementation; called only from the metadata worker.
 struct StoredMetadataRead {

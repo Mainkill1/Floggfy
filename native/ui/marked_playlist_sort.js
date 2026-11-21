@@ -114,17 +114,20 @@
             dispatch(value => value + 1);
         }
 
+        function ownsItems(view, items) {
+            return own(view.ref, "current") === view.source && own(view.source, "items") === items;
+        }
+
         function restore(active) {
             if (!active?.owned) return;
             const {owned, original, view} = active;
-            const {ref, source, dispatch} = view;
-            if (own(ref, "current") !== source || own(source, "items") !== owned) return;
+            if (!ownsItems(view, owned)) return;
             const current = nativeView();
-            if (current && (!sameProvider(current, view) || current.source !== source)) return;
+            if (current && (!sameProvider(current, view) || current.source !== view.source)) return;
             if (grid?.isConnected !== false && !clearSelection(current?.list || view.list)) return false;
-            if (own(ref, "current") !== source || own(source, "items") !== owned) return;
-            source.items = original;
-            redraw(dispatch);
+            if (!ownsItems(view, owned)) return;
+            view.source.items = original;
+            redraw(view.dispatch);
         }
 
         function playbackItems(entries) {
@@ -175,15 +178,18 @@
             options.skipTo = {uid: item.uid, uri: item.uri, index, pageIndex: 0};
         }
 
+        function selectionFailed(previousMode) {
+            if (error !== selectionError || mode !== previousMode) {
+                mode = previousMode;
+                error = selectionError;
+                changed();
+            }
+            return false;
+        }
+
         function reset(message = "") {
             try {
-                if (restore(session) === false) {
-                    if (error !== selectionError) {
-                        error = selectionError;
-                        changed();
-                    }
-                    return false;
-                }
+                if (restore(session) === false) return selectionFailed(mode);
             } catch {
                 message = unsupported;
             }
@@ -197,8 +203,7 @@
             return true;
         }
 
-        function currentFor(active) {
-            const view = nativeView();
+        function currentFor(active, view = nativeView()) {
             if (!sameProvider(view, active.view) || !sameSort(view, active.view)) return null;
             const expected = active.owned || active.original;
             if (!expected) return view;
@@ -265,7 +270,7 @@
                 const uri = own(value, "uri");
                 const canonical = typeof uri === "string" && trackUri.test(uri) ? uri : "";
                 if (canonical) uris.add(canonical);
-                rows.push({entry, uri: canonical, index});
+                rows.push({entry, uri: canonical});
             }
             return {original: items, rows, uris};
         }
@@ -273,58 +278,37 @@
         async function load(active) {
             try {
                 let view = nativeView();
-                if (!view) {
-                    reset(unsupported);
-                    return;
-                }
+                if (!view) return reset(unsupported);
                 // Reuse only a previously completed native fetch whose source,
                 // generation and restored order are still owned by this page.
-                if (loaded && sameProvider(view, loaded.view) && sameSort(view, loaded.view) &&
-                    view.source === loaded.view.source && own(view.source, "invalid") === false &&
-                    own(view.source, "id") === loaded.id && own(view.source, "items") === loaded.original &&
+                let data;
+                if (loaded && currentFor(loaded, view) &&
                     loaded.original.length === loaded.count && own(view.cache, "nrValidItems") === loaded.count) {
-                    const data = complete(view, cachedValues(view));
-                    if (data) {
-                        active.view = view;
-                        active.id = loaded.id;
-                        Object.assign(active, data);
-                        loading = false;
-                        changed();
-                        return;
-                    }
+                    data = complete(view, cachedValues(view));
                 }
-                loaded = null;
-                view = await clearNativeSort(active, view);
-                if (session !== active) return;
-                if (!view) {
-                    reset(unsupported);
-                    return;
-                }
-                active.view = view;
-                const result = await view.cache.cacheAll();
-                if (session !== active) return;
-                // Spotify may commit a replacement source on the following render.
-                await new Promise(resolve => {
-                    window.requestAnimationFrame(() => window.requestAnimationFrame(resolve));
-                });
-                if (session !== active) return;
-                const current = currentFor(active);
-                if (!current) {
-                    reset();
-                    return;
-                }
-                // Older Spotify versions fill the cache without returning the items.
-                const data = own(current.source, "invalid") === false &&
-                    complete(current, result === undefined ? cachedValues(current) : own(result, "items"));
                 if (!data) {
-                    reset(incomplete);
-                    return;
+                    loaded = null;
+                    view = await clearNativeSort(active, view);
+                    if (session !== active) return;
+                    if (!view) return reset(unsupported);
+                    active.view = view;
+                    const result = await view.cache.cacheAll();
+                    if (session !== active) return;
+                    // Spotify may commit a replacement source on the following render.
+                    await new Promise(resolve => {
+                        window.requestAnimationFrame(() => window.requestAnimationFrame(resolve));
+                    });
+                    if (session !== active) return;
+                    view = currentFor(active);
+                    if (!view) return reset();
+                    // Older Spotify versions fill the cache without returning the items.
+                    data = own(view.source, "invalid") === false &&
+                        complete(view, result === undefined ? cachedValues(view) : own(result, "items"));
+                    if (!data) return reset(incomplete);
+                    // The full fetch can replace the source and advance its generation.
+                    loaded = {view, id: own(view.source, "id"), original: data.original, count: data.rows.length};
                 }
-                // The full fetch can replace the source and advance its generation.
-                active.view = current;
-                active.id = own(current.source, "id");
-                Object.assign(active, data);
-                loaded = {view: current, id: active.id, original: data.original, count: data.rows.length};
+                Object.assign(active, data, {view, id: loaded.id});
                 loading = false;
                 changed();
             } catch {
@@ -389,7 +373,7 @@
                 const ordered = active.rows.slice().sort((first, second) => {
                     const a = timestamps.get(first.uri) || "";
                     const b = timestamps.get(second.uri) || "";
-                    if (a === b) return first.index - second.index;
+                    if (a === b) return 0;
                     if (!a || !b) return a ? -1 : 1;
                     return (a < b ? -1 : 1) * direction;
                 }).map(row => row.entry);
@@ -401,18 +385,11 @@
                         return false;
                     }
                     if (!clearSelection(view.list)) {
-                        if (!active.owned) {
-                            reset(selectionError);
-                        } else {
-                            const notify = error !== selectionError || mode !== active.mode;
-                            mode = active.mode;
-                            error = selectionError;
-                            if (notify) changed();
-                        }
+                        if (active.owned) return selectionFailed(active.mode);
+                        reset(selectionError);
                         return false;
                     }
-                    const expected = active.owned || active.original;
-                    if (own(view.ref, "current") !== view.source || own(view.source, "items") !== expected) {
+                    if (!ownsItems(view, active.owned || active.original)) {
                         reset();
                         return false;
                     }

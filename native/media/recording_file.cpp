@@ -10,29 +10,28 @@
 #include "aac_stream.h"
 #include "compressed_buffer.h"
 #include "flac_history_core.h"
+#include "recording_formats.h"
 #include "recording_limits.h"
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
-#include <limits>
 namespace history {
 namespace {
 constexpr size_t metadata_limit=16*1024*1024;
-std::string Field(const Tags& tags,const char* name) {
+const std::string& Field(const Tags& tags,const char* name) {
     for(const auto& field:tags.fields) if(field.first==name) return field.second;
-    return {};
+    static const std::string empty;
+    return empty;
 }
-bool UnsignedField(const Tags& tags,const char* name,uint64_t& out) {
-    const auto value=Field(tags,name);if(value.empty())return false;
-    uint64_t result=0;
-    for(const unsigned char digit:value) {
-        if(digit<'0'||digit>'9'||result>(std::numeric_limits<uint64_t>::max()-(digit-'0'))/10)
-            return false;
-        result=result*10+(digit-'0');
-    }
-    if(!result)return false;
-    out=result;return true;
+bool MatchesUnsignedField(const Tags& tags,const char* name,uint64_t expected) {
+    const auto& value=Field(tags,name);
+    const auto end=value.data()+value.size();
+    uint64_t number=0;
+    const auto parsed=std::from_chars(value.data(),end,number);
+    return parsed.ec==std::errc{} && parsed.ptr==end && number && number==expected;
 }
 void Picture(const uint8_t* bytes,size_t size,RecordingFile& record) {
     record.has_artwork=true;
@@ -66,10 +65,6 @@ void Picture(const uint8_t* bytes,size_t size,RecordingFile& record) {
         record.artwork=std::move(image);
     }
 }
-bool Base64Picture(const std::string& text,std::vector<uint8_t>& output) {
-    return text.size()<=metadata_limit &&
-        base64::DecodePadded(std::string_view(text),metadata_limit,output,true) && !output.empty();
-}
 bool Comments(const uint8_t* b,size_t size,RecordingFile& record,bool vorbis) {
     if(size>metadata_limit || (vorbis && (!size || b[size-1]!=1)))return false;
     std::string_view vendor;
@@ -79,19 +74,17 @@ bool Comments(const uint8_t* b,size_t size,RecordingFile& record,bool vorbis) {
         auto key=CommentKey(value.substr(0,equals));
         // Artwork can dwarf all textual metadata and is irrelevant to identity.
         if(key=="METADATA_BLOCK_PICTURE") {
-            record.picture_comments.emplace_back(value.substr(equals+1));
-            if(equals+1<value.size()) {
+            const auto encoded=value.substr(equals+1);
+            record.picture_comments.emplace_back(encoded);
+            if(!encoded.empty()) {
                 record.has_artwork=true;std::vector<uint8_t> picture;
-                if(Base64Picture(record.picture_comments.back(),picture))Picture(picture.data(),picture.size(),record);
+                if(base64::DecodePadded(encoded,metadata_limit,picture,true) && !picture.empty())
+                    Picture(picture.data(),picture.size(),record);
                 else record.artwork_edit_safe=false;
             }
         } else record.tags.fields.emplace_back(std::move(key),value.substr(equals+1));
     });
 }
-struct PointerBytes {
-    const uint8_t* bytes;
-    uint8_t operator[](size_t at) const noexcept {return bytes[at];}
-};
 struct BufferedBytes {
     const CompressedBuffer& bytes;size_t base;
     uint8_t operator[](size_t at) const noexcept {return bytes[base+at];}
@@ -164,11 +157,16 @@ template<class Source> bool Subframe(Bits<Source>& bits,unsigned block,unsigned 
     }
     return Residual(bits,block,order);
 }
-struct FlacFrameHeader {bool valid=false,variable=false;uint64_t number=0;unsigned block=0;};
+struct FlacFrameInfo {
+    bool header_valid=false,variable=false;
+    uint64_t number=0;
+    unsigned block=0;
+    size_t length=0;
+};
 // RFC 9639 sections 9.1-9.3: walk each subframe, not a sync-byte scan.
 template<class Source> bool FlacFrame(const Source& b,size_t size,const Quality& quality,unsigned max_block,
-               uint64_t expected_sample,uint64_t frame_number,size_t& consumed,unsigned& block,
-               FlacFrameHeader* header=nullptr,bool check_number=true,bool* need_more=nullptr) {
+               uint64_t expected_sample,uint64_t frame_number,FlacFrameInfo& frame,
+               bool check_number=true,bool* need_more=nullptr) {
     Bits<Source> bits{b,size};
     struct IncompleteResult {
         const Bits<Source>& bits;bool* result;
@@ -194,6 +192,7 @@ template<class Source> bool FlacFrame(const Source& b,size_t size,const Quality&
         if(number<minimum[continuations]) return false;
     }
     if(check_number && number!=(variable?expected_sample:frame_number)) return false;
+    unsigned block=0;
     if(block_code==1) block=192;
     else if(block_code<=5) block=576u<<(block_code-2);
     else if(block_code==6) block=unsigned(bits.Read(8))+1;
@@ -210,7 +209,7 @@ template<class Source> bool FlacFrame(const Source& b,size_t size,const Quality&
     if(rate!=quality.rate || depth!=quality.bits || (channels<8?channels+1:2)!=quality.channels || block>max_block) return false;
     bits.Read(8);
     if(!bits.ok || Crc8(b,bits.position/8)) return false;
-    if(header)*header={true,variable,number,block};
+    frame={true,variable,number,block};
     for(unsigned c=0;c<quality.channels;c++) {
         unsigned channel_depth=depth+((channels==8&&c==1)||(channels==9&&c==0)||(channels==10&&c==1));
         if(!Subframe(bits,block,channel_depth)) return false;
@@ -218,35 +217,38 @@ template<class Source> bool FlacFrame(const Source& b,size_t size,const Quality&
     if(bits.position%8 && bits.Read(unsigned(8-bits.position%8))!=0) return false;
     bits.Read(16);
     if(!bits.ok || Crc16(b,bits.position/8)) return false;
-    consumed=bits.position/8; return true;
+    frame.length=bits.position/8; return true;
+}
+bool FitsFlacCoverage(const FlacFrameInfo& frame,unsigned maximum,uint64_t remaining) {
+    return frame.block<=remaining && (frame.block==remaining || frame.block==maximum || frame.variable);
 }
 bool Flac(const uint8_t* b,size_t size,RecordingFile& out) {
-    if(size<42 || (b[4]!=0 && b[4]!=128) || b[5] || b[6] || b[7]!=34) return false;
-    uint64_t packed=0; for(unsigned i=18;i<26;i++) packed=(packed<<8)|b[i];
+    if(size<42 || (binary::ReadBig32(b+4)&0x7fffffff)!=34) return false;
+    const auto packed=binary::ReadBig64(b+18);
     out.quality={Codec::Flac,unsigned(packed>>44),unsigned((packed>>41)&7)+1,unsigned((packed>>36)&31)+1,0};
     uint64_t total=packed&0xfffffffffULL;
-    unsigned maximum=(unsigned(b[10])<<8)|b[11];
+    const auto maximum=binary::ReadBig16(b+10);
     if(!out.quality.rate || out.quality.bits<4 || maximum<16) return false;
-    size_t p=4; bool last=false,comments=false;
-    do {
+    size_t p=42;
+    bool last=(b[4]&128)!=0,comments=false;
+    while(!last) {
         if(size-p<4) return false;
         unsigned type=b[p]&127; last=(b[p]&128)!=0;
         size_t length=(size_t(b[p+1])<<16)|(size_t(b[p+2])<<8)|b[p+3]; p+=4;
-        if(type==127 || length>size-p || p+length>metadata_limit || (type==0&&p!=8)) return false;
+        if(type==0 || type==127 || length>size-p || p+length>metadata_limit) return false;
         if(type==6)Picture(b+p,length,out);
         if(type==4) {
             if(comments || !Comments(b+p,length,out,false)) return false;
             comments=true;
         }
         p+=length;
-    } while(!last);
+    }
     uint64_t samples=0,frames=0;
     while(p<size) {
-        size_t consumed=0; unsigned block=0;
-        const PointerBytes frame{b+p};
-        if(!FlacFrame(frame,size-p,out.quality,maximum,samples,frames,consumed,block)) return true;
-        samples+=block; ++frames; p+=consumed;
-        if(samples>total || (samples<total && block!=maximum && !(b[p-consumed+1]&1))) return true;
+        FlacFrameInfo frame;
+        if(!FlacFrame(b+p,size-p,out.quality,maximum,samples,frames,frame) ||
+           !FitsFlacCoverage(frame,maximum,total-samples)) return true;
+        samples+=frame.block; ++frames; p+=frame.length;
     }
     out.complete=frames && total && samples==total;
     return true;
@@ -320,13 +322,11 @@ void FlacBufferCoverage::Scan(const CompressedBuffer& bytes,const FlacInfo& info
     // conservative inspection limit never acquire proof of completion.
     constexpr size_t maximum_frame_bytes=0xffffff;
     while(next_offset<bytes.size() && samples<info.total_samples) {
-        const BufferedBytes frame{bytes,next_offset};
-        size_t consumed=0;unsigned block=0;
-        if(!FlacFrame(frame,std::min(bytes.size()-next_offset,maximum_frame_bytes),
-                      quality,info.max_block,samples,frames,consumed,block))return;
-        if(block>info.total_samples-samples ||
-           (samples+block<info.total_samples && block!=info.max_block && !(frame[1]&1)))return;
-        samples+=block;++frames;next_offset+=consumed;
+        FlacFrameInfo frame;
+        if(!FlacFrame(BufferedBytes{bytes,next_offset},std::min(bytes.size()-next_offset,maximum_frame_bytes),
+                      quality,info.max_block,samples,frames,frame) ||
+           !FitsFlacCoverage(frame,info.max_block,info.total_samples-samples))return;
+        samples+=frame.block;++frames;next_offset+=frame.length;
     }
     complete=frames && samples==info.total_samples && next_offset==bytes.size();
 }
@@ -345,14 +345,13 @@ void FlacCaptureReader::Scan(CompressedBuffer& bytes,const FlacInfo& info,size_t
     incoming_sample_known=false;
     constexpr size_t frame_limit=0xffffff,resync_limit=1024*1024,index_limit=8*1024*1024;
     const Quality quality{Codec::Flac,info.rate,info.channels,info.bits,0};
-    auto parse=[&](size_t at,FlacFrameHeader& header,size_t& length,bool* need_more=nullptr) {
-        unsigned block=0;
+    auto parse=[&](size_t at,FlacFrameInfo& frame,bool* need_more=nullptr) {
         return FlacFrame(BufferedBytes{bytes,at},std::min(bytes.size()-at,frame_limit),
-                         quality,info.max_block,0,0,length,block,&header,false,need_more);
+                         quality,info.max_block,0,0,frame,false,need_more);
     };
-    auto observe=[&](const FlacFrameHeader& header) {
-        incoming_sample_known=header.valid;
-        if(header.valid)incoming_sample=header.variable?header.number:header.number*info.max_block;
+    auto observe=[&](const FlacFrameInfo& frame) {
+        incoming_sample_known=frame.header_valid;
+        if(frame.header_valid)incoming_sample=frame.variable?frame.number:frame.number*info.max_block;
     };
     auto equal=[&](size_t left,size_t right,size_t length) {
         for(size_t i=0;i<length;++i)if(bytes[left+i]!=bytes[right+i])return false;
@@ -374,11 +373,11 @@ void FlacCaptureReader::Scan(CompressedBuffer& bytes,const FlacInfo& info,size_t
         }
         available-=needed-old;return true;
     };
-    auto is_before=[&](const FlacFrameHeader& h) {
-        return h.valid && (h.variable?h.number<samples:h.number<frames);
+    auto is_before=[&](const FlacFrameInfo& h) {
+        return h.header_valid && (h.variable?h.number<samples:h.number<frames);
     };
-    auto is_next=[&](const FlacFrameHeader& h) {
-        return h.valid && h.number==(h.variable?samples:frames);
+    auto is_next=[&](const FlacFrameInfo& h) {
+        return h.header_valid && h.number==(h.variable?samples:frames);
     };
     auto find_resync=[&](const auto& accepted)->size_t {
         if(resync_origin!=next_offset) {
@@ -388,9 +387,9 @@ void FlacCaptureReader::Scan(CompressedBuffer& bytes,const FlacInfo& info,size_t
         // rejected candidates cannot, so retain only the unfinished ones.
         size_t kept=0;
         for(const auto at:resync_pending) {
-            FlacFrameHeader candidate;size_t n=0;bool need_more=false;
+            FlacFrameInfo candidate;bool need_more=false;
             ++resync_candidate_parses;
-            if(parse(at,candidate,n,&need_more)&&accepted(candidate))return at;
+            if(parse(at,candidate,&need_more)&&accepted(candidate))return at;
             if(need_more)resync_pending[kept++]=at;
         }
         resync_pending.resize(kept);
@@ -398,9 +397,9 @@ void FlacCaptureReader::Scan(CompressedBuffer& bytes,const FlacInfo& info,size_t
         for(;resync_next+2<=end;++resync_next) {
             const auto at=resync_next;++resync_bytes_examined;
             if(bytes[at]!=0xff||(bytes[at+1]&0xfe)!=0xf8)continue;
-            FlacFrameHeader candidate;size_t n=0;bool need_more=false;
+            FlacFrameInfo candidate;bool need_more=false;
             ++resync_candidate_parses;
-            if(parse(at,candidate,n,&need_more)&&accepted(candidate))return at;
+            if(parse(at,candidate,&need_more)&&accepted(candidate))return at;
             if(need_more) {
                 // Speculation must not invalidate an ordinary partial frame
                 // when no recovery memory is available. Keep this cursor for
@@ -423,22 +422,21 @@ void FlacCaptureReader::Scan(CompressedBuffer& bytes,const FlacInfo& info,size_t
             complete=true;reason="complete";return;
         }
         if(next_offset==bytes.size()){reason="waiting_frame";return;}
-        FlacFrameHeader header;size_t length=0;
-        const bool valid=parse(next_offset,header,length);observe(header);
-        if(valid && !is_before(header)) {reason="sample_gap_or_invalid_block";failed=true;return;}
-        bool backward=valid && is_before(header);
-        if(!backward)backward=find_resync(is_before)!=0;
+        FlacFrameInfo frame;
+        const bool valid=parse(next_offset,frame);observe(frame);
+        if(valid && !is_before(frame)) {reason="sample_gap_or_invalid_block";failed=true;return;}
+        const bool backward=valid || find_resync(is_before)!=0;
         if(failed)return;
         if(!backward) {reason=bytes.size()-next_offset>resync_limit?"resync_limit":"waiting_frame";return;}
         uint64_t sample=0;
         for(size_t at=audio_offset;at<next_offset;) {
-            FlacFrameHeader h;size_t n=0;
-            if(!parse(at,h,n)||!grow(index)){if(!failed){reason="invalid_validated_prefix";failed=true;}return;}
-            index.push_back({at,n,sample,h.block});sample+=h.block;at+=n;
+            FlacFrameInfo prior;
+            if(!parse(at,prior)||!grow(index)){if(!failed){reason="invalid_validated_prefix";failed=true;}return;}
+            index.push_back({at,prior.length,sample,prior.block});sample+=prior.block;at+=prior.length;
         }
         recovering=true;resync_origin=~size_t(0);resync_pending.clear();
     }
-    auto frame_index=[&](const FlacFrameHeader& h)->size_t {
+    auto frame_index=[&](const FlacFrameInfo& h)->size_t {
         if(!h.variable)return h.number<=index.size()?size_t(h.number):index.size()+1;
         const auto it=std::lower_bound(index.begin(),index.end(),h.number,
                                      [](const Frame& f,uint64_t sample){return f.sample<sample;});
@@ -446,38 +444,38 @@ void FlacCaptureReader::Scan(CompressedBuffer& bytes,const FlacInfo& info,size_t
         return h.number==samples?index.size():index.size()+1;
     };
     while(next_offset<bytes.size()) {
-        FlacFrameHeader header;size_t length=0;
-        const bool valid=parse(next_offset,header,length);observe(header);
+        FlacFrameInfo frame;
+        const bool valid=parse(next_offset,frame);observe(frame);
         if(valid) {
-            const auto i=frame_index(header);
+            const auto i=frame_index(frame);
             if(i<index.size()) {
                 const auto& known=index[i];
-                if(length!=known.length || !equal(next_offset,known.offset,length)) {
+                if(frame.length!=known.length || !equal(next_offset,known.offset,frame.length)) {
                     reason="conflicting_duplicate";failed=true;return;
                 }
-                ++duplicate_frames;duplicate_bytes+=length;next_offset+=length;continue;
+                ++duplicate_frames;duplicate_bytes+=frame.length;next_offset+=frame.length;continue;
             }
-            if(i!=index.size() || !is_next(header) || header.block>info.total_samples-samples ||
-               (samples+header.block<info.total_samples && header.block!=info.max_block && !header.variable)) {
+            if(i!=index.size() || !is_next(frame) ||
+               !FitsFlacCoverage(frame,info.max_block,info.total_samples-samples)) {
                 reason="sample_gap_or_invalid_block";failed=true;return;
             }
             for(const auto& fragment:pending) {
-                if(fragment.index!=i || fragment.length>=length ||
+                if(fragment.index!=i || fragment.length>=frame.length ||
                    !equal(fragment.offset,next_offset,fragment.length)) {
                     reason="conflicting_interrupted_frame";failed=true;return;
                 }
             }
             if(!grow(index))return;
-            index.push_back({next_offset,length,samples,header.block});pending.clear();
-            samples+=header.block;++frames;next_offset+=length;continue;
+            index.push_back({next_offset,frame.length,samples,frame.block});pending.clear();
+            samples+=frame.block;++frames;next_offset+=frame.length;continue;
         }
         // The interrupted range must have a valid header for an already
         // known frame or exactly the next frame. Its bytes must later match
         // that frame's prefix; arbitrary corrupt bytes are never discarded.
-        if(!header.valid){reason="waiting_or_invalid_frame_header";return;}
-        const auto interrupted_index=frame_index(header);
+        if(!frame.header_valid){reason="waiting_or_invalid_frame_header";return;}
+        const auto interrupted_index=frame_index(frame);
         if(interrupted_index>index.size()) {reason="sample_gap";failed=true;return;}
-        const auto resumed=find_resync([&](const FlacFrameHeader& h){return frame_index(h)<index.size();});
+        const auto resumed=find_resync([&](const FlacFrameInfo& h){return frame_index(h)<index.size();});
         if(failed)return;
         if(!resumed){reason=bytes.size()-next_offset>resync_limit?"resync_limit":"waiting_interrupted_frame";return;}
         const auto fragment_size=resumed-next_offset;
@@ -513,10 +511,9 @@ bool FindValidatedFlacFrame(const CompressedBuffer& bytes,const Quality& quality
     bool found=false;
     for(size_t at=begin;at+2<=bytes.size();++at) {
         if(bytes[at]!=0xff||(bytes[at+1]&0xfe)!=0xf8)continue;
-        size_t length=0;unsigned samples=0;
-        const BufferedBytes frame{bytes,at};
-        if(!FlacFrame(frame,bytes.size()-at,quality,max_block,expected_sample,
-                      frame_number,length,samples))continue;
+        FlacFrameInfo frame;
+        if(!FlacFrame(BufferedBytes{bytes,at},bytes.size()-at,quality,max_block,expected_sample,
+                      frame_number,frame))continue;
         offset=at;found=true;
     }
     return found;
@@ -535,6 +532,7 @@ bool InspectRecording(const uint8_t* bytes,size_t size,RecordingFile& out) {
     out={};
     if(!bytes || size<4 || size>kMaximumRecordingBytes) return false;
     bool valid=false;
+    Mp3Info mp3;
     if(!std::memcmp(bytes,"fLaC",4)) valid=Flac(bytes,size,out);
     else if(!std::memcmp(bytes,"OggS",4)) valid=Ogg(bytes,size,out);
     else if(size>=12 && !std::memcmp(bytes+4,"ftyp",4)) {
@@ -553,18 +551,14 @@ bool InspectRecording(const uint8_t* bytes,size_t size,RecordingFile& out) {
             }
         }
     } else if(!std::memcmp(bytes,"ID3",3)||(bytes[0]==0xff&&(bytes[1]&0xe0)==0xe0)) {
-        Mp3Info mp3;std::string error;
+        std::string error;
         const auto inspected=InspectOwnedMp3Result(bytes,size,mp3,out.tags,error);
         valid=inspected==Mp3InspectionResult::Valid;
         if(inspected==Mp3InspectionResult::ResourceFailure)out.inspection_resource_failure=true;
         if(valid) {
             out.quality={Codec::Mp3,mp3.rate,mp3.channels,0,
                 mp3.Duration()>0?unsigned((mp3.audio_size*8)/mp3.Duration()):0};
-            const bool owned=(Field(out.tags,"HISTORY_COMPLETE_STREAM")=="1"||Field(out.tags,"HISTORY_COMPLETE_LISTEN")=="1")&&
-                Field(out.tags,"HISTORY_CAPTURE")=="native compressed MP3 input";
-            uint64_t expected_samples=0;
-            out.complete=mp3.complete&&(!owned||
-                (UnsignedField(out.tags,"HISTORY_SAMPLES",expected_samples)&&expected_samples==mp3.samples));
+            out.complete=mp3.complete;
             if(!out.tags.cover.empty()) {
                 out.has_artwork=ReadRecordingArtwork(out.tags.cover,out.artwork);
                 out.artwork_edit_safe=out.has_artwork;
@@ -572,11 +566,10 @@ bool InspectRecording(const uint8_t* bytes,size_t size,RecordingFile& out) {
             }
         }
     }
-    out.owned=valid && (Field(out.tags,"HISTORY_COMPLETE_STREAM")=="1"||Field(out.tags,"HISTORY_COMPLETE_LISTEN")=="1") &&
-        ((out.quality.codec==Codec::Flac && Field(out.tags,"HISTORY_CAPTURE")=="native compressed FLAC input") ||
-         (out.quality.codec==Codec::Vorbis && Field(out.tags,"HISTORY_CAPTURE")=="native compressed Ogg pages") ||
-         (out.quality.codec==Codec::Aac && Field(out.tags,"HISTORY_CAPTURE")=="native compressed SpAC AAC packets") ||
-         (out.quality.codec==Codec::Mp3 && Field(out.tags,"HISTORY_CAPTURE")=="native compressed MP3 input"));
+    out.owned=valid && (Field(out.tags,"HISTORY_COMPLETE_STREAM")=="1" || Field(out.tags,"HISTORY_COMPLETE_LISTEN")=="1") &&
+        MatchesRecordingCapture(out.quality.codec,Field(out.tags,"HISTORY_CAPTURE"));
+    if(out.complete && out.owned && out.quality.codec==Codec::Mp3)
+        out.complete=MatchesUnsignedField(out.tags,"HISTORY_SAMPLES",mp3.samples);
     return valid;
 }
 bool MatchesRecording(const RecordingFile& file,const Catalog& c) {

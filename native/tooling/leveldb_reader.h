@@ -209,15 +209,14 @@ template<class Visitor> bool VisitLog(const std::vector<uint8_t>& bytes, const V
   Bytes file(reinterpret_cast<const char *>(bytes.data()), bytes.size());
   size_t p = 0;
   std::string assembling;
-  bool first = false, complete = false;
-  while (p < file.size()) {
+  bool fragmented = false, complete = false;
+  constexpr uint8_t full = 1, first = 2, middle = 3, last = 4;
+  while (file.size() - p >= 7) {
     size_t available = 32768 - p % 32768;
     if (available < 7) {
-      p += std::min(available, file.size() - p);
+      p += available;
       continue;
     }
-    if (file.size() - p < 7)
-      break;
     auto header = file.substr(p, 7);
     size_t n = size_t(Little(header.substr(4, 2)));
     uint8_t kind = uint8_t(header[6]);
@@ -235,28 +234,27 @@ template<class Visitor> bool VisitLog(const std::vector<uint8_t>& bytes, const V
         Little(header.substr(0, 4)))
       return false;
 
-    if (kind == 1) {
-      if (!Batch(payload, visit))
-        return false;
-      complete = true;
-      first = false;
-      assembling.clear();
-    } else if (kind == 2) {
+    if (kind == first) {
       assembling.assign(payload);
-      first = true;
-    } else if (kind == 3 || kind == 4) {
-      if (!first || payload.size() > max_log_record - std::min(max_log_record, assembling.size()))
+      fragmented = true;
+      continue;
+    }
+    if (kind == middle || kind == last) {
+      if (!fragmented ||
+          payload.size() > max_log_record - std::min(max_log_record, assembling.size()))
         return false;
       assembling.append(payload);
-      if (kind == 4) {
-        if (!Batch(assembling, visit))
-          return false;
-        complete = true;
-        first = false;
-        assembling.clear();
-      }
-    } else
+      if (kind == middle)
+        continue;
+      payload = assembling;
+    } else if (kind != full) {
       return false;
+    }
+    if (!Batch(payload, visit))
+      return false;
+    complete = true;
+    fragmented = false;
+    assembling.clear();
   }
   return complete;
 }

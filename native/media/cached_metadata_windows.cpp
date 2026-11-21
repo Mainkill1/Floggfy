@@ -80,34 +80,28 @@ bool Collect(const std::vector<File> &files, CachedMetadataUris uris, CachedMeta
       result.reason = "read-budget";
       return false;
     }
-    HANDLE h = CreateFileW(file.path.c_str(), GENERIC_READ,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-                           OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
-    if (h == INVALID_HANDLE_VALUE) {
-      // Spotify can exclusively hold its active WAL. In that one case use
-      // readable SST catalogue records, matched against the live track below.
-      // This does not claim to reflect unreadable WAL updates or evictions.
-      if (file.log && GetLastError() == ERROR_SHARING_VIOLATION)
-        continue;
-      result.reason = "unreadable";
-      return false;
-    }
-    // Files can be compacted, replaced or appended while Spotify is running.
-    // Read the enumerated prefix; the parser accepts only verified complete records.
     std::vector<uint8_t> bytes;
-    try {
+    {
+      win32::Handle handle{CreateFileW(file.path.c_str(), GENERIC_READ,
+                                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                     nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr)};
+      if (handle.value == INVALID_HANDLE_VALUE) {
+        // Spotify can exclusively hold its active WAL. In that case, use the
+        // readable SST catalogue records and match them against the live track.
+        if (file.log && GetLastError() == ERROR_SHARING_VIOLATION)
+          continue;
+        result.reason = "unreadable";
+        return false;
+      }
+      // Read the enumerated prefix of files that Spotify may replace or append to.
       bytes.resize(size_t(file.size));
-    } catch (...) {
-      CloseHandle(h);
-      throw;
-    }
-    DWORD got = 0;
-    bool ok = ReadFile(h, bytes.data(), DWORD(bytes.size()), &got, nullptr) != 0;
-    CloseHandle(h);
-    result.read_bytes += got;
-    if (!ok || got != bytes.size()) {
-      result.reason = "unreadable";
-      return false;
+      DWORD got = 0;
+      const bool ok = ReadFile(handle.value, bytes.data(), DWORD(bytes.size()), &got, nullptr) != 0;
+      result.read_bytes += got;
+      if (!ok || got != bytes.size()) {
+        result.reason = "unreadable";
+        return false;
+      }
     }
     const bool valid = file.log ? CollectMetadataLog(bytes, uris, records)
                                 : CollectMetadataTable(bytes, uris, records);
@@ -168,20 +162,7 @@ bool ReadStoredMetadata(const std::wstring &users_root, RichMetadata &live,
       if (!Collect(files, {{}, track.album_uri}, records, result))
         continue;
     }
-    std::map<std::string, std::string> fields;
-    if (DecodeCachedAlbum(records.albums, track.album_uri, fields)) {
-      RichMetadata embedded;
-      embedded.uri = track.uri;
-      embedded.title = track.title;
-      embedded.album = track.album;
-      embedded.album_uri = track.album_uri;
-      embedded.duration = track.duration;
-      embedded.fields = track.fields;
-      CachedTrackMetadata complete = track;
-      complete.fields = std::move(fields);
-      MergeCachedMetadata(complete, embedded);
-      track.fields = std::move(embedded.fields);
-    }
+    MergeCachedAlbum(records.albums, track);
     const bool merged = MergeCachedMetadata(track, live);
     result.reason = merged ? "found" : "identity-mismatch";
     return merged;
