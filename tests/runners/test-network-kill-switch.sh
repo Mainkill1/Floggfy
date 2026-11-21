@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")"
+cd -- "$(dirname -- "$0")/../.."
 cxx=${CXX:-x86_64-w64-mingw32-g++}
 cc=${CC:-x86_64-w64-mingw32-gcc}
 build=$(mktemp -d)

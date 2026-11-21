@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One focused event-ordering test. Does not launch Spotify or write music files.
 set -euo pipefail
-cd -- "$(dirname -- "$0")"
+cd -- "$(dirname -- "$0")/../.."
 mkdir -p build/capture-association
 x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vendor/minimp4/minimp4.c -o build/capture-association/minimp4.o
 floggfy_temp_win=$(cmd.exe /c echo %TEMP% 2>/dev/null | tr -d '\r')

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd -- "$(dirname -- "$0")"
+cd -- "$(dirname -- "$0")/../.."
 bash build-artwork-codecs.sh x86_64-w64-mingw32-gcc ar build/artwork-codecs-windows
 # Run from WSL. Use Windows TEMP unless a destination is explicitly supplied.
 if [[ $# -gt 0 ]]; then
@@ -106,9 +106,9 @@ done
 
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_settings_sections_test.cpp -lole32 -luuid -lshell32 -o "$floggfy_settings_test_root/windows-settings-sections-test.exe"
 "$floggfy_settings_test_root/windows-settings-sections-test.exe"
-bash test-update-blocker.sh
+bash tests/runners/test-update-blocker.sh
 
-bash test-artwork-policy.sh
+bash tests/runners/test-artwork-policy.sh
 
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_recent_downloads_test.cpp native/recent_downloads.cpp -o "$floggfy_test_root/windows-recent-downloads-test.exe"
 "$floggfy_test_root/windows-recent-downloads-test.exe"
@@ -153,24 +153,24 @@ x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include \
 
 # Focused correction regressions also remain part of the normal Windows suite.
 for issue in 1 3 5; do
-    bash test-pr11-corrections.sh "$issue"
+    bash tests/runners/test-pr11-corrections.sh "$issue"
 done
 
 # Optional AAC capture and Windows publication are exercised in one executable.
-bash test-aac.sh
+bash tests/runners/test-aac.sh
 
 # Naming configuration and atomic conversion share one focused integration gate.
-bash test-filename-options.sh
+bash tests/runners/test-filename-options.sh
 
 # Directory enumeration bounds and one-list reuse across all codec/name checks.
-bash test-directory-lookup.sh
+bash tests/runners/test-directory-lookup.sh
 
 # Album-artist precedence remains separate from guest/contributing credits.
-bash test-album-artists.sh
+bash tests/runners/test-album-artists.sh
 
 # Raw forensic input and per-stream metadata are independent of normal recording validation.
-bash test-stream-dumps.sh
+bash tests/runners/test-stream-dumps.sh
 
 # Media-session recovery/diagnostics must not regress when publication changes.
-bash test-media-observer.sh
-bash test-diagnostics.sh
+bash tests/runners/test-media-observer.sh
+bash tests/runners/test-diagnostics.sh

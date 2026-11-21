@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One executable for filename settings, safe renames and track-start integration.
 set -euo pipefail
-cd -- "$(dirname -- "$0")"
+cd -- "$(dirname -- "$0")/../.."
 mkdir -p build/filename-options
 floggfy_names_temp=$(cmd.exe /c echo %TEMP% 2>/dev/null | tr -d '\r')
 floggfy_names_root="$(wslpath -u "$floggfy_names_temp")/Floggfy-filename-options-$(date +%s)-$$"

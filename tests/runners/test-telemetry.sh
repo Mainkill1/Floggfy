@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Isolated policy/producer/CEF callback tests. No Spotify execution or network requests.
 set -euo pipefail
-cd -- "$(dirname -- "$0")"
+cd -- "$(dirname -- "$0")/../.."
 mkdir -p build/telemetry-tests
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/telemetry_policy_test.cpp -o build/telemetry-tests/policy
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/telemetry_decode_test.cpp native/telemetry_decode.cpp native/telemetry_inflate.cpp -o build/telemetry-tests/decode

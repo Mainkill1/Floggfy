@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Read-only discovery matrix for signed/local Spotify client DLLs.
 set -euo pipefail
-cd -- "$(dirname -- "$0")"
+cd -- "$(dirname -- "$0")/../.."
 if [[ $# == 0 ]]; then
-    echo 'Usage: bash test-client-compatibility.sh SPOTIFY_DLL [...]' >&2
+    echo 'Usage: bash tests/runners/test-client-compatibility.sh SPOTIFY_DLL [...]' >&2
     exit 2
 fi
 floggfy_temp_win=$(cmd.exe /c echo %TEMP% 2>/dev/null | tr -d '\r')

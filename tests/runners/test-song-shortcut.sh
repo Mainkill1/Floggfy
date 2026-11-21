@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One executable for destination lookup and CEF Song target binding.
 set -euo pipefail
-cd -- "$(dirname -- "$0")"
+cd -- "$(dirname -- "$0")/../.."
 mkdir -p build/song-shortcut
 floggfy_shortcut_temp=$(cmd.exe /c echo %TEMP% 2>/dev/null | tr -d '\r')
 floggfy_shortcut_root="$(wslpath -u "$floggfy_shortcut_temp")/Floggfy-song-shortcut-$(date +%s)-$$"

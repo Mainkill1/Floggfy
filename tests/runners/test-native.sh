@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd -- "$(dirname -- "$0")"
+cd -- "$(dirname -- "$0")/../.."
 mkdir -p build
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/retry_schedule_test.cpp -o build/retry-schedule-test
 build/retry-schedule-test
@@ -123,4 +123,4 @@ g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/telemetry_decode_test.cpp native/
 build/telemetry-decode-test
 
 # Bundled image conversion has no operating-system codec dependency.
-bash test-artwork-image.sh
+bash tests/runners/test-artwork-image.sh

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One focused Windows executable for directory-first lookup, conversion and menu.
 set -euo pipefail
-cd -- "$(dirname -- "$0")"
+cd -- "$(dirname -- "$0")/../.."
 mkdir -p build/directory-lookup
 floggfy_names_temp=$(cmd.exe /c echo %TEMP% 2>/dev/null | tr -d '\r')
 floggfy_names_root="$(wslpath -u "$floggfy_names_temp")/Floggfy-directory-lookup-$(date +%s)-$$"

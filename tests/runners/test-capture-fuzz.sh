@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Deterministic mutation fuzzing and sanitizer regressions; no client execution.
 set -euo pipefail
-cd -- "$(dirname -- "$0")"
+cd -- "$(dirname -- "$0")/../.."
 mkdir -p build/capture-fuzz
 flags=(-g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all)
 gcc "${flags[@]}" -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/capture-fuzz/ogg.o

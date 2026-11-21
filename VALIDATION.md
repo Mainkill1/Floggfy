@@ -1,5 +1,7 @@
 ## Floggfy 1.3: final live recording validation
 
+Current test runners live in `tests/runners/`. Commands in dated validation records use the paths from those revisions.
+
 Tested with Spotify 1.3.9.2055 on Windows x64, including repeated songs,
 rapid skips, backtracks, forward seeks, and a free account with advertisements.
 The release notes compare 1.3 with 1.2.4.

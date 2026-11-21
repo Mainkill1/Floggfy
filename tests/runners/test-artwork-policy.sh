@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One focused Windows executable; no live Spotify or network access is needed.
 set -euo pipefail
-cd -- "$(dirname -- "$0")"
+cd -- "$(dirname -- "$0")/../.."
 mkdir -p build/artwork-policy
 bash build-artwork-codecs.sh x86_64-w64-mingw32-gcc ar build/artwork-codecs-windows
 x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vendor/minimp4/minimp4.c -o build/artwork-policy/minimp4.o

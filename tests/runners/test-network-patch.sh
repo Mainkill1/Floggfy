@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One Windows fixture for restart-only network opt-in and settings persistence.
 set -euo pipefail
-cd -- "$(dirname -- "$0")"
+cd -- "$(dirname -- "$0")/../.."
 floggfy_network_temp=$(cmd.exe /c echo %TEMP% 2>/dev/null | tr -d '\r')
 floggfy_network_root="$(wslpath -u "$floggfy_network_temp")/Floggfy-network-patch-$(date +%s)-$$"
 mkdir -p "$floggfy_network_root"

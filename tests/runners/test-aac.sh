@@ -3,8 +3,8 @@
 # Optional arguments: a complete inspection SpAC file and the Spotify DLL to map
 # for static capability discovery. Neither input is bundled with the project.
 set -euo pipefail
-cd -- "$(dirname -- "$0")"
-if [[ $# != 0 && $# != 2 ]]; then echo 'Usage: bash test-aac.sh [SPAC_FILE SPOTIFY_DLL]' >&2; exit 2; fi
+cd -- "$(dirname -- "$0")/../.."
+if [[ $# != 0 && $# != 2 ]]; then echo 'Usage: bash tests/runners/test-aac.sh [SPAC_FILE SPOTIFY_DLL]' >&2; exit 2; fi
 mkdir -p build/aac-tests
 floggfy_temp_win=$(cmd.exe /c echo %TEMP% 2>/dev/null | tr -d '\r')
 floggfy_aac_root="$(wslpath -u "$floggfy_temp_win")/Floggfy-aac-tests-$(date +%s)-$$"

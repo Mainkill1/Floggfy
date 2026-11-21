@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd -- "$(dirname -- "$0")"
+cd -- "$(dirname -- "$0")/../.."
 
 # Use the Windows temp volume so WSL can launch the test binary directly.
 windows_temp=$(cmd.exe /c echo %TEMP% 2>/dev/null | tr -d '\r')

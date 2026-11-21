@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One focused invocation for album-artist precedence and legacy folder reuse.
 set -euo pipefail
-cd -- "$(dirname -- "$0")"
+cd -- "$(dirname -- "$0")/../.."
 mkdir -p build/album-artists
 bash build-artwork-codecs.sh x86_64-w64-mingw32-gcc x86_64-w64-mingw32-ar build/artwork-codecs-windows
 python3 - <<'PY'

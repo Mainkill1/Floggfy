@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One focused Windows test of timeline continuity and the media I/O boundary.
 set -euo pipefail
-cd -- "$(dirname -- "$0")"
+cd -- "$(dirname -- "$0")/../.."
 floggfy_media_temp=$(cmd.exe /c echo %TEMP% 2>/dev/null | tr -d '\r')
 floggfy_media_root="$(wslpath -u "$floggfy_media_temp")/Floggfy-media-tests-$(date +%s)-$$"
 mkdir -p "$floggfy_media_root"

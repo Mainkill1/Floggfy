@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Run exactly one focused correction test; there is deliberately no "all" mode.
 set -euo pipefail
-cd -- "$(dirname -- "$0")"
-issue=${1:?Usage: bash test-pr11-corrections.sh ISSUE_NUMBER}
+cd -- "$(dirname -- "$0")/../.."
+issue=${1:?Usage: bash tests/runners/test-pr11-corrections.sh ISSUE_NUMBER}
 case "$issue" in 1|3|4|5|6) ;; *) echo 'Issue must be 1, 3, 4, 5 or 6 (issue 2 was retired)' >&2; exit 2;; esac
 mkdir -p build/pr11-corrections
 common=(-std=c++17 -O2 -Wall -Wextra -Werror)

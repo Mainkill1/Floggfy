@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd -- "$(dirname -- "$0")"
+cd -- "$(dirname -- "$0")/../.."
 windows_temp=$(cmd.exe /c echo %TEMP% 2>/dev/null | tr -d '\r')
 marked_test_dir=$(mktemp -d "$(wslpath -u "$windows_temp")/Floggfy-marked-catalog.XXXXXXXX")
 trap 'rm -rf -- "$marked_test_dir"' EXIT

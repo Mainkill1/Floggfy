@@ -96,7 +96,7 @@ interception certificate is installed.
 
 ## Checks
 
-`bash test-telemetry.sh` runs URL-policy, producer, Windows/MinHook cancellation,
+`bash tests/runners/test-telemetry.sh` runs URL-policy, producer, Windows/MinHook cancellation,
 reference ownership and settings tests in isolated temporary directories. It
 checks that known blocked requests never call the original forwarding function,
 while functional routes preserve arguments, references and LastError. These

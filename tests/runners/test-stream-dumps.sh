@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd -- "$(dirname -- "$0")"
+cd -- "$(dirname -- "$0")/../.."
 floggfy_dump_temp=$(cmd.exe /c echo %TEMP% 2>/dev/null | tr -d '\r')
 floggfy_dump_root="$(wslpath -u "$floggfy_dump_temp")/Floggfy-stream-dumps-$(date +%s)-$$"
 mkdir -p "$floggfy_dump_root"

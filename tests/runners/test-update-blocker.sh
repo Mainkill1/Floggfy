@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd -- "$(dirname -- "$0")"
+cd -- "$(dirname -- "$0")/../.."
 cxx=${CXX:-x86_64-w64-mingw32-g++}
 floggfy_temp_win=$(cmd.exe /c echo %TEMP% 2>/dev/null | tr -d '\r')
 floggfy_test_dir=$(mktemp -d "$(wslpath -u "$floggfy_temp_win")/floggfy-update-test.XXXXXX")

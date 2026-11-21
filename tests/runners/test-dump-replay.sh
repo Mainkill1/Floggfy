@@ -2,7 +2,7 @@
 # Replays local DumpStreams bytes through MP3 boundaries or ownership/quality.
 # The raw capture remains local and is never copied into the repository.
 set -euo pipefail
-cd -- "$(dirname -- "$0")"
+cd -- "$(dirname -- "$0")/../.."
 replay_mode=--dump-replay
 replay_args=2
 if [[ ${1:-} == --capture-buffer && $# == 3 ]]; then
@@ -19,7 +19,7 @@ if [[ ${1:-} == --quality && $# == 5 ]]; then
     shift
 fi
 if [[ $# != "$replay_args" ]] || [[ ! -f $1 ]] || [[ $replay_mode != --dump-ogg-listen-replay && $replay_mode != --capture-buffer-replay && ! -f $2 ]]; then
-    echo 'Usage: bash test-dump-replay.sh [--quality] STREAM.bin STREAM.jsonl [NATIVE_FIELD_HEX_OR_auto SPOTIFY_URI]; or --ogg-listen SESSION.jsonl SPOTIFY_URI; or --capture-buffer SESSION.jsonl OUTPUT_DIRECTORY' >&2
+    echo 'Usage: bash tests/runners/test-dump-replay.sh [--quality] STREAM.bin STREAM.jsonl [NATIVE_FIELD_HEX_OR_auto SPOTIFY_URI]; or --ogg-listen SESSION.jsonl SPOTIFY_URI; or --capture-buffer SESSION.jsonl OUTPUT_DIRECTORY' >&2
     exit 2
 fi
 

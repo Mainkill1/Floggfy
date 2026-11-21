@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Optional Windows large-file gate: ~1.1 GiB RAM and 513 MiB temporary disk.
 set -euo pipefail
-cd -- "$(dirname -- "$0")"
+cd -- "$(dirname -- "$0")/../.."
 mkdir -p build/large-podcast
 floggfy_large_temp=$(cmd.exe /c echo %TEMP% 2>/dev/null | tr -d '\r')
 floggfy_large_root="$(wslpath -u "$floggfy_large_temp")/Floggfy-large-podcast-test-$(date +%s)-$$"

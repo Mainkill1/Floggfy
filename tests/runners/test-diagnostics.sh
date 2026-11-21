@@ -2,8 +2,8 @@
 # All optional-diagnostics regressions. No Spotify execution or network requests.
 # Optional DLL is mapped read-only for current-client discovery validation.
 set -euo pipefail
-cd -- "$(dirname -- "$0")"
-if [[ $# -gt 1 ]]; then echo 'Usage: bash test-diagnostics.sh [SPOTIFY_DLL]' >&2; exit 2; fi
+cd -- "$(dirname -- "$0")/../.."
+if [[ $# -gt 1 ]]; then echo 'Usage: bash tests/runners/test-diagnostics.sh [SPOTIFY_DLL]' >&2; exit 2; fi
 floggfy_diag_temp=$(cmd.exe /c echo %TEMP% 2>/dev/null | tr -d '\r')
 floggfy_diag_root="$(wslpath -u "$floggfy_diag_temp")/Floggfy-diagnostics-$(date +%s)-$$"
 floggfy_diag_build=build/diagnostics-tests
