@@ -10,13 +10,16 @@ static std::atomic<bool> hold_probe{false};
 #include "../native/aac_stream.h"
 #include "../native/mp3_stream.h"
 #include "recording_fixture.h"
-static std::atomic<unsigned> verification_reads{0},probe_attempts{0},collision_searches{0};
+static std::atomic<unsigned> verification_reads{0},probe_attempts{0},collision_searches{0},path_builds{0};
 static BOOL WINAPI BlockingAttributes(LPCWSTR path,GET_FILEEX_INFO_LEVELS level,LPVOID data) {
     ++probe_attempts;
     if(hold_probe) {SetEvent(probe_entered);WaitForSingleObject(probe_release,INFINITE);}
     return GetFileAttributesExW(path,level,data);
 }
 namespace history {
+static std::wstring CountingOutputPath(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder,bool track_numbers) {
+    ++path_builds;return OutputPath(root,item,extension,music_folder,track_numbers);
+}
 static bool BlockingListing(const std::wstring& path,RecordingDirectory& directory,const Catalog* catalog=nullptr) {
     ++probe_attempts;
     if(hold_probe) {SetEvent(probe_entered);WaitForSingleObject(probe_release,INFINITE);}
@@ -33,7 +36,9 @@ static bool CountingRecording(const std::wstring& path,const Catalog& catalog,Qu
 #define ListRecordingDirectory BlockingListing
 #define ExistingRecording CountingRecording
 #define GetFileAttributesExW BlockingAttributes
+#define OutputPath CountingOutputPath
 #include "../native/song_destination.cpp"
+#undef OutputPath
 #undef GetFileAttributesExW
 #undef ListRecordingDirectory
 #undef RecordingPathCandidates
@@ -229,7 +234,10 @@ int main() {
     ResetEvent(probe_entered);ResetEvent(probe_release);hold_probe=true;RefreshSongDestination();
     assert(WaitForSingleObject(probe_entered,1000)==WAIT_OBJECT_0);
     const auto unchanged_serial=request_serial.load();
+    PublishSongDestination(7,root,item,true,11);
+    const auto unchanged_paths=path_builds.load();
     for(unsigned i=0;i<1000;++i)PublishSongDestination(7,root,item,true,11);
+    assert(path_builds.load()==unchanged_paths); // Heartbeats reuse paths only when every input matches.
     assert(request_serial.load()==unchanged_serial); // Unchanged requests never starve slow verification.
     hold_probe=false;SetEvent(probe_release);AwaitProbe();
     assert(ReadSongDestination(7,11,saved_file) && saved_file==ogg);

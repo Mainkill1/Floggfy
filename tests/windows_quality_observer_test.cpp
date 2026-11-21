@@ -376,11 +376,11 @@ static void TestExistingMetadataAtPlaybackStart() {
   DWORD written=0;assert(file!=INVALID_HANDLE_VALUE&&WriteFile(file,existing.data(),DWORD(existing.size()),&written,nullptr)&&written==existing.size());CloseHandle(file);
   const auto before=metadata_update_calls;
   enrichment_ready=false;
+  // The worker announces a new revision while the first tag snapshot is being
+  // read. The next heartbeat must enqueue the updated data for this same track.
+  advance_revision_during_enrich=true;
   PublishCurrentDestination(media,settings);QueueFilenameCheck(media,settings);auto initial=TakeFilenameCheck();assert(initial);ProcessFilenameCheck(*initial);
   assert(metadata_update_calls==before+1);
-  advance_revision_during_enrich=true;
-  PublishCurrentDestination(media,settings);QueueFilenameCheck(media,settings);
-  if(auto raced=TakeFilenameCheck())ProcessFilenameCheck(*raced);
   enrichment_ready=true;
   PublishCurrentDestination(media,settings);QueueFilenameCheck(media,settings);auto enriched=TakeFilenameCheck();assert(enriched);ProcessFilenameCheck(*enriched);
   assert(metadata_update_calls==before+2);

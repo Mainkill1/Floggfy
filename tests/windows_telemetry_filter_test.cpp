@@ -1,7 +1,16 @@
 // Removing cancellation, adding a self-reference transfer to get_url, replacing
 // object identity, or forwarding blocked requests must fail these tests.
 #include "../native/history_settings.h"
+#include "../native/telemetry_decode.h"
+static unsigned decode_attempts=0;
+namespace privacy {
+static PayloadDecode CountingDecode(std::string_view body,std::string_view type,std::string_view encoding,bool gabo) {
+ ++decode_attempts;return DecodeTelemetryPayload(body,type,encoding,gabo);
+}
+}
+#define DecodeTelemetryPayload CountingDecode
 #include "../native/telemetry_filter.cpp"
+#undef DecodeTelemetryPayload
 #include <cassert>
 #include <cstring>
 #include <cstdio>
@@ -152,9 +161,13 @@ int main(int argc,char** argv){
    assert(std::filesystem::remove(log));
    HANDLE file=CreateFileW(log.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);assert(file!=INVALID_HANDLE_VALUE);
    LARGE_INTEGER end{};end.QuadPart=5*1024*1024;assert(SetFilePointerEx(file,end,nullptr,FILE_BEGIN)&&SetEndOfFile(file));CloseHandle(file);
+   const auto before_full=decode_attempts;
    capture();capture();assert(history::dump_warnings==2&&std::filesystem::file_size(log)==5*1024*1024);
+   assert(decode_attempts==before_full&&"a full dump must not decode discarded payloads");
    bool failed=false,full=false;for(const auto& line:history::telemetry_messages){failed=failed||line.find("write_failed=2")!=line.npos;full=full||line.find("log_full=2")!=line.npos;}
    assert(failed&&full&&post.refs==1&&element.refs==1&&file_reads==0);
+   assert(std::filesystem::remove(log));capture();
+   assert(decode_attempts==before_full+1&&ReadLog(log).find("Payload (JSON, formatted):")!=std::string::npos);
    assert(MH_Uninitialize()==MH_OK);std::puts("PASS: write failure and existing 5 MiB cap preserve cancellation and deduplicate warnings");return 0;
   }
   url=L"https://name:secret@spclient.wg.spotify.com/gabo-receiver-service/v3/events?token=secret#secret";SetLastError(42);

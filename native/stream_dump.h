@@ -1,15 +1,18 @@
 #pragma once
+#include "windows_file_write.h"
 #include <windows.h>
 #include <shlobj.h>
 #include "async_log.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <map>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <vector>
 namespace history::stream_dump {
 constexpr size_t kChunk=65536,kCapacity=64;
@@ -23,6 +26,7 @@ struct Record {
     unsigned format=0,error_source=0;char event[32]{};
     char instance[129]{};std::array<unsigned char,kChunk> bytes{};
 };
+static_assert(std::is_trivially_copyable_v<Record> && std::is_standard_layout_v<Record>);
 struct Identity {uintptr_t context=0;unsigned epoch=0;bool used=false;std::array<unsigned char,16> value{};};
 struct Gap {
     Kind kind=Kind::Input;uintptr_t context=0;unsigned epoch=0;bool global=false,identity_unknown=false;
@@ -201,10 +205,7 @@ inline void Metadata(const std::string& instance,const std::string& uri,const st
         AcquireSRWLockExclusive(&lock);if(state&&!state->stopping)Omitted(*state,1,0,Kind::Metadata,0,0,time);ReleaseSRWLockExclusive(&lock);
     }
 }
-inline bool Write(HANDLE file,const void* bytes,size_t size) {
-    while(size){DWORD amount=0;if(!WriteFile(file,bytes,DWORD(size),&amount,nullptr)||!amount)return false;bytes=static_cast<const char*>(bytes)+amount;size-=amount;}return true;
-}
-inline bool Line(HANDLE file,const std::string& text) {const auto line=text+"}\n";return Write(file,line.data(),line.size());}
+inline bool Line(HANDLE file,const std::string& text) {const auto line=text+"}\n";return WriteAllBytes(file,line.data(),line.size());}
 struct Stream {
     HANDLE input=INVALID_HANDLE_VALUE,log=INVALID_HANDLE_VALUE;
     uint64_t offset=0,logical=0,identity_unknown_through=0;bool incomplete=false,logical_known=true;unsigned id=0,epoch=0;std::string name,instance;
@@ -258,7 +259,13 @@ inline DWORD WINAPI Writer(void* parameter) {
                 gap=s.capture_gaps[s.capture_gap_head];s.capture_gap_head=(s.capture_gap_head+1)%s.capture_gaps.size();--s.capture_gap_count;lost=true;
             } else if(s.gap_count&&s.gaps[s.gap_head].sequence==next_sequence) {
                 gap=s.gaps[s.gap_head];s.gap_head=(s.gap_head+1)%s.gaps.size();--s.gap_count;lost=true;
-            } else if(s.count){record=s.records[s.head];s.head=(s.head+1)%kCapacity;--s.count;got=true;}
+            } else if(s.count){
+                const auto& queued=s.records[s.head];
+                // Producers bound length to kChunk. Leave unused payload bytes
+                // alone to shorten the lock shared with decoder callbacks.
+                memcpy(&record,&queued,offsetof(Record,bytes)+queued.length);
+                s.head=(s.head+1)%kCapacity;--s.count;got=true;
+            }
             stop=s.stopping&&!s.count&&!s.gap_count&&!s.capture_gap_count&&!s.decision_count&&!s.decision_gap.records;
             ReleaseSRWLockExclusive(&lock);
             if(lost&&gap.kind==Kind::Capture) {
@@ -307,7 +314,7 @@ inline DWORD WINAPI Writer(void* parameter) {
                         ",\"format\":"+std::to_string(record.format)+",\"error_source\":"+std::to_string(record.error_source)+
                         ",\"requested\":"+std::to_string(record.requested)+",\"returned\":"+std::to_string(record.returned)+
                         ",\"input_length\":"+std::to_string(record.input_length)+",\"complete\":"+(stream.incomplete?"false":"true");
-                    if(!Write(stream.input,record.bytes.data(),record.length))throw 1;
+                    if(!WriteAllBytes(stream.input,record.bytes.data(),record.length))throw 1;
                     stream.offset+=record.length;
                     if(!Line(session,line)||!Line(stream.log,line))throw 1;
                 } else if(record.kind==Kind::Decision) {
@@ -327,7 +334,7 @@ inline DWORD WINAPI Writer(void* parameter) {
                         ",\"epoch\":"+std::to_string(stream.epoch)+",\"file\":"+Json(stream.name)+",\"offset\":"+std::to_string(stream.offset)+",\"logical_offset\":"+(stream.logical_known?std::to_string(stream.logical):"null")+",\"complete\":"+(stream.incomplete?"false":"true");
                     if(record.kind==Kind::Input) {
                         line+=",\"bytes\":"+std::to_string(record.length)+",\"group\":"+std::to_string(record.group)+",\"part\":"+std::to_string(record.part)+",\"parts\":"+std::to_string(record.parts)+",\"decoder_valid\":"+(record.decoder_valid?"true":"false");
-                        if(!Write(stream.input,record.bytes.data(),record.length))throw 1;
+                        if(!WriteAllBytes(stream.input,record.bytes.data(),record.length))throw 1;
                         stream.offset+=record.length;stream.logical+=record.length;
                     } else {const auto observed=Hex(record.bytes.data());const bool confirmed=record.sequence>stream.identity_unknown_through;stream.instance=confirmed?observed:std::string{};line+=",\"instance\":"+Json(observed)+",\"identity_confirmed\":"+(confirmed?"true":"false");
                         if(record.length==48)line+=",\"native_field\":"+Json(Hex(record.bytes.data()+16,32));}

@@ -316,19 +316,25 @@ std::string FormatDump(const DumpRecord& record){
 }
 // Open without write sharing so size checking and appending are one transaction
 // across processes. Existing logs are retained; a full log stops accepting data.
-bool AppendDump(const std::string& text,bool& full){
+template<class Format> bool AppendDump(Format&& format,bool& full){
  std::error_code error;std::filesystem::create_directories(dump.location,error);if(error)return false;
  const auto path=std::filesystem::path(dump.location)/L"Floggfy-telemetry.log";
  HANDLE file=CreateFileW(path.c_str(),GENERIC_READ|GENERIC_WRITE,FILE_SHARE_READ,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
  if(file==INVALID_HANDLE_VALUE)return false;
+ struct Close {HANDLE file;~Close(){CloseHandle(file);}} close{file};
  LARGE_INTEGER size{};bool success=GetFileSizeEx(file,&size)!=0;
- if(success&&(size.QuadPart<0||static_cast<unsigned long long>(size.QuadPart)>kDumpLogBytes||text.size()>kDumpLogBytes-static_cast<size_t>(size.QuadPart))){full=true;success=false;}
+ if(!success)return false;
+ // Decode only after the destination can accept data. Recheck on each drain
+ // so deleting/truncating a full log restores dumping without a restart.
+ if(size.QuadPart<0||static_cast<unsigned long long>(size.QuadPart)>=kDumpLogBytes){full=true;return false;}
+ const auto text=format();
+ if(text.size()>kDumpLogBytes-static_cast<size_t>(size.QuadPart)){full=true;return false;}
  if(success){
   success=SetFilePointerEx(file,size,nullptr,FILE_BEGIN)!=0;DWORD written=0;
   if(success){success=WriteFile(file,text.data(),DWORD(text.size()),&written,nullptr)&&written==text.size();
    if(!success){SetFilePointerEx(file,size,nullptr,FILE_BEGIN);SetEndOfFile(file);}}
  }
- CloseHandle(file);return success;
+ return success;
 }
 void DrainDumps() noexcept {
  if(!dump.enabled)return;
@@ -340,12 +346,12 @@ void DrainDumps() noexcept {
    if(dump.count){record=std::move(dump.queue[dump.head]);dump.head=(dump.head+1)%kDumpQueue;--dump.count;}
    ReleaseSRWLockExclusive(&dump.lock);if(!record)break;
    bool full=false;
-   try{if(AppendDump(FormatDump(*record),full))++dump.written;else if(full){++dump.log_full;failure=2;}else{++dump.write_failed;failure=1;}}catch(...){++dump.write_failed;failure=1;}
+   try{if(AppendDump([&]{return FormatDump(*record);},full))++dump.written;else if(full){++dump.log_full;failure=2;}else{++dump.write_failed;failure=1;}}catch(...){++dump.write_failed;failure=1;}
    ++dump.revision;
   }
   const auto revision=dump.revision.load();if(revision==dump.last_summary)return;dump.last_summary=revision;
   char summary[600];std::snprintf(summary,sizeof(summary),"Telemetry dump summary: captured=%u written=%u write_failed=%u log_full=%u queue_dropped=%u limit_dropped=%u busy_dropped=%u allocation_dropped=%u truncated=%u unsupported=%u file_requests=%u excluded_requests=%u\n",dump.captured.load(),dump.written,dump.write_failed,dump.log_full,dump.queue_drops.load(),dump.limit_drops.load(),dump.busy_drops.load(),dump.allocation_drops.load(),dump.truncated.load(),dump.unsupported.load(),dump.files.load(),dump.excluded.load());
-  bool full=false;if(!AppendDump(summary,full))failure=full?2:1;
+  bool full=false;if(!AppendDump([&]{return std::string(summary);},full))failure=full?2:1;
   if(failure&&failure!=dump.last_failure)history::LogEvent(history::LogKind::Warning,"privacy-dump",failure==2?"Telemetry dump log is full; capture/write/drop counters are available in diagnostic logging.":"Telemetry dump write failed; capture/write/drop counters are available in diagnostic logging.");
   dump.last_failure=failure;
   history::QueueDiagnostic(summary);

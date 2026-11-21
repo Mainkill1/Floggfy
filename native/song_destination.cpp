@@ -24,8 +24,9 @@ struct DestinationRequest {
     // Settings generation binds each result to the exact configuration that
     // selected its destination; it is independent of the capture epoch.
     unsigned generation=0;
-    bool track_numbers=false;
+    bool track_numbers=false,music_folder=false;
     Catalog catalog;
+    std::wstring root;
     std::wstring flac,ogg,aac,mp3;
     std::array<std::wstring,4> duplicate_flac,duplicate_ogg,duplicate_aac,duplicate_mp3;
 };
@@ -51,14 +52,20 @@ struct DestinationTryExclusive {
     bool locked=TryAcquireSRWLockExclusive(&destination_lock)!=0;
     ~DestinationTryExclusive(){if(locked)ReleaseSRWLockExclusive(&destination_lock);}
 };
-static bool SameRequest(const DestinationRequest& a,const DestinationRequest& b) {
-    const auto& x=a.catalog;const auto& y=b.catalog;
-    return a.identity==b.identity && a.generation==b.generation && a.track_numbers==b.track_numbers && a.flac==b.flac && a.ogg==b.ogg && a.aac==b.aac && a.mp3==b.mp3 &&
-        a.duplicate_flac==b.duplicate_flac&&a.duplicate_ogg==b.duplicate_ogg&&a.duplicate_aac==b.duplicate_aac&&a.duplicate_mp3==b.duplicate_mp3&&
-        x.kind==y.kind && x.artist==y.artist && x.folder_artist==y.folder_artist && x.legacy_artist==y.legacy_artist && x.album==y.album && x.title==y.title &&
+static bool SameCatalog(const Catalog& x,const Catalog& y) {
+    return x.kind==y.kind && x.artist==y.artist && x.folder_artist==y.folder_artist && x.legacy_artist==y.legacy_artist && x.album==y.album && x.title==y.title &&
         x.author==y.author && x.series==y.series && x.book==y.book && x.show==y.show &&
         x.track==y.track && x.episode_year==y.episode_year && x.disc==y.disc &&
         x.spotify_uri==y.spotify_uri && x.spotify_album_uri==y.spotify_album_uri && x.duration==y.duration;
+}
+static bool SameInputs(const DestinationRequest& request,std::uint64_t identity,const std::wstring& root,
+                       const Catalog& catalog,bool music_folder,unsigned generation,bool track_numbers) {
+    return request.identity==identity && request.generation==generation && request.track_numbers==track_numbers &&
+        request.music_folder==music_folder && request.root==root && SameCatalog(request.catalog,catalog);
+}
+static bool SameRequest(const DestinationRequest& a,const DestinationRequest& b) {
+    return a.identity==b.identity && a.generation==b.generation && a.track_numbers==b.track_numbers && a.flac==b.flac && a.ogg==b.ogg && a.aac==b.aac && a.mp3==b.mp3 &&
+        a.duplicate_flac==b.duplicate_flac&&a.duplicate_ogg==b.duplicate_ogg&&a.duplicate_aac==b.duplicate_aac&&a.duplicate_mp3==b.duplicate_mp3&&SameCatalog(a.catalog,b.catalog);
 }
 static std::wstring& FormatPath(DestinationRequest& request,Codec codec) {
     if(codec==Codec::Flac)return request.flac;
@@ -111,6 +118,11 @@ static std::uint64_t IntentKey(std::uint64_t identity,const std::wstring& root,c
 }
 static void InvalidateResult() {
     destination_file.clear();destination_identity=0;destination_updated=0;result_serial=0;result_intent=0;
+}
+static void QueueLatestRequest(std::uint64_t serial,bool changed=false) {
+    if(changed || (!pending_request && !(probing && active_serial==serial) && GetTickCount64()-destination_updated>=400)) {
+        pending_request=*latest_request;SetEvent(destination_event);
+    }
 }
 struct FileSignature {
     WIN32_FILE_ATTRIBUTE_DATA data{};
@@ -307,26 +319,33 @@ void PublishSongDestination(std::uint64_t identity,const std::wstring& root,
         request_serial.fetch_add(1,std::memory_order_acq_rel);
     const auto serial=request_serial.load(std::memory_order_acquire);
     try {
+        {
+            DestinationTryExclusive guard;
+            if(!guard.locked || !destination_enabled.load(std::memory_order_relaxed) ||
+               intent!=intent_key.load(std::memory_order_acquire) || serial!=request_serial.load(std::memory_order_acquire))return;
+            if(!identity || root.empty()) {latest_request.reset();pending_request.reset();InvalidateResult();return;}
+            // Compare every source input, not just its hash, before reusing paths.
+            if(latest_request && latest_request->serial==serial && SameInputs(*latest_request,identity,root,catalog,music_folder,settings_generation,track_numbers)) {
+                QueueLatestRequest(serial);
+                return;
+            }
+        }
         DestinationRequest request;
         request.identity=identity;request.generation=settings_generation;request.catalog=catalog;request.track_numbers=track_numbers;
+        request.root=root;request.music_folder=music_folder;
         request.serial=serial;request.intent=intent;request.revision=cache_revision.load(std::memory_order_acquire);
-        if(identity && !root.empty()) {
-            for(const auto& format:kRecordingFormats) {
-                FormatPath(request,format.codec)=OutputPath(root,catalog,format.extension,music_folder,track_numbers);
-                const auto paths=DuplicateLookupPaths(root,catalog,format.extension,music_folder,track_numbers);
-                auto& stored=DuplicateFormatPaths(request,format.codec);
-                for(size_t i=0;i<stored.size()&&i<paths.size();++i)stored[i]=paths[i];
-            }
+        for(const auto& format:kRecordingFormats) {
+            FormatPath(request,format.codec)=OutputPath(root,catalog,format.extension,music_folder,track_numbers);
+            const auto paths=DuplicateLookupPaths(root,catalog,format.extension,music_folder,track_numbers);
+            auto& stored=DuplicateFormatPaths(request,format.codec);
+            for(size_t i=0;i<stored.size()&&i<paths.size();++i)stored[i]=paths[i];
         }
         DestinationTryExclusive guard;
         if(!guard.locked || !destination_enabled.load(std::memory_order_relaxed) ||
            intent!=intent_key.load(std::memory_order_acquire) || serial!=request_serial.load(std::memory_order_acquire)) return;
-        if(!identity || root.empty()) {latest_request.reset();pending_request.reset();InvalidateResult();return;}
-        const bool changed=!latest_request || latest_request->serial!=serial || !SameRequest(request,*latest_request);
+        const bool changed=!latest_request || latest_request->serial!=serial || !SameInputs(*latest_request,identity,root,catalog,music_folder,settings_generation,track_numbers);
         if(changed) {latest_request=std::move(request);InvalidateResult();}
-        if(changed || (!pending_request && !(probing && active_serial==serial) && GetTickCount64()-destination_updated>=400)) {
-            pending_request=*latest_request;SetEvent(destination_event);
-        }
+        QueueLatestRequest(serial,changed);
     }catch(...) {/* Allocation failure must not stop capture or publish a stale result. */}
 }
 void RefreshSongDestination() noexcept {

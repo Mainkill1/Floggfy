@@ -1419,7 +1419,8 @@ static bool PublicationStillCurrent(void* context) {
 }
 static ArtifactKey PublicationArtifactKey(const Catalog& catalog,const Tags& tags) {
     ArtifactKey key;
-    auto text=[&](const std::string& value){key.identity+=std::to_string(value.size())+":"+value;};
+    auto length=[&](size_t size){key.identity+=std::to_string(size);key.identity.push_back(':');};
+    auto text=[&](const std::string& value){length(value.size());key.identity+=value;};
     for(const auto* value:{&catalog.artist,&catalog.album,&catalog.title,&catalog.author,&catalog.series,&catalog.book,
                           &catalog.show,&catalog.folder_artist,&catalog.legacy_artist})text(Utf8(*value));
     text(catalog.spotify_uri);text(catalog.spotify_album_uri);
@@ -1428,7 +1429,9 @@ static ArtifactKey PublicationArtifactKey(const Catalog& catalog,const Tags& tag
     for(const auto& field:tags.fields)if(field.first!="HISTORY_SAVED_UTC"){text(field.first);text(field.second);}
     text(tags.mime);
     // Exact content identity prevents stable-URI artwork changes reusing stale bytes.
-    text(std::string(tags.cover.begin(),tags.cover.end()));return key;
+    length(tags.cover.size());
+    if(!tags.cover.empty())key.identity.append(reinterpret_cast<const char*>(tags.cover.data()),tags.cover.size());
+    return key;
 }
 enum class DestinationFailure { None, Directory, Ogg, Preferred, Capture };
 struct PublicationDestinations {
@@ -1861,12 +1864,6 @@ static void QueueFilenameCheck(const Media& media,const Settings& settings) {
         const auto media_identity=PlaybackIdentity(media.PlaybackKey());
         const auto quality=auto_skip?ReadPlaybackQuality():PlaybackQualitySnapshot{};
         auto catalog=CatalogFor(media);
-        Tags tags;
-        tags.fields={{"TITLE",Utf8(media.title)},{"ARTIST",Utf8(media.artist)},
-            {"ALBUM",Utf8(media.album)},{"ALBUMARTIST",Utf8(media.album_artist)},
-            {"TRACKNUMBER",std::to_string(media.track)}};
-        if(!media.genre.empty())tags.fields.push_back({"GENRE",Utf8(media.genre)});
-        EnrichTags(media,tags);ApplyCatalogIdentity(tags,catalog);
         std::string key;
         auto text=[&](const std::string& value){key+=std::to_string(value.size())+":"+value;};
         auto wide=[&](const std::wstring& value){text(Utf8(value));};
@@ -1893,6 +1890,12 @@ static void QueueFilenameCheck(const Media& media,const Settings& settings) {
             last_filename_check_key.swap(key);
         }
         if(queued_filename_check_serial==last_filename_check_serial)return;
+        Tags tags;
+        tags.fields={{"TITLE",Utf8(media.title)},{"ARTIST",Utf8(media.artist)},
+            {"ALBUM",Utf8(media.album)},{"ALBUMARTIST",Utf8(media.album_artist)},
+            {"TRACKNUMBER",std::to_string(media.track)}};
+        if(!media.genre.empty())tags.fields.push_back({"GENRE",Utf8(media.genre)});
+        EnrichTags(media,tags);ApplyCatalogIdentity(tags,catalog);
         FilenameCheck check{std::move(catalog),std::move(tags),settings,quality,media_identity,
             media.playback_instance,last_filename_check_serial};
         if(!TryAcquireSRWLockExclusive(&filename_check_lock))return;
@@ -1978,70 +1981,12 @@ static void ProcessFilenameCheck(const FilenameCheck& check) {
     if(duplicate.empty()||!ListRecordingDirectory(duplicate,duplicate_directory,&check.catalog))return;
     inspect(duplicate_directory,true);
 }
-static uint64_t ArchiveHash(const void* bytes,size_t size) {
-    uint64_t hash=14695981039346656037ull;const auto* data=static_cast<const uint8_t*>(bytes);
-    for(size_t i=0;i<size;++i){hash^=data[i];hash*=1099511628211ull;}return hash;
-}
 // Verify and optionally remove the exact held object. A raced pathname can never
 // authorize cleanup of another job's artifacts.
 struct ArchiveReservation {
     HANDLE file=INVALID_HANDLE_VALUE;
     ~ArchiveReservation(){if(file!=INVALID_HANDLE_VALUE)CloseHandle(file);}
 };
-static bool ArchiveFileMatches(HANDLE file,const void* bytes,size_t size) {
-    LARGE_INTEGER actual{},zero{};
-    if(!GetFileSizeEx(file,&actual)||actual.QuadPart<0)return false;
-    if(uint64_t(actual.QuadPart)!=size){SetLastError(ERROR_SUCCESS);return false;}
-    if(!SetFilePointerEx(file,zero,nullptr,FILE_BEGIN))return false;
-    uint8_t chunk[16384];const auto* expected=static_cast<const uint8_t*>(bytes);
-    for(size_t at=0;at<size;) {
-        DWORD read=0;const auto count=DWORD(std::min(sizeof(chunk),size-at));
-        if(!ReadFile(file,chunk,count,&read,nullptr))return false;
-        if(read!=count){SetLastError(ERROR_HANDLE_EOF);return false;}
-        if(memcmp(chunk,expected+at,count)){SetLastError(ERROR_SUCCESS);return false;}
-        at+=count;
-    }
-    return true;
-}
-static bool VerifiedArchiveFile(const std::wstring& path,const void* bytes,size_t size,bool remove=false,HANDLE* held=nullptr) {
-    auto file=CreateFileW(WindowsPath(path).c_str(),GENERIC_READ|(remove?DELETE:0),FILE_SHARE_READ,
-        nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
-    if(file==INVALID_HANDLE_VALUE) {
-        const auto error=GetLastError();return remove&&(error==ERROR_FILE_NOT_FOUND||error==ERROR_PATH_NOT_FOUND);
-    }
-    if(!ArchiveFileMatches(file,bytes,size)) {
-        // A readable changed object is foreign and preserved. I/O failures keep
-        // cleanup pending rather than authorizing acknowledgement.
-        const auto error=GetLastError();CloseHandle(file);
-        return remove&&error==ERROR_SUCCESS;
-    }
-    bool valid=true;
-    if(remove){FILE_DISPOSITION_INFO disposition{TRUE};valid=SetFileInformationByHandle(file,FileDispositionInfo,&disposition,sizeof(disposition))!=0;}
-    if(valid&&held){*held=file;return true;}
-    CloseHandle(file);return valid;
-}
-static bool WriteArchiveFile(const std::wstring& destination,const void* bytes,size_t size) {
-    if(VerifiedArchiveFile(destination,bytes,size))return true;
-    const auto stage=destination+L".partial";
-    ArchiveReservation file;
-    file.file=CreateFileW(WindowsPath(stage).c_str(),GENERIC_READ|GENERIC_WRITE|DELETE,FILE_SHARE_READ,nullptr,
-        CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
-    const bool created=file.file!=INVALID_HANDLE_VALUE;
-    if(!created) {
-        file.file=CreateFileW(WindowsPath(stage).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,nullptr,
-            OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
-        if(file.file==INVALID_HANDLE_VALUE||!ArchiveFileMatches(file.file,bytes,size))return false;
-    } else if(!stream_dump::Write(file.file,bytes,size)||!FlushFileBuffers(file.file)||!ArchiveFileMatches(file.file,bytes,size)) {
-        FILE_DISPOSITION_INFO disposition{TRUE};SetFileInformationByHandle(file.file,FileDispositionInfo,&disposition,sizeof(disposition));
-        return false;
-    }
-#ifdef FLOGGFY_PUBLICATION_TEST
-    PublicationTestPhase(L"archive-stage-held",stage);
-#endif
-    // Both fresh and recovered stages remain held from verification through the
-    // no-overwrite rename. A raced pathname never selects a different object.
-    return CommitArchiveStage(file.file,destination);
-}
 static Publication PublishUnmatched(SaveJob& job) {
     auto& capture=*job.capture;const auto settings=GetSettings();
     const auto outcome=[&](Publication status,const char* reason) {
@@ -2089,13 +2034,14 @@ static Publication PublishUnmatched(SaveJob& job) {
     }
     const auto extension=capture.Extension();
     const auto& bytes=capture.publication_artifact.bytes.empty()?capture.publication_source:capture.publication_artifact.bytes;
+    const auto audio_hash=std::to_string(RecordingHash(bytes.data(),bytes.size()));
     auto metadata=job.correlation;
     if(metadata.size()>=2)metadata.resize(metadata.size()-2);else metadata="{\"reason\":\"unresolved recording\"";
     metadata+=",\"job\":\""+Utf8(capture.unmatched_name)+"\",\"audio_hash\":\""+
-        std::to_string(ArchiveHash(bytes.data(),bytes.size()))+"\",\"complete\":true,\"validation\":\"valid\"}\n";
+        audio_hash+"\",\"complete\":true,\"validation\":\"valid\"}\n";
     const auto marker="{\"version\":1,\"job\":\""+Utf8(capture.unmatched_name)+"\",\"audio_bytes\":"+
-        std::to_string(bytes.size())+",\"audio_hash\":\""+std::to_string(ArchiveHash(bytes.data(),bytes.size()))+
-        "\",\"metadata_hash\":\""+std::to_string(ArchiveHash(metadata.data(),metadata.size()))+"\"}\n";
+        std::to_string(bytes.size())+",\"audio_hash\":\""+audio_hash+
+        "\",\"metadata_hash\":\""+std::to_string(RecordingHash(metadata.data(),metadata.size()))+"\"}\n";
     auto acknowledge=[&](UnmatchedAttempt& committed) {
         committed.committed=true;bool cleaned=true;
         for(auto& old:capture.unmatched_attempts)if(&old!=&committed) {

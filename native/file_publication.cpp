@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include "file_publication.h"
+#include "windows_file_write.h"
 #include "history_settings.h"
 #include "metadata_update_core.h"
 #include <algorithm>
@@ -55,8 +56,7 @@ bool WriteNew(const std::wstring& path,const void* bytes,size_t size) {
     {
         Handle file{CreateFileW(name.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr)};
         if(file.value==INVALID_HANDLE_VALUE) return false;
-        DWORD written=0;
-        ok=WriteFile(file.value,bytes,DWORD(size),&written,nullptr) && written==size && FlushFileBuffers(file.value);
+        ok=WriteAllBytes(file.value,bytes,size) && FlushFileBuffers(file.value);
     }
     if(!ok) DeleteFileW(name.c_str());
     return ok;
@@ -129,8 +129,62 @@ FilePublication PromoteReplacement(const std::wstring& path,const std::wstring& 
     return published?FilePublication::Upgraded:FilePublication::Failed;
 }
 }
-bool CommitArchiveStage(void* staged_file,const std::wstring& destination) {
-    return staged_file&&staged_file!=INVALID_HANDLE_VALUE&&RenameHandle(static_cast<HANDLE>(staged_file),destination);
+uint64_t RecordingHash(const void* bytes,size_t size,uint64_t hash) {
+    const auto* data=static_cast<const uint8_t*>(bytes);
+    for(size_t i=0;i<size;++i){hash^=data[i];hash*=1099511628211ull;}
+    return hash;
+}
+static bool ArchiveFileMatches(HANDLE file,const void* bytes,size_t size) {
+    LARGE_INTEGER actual{},zero{};
+    if(!GetFileSizeEx(file,&actual)||actual.QuadPart<0)return false;
+    if(uint64_t(actual.QuadPart)!=size){SetLastError(ERROR_SUCCESS);return false;}
+    if(!SetFilePointerEx(file,zero,nullptr,FILE_BEGIN))return false;
+    uint8_t chunk[16384];const auto* expected=static_cast<const uint8_t*>(bytes);
+    for(size_t at=0;at<size;) {
+        DWORD read=0;const auto count=DWORD(std::min(sizeof(chunk),size-at));
+        if(!ReadFile(file,chunk,count,&read,nullptr))return false;
+        if(read!=count){SetLastError(ERROR_HANDLE_EOF);return false;}
+        if(memcmp(chunk,expected+at,count)){SetLastError(ERROR_SUCCESS);return false;}
+        at+=count;
+    }
+    return true;
+}
+bool VerifiedArchiveFile(const std::wstring& path,const void* bytes,size_t size,bool remove,void** held) {
+    auto file=CreateFileW(WindowsPath(path).c_str(),GENERIC_READ|(remove?DELETE:0),FILE_SHARE_READ,
+        nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+    if(file==INVALID_HANDLE_VALUE) {
+        const auto error=GetLastError();return remove&&(error==ERROR_FILE_NOT_FOUND||error==ERROR_PATH_NOT_FOUND);
+    }
+    if(!ArchiveFileMatches(file,bytes,size)) {
+        // A readable changed object is foreign and preserved. I/O failures keep
+        // cleanup pending rather than authorizing acknowledgement.
+        const auto error=GetLastError();CloseHandle(file);
+        return remove&&error==ERROR_SUCCESS;
+    }
+    bool valid=true;
+    if(remove){FILE_DISPOSITION_INFO disposition{TRUE};valid=SetFileInformationByHandle(file,FileDispositionInfo,&disposition,sizeof(disposition))!=0;}
+    if(valid&&held){*held=file;return true;}
+    CloseHandle(file);return valid;
+}
+bool WriteArchiveFile(const std::wstring& destination,const void* bytes,size_t size) {
+    if(VerifiedArchiveFile(destination,bytes,size))return true;
+    const auto stage=destination+L".partial";
+    Handle file;
+    file.value=CreateFileW(WindowsPath(stage).c_str(),GENERIC_READ|GENERIC_WRITE|DELETE,FILE_SHARE_READ,nullptr,
+        CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
+    const bool created=file.value!=INVALID_HANDLE_VALUE;
+    if(!created) {
+        file.value=CreateFileW(WindowsPath(stage).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,nullptr,
+            OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+        if(file.value==INVALID_HANDLE_VALUE||!ArchiveFileMatches(file.value,bytes,size))return false;
+    } else if(!WriteAllBytes(file.value,bytes,size)||!FlushFileBuffers(file.value)||!ArchiveFileMatches(file.value,bytes,size)) {
+        FILE_DISPOSITION_INFO disposition{TRUE};SetFileInformationByHandle(file.value,FileDispositionInfo,&disposition,sizeof(disposition));
+        return false;
+    }
+    TestPhase(L"archive-stage-held",stage);
+    // Both fresh and recovered stages remain held from verification through the
+    // no-overwrite rename. A raced pathname never selects a different object.
+    return RenameHandle(file.value,destination);
 }
 FilenameConversion ConvertRecordingFilename(const std::wstring& source,const std::wstring& title_path,
     const Catalog& catalog,std::wstring& renamed_path,FilenameRenamePermit is_current,void* context) {
@@ -259,9 +313,6 @@ FilePublication PublishBytes(const std::wstring& path,const Quality& quality,con
 namespace {
 uint64_t FileNumber(const BY_HANDLE_FILE_INFORMATION& info) {
     return (uint64_t(info.nFileIndexHigh)<<32)|info.nFileIndexLow;
-}
-uint64_t RecordingHash(const uint8_t* bytes,size_t size,uint64_t hash=14695981039346656037ull) {
-    for(size_t i=0;i<size;++i){hash^=bytes[i];hash*=1099511628211ull;}return hash;
 }
 bool ReceiptSourceUnchanged(HANDLE file,const FormatUpgradeReceipt& receipt,bool& unchanged) {
     unchanged=false;LARGE_INTEGER size{},zero{};

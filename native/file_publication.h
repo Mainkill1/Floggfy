@@ -3,9 +3,10 @@
 #include <cstddef>
 namespace history {
 enum class FilePublication { Saved, Upgraded, Skipped, Failed, Replan, ResourceWait };
-// Caller holds a flushed, verified staging object denying writes/deletion.
-// Rename that exact object without replacing an occupied destination.
-bool CommitArchiveStage(void* staged_file,const std::wstring& destination);
+uint64_t RecordingHash(const void* bytes,size_t size,uint64_t hash=14695981039346656037ull);
+// A matching file can be held through commit or removed by its verified handle.
+bool VerifiedArchiveFile(const std::wstring& path,const void* bytes,size_t size,bool remove=false,void** held=nullptr);
+bool WriteArchiveFile(const std::wstring& destination,const void* bytes,size_t size);
 enum class FilenameConversion { Unchanged, Renamed, Failed };
 using FilenameRenamePermit=bool(*)(void* context);
 using PublicationPermit=bool(*)(void* context);
