@@ -27,6 +27,21 @@ inline bool ParseClientActiveWithoutUri(const std::string& input,
     if(kind)*kind=parsed;
     return true;
 }
+inline bool ClientInstance(const std::string& encoded,std::string& instance) {
+    return encoded.size()<=3*128 && DecodeMetadataText(encoded,instance) && instance.size()<=128 &&
+        std::all_of(instance.begin(),instance.end(),[](unsigned char c){return c>32 && c<127;});
+}
+inline bool ClientNumber(const std::string& text,double& number) {
+    if(text.empty())return false;
+    char* end=nullptr;number=std::strtod(text.c_str(),&end);
+    return !*end && std::isfinite(number);
+}
+inline bool ClientFlag(const std::map<std::string,std::string>& fields,const char* key,bool& flag,bool required=false) {
+    const auto found=fields.find(key);
+    if(found==fields.end())return !required;
+    flag=found->second=="1";
+    return flag || found->second=="0";
+}
 inline bool ParseClientPlayback(const std::string& input,ClientPlaybackRecord& out,std::string& error) {
     const auto fail=[&](const char* reason){error=reason;return false;};
     if(input.size()>16384)return fail("client-payload-too-large");
@@ -46,29 +61,15 @@ inline bool ParseClientPlayback(const std::string& input,ClientPlaybackRecord& o
         p=end+1;
     }
     ClientPlaybackRecord record;
-    if(!ParsePlaybackMetadata(metadata,record.metadata,error))return false;
-    const auto& uri=record.metadata.uri;
-    const size_t prefix=uri.rfind("spotify:track:",0)==0?14:uri.rfind("spotify:episode:",0)==0?16:0;
-    if(!prefix||uri.size()!=prefix+22||!std::all_of(uri.begin()+prefix,uri.end(),[](unsigned char c){
-        return (c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9');}))return fail("client-invalid-uri");
-    const auto number=[&](const char* key,double& result){
-        const auto found=timeline.find(key);if(found==timeline.end()||found->second.empty())return false;
-        char* last=nullptr;result=std::strtod(found->second.c_str(),&last);
-        return last&&!*last&&std::isfinite(result);
-    };
-    if(!number("position",record.position)||record.position<0||record.position>record.metadata.duration)return fail("client-invalid-position");
-    if(!number("sampled_ms",record.sampled_ms)||record.sampled_ms<=0)return fail("client-invalid-clock");
-    if((timeline["paused"]!="0"&&timeline["paused"]!="1")||
-       (timeline["buffering"]!="0"&&timeline["buffering"]!="1"))return fail("client-invalid-playback-flags");
-    record.playing=timeline["paused"]=="0";record.buffering=timeline["buffering"]=="1";
-    if(timeline.count("controlled")) {
-        if(timeline["controlled"]!="0"&&timeline["controlled"]!="1")return fail("client-invalid-control-flag");
-        record.explicit_control=timeline["controlled"]=="1";
-    }
-    if(timeline.count("prior_control")) {
-        if(timeline["prior_control"]!="0"&&timeline["prior_control"]!="1")return fail("client-invalid-prior-control-flag");
-        record.prior_control=timeline["prior_control"]=="1";
-    }
+    if(!ParseRichMetadata(metadata,record.metadata,error))return false;
+    if(!ValidSpotifyMediaUri(record.metadata.uri))return fail("client-invalid-uri");
+    if(!ClientNumber(timeline["position"],record.position)||record.position<0||record.position>record.metadata.duration)return fail("client-invalid-position");
+    if(!ClientNumber(timeline["sampled_ms"],record.sampled_ms)||record.sampled_ms<=0)return fail("client-invalid-clock");
+    bool paused=false;
+    if(!ClientFlag(timeline,"paused",paused,true)||!ClientFlag(timeline,"buffering",record.buffering,true))return fail("client-invalid-playback-flags");
+    record.playing=!paused;
+    if(!ClientFlag(timeline,"controlled",record.explicit_control))return fail("client-invalid-control-flag");
+    if(!ClientFlag(timeline,"prior_control",record.prior_control))return fail("client-invalid-prior-control-flag");
     if(timeline.count("speed")) {
         const auto& speed=timeline["speed"];
         if(speed=="1")record.speed=1;else if(speed=="2")record.speed=2;
@@ -78,19 +79,7 @@ inline bool ParseClientPlayback(const std::string& input,ClientPlaybackRecord& o
     if(timeline["local"]=="1")record.local=1;
     else if(timeline["local"]=="0")record.local=0;
     else if(timeline["local"]!="unknown")return fail("client-invalid-device-flag");
-    if(timeline.count("instance")) {
-        const auto& encoded=timeline["instance"];
-        for(size_t i=0;i<encoded.size();++i) {
-            unsigned char c=encoded[i];
-            if(c=='%') {
-                const auto hex=[](char v){return v>='0'&&v<='9'?v-'0':v>='a'&&v<='f'?v-'a'+10:v>='A'&&v<='F'?v-'A'+10:-1;};
-                if(i+2>=encoded.size()||hex(encoded[i+1])<0||hex(encoded[i+2])<0)return fail("client-invalid-instance");
-                c=unsigned(hex(encoded[i+1])*16+hex(encoded[i+2]));i+=2;
-            }
-            if(c<=32||c>=127||record.instance.size()>=128)return fail("client-invalid-instance");
-            record.instance+=char(c);
-        }
-    }
+    if(!ClientInstance(timeline["instance"],record.instance))return fail("client-invalid-instance");
     out=std::move(record);error.clear();return true;
 }
 struct ClientTransition {std::string uri,instance;double sampled_ms=0,transition_ms=0,position=-1;bool explicit_skip=false,explicit_control=false,control_monitoring=false,natural=false,pending=false,terminal=false;};
@@ -106,41 +95,26 @@ inline bool ParseClientTransition(const std::string& input,ClientTransition& out
         p=end+1;
     }
     if(values["v"]!="1"||values["blocked"]!="buffering")return false;
-    const auto protocol=std::string("v=1&title=transition&artist=transition&album=transition&duration=1&position=0&paused=0&buffering=1&local=1&uri=")+values["uri"]+
-        "&instance="+values["instance"]+"&sampled_ms="+values["sampled_ms"];
-    ClientPlaybackRecord record;std::string error;
-    if(!ParseClientPlayback(protocol,record,error)||values["transition_ms"].empty())return false;
-    char* end=nullptr;const double changed=std::strtod(values["transition_ms"].c_str(),&end);
-    if(!end||*end||!std::isfinite(changed)||changed<=0||changed>record.sampled_ms+250)return false;
-    double position=-1;
+    ClientTransition record;
+    // Preserve the aggregate encoded identity/clock budget of the original wire parser.
+    if(values["uri"].size()+values["instance"].size()+values["sampled_ms"].size()>16384-133)return false;
+    if(!DecodeMetadataText(values["uri"],record.uri) || !ValidSpotifyMediaUri(record.uri) ||
+       !ClientInstance(values["instance"],record.instance) ||
+       !ClientNumber(values["sampled_ms"],record.sampled_ms) || record.sampled_ms<=0 ||
+       !ClientNumber(values["transition_ms"],record.transition_ms) || record.transition_ms<=0 ||
+       record.transition_ms>record.sampled_ms+250)return false;
     if(values.count("position_ms")) {
-        if(values["position_ms"].empty())return false;
-        char* position_end=nullptr;position=std::strtod(values["position_ms"].c_str(),&position_end)/1000;
-        if(!position_end||*position_end||!std::isfinite(position)||position<0||position>86400)return false;
+        if(!ClientNumber(values["position_ms"],record.position))return false;
+        record.position/=1000;
+        if(record.position<0||record.position>86400)return false;
     }
-    const auto manual=values.find("manual");
-    if(manual!=values.end()&&manual->second!="0"&&manual->second!="1")return false;
-    const auto controlled=values.find("controlled");
-    if(controlled!=values.end()&&controlled->second!="0"&&controlled->second!="1")return false;
-    const auto monitoring=values.find("monitoring");
-    if(monitoring==values.end()||(monitoring->second!="0"&&monitoring->second!="1"))return false;
-    const auto natural=values.find("natural");
-    if(natural!=values.end()&&natural->second!="0"&&natural->second!="1")return false;
-    const auto pending=values.find("pending");
-    if(pending!=values.end()&&pending->second!="0"&&pending->second!="1")return false;
-    if(natural!=values.end()&&natural->second=="1"&&pending!=values.end()&&pending->second=="1")return false;
-    const auto terminal=values.find("terminal");
-    if(terminal!=values.end()&&terminal->second!="0"&&terminal->second!="1")return false;
-    const bool cleared=terminal!=values.end()&&terminal->second=="1";
-    if(cleared&&(record.metadata.uri.rfind("spotify:episode:",0)!=0||record.instance.empty()||
-       monitoring->second!="1"||values["natural"]=="1"||values["pending"]=="1"||
-       values["manual"]=="1"||values["controlled"]=="1"))return false;
-    out={record.metadata.uri,record.instance,record.sampled_ms,changed,position,
-         manual!=values.end()&&manual->second=="1",
-         controlled!=values.end()&&controlled->second=="1",
-         monitoring->second=="1",
-         natural!=values.end()&&natural->second=="1",
-         pending!=values.end()&&pending->second=="1",cleared};return true;
+    if(!ClientFlag(values,"manual",record.explicit_skip) || !ClientFlag(values,"controlled",record.explicit_control) ||
+       !ClientFlag(values,"monitoring",record.control_monitoring,true) || !ClientFlag(values,"natural",record.natural) ||
+       !ClientFlag(values,"pending",record.pending) || !ClientFlag(values,"terminal",record.terminal))return false;
+    if(record.natural && record.pending)return false;
+    if(record.terminal && (record.uri.rfind("spotify:episode:",0)!=0 || record.instance.empty() ||
+       !record.control_monitoring || record.natural || record.pending || record.explicit_skip || record.explicit_control))return false;
+    out=std::move(record);return true;
 }
 
 }

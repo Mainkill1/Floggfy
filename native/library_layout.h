@@ -1,4 +1,5 @@
 #pragma once
+#include "spotify_uri.h"
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -19,7 +20,6 @@ struct Catalog {
 };
 std::wstring RelativePath(const Catalog& item,const std::wstring& extension,bool track_numbers=false);
 std::wstring OutputPath(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder=false,bool track_numbers=false);
-bool ValidSpotifyTrackUri(const std::string& uri) noexcept;
 // Additive fallbacks for unresolved filename collisions. Valid track IDs use
 // compact/expanded/full display suffixes; missing or invalid IDs use [no-id-hash].
 // Suffixes never authorize reuse or replacement of a recording.

@@ -17,7 +17,7 @@ int main() {
  assert(m.playback_quality=="very_high" && !m.fields.count("playback_quality"));
  assert(ParseRichMetadata("v=1&title=Song&artist=Artist&album=Album&duration=200&uri=spotify%3Atrack%3Aa&playback_quality=3",m,e));
  assert(m.playback_quality.empty());
- assert(ParsePlaybackMetadata("v=1&title=Episode&uri=spotify%3Aepisode%3A123&duration=4030&playback_quality=high",m,e));
+ assert(ParseRichMetadata("v=1&title=Episode&uri=spotify%3Aepisode%3A123&duration=4030&playback_quality=high",m,e));
  assert(m.title=="Episode" && m.artist.empty() && m.album.empty() && m.playback_quality=="high");
  const std::string episode_payload="v=1&title=Episode&artist=Show&album=Show&uri=spotify%3Aepisode%3A0000000000000000000005&duration=4030&SPOTIFY_URI=spotify%3Aepisode%3A0000000000000000000005&PUBLISHER=Show";
  assert(ParseRichMetadata(episode_payload,m,e));
@@ -28,7 +28,7 @@ int main() {
  assert(ParseRichMetadata(episode_payload,m,e));
  MetadataCache episode_cache;episode_cache.Put(m);
  assert(episode_cache.FindUri(m.uri)&&episode_cache.Find("Episode","Show","Show",4030));
- assert(!ParsePlaybackMetadata("v=1&title=Episode&uri=spotify%3Ashow%3A123&duration=4030",m,e));
+ assert(!ParseRichMetadata("v=1&title=Episode&uri=spotify%3Ashow%3A123&duration=4030",m,e));
  assert(ParseRichMetadata("v=1&title=Song&artist=Artist&album=Album&duration=200&uri=spotify%3Atrack%3Aa&artwork_url=https%3A%2F%2Fi.scdn.co%2Fimage%2Fabc",m,e));
  assert(m.artwork_url=="https://i.scdn.co/image/abc" && !m.fields.count("artwork_url"));
  MetadataCache cache;

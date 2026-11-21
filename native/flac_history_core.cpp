@@ -1,5 +1,6 @@
 #include "flac_history_core.h"
 #include "tag_memory_plan.h"
+#include "vorbis_comments.h"
 #include <cstring>
 namespace history {
 static bool StreamInfo(const uint8_t* b,FlacInfo& info) {
@@ -63,23 +64,6 @@ bool FlacCoverage::Frame(const FlacInfo& info,unsigned block,unsigned rate,unsig
     ++frames;
     return true;
 }
-static uint32_t Little(const uint8_t* p) { return uint32_t(p[0])|(uint32_t(p[1])<<8)|(uint32_t(p[2])<<16)|(uint32_t(p[3])<<24); }
-static void Number(std::vector<uint8_t>& out,uint32_t n) { for(unsigned i=0;i<4;i++) out.push_back(uint8_t(n>>(8*i))); }
-static std::string Upper(std::string s) { for(char& c:s) if(c>='a' && c<='z') c=char(c-'a'+'A'); return s; }
-static bool Fields(const uint8_t* b,size_t n,const Tags& tags,std::string& vendor,std::vector<std::string>& fields) {
-    size_t p=0;
-    auto read=[&](std::string& s) { if(n-p<4) return false; size_t len=Little(b+p); p+=4; if(len>n-p) return false; s.assign(reinterpret_cast<const char*>(b+p),len); p+=len; return true; };
-    if(!read(vendor) || n-p<4) return false;
-    uint32_t count=Little(b+p); p+=4;
-    if(count>100000 || count>(n-p)/4) return false;
-    for(uint32_t i=0;i<count;i++) {
-        std::string s; if(!read(s)) return false; auto key=Upper(s.substr(0,s.find('=')));
-        bool replace=tags.replace_fields || key=="METADATA_BLOCK_PICTURE";
-        for(const auto& tag:tags.fields) if(key==Upper(tag.first)) replace=true;
-        if(!replace) fields.push_back(std::move(s));
-    }
-    return p==n;
-}
 bool IsSyncedLyrics(const std::string& words) {
     size_t p=0;unsigned previous=0,lines=0;
     while(p<words.size()) {
@@ -99,39 +83,48 @@ bool IsSyncedLyrics(const std::string& words) {
     }
     return lines>0;
 }
-bool TagFlac(const std::vector<uint8_t>& source,const Tags& tags,std::vector<uint8_t>& output,std::string& error) {
-    output.clear(); error.clear();
-    auto fail=[&](const char* why) { error=why; output.clear(); return false; };
-    FlacInfo info; size_t audio;
-    if(ParseFlacMetadata(source,info,audio)!=FlacParse::Valid || source.size()-audio<2) return fail("invalid or incomplete FLAC metadata/audio");
-    std::vector<std::pair<unsigned,std::vector<uint8_t>>> blocks;
-    std::vector<std::string> fields; std::string vendor="SpotifyRepair native history";
+void AppendFlacBlock(std::vector<uint8_t>& output,uint8_t type,const std::vector<uint8_t>& body) {
+    output.push_back(type);
+    output.push_back(uint8_t(body.size()>>16));output.push_back(uint8_t(body.size()>>8));output.push_back(uint8_t(body.size()));
+    output.insert(output.end(),body.begin(),body.end());
+}
+bool TagFlacWithPictures(const std::vector<uint8_t>& source,const Tags& tags,std::vector<uint8_t>& output,
+                         std::string& error,const std::vector<std::vector<uint8_t>>* approved_pictures) {
+    output.clear();error.clear();
+    auto fail=[&](const char* why){error=why;output.clear();return false;};
+    FlacInfo info;size_t audio;
+    if(ParseFlacMetadata(source,info,audio)!=FlacParse::Valid || source.size()-audio<2)return fail("invalid or incomplete FLAC metadata/audio");
+    TagMemoryPlan plan;
+    if(!PlanTagConstructionMemory(Codec::Flac,source.size(),audio,0,tags,plan))return fail("FLAC tag allocation overflow");
+    output.reserve(plan.output_capacity);output={'f','L','a','C'};
     std::vector<uint8_t> picture;
-    const bool has_picture=BuildPicture(tags,picture);
-    size_t p=4; unsigned comment_blocks=0;
-    while(p<audio) {
-        unsigned kind=source[p]&127; size_t n=(size_t(source[p+1])<<16)|(size_t(source[p+2])<<8)|source[p+3]; p+=4;
+    const bool has_picture=!approved_pictures && BuildPicture(tags,picture);
+    VorbisComments comments;
+    bool found=false;
+    for(size_t at=4;at<audio;) {
+        const uint8_t kind=source[at]&127;
+        const size_t length=(size_t(source[at+1])<<16)|(size_t(source[at+2])<<8)|source[at+3];
         if(kind==4) {
-            if(++comment_blocks>1 || !Fields(source.data()+p,n,tags,vendor,fields)) return fail("invalid FLAC Vorbis comments");
-        } else if(kind!=1 && (kind!=6 || !has_picture)) { // Preserve old artwork unless a valid replacement arrived.
-            blocks.push_back({kind,std::vector<uint8_t>(source.begin()+p,source.begin()+p+n)});
+            if(found || !comments.Read(source.data()+at+4,length,tags,true))return fail("invalid FLAC Vorbis comments");
+            found=true;
+        } else if(kind!=1 && (kind!=6 || (!approved_pictures && !has_picture))) {
+            output.push_back(kind);
+            output.insert(output.end(),source.begin()+at+1,source.begin()+at+4+length);
         }
-        p+=n;
+        at+=4+length;
     }
-    for(const auto& tag:tags.fields) fields.push_back(tag.first+'='+tag.second);
-    std::vector<uint8_t> comments; Number(comments,uint32_t(vendor.size())); comments.insert(comments.end(),vendor.begin(),vendor.end());
-    Number(comments,uint32_t(fields.size()));
-    for(const auto& field:fields) { Number(comments,uint32_t(field.size())); comments.insert(comments.end(),field.begin(),field.end()); }
-    blocks.push_back({4,std::move(comments)});
-    if(has_picture) blocks.push_back({6,std::move(picture)});
-    TagMemoryPlan plan;if(!PlanTagConstructionMemory(Codec::Flac,source.size(),audio,0,tags,plan))return fail("FLAC tag allocation overflow");
-    output.reserve(plan.output_capacity); output={'f','L','a','C'};
-    for(size_t i=0;i<blocks.size();i++) {
-        const auto& block=blocks[i]; size_t n=block.second.size(); if(n>0xffffff) return fail("FLAC metadata block too large");
-        output.push_back(uint8_t(block.first|(i+1==blocks.size()?128:0)));
-        output.push_back(uint8_t(n>>16)); output.push_back(uint8_t(n>>8)); output.push_back(uint8_t(n));
-        output.insert(output.end(),block.second.begin(),block.second.end());
+    if(approved_pictures)for(const auto& block:*approved_pictures) {
+        if(block.size()>0xffffff)return fail("FLAC metadata block too large");
+        AppendFlacBlock(output,6,block);
     }
-    output.insert(output.end(),source.begin()+audio,source.end()); return true;
+    std::vector<uint8_t> body;
+    if(!comments.Write(body,tags,0xffffff) || picture.size()>0xffffff)return fail("FLAC metadata block too large");
+    AppendFlacBlock(output,has_picture ? 4 : 128|4,body);
+    if(has_picture)AppendFlacBlock(output,128|6,picture);
+    output.insert(output.end(),source.begin()+audio,source.end());
+    return true;
+}
+bool TagFlac(const std::vector<uint8_t>& source,const Tags& tags,std::vector<uint8_t>& output,std::string& error) {
+    return TagFlacWithPictures(source,tags,output,error,nullptr);
 }
 }

@@ -88,7 +88,7 @@ void* playback_pump_target=nullptr;
 std::int32_t playback_pump_decoder_offset=0;
 playback_identity::DiagnosticBridge playback_identity_bridge;
 SRWLOCK playback_identity_lock=SRWLOCK_INIT;
-std::atomic<std::uint64_t> playback_identity_sequence{0};
+std::uint64_t playback_identity_sequence=0; // Protected by playback_identity_lock.
 std::atomic<double> playback_identity_refresh_floor{0};
 std::uint64_t playback_identity_metadata_generation=0;
 // Absolute player-state field offset, learned from a unique full metadata ID.
@@ -761,7 +761,7 @@ static int PlaybackPumpHook(void* owner,void* second,void* third) {
                 std::array<unsigned char,playback_identity::kPlayerStateSearchBytes> state{};
                 const auto readable=playback_identity::ReadPlayerState(owner,path,read,state);
                 if(readable) {
-                    const auto sequence=playback_identity_sequence.fetch_add(1,std::memory_order_relaxed)+1;
+                    const auto sequence=++playback_identity_sequence;
                     playback_identity_bridge.ObservePlayerState(owner_address,decoder,epoch,sequence,state,observed_at,readable);
                 } else playback_identity_bridge.PlayerStateUnreadable();
                 if(event)SetEvent(event);
@@ -782,11 +782,10 @@ static int PlaybackPumpHook(void* owner,void* second,void* third) {
             if(DownloadsEnabled())QueueMp3Playback(decoder,epoch,instance.bytes,observed_at);
             if(!TryAcquireSRWLockExclusive(&playback_identity_lock))return call_original();
             const auto refresh_floor=playback_identity_refresh_floor.load(std::memory_order_acquire);
-            if(playback_identity_bridge.NeedsObservation(owner_address,decoder,epoch,
-                   playback_identity::SnapshotRole::PlayerPlaybackId,field.data(),field.size(),refresh_floor)) {
-                const auto sequence=playback_identity_sequence.fetch_add(1,std::memory_order_relaxed)+1;
-                playback_identity_bridge.Observe(owner_address,decoder,epoch,sequence,field.data(),field.size(),
-                    playback_identity::SnapshotRole::PlayerPlaybackId,observed_at,refresh_floor);
+            const auto next_sequence=playback_identity_sequence==UINT64_MAX?1:playback_identity_sequence+1;
+            if(playback_identity_bridge.Observe(owner_address,decoder,epoch,next_sequence,
+                    field.data(),field.size(),playback_identity::SnapshotRole::PlayerPlaybackId,observed_at,refresh_floor)) {
+                playback_identity_sequence=next_sequence;
                 if(event)SetEvent(event);
             }
             ReleaseSRWLockExclusive(&playback_identity_lock);
@@ -893,9 +892,10 @@ static void SetExpectedPlaybackIdentity(const Media& media,std::uint64_t generat
     if(diagnostics){reported=matches;reported_count=count;}
     else reported_count=0;
 }
-static void ResetPlaybackIdentityBridge() noexcept {
+static void ResetPlaybackIdentityBridge(bool reset_sequence=false) noexcept {
     AcquireSRWLockExclusive(&playback_identity_lock);
     playback_identity_bridge.Reset();
+    if(reset_sequence)playback_identity_sequence=0;
     playback_id_state_offset.store(-1,std::memory_order_release);
     playback_identity_metadata_generation=0;
     ReleaseSRWLockExclusive(&playback_identity_lock);
@@ -4134,8 +4134,7 @@ static DWORD WINAPI Worker(LPVOID) {
     SetCaptureAccelerationAvailable(false);
     return 0;
 }
-static bool NeedPlaybackIdentity(spotify::DiscoveryResult discovery,const Settings& preferences) {
-    (void)preferences;
+static bool NeedPlaybackIdentity(spotify::DiscoveryResult discovery) {
     return discovery==spotify::DiscoveryResult::Found;
 }
 }
@@ -4186,7 +4185,7 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
                 DiscoveryFailure(ownership_discovery));Log(LogKind::Diagnostic,line);
             if(decoded_discovery==spotify::DiscoveryResult::Found)decoded_sink_target=base+decoded.rva;
         }
-        if(NeedPlaybackIdentity(decoded_discovery,preferences)) {
+        if(NeedPlaybackIdentity(decoded_discovery)) {
             playback_pump_target=base+decoded.caller_rva;
             playback_pump_decoder_offset=decoded.decoder_offset;
             char line[180];snprintf(line,sizeof(line),
@@ -4226,7 +4225,7 @@ void StartAudioHistory(HMODULE spotify_module,HMODULE proxy) {
         original_aac_initialize=nullptr;original_aac_push=nullptr;original_aac_destroy=nullptr;
         original_decoded_process=nullptr;decoded_sink_target=nullptr;
         original_playback_pump=nullptr;playback_pump_target=nullptr;playback_pump_decoder_offset=0;
-        ResetPlaybackIdentityBridge();playback_identity_sequence.store(0,std::memory_order_relaxed);
+        ResetPlaybackIdentityBridge(true);
         decoder_ownership_layout={};decoder_ownership_layout_available=false;
         ResetCaptureQueueLosses();
         ResetDecodedActivityQueue();

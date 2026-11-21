@@ -2,36 +2,21 @@
 # One focused Windows executable; no live Spotify or network access is needed.
 set -euo pipefail
 cd -- "$(dirname -- "$0")/../.."
+source tests/runners/windows-common.sh
 mkdir -p build/artwork-policy
 bash build-artwork-codecs.sh x86_64-w64-mingw32-gcc ar build/artwork-codecs-windows
-x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vendor/minimp4/minimp4.c -o build/artwork-policy/minimp4.o
-floggfy_temp_win=$(cmd.exe /c echo %TEMP% 2>/dev/null | tr -d '\r')
-floggfy_artwork_root="$(wslpath -u "$floggfy_temp_win")/Floggfy-artwork-policy-tests"
-mkdir -p "$floggfy_artwork_root"
-python3 - <<'PY'
-from pathlib import Path
-script=Path('native/marked_playlist_sort.js').read_text()+'\n'+Path('native/marked_playlist.js').read_text()+'\n'+Path('native/artwork_collector.js').read_text()+'\n'+Path('native/metadata_collector.js').read_text()
-Path('build/metadata_script.h').write_text('static constexpr wchar_t metadata_script[]=LR"FLOGGFY('+script+')FLOGGFY";\n')
-privacy=Path('native/telemetry_producers.js').read_text()
-Path('build/telemetry_script.h').write_text('static constexpr wchar_t telemetry_script[]=LR"FLOGGFY('+privacy+')FLOGGFY";\n')
-PY
-for source in buffer hook trampoline hde/hde64; do
-    x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c \
-        "native/vendor/minhook/src/$source.c" -o "build/artwork-policy/minhook-${source//\//-}.o"
-done
-x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vorbis_headers_stb.c -o build/artwork-policy/vorbis.o
-x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/artwork-policy/ogg.o
+build_windows_audio_objects build/artwork-policy -Wall -Wextra
+floggfy_artwork_root=$(windows_test_dir "Floggfy-artwork-policy-tests")
+python3 tools/embed_assets.py
+build_windows_minhook build/artwork-policy
 # The test includes the actual metadata bridge and settings implementation.
 # Link the capture worker too, so removed Media fields/providers cannot survive
 # as unnoticed integration dependencies. Hooks and live SMTC reads are not run.
-x86_64-w64-mingw32-g++ tests/marked_catalog_stub.cpp -std=c++17 -O2 -Wall -Wextra -Werror -static-libgcc -static-libstdc++ \
+x86_64-w64-mingw32-g++ "${windows_cxxflags[@]}" tests/marked_catalog_stub.cpp \
     -I native/vendor/libogg/include tests/windows_artwork_enrichment_test.cpp native/telemetry_filter.cpp native/telemetry_decode.cpp native/telemetry_inflate.cpp \
-    native/audio_history.cpp native/playback_identity_bridge.cpp native/auto_skip.cpp native/decoder_ownership.cpp native/media_session.cpp native/playback_quality_windows.cpp native/playback_quality.cpp \
-    native/spotify_hook_discovery.cpp native/rich_metadata.cpp native/artwork_reply.cpp native/cached_metadata.cpp native/cached_metadata_windows.cpp native/cached_artwork_windows.cpp native/artwork_image.cpp \
-    native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp native/ogg_history_core.cpp native/image_info.cpp \
-    native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp native/mp3_stream.cpp native/vorbis_headers.cpp native/existing_quality.cpp native/library_layout.cpp \
-    native/file_publication.cpp native/metadata_update_core.cpp native/metadata_update_windows.cpp \
-    native/recent_downloads.cpp native/song_destination.cpp native/async_log.cpp \
+    native/audio_history.cpp "${capture_sources[@]}" \
+    native/rich_metadata.cpp native/artwork_reply.cpp native/cached_metadata.cpp native/cached_metadata_windows.cpp native/cached_artwork_windows.cpp native/artwork_image.cpp \
+    native/existing_quality.cpp native/song_destination.cpp \
     build/artwork-policy/*.o build/artwork-codecs-windows/libwebpdecoder.a -lole32 -luuid -lshell32 -lruntimeobject \
     -o "$floggfy_artwork_root/artwork-policy.exe"
 exec "$floggfy_artwork_root/artwork-policy.exe"

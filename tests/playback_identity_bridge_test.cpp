@@ -192,16 +192,16 @@ int main() {
 
     DiagnosticBridge bridge;
     assert(bridge.SetExpected(kFirst, 7));
-    assert(bridge.NeedsObservation(0x1000, 0x2000, 3));
     auto raw = Snapshot(first, 0x128);
+    assert(bridge.NeedsObservation(0x1000, 0x2000, 3, SnapshotRole::Owner, raw.data(), raw.size()));
     assert(bridge.Observe(0x1000, 0x2000, 3, 10, raw.data(), raw.size()));
     auto observed = bridge.TakeObservation();
     assert(observed && observed->owner == 0x1000 && observed->decoder == 0x2000);
     assert(observed->epoch == 3 && observed->sequence == 10 && observed->owner_generation == 1);
     assert(!bridge.TakeObservation());
-    assert(!bridge.NeedsObservation(0x1000, 0x2000, 3));
-    assert(bridge.NeedsObservation(0x1000, 0x3000, 3));
-    assert(bridge.NeedsObservation(0x1000, 0x2000, 4));
+    assert(!bridge.NeedsObservation(0x1000, 0x2000, 3, SnapshotRole::Owner, raw.data(), raw.size()));
+    assert(bridge.NeedsObservation(0x1000, 0x3000, 3, SnapshotRole::Owner, raw.data(), raw.size()));
+    assert(bridge.NeedsObservation(0x1000, 0x2000, 4, SnapshotRole::Owner, raw.data(), raw.size()));
     auto match = QuerySingle(bridge,kFirst,7,3);
     assert(match && match->owner == 0x1000 && match->decoder == 0x2000);
     assert(match->epoch == 3 && match->sequence == 10 && match->metadata_generation == 7);
@@ -214,7 +214,7 @@ int main() {
     std::array<unsigned char,kMaximumSnapshotBytes> owner_empty{};
     assert(decoder_snapshot.Observe(0xa000,0xb000,0,1,owner_empty.data(),owner_empty.size(),
                                      SnapshotRole::Owner));
-    assert(decoder_snapshot.NeedsObservation(0xa000,0xb000,0,SnapshotRole::Decoder));
+    assert(decoder_snapshot.NeedsObservation(0xa000,0xb000,0,SnapshotRole::Decoder,raw.data(),raw.size()));
     assert(decoder_snapshot.Observe(0xa000,0xb000,0,2,raw.data(),raw.size(),
                                     SnapshotRole::Decoder));
     match=QuerySingle(decoder_snapshot,kFirst,12,0);
@@ -295,7 +295,6 @@ int main() {
                                        raw.data(),raw.size(),80.0));
     assert(lifecycles.NeedsObservation(0x6200,0x7200,6,SnapshotRole::PlayerPlaybackId,
                                       raw.data(),raw.size(),100.0));
-    assert(lifecycles.NeedsObservation(0x6200,0x7200,6,SnapshotRole::PlayerPlaybackId,100.0));
     assert(lifecycles.Observe(0x6200,0x7200,6,61,raw.data(),raw.size(),
                               SnapshotRole::PlayerPlaybackId,100.1,100.0));
     assert(!lifecycles.NeedsObservation(0x6200,0x7200,6,SnapshotRole::PlayerPlaybackId,
@@ -312,7 +311,7 @@ int main() {
     // Capture epoch zero is the normal initial settings epoch.
     DiagnosticBridge initial_epoch;
     assert(initial_epoch.SetExpected(kFirst, 1));
-    assert(initial_epoch.NeedsObservation(0x8000, 0x9000, 0));
+    assert(initial_epoch.NeedsObservation(0x8000, 0x9000, 0, SnapshotRole::Owner, raw.data(), raw.size()));
     assert(initial_epoch.Observe(0x8000, 0x9000, 0, 1, raw.data(), raw.size()));
     match = QuerySingle(initial_epoch,kFirst,1,0);
     assert(match && match->epoch == 0);
@@ -375,8 +374,7 @@ int main() {
     assert(bounded.ObservationLost());
 
     // A long-running Spotify process must not permanently disable direct
-    // identity after the bounded history fills. The hook calls
-    // NeedsObservation before Observe, so a new lifecycle must still enter the
+    // identity after the bounded history fills. A new lifecycle must still enter the
     // bridge and become matchable after more than 128 prior observations.
     DiagnosticBridge long_session;
     for(size_t index=0;index<kObservationCapacity;++index) {

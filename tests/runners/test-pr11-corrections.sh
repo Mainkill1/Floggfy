@@ -40,6 +40,7 @@ case "$issue" in
         build/pr11-corrections/vorbis-windows.o build/pr11-corrections/ogg-windows.o build/pr11-corrections/minimp4.o -o "$floggfy_correction_root/issue$issue.exe"
     ;;
 5)
+    python3 tools/embed_assets.py
     x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_settings_failure_test.cpp -lole32 -luuid -lshell32 \
         -o "$floggfy_correction_root/issue5.exe"
     ;;

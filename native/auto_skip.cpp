@@ -2,20 +2,13 @@
 #include <windows.h>
 #include "auto_skip.h"
 #include "srw_guard.h"
-#include <cctype>
+#include "spotify_uri.h"
 
 namespace history {
 namespace {
 SRWLOCK request_lock=SRWLOCK_INIT;
 AutoSkipRequest request;
 
-bool MusicUri(const std::string& uri) noexcept {
-    constexpr char prefix[]="spotify:track:";
-    if(uri.size()!=sizeof(prefix)-1+22 || uri.compare(0,sizeof(prefix)-1,prefix))return false;
-    for(size_t i=sizeof(prefix)-1;i<uri.size();++i)
-        if(!std::isalnum(static_cast<unsigned char>(uri[i])))return false;
-    return true;
-}
 bool PlaybackInstance(const std::string& instance) noexcept {
     if(instance.empty()||instance.size()>128)return false;
     for(const unsigned char c:instance)if(c<0x20||c>0x7e)return false;
@@ -41,7 +34,7 @@ bool ShouldAutoSkipDownloaded(const PlaybackQualitySnapshot& current,
 std::uint32_t QueueAutoSkipRequest(const std::string& spotify_uri,
                                    const std::string& playback_instance,
                                    unsigned settings_generation) {
-    if(!MusicUri(spotify_uri)||!PlaybackInstance(playback_instance))return 0;
+    if(!ValidSpotifyTrackUri(spotify_uri)||!PlaybackInstance(playback_instance))return 0;
     ExclusiveSrw guard(request_lock);
     auto token=request.token+1;if(!token)++token;
     request={token,settings_generation,spotify_uri,playback_instance};

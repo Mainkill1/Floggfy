@@ -64,7 +64,6 @@ void LogEvent(LogKind kind, const char*, const std::string& detail) {
     if (kind == LogKind::Warning && detail.find("older.ogg") != std::string::npos &&
         detail.find("transient test error") != std::string::npos) ++read_warnings;
 }
-bool ValidMarkedUri(const std::string& value) { return value == uri; }
 bool ReadMarkedRecording(const std::wstring& path, MarkedRecording& record, std::string& error) {
     ++reads;
     if (block_reader) {

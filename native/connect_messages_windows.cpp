@@ -21,7 +21,8 @@ std::uintptr_t decoded_plain_return=0,decoded_compressed_return=0;
 hooks::InitController decoded_init;
 hooks::CallbackCounter decoded_callbacks;
 HMODULE decoded_module=nullptr; // Retained while the optional detour can exist.
-enum class CopyState { Copied,Oversized,Unreadable,InvalidString };
+// Zero represents a fresh unread record so the empty queue needs no bytes in the DLL.
+enum class CopyState { Unreadable,Copied,Oversized,InvalidString };
 enum class MessageSource { Plain,Decompressed };
 struct DecodedRecord {
     std::uint64_t observed_ms=0;

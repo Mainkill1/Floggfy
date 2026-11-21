@@ -27,6 +27,8 @@ bool InspectMp3Prefix(const CompressedBuffer&,std::size_t offset,Mp3Info&) noexc
 bool InspectMp3Range(const CompressedBuffer&,std::size_t offset,std::size_t length,Mp3Info&) noexcept;
 bool MakeOwnedMp3(const std::uint8_t* source,std::size_t size,const Tags& tags,
                   std::vector<std::uint8_t>& out,std::string& error);
+bool AddMp3TextFrame(const std::vector<std::uint8_t>& source,const std::string& key,const std::string& value,
+                     std::vector<std::uint8_t>& output);
 enum class Mp3InspectionResult { Valid,Invalid,ResourceFailure };
 Mp3InspectionResult InspectOwnedMp3Result(const std::uint8_t* bytes,std::size_t size,
                                           Mp3Info& info,Tags& tags,std::string& error) noexcept;

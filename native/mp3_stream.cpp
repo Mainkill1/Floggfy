@@ -54,29 +54,32 @@ bool Text(const std::uint8_t* bytes,std::size_t size,std::string& out) {
     out.assign(reinterpret_cast<const char*>(bytes+1),size-1);
     return std::find(out.begin(),out.end(),'\0')==out.end();
 }
+constexpr struct {const char* id;const char* field;} text_frames[]={
+    {"TIT2","TITLE"},{"TPE1","ARTIST"},{"TALB","ALBUM"},{"TPE2","ALBUMARTIST"},
+    {"TRCK","TRACKNUMBER"},{"TCON","GENRE"},{"TDRC","DATE"}
+};
 const char* FieldForFrame(const char* id) noexcept {
-    if(!std::memcmp(id,"TIT2",4))return "TITLE";
-    if(!std::memcmp(id,"TPE1",4))return "ARTIST";
-    if(!std::memcmp(id,"TALB",4))return "ALBUM";
-    if(!std::memcmp(id,"TPE2",4))return "ALBUMARTIST";
-    if(!std::memcmp(id,"TRCK",4))return "TRACKNUMBER";
-    if(!std::memcmp(id,"TCON",4))return "GENRE";
-    if(!std::memcmp(id,"TDRC",4))return "DATE";
+    for(const auto& frame:text_frames)if(!std::memcmp(id,frame.id,4))return frame.field;
     return nullptr;
 }
 const char* FrameForField(const std::string& name) noexcept {
-    if(name=="TITLE")return "TIT2";
-    if(name=="ARTIST")return "TPE1";
-    if(name=="ALBUM")return "TALB";
-    if(name=="ALBUMARTIST")return "TPE2";
-    if(name=="TRACKNUMBER")return "TRCK";
-    if(name=="GENRE")return "TCON";
-    if(name=="DATE"||name=="YEAR")return "TDRC";
+    if(name=="YEAR")return "TDRC";
+    for(const auto& frame:text_frames)if(name==frame.field)return frame.id;
     return nullptr;
 }
 void Frame(std::vector<std::uint8_t>& tag,const char* id,const std::vector<std::uint8_t>& payload) {
     tag.insert(tag.end(),id,id+4);Syncsafe(tag,payload.size());tag.push_back(0);tag.push_back(0);
     tag.insert(tag.end(),payload.begin(),payload.end());
+}
+void TextFrame(std::vector<std::uint8_t>& frames,const std::string& key,const std::string& value) {
+    const char* id=FrameForField(key);
+    std::vector<std::uint8_t> payload{3};
+    if(!id) {
+        payload.insert(payload.end(),key.begin(),key.end());payload.push_back(0);
+        id="TXXX";
+    }
+    payload.insert(payload.end(),value.begin(),value.end());
+    Frame(frames,id,payload);
 }
 enum class Mp3Scan {Invalid,Incomplete,Complete,Boundary};
 template<class Bytes>
@@ -251,13 +254,7 @@ bool MakeOwnedMp3(const std::uint8_t* source,std::size_t size,const Tags& tags,
                 return Fail(error,"MP3 metadata exceeds limit");
             // DATE already contains the year; serialize one TDRC even when both are supplied.
             if((item.first=="DATE"||item.first=="YEAR") && &item.second!=date)continue;
-            std::vector<std::uint8_t> payload{3};
-            if(const auto* id=FrameForField(item.first)) {
-                payload.insert(payload.end(),item.second.begin(),item.second.end());Frame(frames,id,payload);
-            } else {
-                payload.insert(payload.end(),item.first.begin(),item.first.end());payload.push_back(0);
-                payload.insert(payload.end(),item.second.begin(),item.second.end());Frame(frames,"TXXX",payload);
-            }
+            TextFrame(frames,item.first,item.second);
             if(frames.size()>kTagLimit)return Fail(error,"MP3 metadata exceeds limit");
         }
         if(!tags.cover.empty()) {
@@ -274,6 +271,21 @@ bool MakeOwnedMp3(const std::uint8_t* source,std::size_t size,const Tags& tags,
         result.insert(result.end(),source+info.audio_offset,source+info.audio_offset+info.audio_size);
         out.swap(result);error.clear();return true;
     } catch(...) {out.clear();return Fail(error,"MP3 metadata allocation failed");}
+}
+// Insert ahead of existing frames so opaque frames, padding, artwork and audio survive.
+bool AddMp3TextFrame(const std::vector<std::uint8_t>& source,const std::string& key,const std::string& value,
+                     std::vector<std::uint8_t>& output) {
+    size_t tag_size=0;
+    if(source.size()<10 || source.size()>kFileLimit || std::memcmp(source.data(),"ID3\x04\x00\x00",6) ||
+       !Syncsafe(source.data()+6,tag_size) || tag_size>source.size()-10)return false;
+    std::vector<std::uint8_t> frame;
+    TextFrame(frame,key,value);
+    if(frame.size()>kTagLimit || tag_size>kTagLimit-frame.size() || frame.size()>kFileLimit-source.size())return false;
+    output.assign(source.begin(),source.begin()+6);
+    Syncsafe(output,tag_size+frame.size());
+    output.insert(output.end(),frame.begin(),frame.end());
+    output.insert(output.end(),source.begin()+10,source.end());
+    return true;
 }
 Mp3InspectionResult InspectOwnedMp3Result(const std::uint8_t* bytes,std::size_t size,
                                           Mp3Info& info,Tags& tags,std::string& error) noexcept {

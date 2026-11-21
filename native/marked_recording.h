@@ -1,4 +1,5 @@
 #pragma once
+#include "spotify_uri.h"
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -11,7 +12,6 @@ struct MarkedRecording {
     bool complete=false,owned=false;
 };
 
-bool ValidMarkedUri(const std::string& uri);
 inline bool ValidMarkedDate(const std::string& date) {
     if(date.size()!=20 || date[4]!='-' || date[7]!='-' || date[10]!='T' ||
        date[13]!=':' || date[16]!=':' || date[19]!='Z')return false;

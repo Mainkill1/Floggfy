@@ -4,13 +4,7 @@ cd -- "$(dirname -- "$0")"
 mkdir -p build
 bash build-artwork-codecs.sh x86_64-w64-mingw32-gcc ar build/artwork-codecs-windows
 x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vendor/minimp4/minimp4.c -o build/minimp4.o
-python3 - <<'PY'
-from pathlib import Path
-script=Path('native/marked_playlist_sort.js').read_text()+'\n'+Path('native/marked_playlist.js').read_text()+'\n'+Path('native/artwork_collector.js').read_text()+'\n'+Path('native/metadata_collector.js').read_text()
-Path('build/metadata_script.h').write_text('static constexpr wchar_t metadata_script[]=LR"FLOGGFY('+script+')FLOGGFY";\n')
-privacy=Path('native/telemetry_producers.js').read_text()
-Path('build/telemetry_script.h').write_text('static constexpr wchar_t telemetry_script[]=LR"FLOGGFY('+privacy+')FLOGGFY";\n')
-PY
+python3 tools/embed_assets.py
 x86_64-w64-mingw32-gcc -std=c11 -O2 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DQS=0 -c native/vendor/sqlite/sqlite3.c -o build/sqlite3.o
 for source in buffer hook trampoline hde/hde64; do
     x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c \

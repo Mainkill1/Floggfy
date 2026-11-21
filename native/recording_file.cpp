@@ -3,6 +3,7 @@
 #include "ogg_history_core.h"
 #include "image_info.h"
 #include "vorbis_headers.h"
+#include "vorbis_comments.h"
 #include "aac_stream.h"
 #include "compressed_buffer.h"
 #include "flac_history_core.h"
@@ -15,7 +16,6 @@
 namespace history {
 namespace {
 constexpr size_t metadata_limit=16*1024*1024;
-uint32_t Little(const uint8_t* p) { return uint32_t(p[0])|(uint32_t(p[1])<<8)|(uint32_t(p[2])<<16)|(uint32_t(p[3])<<24); }
 std::string Field(const Tags& tags,const char* name) {
     for(const auto& field:tags.fields) if(field.first==name) return field.second;
     return {};
@@ -93,35 +93,22 @@ bool Base64Picture(const std::string& text,std::vector<uint8_t>& output) {
     return count==0 && !output.empty();
 }
 bool Comments(const uint8_t* b,size_t size,RecordingFile& record,bool vorbis) {
-    size_t p=0;
-    auto string=[&](std::string& value) {
-        if(size-p<4) return false;
-        size_t n=Little(b+p); p+=4;
-        if(n>size-p) return false;
-        value.assign(reinterpret_cast<const char*>(b+p),n); p+=n; return true;
-    };
-    std::string vendor;
-    if(size>metadata_limit || !string(vendor) || size-p<4) return false;
-    uint32_t count=Little(b+p); p+=4;
-    if(count>100000 || count>(size-p)/4) return false;
-    for(uint32_t i=0;i<count;i++) {
-        std::string value;
-        if(!string(value)) return false;
-        auto equals=value.find('=');
-        if(equals==std::string::npos) continue;
-        auto key=value.substr(0,equals);
-        for(char& c:key) if(c>='a'&&c<='z') c=char(c-'a'+'A');
+    if(size>metadata_limit || (vorbis && (!size || b[size-1]!=1)))return false;
+    std::string_view vendor;
+    return ReadVorbisComments(b,size-size_t(vorbis),vendor,[&](std::string_view value) {
+        const auto equals=value.find('=');
+        if(equals==value.npos)return;
+        auto key=CommentKey(value.substr(0,equals));
         // Artwork can dwarf all textual metadata and is irrelevant to identity.
         if(key=="METADATA_BLOCK_PICTURE") {
             record.picture_comments.emplace_back(value.substr(equals+1));
             if(equals+1<value.size()) {
                 record.has_artwork=true;std::vector<uint8_t> picture;
-                if(Base64Picture(value.substr(equals+1),picture))Picture(picture.data(),picture.size(),record);
+                if(Base64Picture(record.picture_comments.back(),picture))Picture(picture.data(),picture.size(),record);
                 else record.artwork_edit_safe=false;
             }
         } else record.tags.fields.emplace_back(std::move(key),value.substr(equals+1));
-    }
-    return vorbis ? p+1==size && b[p]==1 : p==size;
+    });
 }
 struct PointerBytes {
     const uint8_t* bytes;
@@ -294,7 +281,7 @@ bool Ogg(const uint8_t* b,size_t size,RecordingFile& out) {
         size_t header=27+b[p+26]; if(header>size-p) return false;
         size_t body=0; for(size_t i=27;i<header;i++) body+=b[p+i];
         if(header+body>size-p || stream.complete) return true;
-        if(p==0 && (b[p+5]!=2 || Little(b+p+18)!=0 || Little(b+p+6)!=0 || Little(b+p+10)!=0)) return true;
+        if(p==0 && (b[p+5]!=2 || ReadLittle32(b+p+18)!=0 || ReadLittle32(b+p+6)!=0 || ReadLittle32(b+p+10)!=0)) return true;
         auto state=stream.Push(b+p,header+body);
         if(state==Result::Invalid || state==Result::Ignore || (p!=0 && state==Result::Begin)) return true;
         out.quality={Codec::Vorbis,stream.rate,stream.channels,0,stream.bitrate};

@@ -50,13 +50,6 @@ std::wstring OutputPath(const std::wstring& root,const Catalog& item,const std::
     while(!base.empty() && (base.back()==L'\\' || base.back()==L'/')) base.pop_back();
     return base+L"\\"+relative;
 }
-bool ValidSpotifyTrackUri(const std::string& uri) noexcept {
-    constexpr char prefix[]="spotify:track:";constexpr size_t prefix_size=sizeof(prefix)-1,id_size=22;
-    if(uri.size()!=prefix_size+id_size || uri.compare(0,prefix_size,prefix))return false;
-    for(size_t i=prefix_size;i<uri.size();++i)if(!((uri[i]>='0'&&uri[i]<='9')||
-       (uri[i]>='A'&&uri[i]<='Z')||(uri[i]>='a'&&uri[i]<='z')))return false;
-    return true;
-}
 static std::wstring MissingTrackIdSuffix(const Catalog& item) {
     const auto identity=item.artist+L'\0'+item.album+L'\0'+item.title+L'\0'+
         std::to_wstring(item.disc)+L":"+std::to_wstring(item.track)+L":"+std::to_wstring(item.duration);

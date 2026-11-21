@@ -1,4 +1,4 @@
-#include "ogg_tags.h"
+#include "vorbis_comments.h"
 #include "tag_memory_plan.h"
 #include "image_info.h"
 #include "ogg_history_core.h"
@@ -7,15 +7,8 @@
 #include <cstring>
 #include <limits>
 namespace history {
-static void Number(std::vector<uint8_t>& v,uint32_t n,bool big=false) {
-    for(int i=0;i<4;i++) v.push_back(uint8_t(n>>(8*(big ? 3-i : i))));
-}
-static uint32_t Little(const uint8_t* p) {
-    return uint32_t(p[0])|(uint32_t(p[1])<<8)|(uint32_t(p[2])<<16)|(uint32_t(p[3])<<24);
-}
-static std::string Upper(std::string s) {
-    for(char& c:s) if(c>='a' && c<='z') c=char(c-'a'+'A');
-    return s;
+static void WriteBig32(std::vector<uint8_t>& v,uint32_t n) {
+    for(int i=0;i<4;i++) v.push_back(uint8_t(n>>(8*(3-i))));
 }
 static std::string Base64(const std::vector<uint8_t>& v) {
     const char* alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -33,48 +26,25 @@ bool BuildPicture(const Tags& tags,std::vector<uint8_t>& picture) {
     picture.clear();
     ImageInfo info;
     if(!ReadImageInfo(tags.cover,info) || tags.mime!=info.mime) return false;
-    Number(picture,3,true);
-    Number(picture,uint32_t(tags.mime.size()),true); picture.insert(picture.end(),tags.mime.begin(),tags.mime.end());
-    Number(picture,0,true);
-    Number(picture,info.width,true); Number(picture,info.height,true);
-    Number(picture,info.depth,true); Number(picture,info.colors,true);
-    Number(picture,uint32_t(tags.cover.size()),true); picture.insert(picture.end(),tags.cover.begin(),tags.cover.end());
+    WriteBig32(picture,3);
+    WriteBig32(picture,uint32_t(tags.mime.size())); picture.insert(picture.end(),tags.mime.begin(),tags.mime.end());
+    WriteBig32(picture,0);
+    WriteBig32(picture,info.width); WriteBig32(picture,info.height);
+    WriteBig32(picture,info.depth); WriteBig32(picture,info.colors);
+    WriteBig32(picture,uint32_t(tags.cover.size())); picture.insert(picture.end(),tags.cover.begin(),tags.cover.end());
     return true;
 }
 static bool Comments(const ogg_packet& packet,const Tags& tags,std::vector<uint8_t>& out) {
-    if(packet.bytes<16 || std::memcmp(packet.packet,"\x03vorbis",7)) return false;
-    size_t offset=7,limit=size_t(packet.bytes);
-    auto read=[&](std::string& s) {
-        if(offset+4>limit) return false;
-        uint32_t n=Little(packet.packet+offset); offset+=4;
-        if(n>limit-offset) return false;
-        s.assign(reinterpret_cast<char*>(packet.packet+offset),n); offset+=n; return true;
-    };
-    std::string vendor;
-    if(!read(vendor) || offset+4>limit) return false;
-    uint32_t count=Little(packet.packet+offset); offset+=4;
-    if(count>100000 || count>(limit-offset)/4) return false;
+    if(packet.bytes<16 || std::memcmp(packet.packet,"\x03vorbis",7) || packet.packet[packet.bytes-1]!=1)return false;
     std::vector<uint8_t> picture;
     const bool has_picture=BuildPicture(tags,picture);
-    std::vector<std::string> fields;
-    for(uint32_t i=0;i<count;i++) {
-        std::string field; if(!read(field)) return false;
-        std::string key=Upper(field.substr(0,field.find('=')));
-        bool replace=tags.replace_fields || (has_picture && key=="METADATA_BLOCK_PICTURE");
-        for(const auto& item:tags.fields) if(key==Upper(item.first)) replace=true;
-        if(!replace) fields.push_back(std::move(field));
-    }
-    if(offset+1!=limit || packet.packet[offset]!=1) return false;
-    for(const auto& item:tags.fields) fields.push_back(item.first+'='+item.second);
-    if(has_picture) fields.push_back("METADATA_BLOCK_PICTURE="+Base64(picture));
+    VorbisComments comments;
+    if(!comments.Read(packet.packet+7,size_t(packet.bytes)-8,tags,has_picture))return false;
+    if(comments.vendor.empty())comments.vendor="SpotifyRepair native history";
     out.assign({'\x03','v','o','r','b','i','s'});
-    if(vendor.empty()) vendor="SpotifyRepair native history";
-    Number(out,uint32_t(vendor.size())); out.insert(out.end(),vendor.begin(),vendor.end());
-    Number(out,uint32_t(fields.size()));
-    for(const auto& field:fields) {
-        Number(out,uint32_t(field.size())); out.insert(out.end(),field.begin(),field.end());
-    }
-    out.push_back(1); return out.size()<=16*1024*1024;
+    const auto extra=has_picture ? "METADATA_BLOCK_PICTURE="+Base64(picture) : std::string{};
+    if(!comments.Write(out,tags,16*1024*1024-1,extra))return false;
+    out.push_back(1);return true;
 }
 struct OggStreams {
     ogg_stream_state input={},output={}; bool initialized=false;

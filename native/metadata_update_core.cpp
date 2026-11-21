@@ -2,20 +2,15 @@
 #include "aac_stream.h"
 #include "flac_history_core.h"
 #include "marked_recording.h"
-#include "recording_limits.h"
-#include <cstring>
+#include "mp3_stream.h"
+#include "vorbis_comments.h"
 #include <algorithm>
 #include <set>
 namespace history {
 namespace {
-constexpr size_t comment_limit=16*1024*1024;
-std::string Upper(std::string text) {
-    for(char& c:text)if(c>='a' && c<='z')c=char(c-'a'+'A');
-    return text;
-}
 bool Words(const std::string& value) {return value.find_first_not_of(" \r\n\t")!=std::string::npos;}
 std::string Value(const Tags& tags,const std::string& key) {
-    for(const auto& field:tags.fields)if(Upper(field.first)==key && Words(field.second))return field.second;
+    for(const auto& field:tags.fields)if(CommentKey(field.first)==key && Words(field.second))return field.second;
     return {};
 }
 bool TextKey(const std::string& key) {
@@ -47,14 +42,14 @@ void ReleaseDateDelta(const Tags& existing,const Tags& incoming,Tags& delta) {
 void LyricsDelta(const Tags& existing,const Tags& incoming,Tags& delta) {
     bool old_words=false;
     for(const auto& field:existing.fields) {
-        const auto key=Upper(field.first);
+        const auto key=CommentKey(field.first);
         if(key!="LYRICS" && key!="UNSYNCEDLYRICS")continue;
         if(Words(field.second))old_words=true;
         if(IsSyncedLyrics(field.second))return;
     }
     std::string lyrics;
     for(const char* key:{"LYRICS","UNSYNCEDLYRICS"})for(const auto& field:incoming.fields) {
-        if(Upper(field.first)!=key || !Words(field.second) || field.second.size()>65536)continue;
+        if(CommentKey(field.first)!=key || !Words(field.second) || field.second.size()>65536)continue;
         if(lyrics.empty() || IsSyncedLyrics(field.second))lyrics=field.second;
         if(IsSyncedLyrics(lyrics))break;
     }
@@ -86,7 +81,7 @@ constexpr const char* saved_key="HISTORY_SAVED_UTC";
 bool MissingSavedDate(const RecordingFile& existing) {
     return existing.complete && existing.owned &&
            std::none_of(existing.tags.fields.begin(),existing.tags.fields.end(),
-                        [](const auto& field){return Upper(field.first)==saved_key;});
+                        [](const auto& field){return CommentKey(field.first)==saved_key;});
 }
 MetadataPlan PlanMetadata(const RecordingFile& existing,const Tags& incoming,bool fill_saved_date) {
     MetadataPlan plan;
@@ -98,9 +93,9 @@ MetadataPlan PlanMetadata(const RecordingFile& existing,const Tags& incoming,boo
     }
     if(existing.quality.codec==Codec::Mp3)return plan;
     std::set<std::string> populated;
-    for(const auto& field:existing.tags.fields)if(Words(field.second))populated.insert(Upper(field.first));
+    for(const auto& field:existing.tags.fields)if(Words(field.second))populated.insert(CommentKey(field.first));
     for(const auto& field:incoming.fields) {
-        const auto key=Upper(field.first);
+        const auto key=CommentKey(field.first);
         if(!TextKey(key) || !Words(field.second) || key.rfind("HISTORY_",0)==0 || key=="METADATA_BLOCK_PICTURE" ||
            key==artwork_source || key=="LYRICS" || key=="UNSYNCEDLYRICS" || key=="YEAR" || key=="DATE" || populated.count(key))continue;
         delta.fields.emplace_back(key,field.second);
@@ -114,96 +109,34 @@ MetadataPlan PlanMetadata(const RecordingFile& existing,const Tags& incoming,boo
     }
     return plan;
 }
-uint32_t Little(const uint8_t* bytes) {
-    return uint32_t(bytes[0])|(uint32_t(bytes[1])<<8)|(uint32_t(bytes[2])<<16)|(uint32_t(bytes[3])<<24);
-}
-void Number(std::vector<uint8_t>& bytes,uint32_t value) {
-    for(unsigned i=0;i<4;++i)bytes.push_back(uint8_t(value>>(i*8)));
-}
-void Block(std::vector<uint8_t>& output,uint8_t type,const std::vector<uint8_t>& body) {
-    output.push_back(type);output.push_back(uint8_t(body.size()>>16));output.push_back(uint8_t(body.size()>>8));output.push_back(uint8_t(body.size()));
-    output.insert(output.end(),body.begin(),body.end());
-}
 bool FillFlac(const std::vector<uint8_t>& source,const Tags& delta,const std::vector<uint8_t>& picture,
               std::vector<uint8_t>& output,std::string& error) {
     FlacInfo info;size_t audio=0;
     if(ParseFlacMetadata(source,info,audio)!=FlacParse::Valid){error="invalid FLAC metadata";return false;}
-    std::string vendor;std::vector<std::string> fields;bool found=false;
-    for(size_t p=4;p<audio;) {
-        const auto type=source[p]&127;const size_t size=(size_t(source[p+1])<<16)|(size_t(source[p+2])<<8)|source[p+3];p+=4;
-        if(type==4) {
-            if(found){error="duplicate FLAC comment blocks";return false;}found=true;
-            size_t at=0;
-            auto read=[&](std::string& text) {
-                if(size-at<4)return false;
-                const auto length=Little(source.data()+p+at);at+=4;
-                if(length>size-at)return false;
-                text.assign(reinterpret_cast<const char*>(source.data()+p+at),length);at+=length;return true;
-            };
-            if(!read(vendor) || size-at<4){error="invalid FLAC comments";return false;}
-            const auto count=Little(source.data()+p+at);at+=4;
-            if(count>100000 || count>(size-at)/4){error="invalid FLAC comment count";return false;}
-            for(uint32_t i=0;i<count;++i){std::string field;if(!read(field)){error="invalid FLAC comment field";return false;}fields.push_back(std::move(field));}
-            if(at!=size){error="trailing FLAC comment bytes";return false;}
-        }
-        p+=size;
-    }
-    if(!found){error="owned recording has no comments";return false;}
-    std::set<std::string> replaced;
-    for(const auto& field:delta.fields)replaced.insert(Upper(field.first));
-    if(!picture.empty())replaced.insert("METADATA_BLOCK_PICTURE");
-    fields.erase(std::remove_if(fields.begin(),fields.end(),[&](const auto& field) {
-        const auto split=field.find('=');return split!=std::string::npos && replaced.count(Upper(field.substr(0,split)));
-    }),fields.end());
-    for(const auto& field:delta.fields)fields.push_back(field.first+'='+field.second);
-    std::vector<uint8_t> comments;Number(comments,uint32_t(vendor.size()));comments.insert(comments.end(),vendor.begin(),vendor.end());
-    if(fields.size()>100000){error="too many FLAC comments";return false;}Number(comments,uint32_t(fields.size()));
-    for(const auto& field:fields) {
-        if(field.size()>comment_limit || comments.size()>comment_limit-field.size() || comment_limit-comments.size()-field.size()<4){error="FLAC comments too large";return false;}
-        Number(comments,uint32_t(field.size()));comments.insert(comments.end(),field.begin(),field.end());
-    }
-    if(comments.size()>0xffffff || picture.size()>0xffffff){error="FLAC metadata block too large";return false;}
+    if(picture.size()>0xffffff){error="FLAC metadata block too large";return false;}
+    bool found=false;
     output.assign(source.begin(),source.begin()+4);
     for(size_t p=4;p<audio;) {
         const auto type=source[p]&127;const size_t size=(size_t(source[p+1])<<16)|(size_t(source[p+2])<<8)|source[p+3];
         // Only accepted front-cover upgrades remove old PICTURE blocks. If
         // the old last block is a picture, its replacement keeps the last bit;
         // otherwise insert before the original last block, preserving padding.
-        if((source[p]&128) && !picture.empty())Block(output,uint8_t(6|(type==6?128:0)),picture);
-        if(type==4)Block(output,source[p],comments);
+        if((source[p]&128) && !picture.empty())AppendFlacBlock(output,uint8_t(6|(type==6?128:0)),picture);
+        if(type==4) {
+            if(found){error="duplicate FLAC comment blocks";return false;}
+            found=true;
+            VorbisComments comments;
+            if(!comments.Read(source.data()+p+4,size,delta,!picture.empty(),true)){error="invalid FLAC comments";return false;}
+            if(comments.kept.size()+delta.fields.size()>100000){error="too many FLAC comments";return false;}
+            std::vector<uint8_t> body;
+            if(!comments.Write(body,delta,0xffffff)){error="FLAC comments too large";return false;}
+            AppendFlacBlock(output,source[p],body);
+        }
         else if(type!=6 || picture.empty())output.insert(output.end(),source.begin()+p,source.begin()+p+4+size);
         p+=4+size;
     }
+    if(!found){error="owned recording has no comments";return false;}
     output.insert(output.end(),source.begin()+audio,source.end());return true;
-}
-// Append one UTF-8 ID3v2.4 TXXX frame, preserving existing artwork, unknown
-// frames, padding and audio bytes. Only the variant emitted by this app is edited.
-bool FillMp3Date(const std::vector<uint8_t>& source,const std::string& date,std::vector<uint8_t>& output) {
-    if(source.size()<10 || source.size()>kMaximumRecordingBytes ||
-       std::memcmp(source.data(),"ID3\x04\x00\x00",6))return false;
-    uint32_t tag_size=0;
-    for(size_t at=6;at<10;++at) {
-        if(source[at]&128)return false;
-        tag_size=(tag_size<<7)|source[at];
-    }
-    if(tag_size>source.size()-10)return false;
-    auto syncsafe=[](uint32_t n){return std::vector<uint8_t>{
-        uint8_t((n>>21)&127),uint8_t((n>>14)&127),uint8_t((n>>7)&127),uint8_t(n&127)};};
-    const std::string key(saved_key);
-    std::vector<uint8_t> frame={'T','X','X','X'};
-    const auto body_size=syncsafe(uint32_t(key.size()+date.size()+2));
-    frame.insert(frame.end(),body_size.begin(),body_size.end());
-    frame.insert(frame.end(),{0,0,3});
-    frame.insert(frame.end(),key.begin(),key.end());
-    frame.push_back(0);
-    frame.insert(frame.end(),date.begin(),date.end());
-    if(tag_size+frame.size()>comment_limit || frame.size()>kMaximumRecordingBytes-source.size())return false;
-    const auto size=syncsafe(uint32_t(tag_size+frame.size()));
-    output.assign(source.begin(),source.begin()+6);
-    output.insert(output.end(),size.begin(),size.end());
-    output.insert(output.end(),frame.begin(),frame.end());
-    output.insert(output.end(),source.begin()+10,source.end());
-    return true;
 }
 bool SameQuality(const Quality& a,const Quality& b) {
     return a.codec==b.codec && a.rate==b.rate && a.channels==b.channels && a.bits==b.bits && a.bitrate==b.bitrate;
@@ -223,32 +156,7 @@ bool FlacPictures(const std::vector<uint8_t>& source,std::vector<std::vector<uin
     }
     return true;
 }
-bool ReplaceFlacPictures(const std::vector<uint8_t>& incoming,
-                         const std::vector<std::vector<uint8_t>>& pictures,std::vector<uint8_t>& source) {
-    FlacInfo info;
-    size_t audio=0;
-    if(ParseFlacMetadata(incoming,info,audio)!=FlacParse::Valid)return false;
-    source.assign(incoming.begin(),incoming.begin()+4);
-    size_t last=0;
-    for(size_t at=4;at<audio;) {
-        const unsigned type=incoming[at]&127;
-        const size_t length=(size_t(incoming[at+1])<<16)|(size_t(incoming[at+2])<<8)|incoming[at+3];
-        if(type!=6) {
-            last=source.size();
-            source.insert(source.end(),incoming.begin()+at,incoming.begin()+at+4+length);
-            source[last]&=127;
-        }
-        at+=4+length;
-    }
-    for(const auto& picture:pictures) {
-        last=source.size();
-        Block(source,6,picture);
-    }
-    if(!last)return false;
-    source[last]|=128;
-    source.insert(source.end(),incoming.begin()+audio,incoming.end());
-    return true;
-}
+
 }
 bool NeedsRecordingMetadata(const RecordingFile& existing,const Tags& incoming,bool backfill_saved_date) {
     return (backfill_saved_date && MissingSavedDate(existing)) || PlanMetadata(existing,incoming,false).Needed();
@@ -268,7 +176,7 @@ MetadataUpdate FillRecordingMetadata(const std::vector<uint8_t>& source,const Ta
     }
     const bool updated=existing.quality.codec==Codec::Flac ? FillFlac(source,delta,picture,output,error) :
         existing.quality.codec==Codec::Aac ? TagAacM4a(source,delta,output,error) :
-        existing.quality.codec==Codec::Mp3 ? FillMp3Date(source,Value(delta,saved_key),output) :
+        existing.quality.codec==Codec::Mp3 ? AddMp3TextFrame(source,saved_key,Value(delta,saved_key),output) :
         TagOgg(source,delta,output,error);
     RecordingFile result;
     if(!updated || !InspectRecording(output.data(),output.size(),result) || !result.complete || !result.owned ||
@@ -303,15 +211,15 @@ bool PreserveUpgradeMetadata(const std::vector<uint8_t>& source,const std::vecto
     // Preserve populated user fields (including repeats). The shared delta
     // fills blanks, keeps synchronized lyrics and resolves DATE/YEAR conflicts.
     std::set<std::string> changed;
-    for(const auto& field:plan.delta.fields)changed.insert(Upper(field.first));
+    for(const auto& field:plan.delta.fields)changed.insert(CommentKey(field.first));
     for(const auto& field:old.tags.fields) {
-        const auto key=Upper(field.first);
+        const auto key=CommentKey(field.first);
         if(key.rfind("HISTORY_",0)!=0 && key!="METADATA_BLOCK_PICTURE" && !changed.count(key))
             merged.fields.push_back(field);
     }
     merged.fields.insert(merged.fields.end(),plan.delta.fields.begin(),plan.delta.fields.end());
     for(const auto& field:next.tags.fields)
-        if(Upper(field.first).rfind("HISTORY_",0)==0)merged.fields.push_back(field);
+        if(CommentKey(field.first).rfind("HISTORY_",0)==0)merged.fields.push_back(field);
 
     // Legacy picture comments are retained too; they can be opaque or use a
     // format we cannot compare. A valid new front cover only replaces them
@@ -329,20 +237,13 @@ bool PreserveUpgradeMetadata(const std::vector<uint8_t>& source,const std::vecto
     bool tagged=false;
     if(next.quality.codec==Codec::Flac) {
         std::vector<std::vector<uint8_t>> pictures;
-        if(plan.picture) {
-            std::vector<uint8_t> picture;
-            if(!BuildPicture(next.tags,picture))return false;
-            pictures.push_back(std::move(picture));
-        } else if(old.quality.codec==Codec::Flac) {
+        if(!plan.picture && old.quality.codec==Codec::Flac) {
             if(!FlacPictures(source,pictures))return false;
-        } else if(old.has_artwork) {
-            std::vector<uint8_t> picture;
-            if(!BuildPicture(old.tags,picture))return false;
-            pictures.push_back(std::move(picture));
+        } else if(plan.picture || old.has_artwork) {
+            pictures.emplace_back();
+            if(!BuildPicture(plan.picture ? next.tags : old.tags,pictures.back()))return false;
         }
-        std::vector<uint8_t> prepared;
-        if(!ReplaceFlacPictures(incoming,pictures,prepared))return false;
-        tagged=TagFlac(prepared,merged,output,error);
+        tagged=TagFlacWithPictures(incoming,merged,output,error,&pictures);
     } else {
         if(plan.picture) {
             merged.cover=next.tags.cover;

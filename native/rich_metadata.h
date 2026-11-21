@@ -1,4 +1,5 @@
 #pragma once
+#include "spotify_uri.h"
 #include <string>
 #include <cstdint>
 #include <map>
@@ -21,10 +22,8 @@ struct RichMetadata {
  bool Matches(const std::string&,const std::string&,const std::string&,double) const;
 };
 bool ParseRichMetadata(const std::string&,RichMetadata&,std::string&);
-// Current-item footer also accepts episodes without music artist/album tags.
-bool ParsePlaybackMetadata(const std::string&,RichMetadata&,std::string&);
+bool DecodeMetadataText(const std::string& encoded,std::string& out);
 bool MetadataTextValid(const std::string&);
-bool ValidSpotifyAlbumUri(const std::string&) noexcept;
 // Record state is protected by the metadata bridge lock. Matcher/save jobs pin
 // the same record, so enrichment outlives playback changes and registry pruning.
 struct MetadataRecord {

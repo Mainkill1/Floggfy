@@ -323,7 +323,7 @@ std::optional<Row> Refresh(Database& db, const fs::path& root, const fs::path& r
         WarnFile("could not read recording metadata", key, error);
         return {};
     }
-    if (scan && record.complete && record.owned && ValidMarkedUri(record.uri) &&
+    if (scan && record.complete && record.owned && ValidSpotifyTrackUri(record.uri) &&
         record.saved_utc.empty() && Current(epoch, scan)) {
         const auto settings = GetSettings();
         if (settings.downloads && settings.metadata && settings.update_existing_metadata) {
@@ -347,7 +347,7 @@ std::optional<Row> Refresh(Database& db, const fs::path& root, const fs::path& r
         WarnFile("recording changed during catalog read", key);
         return {};
     }
-    if (!record.complete || !record.owned || !ValidMarkedUri(record.uri) ||
+    if (!record.complete || !record.owned || !ValidSpotifyTrackUri(record.uri) ||
         !ValidMarkedDate(record.saved_utc)) {
         const auto result = db.Erase(key);
         Changed(epoch, result);
@@ -654,7 +654,7 @@ bool QueueMarkedQuery(const std::string& request, const std::vector<std::string>
     if (state.stopped || !state.enabled || !Start(state)) return false;
     Query query{request, {}, 0, ready};
     for (const auto& uri : uris) {
-        if (ValidMarkedUri(uri) && std::find(query.uris.begin(), query.uris.end(), uri) == query.uris.end()) {
+        if (ValidSpotifyTrackUri(uri) && std::find(query.uris.begin(), query.uris.end(), uri) == query.uris.end()) {
             query.uris.push_back(uri);
         }
     }

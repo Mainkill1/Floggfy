@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
 #include <cwchar>
 #include <string>
 #include <string_view>
@@ -71,10 +72,6 @@ inline bool Write(const std::wstring& path,const std::wstring& text,bool create=
     else WritePrivateProfileStringW(nullptr,nullptr,nullptr,path.c_str());
     return ok;
 }
-inline bool Unicode(const std::wstring& path) {
-    std::wstring text;bool unicode=false;
-    return Read(path,text,unicode)&&(unicode||Write(path,text));
-}
 inline std::wstring Trim(std::wstring text) {
     const auto first=text.find_first_not_of(L" \t\r");
     if(first==std::wstring::npos)return {};
@@ -83,6 +80,29 @@ inline std::wstring Trim(std::wstring text) {
 struct IniValue {
     bool present=false,duplicate=false;
     std::wstring_view value,raw_value;
+};
+// All strict startup preferences use the same file contents and read status.
+struct Snapshot {
+    std::wstring path,text;
+    bool unicode=false,readable;
+
+    Snapshot(const std::wstring& file):path(file),readable(Read(path,text,unicode)) {}
+
+    // Only exact, unambiguous spellings opt in. An unreadable file uses the
+    // default without asking the persistence worker to normalize it.
+    template<class T>
+    bool ReadChoice(IniValue value,T& target,int initial,std::initializer_list<int> allowed) const {
+        if(readable&&value.present&&!value.duplicate) {
+            for(int choice:allowed) {
+                if(value.raw_value==std::to_wstring(choice)) {
+                    target=static_cast<T>(choice);
+                    return false;
+                }
+            }
+        }
+        target=static_cast<T>(initial);
+        return readable;
+    }
 };
 inline std::wstring_view TrimView(std::wstring_view text) noexcept {
     const auto first=text.find_first_not_of(L" \t\r");

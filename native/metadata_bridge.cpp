@@ -154,12 +154,8 @@ static std::deque<OnlineEnrichment> online_enrichment; // Protected by cache_loc
 static bool HasField(const RichMetadata& metadata,const char* key) {
  const auto found=metadata.fields.find(key);return found!=metadata.fields.end()&&!found->second.empty();
 }
-static bool IsTrackUri(const std::string& uri) {
- return uri.size()==36&&uri.compare(0,14,"spotify:track:")==0&&
-        std::all_of(uri.begin()+14,uri.end(),[](unsigned char c){return (c>='0'&&c<='9')||(c>='A'&&c<='Z')||(c>='a'&&c<='z');});
-}
 static bool NeedsStoredMetadata(const RichMetadata& metadata) {
- return IsTrackUri(metadata.uri)&&(!HasField(metadata,"DATE")||!HasField(metadata,"ISRC")||
+ return ValidSpotifyTrackUri(metadata.uri)&&(!HasField(metadata,"DATE")||!HasField(metadata,"ISRC")||
         !HasField(metadata,"LABEL")||metadata.album_uri.empty());
 }
 static bool ReferencesArtwork(const RichMetadata& data,const std::string& reference) {
@@ -319,9 +315,9 @@ static bool AttemptNativeArtwork(RichMetadata& data) {
  return reason!="disabled";
 }
 static unsigned OnlineNeeds(const RichMetadata& data,bool lyrics) {
- if(!IsTrackUri(data.uri))return 0;
+ if(!ValidSpotifyTrackUri(data.uri))return 0;
  const bool album=!HasField(data,"LABEL")||data.artwork_url.empty();
- return ((!HasField(data,"DATE")||!HasField(data,"ISRC")||(album&&!ValidSpotifyAlbumUri(data.album_uri)))?1u:0u)|
+ return ((!HasField(data,"DATE")||!HasField(data,"ISRC")||(album&&!ValidSpotifyUri(data.album_uri,"spotify:album:")))?1u:0u)|
         (album?2u:0u)|
         ((lyrics&&!HasField(data,"LYRICS"))?4u:0u);
 }
@@ -618,7 +614,7 @@ static bool CurrentPlayback(const String* text) {
     payload+=char(text->str[i]);
    }
    RichMetadata record;std::string error;
-   if(ParsePlaybackMetadata(payload,record,error)) {
+   if(ParseRichMetadata(payload,record,error)) {
     item.source=MediaSource::Spotify;item.spotify_uri=record.uri;
     item.title=MetadataWide(record.title);item.artist=MetadataWide(record.artist);item.album=MetadataWide(record.album);
     item.duration=record.duration;

@@ -133,5 +133,18 @@ int main(int argc,char** argv){
     assert(!ParseClientTransition(event+"&transition_ms=1793300000000",transition));
     assert(!ParseClientTransition(event+"&unexpected=1",transition));
     assert(!ParseClientTransition("v=1&blocked=buffering",transition));
+    const std::string identity="v=1&blocked=buffering&uri=spotify%3atrack%3A0000000000000000000001&monitoring=0&transition_ms=251&sampled_ms=1&instance=";
+    std::string encoded_instance;
+    for(unsigned i=0;i<128;++i)encoded_instance+="%2B";
+    assert(ParseClientTransition(identity+encoded_instance,transition) && transition.instance==std::string(128,'+'));
+    for(const auto& bad:{encoded_instance+"x",std::string("%20"),std::string("%00"),std::string("%C3%A8"),std::string("%Z1")}) {
+        assert(!ParseClientTransition(identity+bad,transition));
+        assert(!ParseClientPlayback(base+timeline+"&instance="+bad,value,error) && error=="client-invalid-instance");
+    }
+    const std::string uri="spotify:track:0000000000000000000001";
+    const auto clock=std::string(16384-133-uri.size()-1,' ')+"1";
+    const auto prefix="v=1&blocked=buffering&uri="+uri+"&monitoring=1&transition_ms=1&sampled_ms=";
+    assert(ParseClientTransition(prefix+clock,transition));
+    assert(!ParseClientTransition(prefix+' '+clock,transition));
     std::cout<<"PASS: bounded client timeline protocol, exact URI, finite positions, flags and duplicate/unknown-field rejection\n";
 }

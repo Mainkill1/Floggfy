@@ -86,11 +86,8 @@ std::vector<uint8_t> PodcastMp3() {
 }
 void DumpStreamHooks() {
     const auto prior_level=InterlockedExchange(&history::log_level_value,1);
-    Settings preferences;preferences.dump_streams=true;
-    assert(NeedPlaybackIdentity(spotify::DiscoveryResult::Found,preferences));
-    assert(!NeedPlaybackIdentity(spotify::DiscoveryResult::MissingTarget,preferences));
-    preferences.dump_streams=false;assert(NeedPlaybackIdentity(spotify::DiscoveryResult::Found,preferences)&&
-        "decoder reuse boundaries must remain available at normal logging with dumps disabled");
+    assert(NeedPlaybackIdentity(spotify::DiscoveryResult::Found));
+    assert(!NeedPlaybackIdentity(spotify::DiscoveryResult::MissingTarget));
     InterlockedExchange(&history::log_level_value,prior_level);
     wchar_t temp[MAX_PATH]{};assert(GetTempPathW(MAX_PATH,temp));
     const auto root=std::filesystem::path(temp)/(L"Floggfy-dump-hooks-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64()));

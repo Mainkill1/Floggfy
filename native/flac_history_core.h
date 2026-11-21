@@ -17,5 +17,8 @@ struct FlacCoverage {
 };
 // Recognize bounded, monotonic LRC timestamps without accepting plain text.
 bool IsSyncedLyrics(const std::string& lyrics);
+void AppendFlacBlock(std::vector<uint8_t>& output,uint8_t type,const std::vector<uint8_t>& body);
+bool TagFlacWithPictures(const std::vector<uint8_t>& source,const Tags& tags,std::vector<uint8_t>& output,
+                         std::string& error,const std::vector<std::vector<uint8_t>>* approved_pictures);
 bool TagFlac(const std::vector<uint8_t>& source,const Tags& tags,std::vector<uint8_t>& output,std::string& error);
 }

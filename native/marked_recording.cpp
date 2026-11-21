@@ -6,13 +6,6 @@
 #include <vector>
 
 namespace history {
-bool ValidMarkedUri(const std::string& uri) {
-    constexpr std::string_view prefix="spotify:track:";
-    if(uri.size()!=prefix.size()+22 || uri.compare(0,prefix.size(),prefix)!=0)return false;
-    return std::all_of(uri.begin()+prefix.size(),uri.end(),[](char c){
-        return (c>='0' && c<='9') || (c>='a' && c<='z') || (c>='A' && c<='Z');
-    });
-}
 namespace {
 constexpr uint64_t metadata_limit=16*1024*1024;
 constexpr unsigned operation_limit=200000;
@@ -353,7 +346,7 @@ bool ReadMarkedRecording(uint64_t bytes,const MarkedReadAt& read,MarkedRecording
         return false;
     }
     auto uri=fields.Value("SPOTIFY_URI");
-    if(!ValidMarkedUri(uri))uri.clear();
+    if(!ValidSpotifyTrackUri(uri))uri.clear();
     const bool complete=fields.Value("HISTORY_COMPLETE_STREAM")=="1" || fields.Value("HISTORY_COMPLETE_LISTEN")=="1";
     const bool owned=complete && fields.Value("HISTORY_CAPTURE")==capture;
     out={std::move(uri),std::move(saved),bytes,0,complete,owned};

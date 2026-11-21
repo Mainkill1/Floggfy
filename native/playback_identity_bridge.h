@@ -91,9 +91,6 @@ public:
     void PlayerStateUnreadable() noexcept {location_.status=LocationStatus::Unreadable;}
     PlayerLocation Location() const noexcept {return location_;}
     bool HasPlayerIdentity(std::uintptr_t decoder,unsigned epoch,double began,double closed_at) const noexcept;
-    bool NeedsObservation(std::uintptr_t owner,std::uintptr_t decoder,
-                          unsigned epoch,SnapshotRole role=SnapshotRole::Owner,
-                          double minimum_observed_at=0) const noexcept;
     bool NeedsObservation(std::uintptr_t owner,std::uintptr_t decoder,unsigned epoch,
                           SnapshotRole role,const void* snapshot,
                           std::size_t snapshot_size,double minimum_observed_at=0) const noexcept;
@@ -148,7 +145,7 @@ private:
     std::array<Observation,kObservationCapacity> observations_{};
     std::size_t observation_head_=0;
     std::size_t observation_count_=0;
-    std::uint64_t next_owner_generation_=1;
+    std::uint64_t last_owner_generation_=0;
     Instance expected_{};
     std::uint64_t metadata_generation_=0;
     bool has_expected_=false;

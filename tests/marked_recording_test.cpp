@@ -119,8 +119,8 @@ void RejectMissingAudio(const Bytes& bytes,unsigned format) {
 }
 }
 int main() {
-    assert(ValidMarkedUri(uri) && !ValidMarkedUri("spotify:track:abc"));
-    assert(!ValidMarkedUri("spotify:episode:0123456789abcdefghijkl"));
+    assert(ValidSpotifyTrackUri(uri) && !ValidSpotifyTrackUri("spotify:track:abc"));
+    assert(!ValidSpotifyTrackUri("spotify:episode:0123456789abcdefghijkl"));
     assert(ValidMarkedDate(stamp) && !ValidMarkedDate("1900-02-29T00:00:00Z"));
     assert(!ValidMarkedDate("2024-02-29T24:00:00Z") && !ValidMarkedDate("2024-00-01T00:00:00Z"));
 

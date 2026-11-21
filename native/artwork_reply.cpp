@@ -1,3 +1,4 @@
+#include "spotify_uri.h"
 #include "artwork_reply.h"
 #include <algorithm>
 #include <array>
@@ -5,7 +6,6 @@
 namespace history {
 namespace {
 int Hex(char c){return c>='0'&&c<='9'?c-'0':c>='a'&&c<='f'?c-'a'+10:c>='A'&&c<='F'?c-'A'+10:-1;}
-bool Alnum(char c){return (c>='0'&&c<='9')||(c>='a'&&c<='z')||(c>='A'&&c<='Z');}
 bool DecodeHeader(std::string_view input,size_t limit,std::string& result){
  if(input.size()>limit*3)return false;
  for(size_t i=0;i<input.size();++i){
@@ -18,12 +18,6 @@ bool DecodeHeader(std::string_view input,size_t limit,std::string& result){
   result+=char(c);
  }
  return true;
-}
-bool MediaUri(const std::string& uri){
- for(const std::string_view prefix:{"spotify:track:","spotify:episode:"})
-  if(uri.size()==prefix.size()+22&&uri.compare(0,prefix.size(),prefix)==0)
-   return std::all_of(uri.begin()+prefix.size(),uri.end(),Alnum);
- return false;
 }
 bool ImageReference(const std::string& reference){
  constexpr std::string_view prefix="https://i.scdn.co/image/";
@@ -73,7 +67,7 @@ bool ParseArtworkReply(const std::string& input,ArtworkReply& out,std::string& e
  if(!DecodeHeader(fields[0],20,next.id)||!DecodeHeader(fields[1],38,next.uri)||
     !DecodeHeader(fields[2],64,next.reference)||!DecodeHeader(fields[3],1,source)||
     !DecodeHeader(fields[4],11,next.status)||!DecodeHeader(fields[5],64,next.reason))return fail("reply-field-invalid");
- if(next.id.empty()||!std::all_of(next.id.begin(),next.id.end(),[](char c){return c>='0'&&c<='9';})||!MediaUri(next.uri))return fail("reply-identity-invalid");
+ if(next.id.empty()||!std::all_of(next.id.begin(),next.id.end(),[](char c){return c>='0'&&c<='9';})||!ValidSpotifyMediaUri(next.uri))return fail("reply-identity-invalid");
  if(!next.reference.empty()&&!ImageReference(next.reference))return fail("reply-reference-invalid");
  if(source.size()!=1||source[0]<'0'||source[0]>'3')return fail("reply-source-invalid");
  next.source=unsigned(source[0]-'0');
