@@ -16,6 +16,11 @@ runtime helper.
 - Launcher mode checks both adjacent binary headers before stopping existing
   Spotify processes and reports architecture/header-read errors. This does not
   validate every loader dependency or guarantee Spotify-version compatibility.
+- Launcher mode also loads the adjacent `Floggfy.dll` into supported Spotify
+  children from the same installation before their application entry point.
+  Each covered child applies the same process-launch and network hooks before it
+  can create descendants. Unrelated programs and other Spotify installations
+  are forwarded unchanged.
 - A mismatched automatic-mode DLL cannot run its own error-reporting code.
 
 ## Settings
@@ -163,8 +168,11 @@ ConvertNumberedFilenames=0
 - **NetworkKillSwitch:** `[Misc]`, default `0` shows the control off. `-1` hides it and
   disables its hooks; `1` shows it on. Menu changes apply live. It blocks
   covered IPv4/IPv6 Winsock operations in processes loading Floggfy, including
-  functional traffic needed for login, playback and online metadata. Already
-  queued I/O is not cancelled; uninjected processes, external DNS services,
+  functional traffic needed for login, playback and online metadata. Launcher
+  mode loads Floggfy into approved same-installation Spotify children before
+  their entry point; automatic `version.dll` mode cannot cover a helper that
+  does not load that proxy. Already queued I/O is not cancelled; uninjected
+  processes, external DNS services,
   provider pointers obtained before hook startup, direct native I/O and cached
   Registered I/O (RIO) paths remain outside coverage. This is not a firewall
   guarantee. If hooks are unavailable, the menu shows **Unavailable**.
