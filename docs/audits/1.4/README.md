@@ -44,6 +44,7 @@ The 63 open entries include repeated destination-path searches and duplicate art
 | Metadata cleanup | Decode renderer metadata into its final fields and share tag merging between the renderer and offline cache. | A representative long-lyrics message went from 85 allocations to 43. A 20,016-input comparison preserved parsed fields and errors. Captured renderer messages compared byte-for-byte. |
 | Recovery and packaging | Retry pending INI writes after a transient failure. Build both release outputs before replacing the packaged files. | Unlocking the INI persisted the newest menu changes without another edit. A missing launcher preserved both previous outputs. |
 | Saved playback | Restore the original active playlist order when leaving Saved sort. Wait while a manually queued song is playing and retry transient update failures. | Renderer fixtures cover the native sort switch, a pending manual queue, session changes, and synchronous and asynchronous retries. |
+| Ogg publication | Share source preparation across named and Unmatched saves. Reuse the validated source on retries and release rejected recordings from the queue. Rebase page numbers during tagging. | A checksum-valid stream with malformed Vorbis setup no longer creates an Unmatched archive. Page-one input tags identically to page-zero input and its original Unmatched bytes decode to identical PCM. |
 
 The detailed reviews below retain the original findings. The CSV dispositions record their current status.
 
@@ -100,12 +101,10 @@ The telemetry fixture exercised 5,040 URL classifications with the same results.
 
 Reproduced in fixtures
 
-- A complete set of checksum-valid Ogg pages with an invalid Vorbis setup header can reach Unmatched with a sidecar claiming complete and valid audio. Named saves run a second recording inspection that rejects the same setup header. [Unmatched publication](../../../native/media/audio_history.cpp#L2021) · [Vorbis header inspection](../../../native/media/recording_file.cpp#L280)
-- A Vorbis stream whose first page sequence is nonzero can pass capture validation and stall named publication. The recording inspector requires zero, and the save worker retries this permanent validation failure. [Recording inspection](../../../native/media/recording_file.cpp#L264) · [Save retry](../../../native/media/audio_history.cpp#L2187)
 - Cancelling the initial Saved sort while a native sort command is in flight can leave that native column in a different sort direction. This also reproduced on v1.4. [Native sort cycle](../../../native/ui/marked_playlist_sort.js#L225)
 
 Found in source
 
-- The Ogg release audit reserves space for the flattened copy. Its Vorbis parser also allocates an 8 MiB scratch arena outside that reservation. [Release audit](../../../native/media/audio_history.cpp#L1201) · [Vorbis setup validation](../../../native/media/vorbis_headers.cpp#L45)
+- The Ogg release audit and source preparation reserve space for the flattened copy. The Vorbis parser also allocates an 8 MiB scratch arena outside that reservation. [Release audit](../../../native/media/audio_history.cpp#L1183) · [Vorbis setup validation](../../../native/media/vorbis_headers.cpp#L45)
 - Cancelling a Saved database rebuild stops further scanning. A date backfill already in flight can still write one file. [Catalog rebuild](../../../native/ui/marked_catalog.cpp#L333)
 - Startup can accept a relative Save Location from the INI even though the documented option requires an absolute path. Invalid matcher values fall back to defaults and can trigger a redundant rewrite that preserves the invalid text. [Save Location](../../../native/tooling/history_settings.cpp#L387) · [Matcher options](../../../native/tooling/history_settings.cpp#L249)

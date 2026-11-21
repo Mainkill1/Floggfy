@@ -255,6 +255,20 @@ static void vorbis_headers() {
     RecordingFile owned_recording;
     check(InspectRecording(owned_valid.data(),owned_valid.size(),owned_recording)&&owned_recording.owned&&owned_recording.complete,
           "supported headers preserve ownership for a complete captured recording");
+    std::vector<uint8_t> expected_tagged,tagged;std::string error;
+    check(TagOgg(owned_valid,{},expected_tagged,error),"page-zero stream tags successfully");
+    for(const unsigned first:{1u,0x7fffffffu,0xfffffffeu}) {
+        const auto shifted=recording_fixture::ogg_headers(id,setup,false,owned_comment,first);
+        check(TagOgg(shifted,{},tagged,error)&&tagged==expected_tagged,
+              "a continuous nonzero page sequence tags to the same byte-identical recording");
+        if(first==0xfffffffeu) {
+            check(!InspectRecording(shifted.data(),shifted.size(),owned_recording)||!owned_recording.complete,
+                  "a raw sequence crossing the libogg sentinel is not a verified standalone file");
+        } else {
+            check(InspectRecording(shifted.data(),shifted.size(),owned_recording)&&owned_recording.owned&&owned_recording.complete,
+                  "a continuous nonzero page sequence is also complete as an original recording");
+        }
+    }
     auto rejected=[&](const std::vector<uint8_t>& identification,const std::vector<uint8_t>& configuration,const char* label) {
         const auto stream=recording_fixture::ogg_headers(identification,configuration,false,owned_comment);RecordingFile recording;
         check(!InspectRecording(stream.data(),stream.size(),recording)&&!recording.owned&&!recording.complete,label);

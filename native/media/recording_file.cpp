@@ -261,9 +261,11 @@ bool Ogg(const uint8_t* b,size_t size,RecordingFile& out) {
         size_t header=27+b[p+26]; if(header>size-p) return false;
         size_t body=0; for(size_t i=27;i<header;i++) body+=b[p+i];
         if(header+body>size-p || stream.complete) return true;
-        if(p==0 && (b[p+5]!=2 || binary::ReadLittle32(b+p+18)!=0 || binary::ReadLittle32(b+p+6)!=0 || binary::ReadLittle32(b+p+10)!=0)) return true;
+        if(p==0 && (b[p+5]!=2 || binary::ReadLittle32(b+p+6)!=0 || binary::ReadLittle32(b+p+10)!=0)) return true;
         auto state=stream.Push(b+p,header+body);
-        if(state==Result::Invalid || state==Result::Ignore || (p!=0 && state==Result::Begin)) return true;
+        // libogg uses -1 as an uninitialized page number. Standalone files
+        // crossing that value are not reliably readable without repaging.
+        if(state==Result::Invalid || state==Result::Ignore || (p!=0 && state==Result::Begin) || !stream.next) return true;
         out.quality={Codec::Vorbis,stream.rate,stream.channels,0,stream.bitrate};
         if(bool(b[p+5]&1)!=packet_open) return true;
         size_t at=p+header;
@@ -285,7 +287,10 @@ bool Ogg(const uint8_t* b,size_t size,RecordingFile& out) {
                     // Unsupported or invalid headers must not confer ownership: an
                     // existing recording outside these limits is not repairable.
                     const auto result=ValidateVorbisHeaders(identification,packet);
-                    if(result!=VorbisHeadersResult::Valid)return false;
+                    if(result!=VorbisHeadersResult::Valid) {
+                        out.inspection_resource_failure=result==VorbisHeadersResult::ResourceFailure;
+                        return false;
+                    }
                     headers_valid=true;
                 }
             }

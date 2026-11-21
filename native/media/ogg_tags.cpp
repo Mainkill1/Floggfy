@@ -61,7 +61,8 @@ bool TagOgg(const std::vector<uint8_t>& source,const Tags& tags,
         if(size>source.size()-offset) return fail("truncated Ogg body");
         if(validation.complete) return fail("trailing stream after EOS");
         Result state=validation.Push(b,size);
-        if(state==Result::Invalid || state==Result::Ignore) return fail("invalid Ogg stream or sequence gap");
+        if(state==Result::Invalid || state==Result::Ignore || (offset && state==Result::Begin))
+            return fail("invalid Ogg stream or sequence gap");
         if(!streams.initialized) {
             if(ogg_stream_init(&streams.input,int(validation.serial))) return fail("input Ogg allocation failed");
             if(ogg_stream_init(&streams.output,int(validation.serial))) {
@@ -71,7 +72,12 @@ bool TagOgg(const std::vector<uint8_t>& source,const Tags& tags,
             TagMemoryPlan plan;if(!PlanTagConstructionMemory(Codec::Vorbis,source.size(),0,0,tags,plan))return fail("Ogg tag allocation overflow");
             output.reserve(plan.output_capacity);
         }
-        ogg_page page={const_cast<unsigned char*>(b),long(header),const_cast<unsigned char*>(b+header),long(body)};
+        // Stream checked the original sequence and CRC. Give libogg a page-zero
+        // sequence for packet assembly, including when the source wraps around.
+        uint8_t page_header[282];std::memcpy(page_header,b,header);
+        const uint32_t sequence=validation.pages-1;
+        for(unsigned i=0;i<4;++i)page_header[18+i]=uint8_t(sequence>>(i*8));
+        ogg_page page={page_header,long(header),const_cast<unsigned char*>(b+header),long(body)};
         if(ogg_stream_pagein(&streams.input,&page)) return fail("Ogg page rejected");
         ogg_packet packet; int result;
         auto flush=[&] {

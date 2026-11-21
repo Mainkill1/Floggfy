@@ -1131,16 +1131,6 @@ static FinalCaptureValidation ValidateFinalCapture(const Capture& capture) {
     if(capture.aac)return ValidateAacCapture(capture);
     return ValidateOggCapture(capture);
 }
-static bool ValidateFlattenedCapture(const Capture& capture,const std::vector<uint8_t>& source) {
-    if(capture.aac||capture.mp3)return true; // These streams were reparsed immediately before Flatten().
-    RecordingFile recording;
-    if(!InspectRecording(source.data(),source.size(),recording)||!recording.complete)return false;
-    const auto codec=capture.lossless?Codec::Flac:Codec::Vorbis;
-    if(recording.quality.codec!=codec||recording.quality.rate!=(capture.lossless?capture.flac.rate:capture.stream.rate)||
-       recording.quality.channels!=(capture.lossless?capture.flac.channels:capture.stream.channels))return false;
-    if(capture.lossless&&recording.quality.bits!=capture.flac.bits)return false;
-    return true;
-}
 static FinalCaptureValidation CachedFinalValidation(const Capture& capture) {
     if(capture.final_validation<0) {
         ++capture.validation_runs;
@@ -1522,7 +1512,7 @@ static DestinationFailure ResolvePublicationDestinations(const Capture& capture,
     return DestinationFailure::None;
 }
 static LogKind PublicationLogKind(Publication status,bool newly_saved) {
-    if(status==Publication::RetryIO||status==Publication::Blocked)return LogKind::Failure;
+    if(status==Publication::RetryIO||status==Publication::Blocked||status==Publication::Rejected)return LogKind::Failure;
     if(status==Publication::Saved&&newly_saved)return LogKind::Finished;
     return LogKind::Activity;
 }
@@ -1545,11 +1535,27 @@ static bool ReserveConstruction(Capture& capture,size_t incremental_peak) {
     }
     return true;
 }
-static bool FlattenPublicationSource(Capture& capture) {
-    if(!capture.publication_source.empty())return true;
-    if(!ReserveConstruction(capture,capture.data.size()))return false;
-    capture.publication_source=capture.data.Flatten();
-    return true;
+struct PublicationSourceError {Publication status;const char* detail;};
+static std::optional<PublicationSourceError> PreparePublicationSource(Capture& capture) {
+    if(!capture.publication_source.empty())return {};
+    if(CachedFinalValidation(capture)!=FinalCaptureValidation::Valid)
+        return PublicationSourceError{Publication::Rejected,"final cached capture validation failed; no file published"};
+    if(!ReserveConstruction(capture,capture.data.size()))
+        return PublicationSourceError{Publication::Blocked,"flatten construction memory unavailable; source retained"};
+    auto source=capture.data.Flatten();
+    if(!capture.aac&&!capture.mp3) {
+        RecordingFile recording;
+        const auto expected=capture.Encoding();
+        if(!InspectRecording(source.data(),source.size(),recording)||!recording.complete||
+           recording.quality.codec!=expected.codec||recording.quality.rate!=expected.rate||
+           recording.quality.channels!=expected.channels||recording.quality.bits!=expected.bits) {
+            if(recording.inspection_resource_failure)
+                return PublicationSourceError{Publication::Blocked,"capture inspection resources unavailable; source retained"};
+            return PublicationSourceError{Publication::Rejected,"flattened capture integrity validation failed; no file published"};
+        }
+    }
+    capture.publication_source=std::move(source);
+    return {};
 }
 enum class AacPreparation { Ready,ExtractionMemory,InvalidSource,MuxMemory,MuxFailed };
 static AacPreparation PreparePublicationAac(Capture& capture,const Tags& tags,
@@ -1737,16 +1743,9 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
         if(c.aac&&c.publication_source.empty()&&
            !AacExtractionFitsBudget(c.data.capacity(),c.data.size(),size_t(c.SourceUnits())))
             return finish(Publication::RetryIO,"failed","AAC extraction memory budget exceeded; no file published");
-        // Every linked capture gets a final complete-buffer check immediately
-        // before its block storage is cleared. Ogg/AAC are rebuilt from the cached
-        // bytes; flattened FLAC/Ogg then receive the recording parser's whole-file
-        // frame/page checksum and trailing-data validation as well.
-        if(CachedFinalValidation(c)!=FinalCaptureValidation::Valid)
-            return finish(Publication::Blocked,"failed","final cached capture validation failed; no file published");
-        if(!FlattenPublicationSource(c))return finish(Publication::Blocked,"deferred","flatten construction memory unavailable; source retained");
+        if(const auto error=PreparePublicationSource(c))
+            return finish(error->status,error->status==Publication::Blocked?"deferred":"failed",error->detail);
         const auto& source=c.publication_source;
-        if(!ValidateFlattenedCapture(c,source))
-            return finish(Publication::Blocked,"failed","flattened capture integrity validation failed; no file published");
         bool tagged_ok=false;
         if(c.aac) {
             const auto prepared=PreparePublicationAac(c,tags,tagged,error);
@@ -2025,10 +2024,9 @@ static Publication PublishUnmatched(SaveJob& job) {
     };
     if(!settings.downloads||settings.capture_epoch!=job.epoch||!settings.save_unmatched)
         return outcome(Publication::Cancelled,"downloads-disabled-capture-epoch-changed-or-save-unmatched-disabled");
-    const auto validation=CachedFinalValidation(capture);
-    if(validation!=FinalCaptureValidation::Valid) {
-        Log(LogKind::Diagnostic,"unmatched publication blocked: cached audio is incomplete or invalid");
-        return outcome(Publication::Blocked,"cached-capture-validation-rejected");
+    if(const auto error=PreparePublicationSource(capture)) {
+        if(error->status==Publication::Rejected)LogEvent(LogKind::Failure,"failed",error->detail);
+        return outcome(error->status,error->detail);
     }
     const auto fail=[&](const char* reason) {
         if(capture.publication_error!=reason) {
@@ -2045,7 +2043,6 @@ static Publication PublishUnmatched(SaveJob& job) {
             time.wYear,time.wMonth,time.wDay,time.wHour,time.wMinute,time.wSecond,time.wMilliseconds);
         capture.unmatched_name=std::wstring(stamp)+guid;
     }
-    if(!FlattenPublicationSource(capture))return outcome(Publication::Blocked,"flatten-memory-unavailable");
     if(capture.aac&&capture.publication_artifact.bytes.empty()) {
         std::string error;
         std::vector<uint8_t> packaged;
@@ -2172,7 +2169,7 @@ static DWORD WINAPI SaveWorker(LPVOID) {
         }
         const char* outcome=result==Publication::Saved?"saved":result==Publication::AlreadyPresent?"already-present":
             result==Publication::Replan?"settings-or-metadata-changed":result==Publication::RetryIO?"retry-io":
-            result==Publication::Blocked?"blocked":"cancelled";
+            result==Publication::Blocked?"blocked":result==Publication::Rejected?"rejected":"cancelled";
         TraceCaptureDisposition(*job.capture,job.unmatched?"unmatched-publication":"named-publication",outcome);
         if((result==Publication::RetryIO||result==Publication::Blocked)&&!job.capture->publication_error.empty())
             TraceCaptureDisposition(*job.capture,"publication-detail",job.capture->publication_error.c_str());
@@ -2207,8 +2204,8 @@ static DWORD WINAPI SaveWorker(LPVOID) {
             continue;
         }
         if(result==Publication::AlreadyPresent||result==Publication::Cancelled)recording_counters.skipped.fetch_add(1,std::memory_order_relaxed);
-        else if(job.unmatched)recording_counters.unmatched.fetch_add(1,std::memory_order_relaxed);
-        else recording_counters.saved.fetch_add(1,std::memory_order_relaxed);
+        else if(result==Publication::Saved)
+            (job.unmatched?recording_counters.unmatched:recording_counters.saved).fetch_add(1,std::memory_order_relaxed);
         job.capture.reset();job.metadata_counter.Reset();publishing_reserved.fetch_sub(job.reserved);
     }
     while(auto retry=retries.PopDue(UINT64_MAX)) {

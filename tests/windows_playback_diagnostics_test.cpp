@@ -1027,9 +1027,9 @@ std::unique_ptr<Capture> CompleteFlacCapture(double born,double finished) {
     capture->metadata=true;capture->flac_audio_offset=audio;capture->flac_source.Scan(capture->data,capture->flac,audio);
     capture->coverage.samples=16;capture->coverage.frames=1;return capture;
 }
-std::unique_ptr<Capture> CompleteOggCapture(double born,double finished) {
+std::unique_ptr<Capture> CompleteOggCapture(double born,double finished,unsigned first_sequence=0) {
     auto capture=std::make_unique<Capture>();capture->born=born;capture->finished=finished;
-    const auto bytes=recording_fixture::ogg();
+    const auto bytes=recording_fixture::ogg(false,first_sequence);
     for(size_t at=0;at<bytes.size();) {
         const size_t header=27+bytes[at+26];size_t length=header;
         for(size_t index=27;index<header;++index)length+=bytes[at+index];
@@ -1477,14 +1477,17 @@ void UnmatchedWriterRejectsPartial() {
     const auto root=std::filesystem::path(temp)/(L"Floggfy-reject-unmatched-"+std::to_wstring(GetTickCount64()));
     history::settings.root=root.wstring();history::settings.save_unmatched=history::settings.downloads=true;
     history::settings.capture_epoch=0;
-    for(const bool corrupt:{false,true}) {
+    for(const unsigned defect:{0,1,2}) {
         SaveJob job;job.unmatched=true;job.capture=CompleteOggCapture(100,101);
-        if(corrupt) {
-            auto bytes=recording_fixture::ogg();bytes.back()^=1;job.capture->data={};
+        if(defect!=0) {
+            auto bytes=defect==1?recording_fixture::ogg():recording_fixture::ogg_headers(
+                recording_fixture::identification(),{5,'v','o','r','b','i','s'});
+            if(defect==1)bytes.back()^=1;
+            job.capture->data={};job.capture->bytes=bytes.size();
             assert(job.capture->data.Append(bytes.data(),bytes.size(),1024*1024));
         } else job.capture->stream.complete=false;
-        assert(PublishUnmatched(job)==Publication::Blocked&&
-            "the writer must independently refuse incomplete or invalid unmatched recordings");
+        assert(PublishUnmatched(job)==Publication::Rejected&&
+            "invalid unmatched recordings are terminal and must not be retried");
         assert(!std::filesystem::exists(root)&&"rejected unmatched audio must not create audio or sidecar files");
     }
     history::settings=prior;
@@ -1523,7 +1526,9 @@ void UnmatchedArchiveRetry(bool fail_node=false) {
     history::settings.root=root.wstring();history::settings.save_unmatched=true;
     history::settings.capture_epoch=0;history::settings.downloads=true;
     {std::ofstream blocked(root/L"Unmatched");blocked<<"block directory creation";}
-    auto capture=CompleteOggCapture(100,101);
+    const unsigned first_sequence=fail_node?1:0;
+    const auto original=recording_fixture::ogg(false,first_sequence);
+    auto capture=CompleteOggCapture(100,101,first_sequence);
     assert(QueueRecording(capture,0,true,"{\"reason\":\"test unmatched\"}\n"));
     const auto failures=retry_node_failures.load();fail_retry_node=fail_node;
     const auto prior_event=save_event;save_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(save_event);
@@ -1534,7 +1539,7 @@ void UnmatchedArchiveRetry(bool fail_node=false) {
         while(retry_node_failures.load()==failures&&GetTickCount64()<node_deadline)Sleep(10);
         assert(retry_node_failures.load()==failures+1);
     } else Sleep(150);
-    assert(publishing_reserved.load()>=recording_fixture::ogg().size()&&"failed archive publication must keep the recording in RAM");
+    assert(publishing_reserved.load()>=original.size()&&"failed archive publication must keep the recording in RAM");
     std::filesystem::remove(root/L"Unmatched");
     const auto deadline=GetTickCount64()+5000;
     while(publishing_reserved.load()&&GetTickCount64()<deadline)Sleep(20);
@@ -1547,7 +1552,7 @@ void UnmatchedArchiveRetry(bool fail_node=false) {
         if(file.path().extension()==L".ogg") {
             ++audio;std::ifstream input(file.path(),std::ios::binary);
             const std::vector<uint8_t> bytes{std::istreambuf_iterator<char>(input),{}};
-            assert(bytes==recording_fixture::ogg()&&"archival preserves the exact original Ogg pages");
+            assert(bytes==original&&"archival preserves the exact original Ogg pages");
         } else if(file.path().extension()==L".json")++sidecars;
         else if(file.path().extension()==L".commit")++commits;
         else assert(false&&"no partial publication should remain after successful archive");

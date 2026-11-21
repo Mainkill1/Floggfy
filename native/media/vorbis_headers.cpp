@@ -51,7 +51,7 @@ VorbisHeadersResult ValidateVorbisHeaders(const std::vector<uint8_t>& identifica
     if(identification[11]>8)return VorbisHeadersResult::Unsupported;
     try {
         std::vector<uint8_t> pages;
-        if(!HeaderPages(identification,setup,pages))return VorbisHeadersResult::Unsupported;
+        if(!HeaderPages(identification,setup,pages))return VorbisHeadersResult::ResourceFailure;
         // uint64_t supplies the eight-byte alignment required by the arena.
         std::vector<uint64_t> arena(arena_bytes/sizeof(uint64_t));
         stb_vorbis_alloc allocation{reinterpret_cast<char*>(arena.data()),int(arena_bytes)};
@@ -71,7 +71,7 @@ VorbisHeadersResult ValidateVorbisHeaders(const std::vector<uint8_t>& identifica
         return error==0 && consumed==int(pages.size()) && info.channels==identification[11] && info.sample_rate==rate
             ? VorbisHeadersResult::Valid : VorbisHeadersResult::Invalid;
     }catch(...) {
-        return VorbisHeadersResult::Unsupported;
+        return VorbisHeadersResult::ResourceFailure;
     }
 }
 }

@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 namespace history {
-enum class Publication { Saved,AlreadyPresent,Replan,RetryIO,Blocked,Cancelled };
+enum class Publication { Saved,AlreadyPresent,Replan,RetryIO,Blocked,Cancelled,Rejected };
 struct PublicationPreferences {
     bool metadata=false,lyrics=false;
     uint64_t revision=0;

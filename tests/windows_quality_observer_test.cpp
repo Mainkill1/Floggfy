@@ -602,7 +602,7 @@ static void TestPublicationLogging() {
   assert(SetDownloads(false));assert(Publish(*capture,heard,CaptureEpoch())==Publication::Cancelled);
   WaitLog("skipped capture settings changed or downloads/format disabled", "Log Artist - Log Track");
   assert(SetDownloads(true));capture=make(44100,24);capture->data.Flatten();
-  assert(Publish(*capture,heard,CaptureEpoch())==Publication::Blocked);
+  assert(Publish(*capture,heard,CaptureEpoch())==Publication::Rejected);
   WaitLog("failed final cached capture validation failed; no file published","Log Artist - Log Track");
   assert(ReadRecentDownloads(recent)&&recent.size()==2); // Only the two actual publication paths add entries.
   // Real publication paths and labels may contain every old classifier word.
