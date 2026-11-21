@@ -58,14 +58,17 @@ hooks::QueuedHookSet<1> menu_startup_hooks;
 bool menu_prepared=false;
 hooks::InitController submenu_init;
 constexpr int root_id=28480,downloads_id=28481,location_id=28482,flac_id=28483,ogg_id=28484;
-constexpr int song_id=28485,last_quality_id=song_id+3,lyrics_id=28489;
+constexpr int song_id=28485,last_quality_id=song_id+int(history::kPlaybackLabelPrefixes.size())-1,lyrics_id=28489;
 constexpr int recent_id=28490,first_recent_id=28491;
-constexpr int speed_root_id=28474,first_speed_id=28475,last_speed_id=28479;
+constexpr unsigned speeds[]{1,2,4,8,10};
+constexpr int speed_root_id=28474,first_speed_id=28475,last_speed_id=first_speed_id+int(std::size(speeds))-1;
 constexpr int podcasts_id=28473,auto_skip_id=28472,never_pause_id=28471;
 constexpr int fallbacks_root_id=28470,windows_fallback_id=28469,misc_root_id=28468,network_kill_id=28467;
 constexpr int formats_root_id=28466,aac_id=28465,block_updates_id=28464;
 constexpr int project_id=28463;
 constexpr int marked_id=28458,marked_rebuild_id=28457;
+constexpr wchar_t root_label[]=L"To Disk";
+constexpr wchar_t recent_label[]=L"Latest Downloads";
 constexpr wchar_t project_label[]=L"Floggfy - v1.4";
 struct ToggleItem {
     int id;
@@ -89,13 +92,13 @@ constexpr ToggleItem format_items[]={
     {podcasts_id,L"Podcasts","Podcasts",&history::Settings::podcasts,history::SetPodcasts},
     {lyrics_id,L"Include Lyrics","Lyrics",&history::Settings::lyrics,history::SetLyrics},
 };
-constexpr ToggleItem other_items[]={
-    {downloads_id,L"Downloads","Downloads",&history::Settings::downloads,history::SetDownloads},
-    {auto_skip_id,L"Auto Skip Downloaded","Auto Skip Downloaded",&history::Settings::auto_skip_downloaded,history::SetAutoSkipDownloaded},
-};
+constexpr ToggleItem download_item{downloads_id,L"Downloads","Downloads",&history::Settings::downloads,history::SetDownloads};
+constexpr ToggleItem auto_skip_item{auto_skip_id,L"Auto Skip Downloaded","Auto Skip Downloaded",
+    &history::Settings::auto_skip_downloaded,history::SetAutoSkipDownloaded};
 static const ToggleItem* ToggleFor(int command) noexcept {
+    if(command==downloads_id)return &download_item;
+    if(command==auto_skip_id)return &auto_skip_item;
     for(const auto& entry:format_items)if(entry.id==command)return &entry;
-    for(const auto& entry:other_items)if(entry.id==command)return &entry;
     for(const auto& entry:fallback_items)if(entry.id==command)return &entry;
     return nullptr;
 }
@@ -103,6 +106,21 @@ static_assert(fallback_items[3].id>=cef_menu::kUserCommandFirst &&
               first_recent_id+history::kRecentDownloadLimit-1<=cef_menu::kUserCommandLast,
               "Menu commands stay within the CEF user command range (26500..28500)");
 static String Text(std::wstring_view s) { return {const_cast<wchar_t*>(s.data()),s.size(),nullptr}; }
+static void AddCheckItem(Menu* menu,int id,std::wstring_view label,bool checked,bool enabled=true) {
+    const auto text=Text(label);
+    MenuMethods::AddCheckItem(menu,id,&text);
+    MenuMethods::SetChecked(menu,id,checked);
+    MenuMethods::SetEnabled(menu,id,enabled);
+}
+static void AddDisabledItem(Menu* menu,int id,std::wstring_view label) {
+    const auto text=Text(label);
+    MenuMethods::AddItem(menu,id,&text);
+    MenuMethods::SetEnabled(menu,id,false);
+}
+static std::wstring_view ProtectionLabel(int command,bool available) {
+    if(command==block_updates_id) return available ? L"Block Updates" : L"Block Updates (Unavailable)";
+    return available ? L"Network Kill Switch" : L"Network Kill Switch (Unavailable)";
+}
 static const char* SettingName(int command) noexcept {
     if(auto* item=ToggleFor(command))return item->log_name;
     if(command==never_pause_id)return "Never Pause";
@@ -159,31 +177,36 @@ static bool Main(Menu* menu) {
     for(size_t index=0;index<count;++index) types[index]=MenuMethods::TypeAt(menu,index);
     return cef_menu::LooksLikeMainMenu(false,types,count);
 }
-static void UpdateQuality(Menu* menu,const history::PlaybackQualitySnapshot* song=nullptr,const std::wstring* folder=nullptr) {
+static void UpdateQuality(Menu* menu,const history::PlaybackQualitySnapshot* song=nullptr,bool song_available=false) {
     const auto snapshot=history::ReadPlaybackQuality();
     const auto labels=history::PlaybackQualityLabels(snapshot,song);
     const bool known_format=snapshot.format!=history::PlaybackFormat::Unknown;
+    const bool visible[]{true,snapshot.level!=history::PlaybackLevel::Unknown,known_format,known_format && snapshot.rate!=0};
     if(MenuMethods::IndexOf(menu,song_id)<0) MenuMethods::AddSeparator(menu);
     for(unsigned i=0;i<labels.size();++i) {
         int id=song_id+int(i);auto text=Text(labels[i]);
         if(MenuMethods::IndexOf(menu,id)<0)MenuMethods::AddItem(menu,id,&text);
         else MenuMethods::SetLabel(menu,id,&text);
-        MenuMethods::SetEnabled(menu,id,int(i==0 && folder && !folder->empty()));
-        const bool visible=i==0 || (i==1 ? snapshot.level!=history::PlaybackLevel::Unknown :
-                                     known_format && (i==2 || snapshot.rate!=0));
-        MenuMethods::SetVisible(menu,id,int(visible));
+        MenuMethods::SetEnabled(menu,id,i==0 && song_available);
+        MenuMethods::SetVisible(menu,id,visible[i]);
     }
 }
-constexpr unsigned speeds[]{1,2,4,8,10};
 static void RefreshSpeedMenu(Menu* parent) {
-    if(!parent||MenuMethods::IndexOf(parent,speed_root_id)<0)return;
-    auto* speed_menu=MenuMethods::GetSubmenu(parent,speed_root_id);if(!speed_menu)return;
+    auto* speed_menu=MenuMethods::GetSubmenu(parent,speed_root_id);
+    if(!speed_menu)return;
     MenuReference speed_reference(speed_menu);
     const auto selected=history::CaptureSpeed();
-    for(unsigned i=0;i<std::size(speeds);++i)if(MenuMethods::IndexOf(speed_menu,first_speed_id+int(i))>=0) {
-        MenuMethods::SetChecked(speed_menu,first_speed_id+int(i),int(selected==speeds[i]));
-        MenuMethods::SetEnabled(speed_menu,first_speed_id+int(i),int(history::CaptureSpeedAvailable(speeds[i])));
+    for(unsigned i=0;i<std::size(speeds);++i) {
+        const auto id=first_speed_id+int(i);
+        if(MenuMethods::IndexOf(speed_menu,id)<0)continue;
+        MenuMethods::SetChecked(speed_menu,id,selected==speeds[i]);
+        MenuMethods::SetEnabled(speed_menu,id,history::CaptureSpeedAvailable(speeds[i]));
     }
+}
+static void RefreshMarkedMenu(Menu* menu,bool enabled) {
+    MenuMethods::SetChecked(menu,marked_id,enabled);
+    MenuMethods::SetChecked(menu,marked_rebuild_id,history::MarkedRebuildRunning());
+    MenuMethods::SetEnabled(menu,marked_rebuild_id,enabled);
 }
 static bool ShowCaptureSpeed(const history::Settings& state) noexcept {
     return state.capture_speed>=0;
@@ -200,29 +223,29 @@ static void Populate(Menu* menu) {
             history::QueueDiagnostic("To Disk menu probe: non-main model ignored");
         return;
     }
-    auto state=history::GetSettings();
+    const auto state=history::GetSettings();
     auto submenu=[](Menu* parent,int id,std::wstring_view label) {
-        auto text=Text(label);
+        const auto text=Text(label);
         return MenuMethods::AddSubmenu(parent,id,&text);
     };
-    Menu* child=submenu(menu,root_id,L"To Disk");
-    if(!Capable(child)) { if(child && child->base.release) child->base.release(&child->base); return; }
+    auto* child=submenu(menu,root_id,root_label);
     MenuReference child_reference(child);
-    const auto project=Text(project_label);
-    MenuMethods::AddItem(child,project_id,&project);
-    MenuMethods::SetEnabled(child,project_id,0);
+    if(!Capable(child))return;
+    AddDisabledItem(child,project_id,project_label);
     MenuMethods::AddSeparator(child);
-    auto item=[](Menu* target,int id,std::wstring_view label,bool checked,bool enabled=true) {
-        auto text=Text(label);
-        MenuMethods::AddCheckItem(target,id,&text);
-        MenuMethods::SetChecked(target,id,int(checked)); MenuMethods::SetEnabled(target,id,int(enabled));
+    auto add_toggle=[&](Menu* target,const ToggleItem& item) {
+        AddCheckItem(target,item.id,item.label,state.*item.enabled);
     };
-    item(child,downloads_id,L"Downloads",state.downloads,true);
-    if(auto* recent=submenu(child,recent_id,L"Latest Downloads")) {
+    auto add_toggle_submenu=[&](int id,std::wstring_view label,const auto& items) {
+        if(auto* target=submenu(child,id,label)) {
+            MenuReference reference(target);
+            for(const auto& item:items)add_toggle(target,item);
+        }
+    };
+    add_toggle(child,download_item);
+    if(auto* recent=submenu(child,recent_id,recent_label)) {
         MenuReference recent_reference(recent);
-        auto placeholder=Text(L"No downloads yet");
-        MenuMethods::AddItem(recent,first_recent_id,&placeholder);
-        MenuMethods::SetEnabled(recent,first_recent_id,0);
+        AddDisabledItem(recent,first_recent_id,L"No downloads yet");
     }
     MenuMethods::SetEnabled(child,recent_id,0);
     MenuMethods::SetVisible(child,recent_id,0);
@@ -236,29 +259,23 @@ static void Populate(Menu* menu) {
         }
     }
     if(state.never_pause>=0)
-        item(child,never_pause_id,L"Never Pause",state.never_pause==1);
-    if(auto* formats=submenu(child,formats_root_id,L"Allowed Formats")) {
-        MenuReference formats_reference(formats);
-        for(const auto& entry:format_items)item(formats,entry.id,entry.label,state.*(entry.enabled));
-    }
+        AddCheckItem(child,never_pause_id,L"Never Pause",state.never_pause==1);
+    add_toggle_submenu(formats_root_id,L"Allowed Formats",format_items);
     if(auto* misc=submenu(child,misc_root_id,L"Misc")) {
         MenuReference misc_reference(misc);
-        auto location_text=Text(L"Save Location");
+        const auto location_text=Text(L"Save Location");
         MenuMethods::AddItem(misc,location_id,&location_text);
-        item(misc,auto_skip_id,L"Auto Skip Downloaded",state.auto_skip_downloaded);
-        item(misc,marked_id,L"Marked When Downloaded",state.marked_when_downloaded);
-        item(misc,marked_rebuild_id,L"Marked DB Rebuild",history::MarkedRebuildRunning(),state.marked_when_downloaded);
-        item(misc,block_updates_id,!updates::Available() ? L"Block Updates (Unavailable)" :
-             L"Block Updates",updates::Blocked(),updates::Available());
-        if(state.network_kill_switch>=0)
-            item(misc,network_kill_id,!network::Available() ? L"Network Kill Switch (Unavailable)" :
-                 L"Network Kill Switch",
-                 network::Enabled(),network::Available());
+        add_toggle(misc,auto_skip_item);
+        AddCheckItem(misc,marked_id,L"Marked When Downloaded",state.marked_when_downloaded);
+        AddCheckItem(misc,marked_rebuild_id,L"Marked DB Rebuild",history::MarkedRebuildRunning(),state.marked_when_downloaded);
+        const bool can_block_updates=updates::Available();
+        AddCheckItem(misc,block_updates_id,ProtectionLabel(block_updates_id,can_block_updates),updates::Blocked(),can_block_updates);
+        if(state.network_kill_switch>=0) {
+            const bool can_kill_network=network::Available();
+            AddCheckItem(misc,network_kill_id,ProtectionLabel(network_kill_id,can_kill_network),network::Enabled(),can_kill_network);
+        }
     }
-    if(auto* fallbacks=submenu(child,fallbacks_root_id,L"Fallbacks")) {
-        MenuReference fallbacks_reference(fallbacks);
-        for(const auto& entry:fallback_items)item(fallbacks,entry.id,entry.label,state.*(entry.enabled));
-    }
+    add_toggle_submenu(fallbacks_root_id,L"Fallbacks",fallback_items);
     RefreshSpeedMenu(child);
     UpdateQuality(child);
 }
@@ -284,6 +301,17 @@ struct MenuOpening {
         std::vector<history::RecentDownload> recent;
         bool song_bound=false;
         unsigned song_settings_generation=0;
+
+        void RefreshSong(bool bind) {
+            if(bind) {
+                song=history::ReadPlaybackQuality();
+                song_settings_generation=history::GetSettings().generation;
+                song_file.clear();
+                song_bound=true;
+            }
+            if(song_bound && song_file.empty())
+                history::ReadSongDestination(song.identity,song_settings_generation,song_file);
+        }
     } snapshot;
     Phase phase=Phase::Preparing;
     bool Visible()const{return phase==Phase::Visible;}
@@ -298,6 +326,9 @@ struct Wrapped {
     // The shared delegate owns command targets, never a retained menu model.
     MenuOpening opening;
     bool CapableCached(Menu* menu) { return capability.Check(menu); }
+    bool HasQualityRows(Menu* menu) {
+        return CapableCached(menu) && MenuMethods::IndexOf(menu,song_id)>=0 && MenuMethods::IndexOf(menu,downloads_id)>=0;
+    }
     void ClearValidation() { capability.ClearValidation(); }
     ~Wrapped() { if(original) original->base.release(&original->base); }
 };
@@ -306,21 +337,7 @@ static void Add(Base* p) { Self(p)->refs.fetch_add(1,std::memory_order_relaxed);
 static int Release(Base* p) { auto* w=Self(p); if(w->refs.fetch_sub(1,std::memory_order_acq_rel)==1) { delete w; return 1; } return 0; }
 static int One(Base* p) { return Self(p)->refs.load()==1; }
 static int Any(Base* p) { return Self(p)->refs.load()!=0; }
-static void ReleaseMenu(Menu* menu) { if(menu && menu->base.release) menu->base.release(&menu->base); }
-static void RefreshPendingSongTarget(Wrapped* wrapped) {
-    auto& opening=wrapped->opening.snapshot;
-    if(!opening.song_bound || !opening.song_file.empty())return;
-    std::wstring saved_file;
-    if(history::ReadSongDestination(opening.song.identity,opening.song_settings_generation,saved_file))
-        opening.song_file.swap(saved_file);
-}
-static void BindSong(Wrapped* wrapped) {
-    auto& opening=wrapped->opening.snapshot;
-    opening.song=history::ReadPlaybackQuality();
-    opening.song_settings_generation=history::GetSettings().generation;
-    opening.song_file.clear();opening.song_bound=true;
-    RefreshPendingSongTarget(wrapped);
-}
+static void ReleaseMenu(Menu* menu) { MenuReference reference(menu); }
 static void RefreshRecent(Wrapped* wrapped,Menu* child) {
     std::vector<history::RecentDownload> next;
     if(!history::ReadRecentDownloads(next)) return; // Never block or erase a prior snapshot.
@@ -331,72 +348,56 @@ static void RefreshRecent(Wrapped* wrapped,Menu* child) {
     labels.reserve(next.size());
     for(const auto& entry:next) labels.push_back(entry.title.empty() ? L"Untitled download" : history::MenuTitle(entry.title,0x9f));
     auto* recent=MenuMethods::GetSubmenu(child,recent_id);
-    if(!recent)return;
     MenuReference recent_reference(recent);
     if(!wrapped->CapableCached(recent) || !MenuMethods::Clear(recent))return;
     wrapped->opening.snapshot.recent.swap(next);
-    if(wrapped->opening.snapshot.recent.empty()) {
-        wchar_t empty[]=L"No downloads yet";String text{empty,15,nullptr};
-        MenuMethods::AddItem(recent,first_recent_id,&text);
-        MenuMethods::SetEnabled(recent,first_recent_id,0);
-    } else for(size_t i=0;i<wrapped->opening.snapshot.recent.size();++i) {
-        auto text=Text(labels[i]);MenuMethods::AddItem(recent,first_recent_id+int(i),&text);
+    if(labels.empty()) AddDisabledItem(recent,first_recent_id,L"No downloads yet");
+    for(size_t i=0;i<labels.size();++i) {
+        const auto text=Text(labels[i]);
+        MenuMethods::AddItem(recent,first_recent_id+int(i),&text);
     }
-    MenuMethods::SetEnabled(child,recent_id,!wrapped->opening.snapshot.recent.empty());
-    MenuMethods::SetVisible(child,recent_id,!wrapped->opening.snapshot.recent.empty());
+    MenuMethods::SetEnabled(child,recent_id,!labels.empty());
+    MenuMethods::SetVisible(child,recent_id,!labels.empty());
 }
-static DWORD WINAPI RevealRecentWorker(void* argument) {
-    std::unique_ptr<std::wstring> path(static_cast<std::wstring*>(argument));
-    const HRESULT initialized=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
-    DWORD attributes=INVALID_FILE_ATTRIBUTES;
-    HRESULT result=HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
-    try {
-        attributes=GetFileAttributesW(history::WindowsPath(*path).c_str());
-        if(win32::IsFile(attributes)) {
-            PIDLIST_ABSOLUTE item=nullptr;
-            result=SHParseDisplayName(path->c_str(),nullptr,&item,0,nullptr);
-            if(SUCCEEDED(result)) result=SHOpenFolderAndSelectItems(item,0,nullptr,0);
-            CoTaskMemFree(item);
-        }
-    } catch(...) { result=E_OUTOFMEMORY; }
-    if(FAILED(result)) MessageBoxW(nullptr,
-        !win32::IsFile(attributes) ?
-        L"This download is no longer available at its saved location." :
-        L"Explorer could not show this download.",L"Latest Downloads",MB_OK|MB_ICONINFORMATION);
-    if(SUCCEEDED(initialized)) CoUninitialize();
-    return 0;
-}
-static DWORD WINAPI RevealSongWorker(void* argument) {
-    std::unique_ptr<std::wstring> saved_file(static_cast<std::wstring*>(argument));
+struct RevealRequest { std::wstring path; bool song_folder; };
+static DWORD WINAPI RevealWorker(void* argument) {
+    std::unique_ptr<RevealRequest> request(static_cast<RevealRequest*>(argument));
+    const auto& path=request->path;
     const HRESULT initialized=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
     bool available=false,opened=false;
     try {
-        // A file may disappear after the worker snapshot was displayed. Check
-        // the bound file again on this click, without recreating its folder.
-        const auto attributes=GetFileAttributesW(history::WindowsPath(*saved_file).c_str());
-        available=win32::IsFile(attributes);
-        const auto slash=saved_file->find_last_of(L"\\/");
-        if(available && slash!=std::wstring::npos) {
-            const auto folder=saved_file->substr(0,slash);
-            opened=reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr,L"open",folder.c_str(),nullptr,nullptr,SW_SHOWNORMAL))>32;
+        available=win32::IsFile(GetFileAttributesW(history::WindowsPath(path).c_str()));
+        if(available && request->song_folder) {
+            const auto slash=path.find_last_of(L"\\/");
+            if(slash!=std::wstring::npos) {
+                const auto folder=path.substr(0,slash);
+                opened=reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr,L"open",folder.c_str(),nullptr,nullptr,SW_SHOWNORMAL))>32;
+            }
+        } else if(available) {
+            PIDLIST_ABSOLUTE item=nullptr;
+            opened=SUCCEEDED(SHParseDisplayName(path.c_str(),nullptr,&item,0,nullptr)) &&
+                SUCCEEDED(SHOpenFolderAndSelectItems(item,0,nullptr,0));
+            CoTaskMemFree(item);
         }
     } catch(...) {/* Never unwind out of a click worker on allocation failure. */}
-    if(!opened)
-        MessageBoxW(nullptr,available ? L"Explorer could not open this song's folder." :
-                    L"This song's saved audio is no longer available at its saved location.",
-                    L"Song folder",MB_OK|MB_ICONINFORMATION);
+    if(!opened) {
+        const wchar_t* message=request->song_folder
+            ? (available ? L"Explorer could not open this song's folder." : L"This song's saved audio is no longer available at its saved location.")
+            : (available ? L"Explorer could not show this download." : L"This download is no longer available at its saved location.");
+        MessageBoxW(nullptr,message,request->song_folder ? L"Song folder" : recent_label,MB_OK|MB_ICONINFORMATION);
+    }
     if(SUCCEEDED(initialized)) CoUninitialize();
     return 0;
 }
 static void RevealSavedFile(const std::wstring& path,bool song_folder) {
-    auto* copy=new(std::nothrow) std::wstring(path);
-    if(!copy)return;
-    HANDLE worker=CreateThread(nullptr,0,song_folder?RevealSongWorker:RevealRecentWorker,copy,0,nullptr);
+    auto* request=new(std::nothrow) RevealRequest{path,song_folder};
+    if(!request)return;
+    HANDLE worker=CreateThread(nullptr,0,RevealWorker,request,0,nullptr);
     if(worker)CloseHandle(worker);
     else {
-        delete copy;
+        delete request;
         MessageBoxW(GetActiveWindow(),song_folder?L"The song folder could not be opened.":L"Explorer could not be started.",
-                    song_folder?L"Song folder":L"Latest Downloads",MB_OK|(song_folder?MB_ICONERROR:MB_ICONINFORMATION));
+                    song_folder?L"Song folder":recent_label,MB_OK|(song_folder?MB_ICONERROR:MB_ICONINFORMATION));
     }
 }
 static bool ChangeNetworkKillSwitch(bool enabled) {
@@ -428,24 +429,25 @@ static bool ChangeBlockUpdates(bool blocked) {
     if(!restored)LogBlockUpdatesFailure("rollback",restore_error);
     return false;
 }
-static void Execute(Delegate* self,Menu* menu,int command,int flags) {
+static void Execute(Delegate* self,Menu* menu,int command,int flags) try {
     history::HookDiagnosticScope diagnostic(history::diagnostics::Phase::MenuExecute);
     MenuReference reference(menu);
-    try {
+    auto* wrapped=Self(self);
     if(command==project_id)return;
     if(command==song_id) {
-        const auto& file=Self(self)->opening.snapshot.song_file;
+        const auto& file=wrapped->opening.snapshot.song_file;
         if(!file.empty())RevealSavedFile(file,true);
         return;
     }
     if(command>=first_recent_id && command<first_recent_id+int(history::kRecentDownloadLimit)) {
         const auto index=size_t(command-first_recent_id);
-        const auto& recent=Self(self)->opening.snapshot.recent;
+        const auto& recent=wrapped->opening.snapshot.recent;
         if(index<recent.size())RevealSavedFile(recent[index].path,false);
         return;
     }
-    if(command==recent_id || command==speed_root_id || command==formats_root_id || command==fallbacks_root_id || command==misc_root_id) {return;}
-    if(command>=song_id && command<=last_quality_id) {return;}
+    if(command==recent_id || command==speed_root_id || command==formats_root_id ||
+       command==fallbacks_root_id || command==misc_root_id ||
+       (command>song_id && command<=last_quality_id))return;
     if(command>=first_speed_id && command<=last_speed_id) {
         const auto speed=speeds[command-first_speed_id];
         if(!history::CaptureSpeedAvailable(speed)) {
@@ -464,15 +466,14 @@ static void Execute(Delegate* self,Menu* menu,int command,int flags) {
         if(!ok)MessageBoxW(GetActiveWindow(),L"The capture speed could not be saved; the current speed remains active.",L"To Disk",MB_OK|MB_ICONERROR);
         return;
     }
-    auto* w=Self(self); auto settings=history::GetSettings(); bool ok=true;
+    const auto settings=history::GetSettings();
+    bool ok=true;
     if(command==marked_id||command==marked_rebuild_id) {
         if(command==marked_id)ok=history::SetMarkedWhenDownloaded(!settings.marked_when_downloaded);
         const auto updated=history::GetSettings();
         history::ConfigureMarkedCatalog(updated.root,updated.marked_when_downloaded);
         if(command==marked_rebuild_id)ok=history::ToggleMarkedRebuild();
-        MenuMethods::SetChecked(menu,marked_id,int(updated.marked_when_downloaded));
-        MenuMethods::SetChecked(menu,marked_rebuild_id,int(history::MarkedRebuildRunning()));
-        MenuMethods::SetEnabled(menu,marked_rebuild_id,int(updated.marked_when_downloaded));
+        RefreshMarkedMenu(menu,updated.marked_when_downloaded);
         if(!ok)MessageBoxW(GetActiveWindow(),L"The marked-download setting or scan could not be started. Check the log for details.",L"To Disk",MB_OK|MB_ICONERROR);
         return;
     }
@@ -497,106 +498,89 @@ static void Execute(Delegate* self,Menu* menu,int command,int flags) {
         ok=updates_item ? ChangeBlockUpdates(!updates::Blocked()) : ChangeNetworkKillSwitch(!network::Enabled());
         enabled=updates_item ? updates::Blocked() : network::Enabled();
         const bool available=updates_item ? updates::Available() : network::Available();
-        std::wstring label=updates_item ? L"Block Updates" : L"Network Kill Switch";
-        if(!available)label+=L" (Unavailable)";
-        auto text=Text(label);
+        const auto text=Text(ProtectionLabel(command,available));
         MenuMethods::SetLabel(menu,command,&text);
         if(updates_item)MenuMethods::SetEnabled(menu,command,available);
         failure=updates_item ? L"Update blocking could not be changed. Check the log for details." :
                                L"The network kill switch could not be changed. Check the log for details.";
     } else {
-        if(w->original && w->original->execute)w->original->execute(w->original,reference.Take(),command,flags);
+        auto* original=wrapped->original;
+        if(original && original->execute)original->execute(original,reference.Take(),command,flags);
         return;
     }
     MenuMethods::SetChecked(menu,command,enabled);
     char line[96];SettingOutcomeLine(command,ok,enabled,line,sizeof(line));
     history::LogEvent(ok?history::LogKind::Activity:history::LogKind::Failure,ok?"settings":"failed",line);
     if(!ok)MessageBoxW(GetActiveWindow(),failure,L"To Disk",MB_OK|MB_ICONERROR);
-    }catch(...) {/* Do not unwind allocating settings/UI operations through CEF. */}
-}
+}catch(...) {/* Do not unwind allocating settings/UI operations through CEF. */}
 static void Outside(Delegate* self,Menu* menu,const void* point) { auto* o=Self(self)->original; if(o && o->outside) o->outside(o,menu,point); else ReleaseMenu(menu); }
 static void Open(Delegate* self,Menu* menu,int rtl) { auto* o=Self(self)->original; if(o && o->open) o->open(o,menu,rtl); else ReleaseMenu(menu); }
 static void Close(Delegate* self,Menu* menu,int rtl) { auto* o=Self(self)->original; if(o && o->close) o->close(o,menu,rtl); else ReleaseMenu(menu); }
-static void WillShow(Delegate* self,Menu* menu) {
+static void WillShow(Delegate* self,Menu* menu) try {
     history::HookDiagnosticScope diagnostic(history::diagnostics::Phase::MenuWillShow);
     MenuReference reference(menu);
-    try {
+    auto* wrapped=Self(self);
     RefreshSpeedMenu(menu);
-    if(MenuMethods::IndexOf(menu,marked_id)>=0) {
-        const auto settings=history::GetSettings();
-        MenuMethods::SetChecked(menu,marked_id,int(settings.marked_when_downloaded));
-        MenuMethods::SetChecked(menu,marked_rebuild_id,int(history::MarkedRebuildRunning()));
-        MenuMethods::SetEnabled(menu,marked_rebuild_id,int(settings.marked_when_downloaded));
-    }
-    if(Self(self)->CapableCached(menu) && MenuMethods::IndexOf(menu,root_id)>=0) Self(self)->opening.Show();
-    auto* o=Self(self)->original;
+    if(MenuMethods::IndexOf(menu,marked_id)>=0) RefreshMarkedMenu(menu,history::GetSettings().marked_when_downloaded);
+    if(wrapped->CapableCached(menu) && MenuMethods::IndexOf(menu,root_id)>=0) wrapped->opening.Show();
+    auto* original=wrapped->original;
     // CEF transfers one menu reference into every delegate callback. Retain
     // another across the original callback, which consumes its argument.
-    if(o && o->will_show) { menu->base.add_ref(&menu->base); o->will_show(o,menu); }
-    if(Self(self)->CapableCached(menu) && MenuMethods::IndexOf(menu,song_id)>=0) {
-        if(!Self(self)->opening.snapshot.song_bound) BindSong(Self(self));
-        else RefreshPendingSongTarget(Self(self));
-        UpdateQuality(menu,&Self(self)->opening.snapshot.song,&Self(self)->opening.snapshot.song_file);
-    }
-    else Populate(menu);
-    }catch(...) {/* Keep prior labels if allocation fails. */}
-}
+    if(original && original->will_show) { menu->base.add_ref(&menu->base); original->will_show(original,menu); }
+    if(wrapped->CapableCached(menu) && MenuMethods::IndexOf(menu,song_id)>=0) {
+        auto& snapshot=wrapped->opening.snapshot;
+        snapshot.RefreshSong(!snapshot.song_bound);
+        UpdateQuality(menu,&snapshot.song,!snapshot.song_file.empty());
+    } else Populate(menu);
+}catch(...) {/* Keep prior labels if allocation fails. */}
 static void Closed(Delegate* self,Menu* menu) {
     history::HookDiagnosticScope diagnostic(history::diagnostics::Phase::MenuClosed);
     MenuReference reference(menu);
-    if(Self(self)->CapableCached(menu) && MenuMethods::IndexOf(menu,root_id)>=0) Self(self)->opening.Close();
-    Self(self)->ClearValidation();
-    auto* original=Self(self)->original;
+    auto* wrapped=Self(self);
+    if(wrapped->CapableCached(menu) && MenuMethods::IndexOf(menu,root_id)>=0) wrapped->opening.Close();
+    wrapped->ClearValidation();
+    auto* original=wrapped->original;
     if(original && original->closed)original->closed(original,reference.Take());
 }
 static int Format(Delegate* self,Menu* menu,String* label) {
     history::HookDiagnosticScope diagnostic(history::diagnostics::Phase::MenuFormat);
     MenuReference reference(menu);
-    auto* o=Self(self)->original;int changed=0;
+    auto* wrapped=Self(self);
+    auto* original=wrapped->original;
+    int changed=0;
     try {
-    if(o && o->format) {
-        menu->base.add_ref(&menu->base);
-        changed=o->format(o,menu,label);
-    }
-    // Refresh visibility while CEF formats the parent label, before it builds
-    // the submenu's visible children. WillShow alone is too late for the first
-    // opening after a codec change on a reused model.
-    if(label && label->str && label->length==7 && !wmemcmp(label->str,L"To Disk",7) &&
-       Self(self)->CapableCached(menu) && MenuMethods::IndexOf(menu,root_id)>=0) {
-        if(auto* child=MenuMethods::GetSubmenu(menu,root_id)) {
+        if(original && original->format) {
+            menu->base.add_ref(&menu->base);
+            changed=original->format(original,menu,label);
+        }
+        if(!label || !label->str)return changed;
+        const std::wstring_view text(label->str,label->length);
+        auto& snapshot=wrapped->opening.snapshot;
+        // CEF builds visible children after formatting the parent label and before WillShow.
+        if(text==root_label) {
+            if(!wrapped->CapableCached(menu))return changed;
+            auto* child=MenuMethods::GetSubmenu(menu,root_id);
             MenuReference child_reference(child);
             RefreshSpeedMenu(child);
-            try { if(Self(self)->CapableCached(child) && MenuMethods::IndexOf(child,song_id)>=0 &&
-                     MenuMethods::IndexOf(child,downloads_id)>=0) {
-                         if(!Self(self)->opening.Visible()) BindSong(Self(self));
-                         else RefreshPendingSongTarget(Self(self));
-                         UpdateQuality(child,&Self(self)->opening.snapshot.song,&Self(self)->opening.snapshot.song_file);
-                         if(!Self(self)->opening.Visible()) RefreshRecent(Self(self),child);
-                     } }
-            catch(...) {/* Keep prior visibility on allocation failure. */}
+            if(wrapped->HasQualityRows(child)) {
+                snapshot.RefreshSong(!wrapped->opening.Visible());
+                UpdateQuality(child,&snapshot.song,!snapshot.song_file.empty());
+                if(!wrapped->opening.Visible()) RefreshRecent(wrapped,child);
+            }
+            return changed;
         }
-    }
-    // CEF constructs visible labels before MenuWillShow. Its public label
-    // formatter supplies fresh text during construction, on the UI thread.
-    // Reject ordinary labels before capability queries or model scans. Most
-    // menus contain no quality rows, so this keeps their formatting cheap.
-    if(set_string && label && label->str) {
+        // Skip ordinary labels before probing menu capabilities or scanning rows.
+        if(!set_string)return changed;
         for(size_t i=0;i<history::kPlaybackLabelPrefixes.size();++i) {
             const auto prefix=history::kPlaybackLabelPrefixes[i];
-            if(label->length<prefix.size() || wmemcmp(label->str,prefix.data(),prefix.size())) continue;
-            if(!Self(self)->CapableCached(menu) || MenuMethods::IndexOf(menu,song_id)<0 ||
-               MenuMethods::IndexOf(menu,downloads_id)<0) break;
-            try {
-                if(i==0 && !Self(self)->opening.snapshot.song_bound) BindSong(Self(self));
-                else if(i==0)RefreshPendingSongTarget(Self(self));
-                const auto row=i==0 ? history::PlaybackQualityLabel(Self(self)->opening.snapshot.song,i) :
-                                      history::PlaybackQualityLabel(history::ReadPlaybackQuality(),i);
-                if(i==0) MenuMethods::SetEnabled(menu,song_id,int(!Self(self)->opening.snapshot.song_file.empty()));
-                if(set_string(row.data(),row.size(),label,1))changed=1;
-            }catch(...) {/* Keep the original CEF label on allocation failure. */}
+            if(text.substr(0,prefix.size())!=prefix)continue;
+            if(!wrapped->HasQualityRows(menu))break;
+            if(i==0) snapshot.RefreshSong(!snapshot.song_bound);
+            const auto row=history::PlaybackQualityLabel(i==0 ? snapshot.song : history::ReadPlaybackQuality(),i);
+            if(i==0) MenuMethods::SetEnabled(menu,song_id,!snapshot.song_file.empty());
+            if(set_string(row.data(),row.size(),label,1))changed=1;
             break;
         }
-    }
     }catch(...) {/* Keep the last complete opening on allocation failure. */}
     return changed;
 }

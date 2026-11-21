@@ -18,7 +18,10 @@ namespace history {
 #endif
 namespace {
 using win32::Handle;
-bool ReadLockedRecording(HANDLE file,std::vector<uint8_t>& bytes) {
+HANDLE OpenLockedFile(const std::wstring& path,DWORD access=GENERIC_READ|DELETE) {
+    return CreateFileW(WindowsPath(path).c_str(),access,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+}
+bool ReadLockedRecording(HANDLE file,std::vector<uint8_t>& bytes,RecordingFile& recording) {
     LARGE_INTEGER size{};
     if(!GetFileSizeEx(file,&size) || size.QuadPart<4 || size.QuadPart>static_cast<LONGLONG>(kMaximumRecordingBytes))return false;
     if(RecordingReadMemoryScope::HasPermit()) {
@@ -32,7 +35,7 @@ bool ReadLockedRecording(HANDLE file,std::vector<uint8_t>& bytes) {
         if(!ReadFile(file,bytes.data()+offset,wanted,&read,nullptr) || read!=wanted)return false;
         offset+=read;
     }
-    return true;
+    return InspectRecording(bytes.data(),bytes.size(),recording);
 }
 std::wstring UniqueSibling(const std::wstring& path,const wchar_t* label) {
     static volatile LONG sequence=0;
@@ -70,8 +73,7 @@ bool SameFile(HANDLE handle,const std::wstring& path) {
 }
 bool PrepareBackupSlot(const std::wstring& path,const Catalog& catalog) {
     const auto previous=path+L".previous";
-    Handle backup{CreateFileW(WindowsPath(previous).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,
-        nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
+    Handle backup{OpenLockedFile(previous)};
     if(backup.value==INVALID_HANDLE_VALUE) {
         const auto error=GetLastError();
         return win32::PathMissing(error);
@@ -101,14 +103,15 @@ bool PrepareBackupSlot(const std::wstring& path,const Catalog& catalog) {
     return false;
 }
 FilePublication PromoteReplacement(const std::wstring& path,StagingFile& staging,const Catalog& catalog,HANDLE old) {
-    auto backup=path+L".previous";
-    bool moved=PrepareBackupSlot(path,catalog) && RenameWithoutReplacing(old,backup);
-    if(moved) PUBLICATION_CHECKPOINT(L"reserved",path);
-    bool published=moved && staging.Publish(path);
-    if(published) {
-        win32::DeleteOnClose(old);
-    } else if(moved) RenameWithoutReplacing(old,path); // no replacement; preserve any raced file
-    return published?FilePublication::Upgraded:FilePublication::Failed;
+    const auto backup=path+L".previous";
+    if(!PrepareBackupSlot(path,catalog) || !RenameWithoutReplacing(old,backup))return FilePublication::Failed;
+    PUBLICATION_CHECKPOINT(L"reserved",path);
+    if(!staging.Publish(path)) {
+        RenameWithoutReplacing(old,path); // Preserve any file created since reservation.
+        return FilePublication::Failed;
+    }
+    win32::DeleteOnClose(old);
+    return FilePublication::Upgraded;
 }
 }
 static bool ArchiveFileMatches(HANDLE file,const void* bytes,size_t size) {
@@ -127,8 +130,7 @@ static bool ArchiveFileMatches(HANDLE file,const void* bytes,size_t size) {
     return true;
 }
 bool VerifiedArchiveFile(const std::wstring& path,const void* bytes,size_t size,bool remove,void** held) {
-    auto file=CreateFileW(WindowsPath(path).c_str(),GENERIC_READ|(remove?DELETE:0),FILE_SHARE_READ,
-        nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+    auto file=OpenLockedFile(path,GENERIC_READ|(remove?DELETE:0));
     if(file==INVALID_HANDLE_VALUE) {
         const auto error=GetLastError();return remove&&win32::PathMissing(error);
     }
@@ -151,8 +153,7 @@ bool WriteArchiveFile(const std::wstring& destination,const void* bytes,size_t s
         CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
     const bool created=file.value!=INVALID_HANDLE_VALUE;
     if(!created) {
-        file.value=CreateFileW(WindowsPath(stage).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,nullptr,
-            OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+        file.value=OpenLockedFile(stage);
         if(file.value==INVALID_HANDLE_VALUE||!ArchiveFileMatches(file.value,bytes,size))return false;
     } else if(!WriteAllBytes(file.value,bytes,size)||!FlushFileBuffers(file.value)||!ArchiveFileMatches(file.value,bytes,size)) {
         win32::DeleteOnClose(file.value);
@@ -194,8 +195,7 @@ FilenameConversion ConvertRecordingFilename(const std::wstring& source,const std
         // Freeze the exact source against writes/deletion before validating
         // ownership and identity. The existing rename helper never overwrites.
         if(is_current && !is_current(context))return FilenameConversion::Unchanged;
-        Handle file{CreateFileW(WindowsPath(source).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,
-            nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
+        Handle file{OpenLockedFile(source)};
         RecordingFile existing;
         if(file.value==INVALID_HANDLE_VALUE || !SameFile(file.value,source) ||
            !ReadRecording(source,existing) || !existing.complete || !existing.owned ||
@@ -239,13 +239,11 @@ FilePublication PublishBytes(const std::wstring& path,const Quality& quality,con
     if(decision==SaveDecision::Upgrade) {
         // Freeze the exact existing object BEFORE composing replacement tags.
         // The same handle protects this snapshot through reservation/promotion.
-        old.value=CreateFileW(WindowsPath(path).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,
-            nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+        old.value=OpenLockedFile(path);
         std::vector<uint8_t> existing;
         RecordingFile current;
         if(old.value==INVALID_HANDLE_VALUE || !SameFile(old.value,path) ||
-           !ReadLockedRecording(old.value,existing) ||
-           !InspectRecording(existing.data(),existing.size(),current) ||
+           !ReadLockedRecording(old.value,existing,current) ||
            !CanUpgradeRecording(current,quality,catalog))
             return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
         if(current.complete) {
@@ -270,18 +268,15 @@ FilePublication PublishBytes(const std::wstring& path,const Quality& quality,con
     if(!staging.WriteNew(UniqueSibling(path,L".complete-"),bytes,size)) return FilePublication::Failed;
     PUBLICATION_CHECKPOINT(L"staged",path);
     if(permit&&!permit(context))return FilePublication::Replan;
-    if(decision==SaveDecision::NewFile) {
-        // No replace flag: a destination created during staging belongs to the
-        // other writer, even when its quality happens to be lower.
-        bool ok=staging.Publish(path);
-        if(ok && published_bytes)*published_bytes=size;
-        return ok?FilePublication::Saved:FilePublication::Failed;
+    auto result=FilePublication::Failed;
+    if(decision==SaveDecision::Upgrade) {
+        // An interruption leaves .previous for recovery on the next lookup.
+        result=PromoteReplacement(path,staging,catalog,old.value);
+        if(memory.Denied())return FilePublication::ResourceWait;
+    } else if(staging.Publish(path)) {
+        result=FilePublication::Saved;
     }
-    // Promotion never overwrites a raced pathname. An interruption retains
-    // the old object in .previous for the next resolver/publication to recover.
-    const auto result=PromoteReplacement(path,staging,catalog,old.value);
-    if(memory.Denied())return FilePublication::ResourceWait;
-    if(result==FilePublication::Upgraded && published_bytes)*published_bytes=size;
+    if(published_bytes && (result==FilePublication::Saved || result==FilePublication::Upgraded))*published_bytes=size;
     return result;
     }catch(const std::bad_alloc&){return FilePublication::ResourceWait;}
     catch(...){return FilePublication::Failed;}
@@ -305,20 +300,19 @@ bool ReceiptSourceUnchanged(HANDLE file,const FormatUpgradeReceipt& receipt,bool
     if(!SetFilePointerEx(file,zero,nullptr,FILE_BEGIN))return false;
     unchanged=hash==receipt.source_hash;return true;
 }
-bool ReceiptQuality(const RecordingFile& recording,const FormatUpgradeReceipt& receipt) {
-    const auto& a=recording.quality;const auto& b=receipt.quality;
-    return recording.complete&&recording.owned&&MatchesRecording(recording,receipt.catalog)&&
-        HigherQuality(a,receipt.source_quality)&&(SameQuality(a,b)||HigherQuality(a,b));
+bool ReadUpgradeDestination(HANDLE file,const FormatUpgradeReceipt& receipt,std::vector<uint8_t>& bytes,RecordingFile& recording) {
+    if(file==INVALID_HANDLE_VALUE || !SameFile(file,receipt.destination) || !ReadLockedRecording(file,bytes,recording))return false;
+    const auto& quality=recording.quality;
+    return recording.complete && recording.owned && MatchesRecording(recording,receipt.catalog) &&
+        HigherQuality(quality,receipt.source_quality) && (SameQuality(quality,receipt.quality) || HigherQuality(quality,receipt.quality));
 }
 FilePublication CompleteFormatUpgradeHeld(FormatUpgradeReceipt& receipt,HANDLE old,size_t* published_bytes) {
     RecordingReadMemoryScope memory;
     PUBLICATION_CHECKPOINT(L"format-final-read",receipt.destination);
-    Handle final{CreateFileW(WindowsPath(receipt.destination).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,
-        nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
+    Handle final{OpenLockedFile(receipt.destination)};
     std::vector<uint8_t> final_bytes;RecordingFile recording;
-    if(final.value==INVALID_HANDLE_VALUE||!SameFile(final.value,receipt.destination)||
-       !ReadLockedRecording(final.value,final_bytes)||
-       !InspectRecording(final_bytes.data(),final_bytes.size(),recording)||!ReceiptQuality(recording,receipt))return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
+    if(!ReadUpgradeDestination(final.value,receipt,final_bytes,recording))
+        return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
     RecordingMemoryPlan final_memory;
     if(RecordingReadMemoryScope::HasPermit()) {
         if(!ProbeRecordingMemory(final_bytes.data(),final_bytes.size(),final_memory))return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
@@ -337,7 +331,7 @@ FilePublication CompleteFormatUpgradeHeld(FormatUpgradeReceipt& receipt,HANDLE o
         std::vector<uint8_t> old_bytes,merged;std::string error;
         {
             RecordingFile prior;
-            if(!ReadLockedRecording(old,old_bytes)||!InspectRecording(old_bytes.data(),old_bytes.size(),prior)||
+            if(!ReadLockedRecording(old,old_bytes,prior)||
                !PreserveUpgradeMetadata(old_bytes,prior,final_bytes,recording,receipt.catalog,merged,error))
                 return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
         }
@@ -346,12 +340,9 @@ FilePublication CompleteFormatUpgradeHeld(FormatUpgradeReceipt& receipt,HANDLE o
                 RecordingMetadataMemoryUsage(recording));
         if(merged!=final_bytes) {
             if(PublishMetadataBytes(receipt.destination,merged.data(),merged.size(),receipt.catalog,final.value)!=FilePublication::Upgraded)return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
-            CloseHandle(final.value);final.value=CreateFileW(WindowsPath(receipt.destination).c_str(),GENERIC_READ,FILE_SHARE_READ,
-                nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
-            final_bytes.clear();
-            if(final.value==INVALID_HANDLE_VALUE||!SameFile(final.value,receipt.destination)||
-               !ReadLockedRecording(final.value,final_bytes)||
-               !InspectRecording(final_bytes.data(),final_bytes.size(),recording)||!ReceiptQuality(recording,receipt))return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
+            CloseHandle(final.value);final.value=OpenLockedFile(receipt.destination,GENERIC_READ);
+            if(!ReadUpgradeDestination(final.value,receipt,final_bytes,recording))
+                return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
         }
         receipt.metadata_preserved=true;
     }
@@ -368,8 +359,7 @@ FilePublication CompleteFormatUpgrade(FormatUpgradeReceipt& receipt,size_t* publ
     if(published_bytes)*published_bytes=0;
     if(!receipt.committed)return FilePublication::Failed;
     try {
-        Handle old{CreateFileW(WindowsPath(receipt.source).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,
-            nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
+        Handle old{OpenLockedFile(receipt.source)};
         if(old.value==INVALID_HANDLE_VALUE) {
             const auto error=GetLastError();
             if(!win32::PathMissing(error))return FilePublication::Failed;
@@ -407,11 +397,10 @@ FilePublication PublishFormatUpgrade(const std::wstring& source,const std::wstri
         if(!InspectRecording(incoming.data(),incoming.size(),next)||!next.complete||!next.owned||
            !MatchesRecording(next,catalog)||!SameQuality(next.quality,quality))return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
         memory.SetRetainedBytes(incoming.capacity()+RecordingMetadataMemoryUsage(next));
-        Handle old{CreateFileW(WindowsPath(source).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,
-            nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
+        Handle old{OpenLockedFile(source)};
         std::vector<uint8_t> old_bytes;RecordingFile prior;BY_HANDLE_FILE_INFORMATION old_info{};
         if(old.value==INVALID_HANDLE_VALUE||!SameFile(old.value,source)||!GetFileInformationByHandle(old.value,&old_info)||
-           !ReadLockedRecording(old.value,old_bytes)||!InspectRecording(old_bytes.data(),old_bytes.size(),prior)||
+           !ReadLockedRecording(old.value,old_bytes,prior)||
            !prior.complete||!prior.owned||prior.quality.codec!=Codec::Vorbis||!MatchesRecording(prior,catalog)||
            !HigherQuality(next.quality,prior.quality))return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
         // Allocate every receipt field before committing. A post-commit failure
@@ -430,21 +419,17 @@ FilePublication PublishFormatUpgrade(const std::wstring& source,const std::wstri
         if(!PreserveUpgradeMetadata(old_bytes,prior,incoming,next,catalog,preserved,error))return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
         const auto parsed_memory=RecordingMetadataMemoryUsage(next)+RecordingMetadataMemoryUsage(prior);
         memory.SetRetainedBytes(incoming.capacity()+old_bytes.capacity()+preserved.capacity()+parsed_memory);
-        size_t saved=0;const auto result=PublishBytes(destination,quality,preserved.data(),preserved.size(),catalog,&saved,permit,context);
+        const auto result=PublishBytes(destination,quality,preserved.data(),preserved.size(),catalog,nullptr,permit,context);
         if(result==FilePublication::Failed||result==FilePublication::Replan||result==FilePublication::ResourceWait)return result;
-        if(result==FilePublication::Saved||result==FilePublication::Upgraded) {
-            receipt.committed=true;receipt.metadata_preserved=true;
-        } else {
-            // AlreadyPresent is a commit receipt only after verifying that the
-            // existing destination satisfies the requested recording and quality.
-            Handle current{CreateFileW(WindowsPath(destination).c_str(),GENERIC_READ,FILE_SHARE_READ,
-                nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
+        if(result==FilePublication::Skipped) {
+            // An existing destination must satisfy the requested identity and
+            // quality before it can authorize a commit receipt.
+            Handle current{OpenLockedFile(destination,GENERIC_READ)};
             std::vector<uint8_t> current_bytes;RecordingFile recording;
-            if(current.value==INVALID_HANDLE_VALUE||!SameFile(current.value,destination)||
-               !ReadLockedRecording(current.value,current_bytes)||
-               !InspectRecording(current_bytes.data(),current_bytes.size(),recording)||!ReceiptQuality(recording,receipt))return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
-            receipt.committed=true;
-        }
+            if(!ReadUpgradeDestination(current.value,receipt,current_bytes,recording))
+                return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
+        } else receipt.metadata_preserved=true;
+        receipt.committed=true;
         // Close the large construction snapshots before the verification pass.
         std::vector<uint8_t>().swap(incoming);std::vector<uint8_t>().swap(old_bytes);std::vector<uint8_t>().swap(preserved);
         memory.SetRetainedBytes(parsed_memory);

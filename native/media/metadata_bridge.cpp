@@ -55,9 +55,23 @@ static std::wstring MetadataWide(const std::string& text) {
 namespace {
 struct Base {size_t size;void(*add)(Base*);int(*release)(Base*);int(*one)(Base*);int(*any)(Base*);};
 struct String {wchar_t* str;size_t length;void(*dtor)(wchar_t*);};
+static std::wstring_view ConsoleText(const String* text) {
+ return text&&text->str?std::wstring_view(text->str,text->length):std::wstring_view{};
+}
+static bool CopyAscii(std::wstring_view text,std::string& ascii) {
+ if(std::any_of(text.begin(),text.end(),[](wchar_t c){return c>127;}))return false;
+ ascii.assign(text.begin(),text.end());return true;
+}
 template<size_t N> struct Object {Base base;void* methods[N];};
 using Client=Object<19>;using Display=Object<13>;using Load=Object<4>;using Browser=Object<21>;using Frame=Object<26>;
 static void Release(void* p) {if(p)static_cast<Base*>(p)->release(static_cast<Base*>(p));}
+static void RunScript(Frame* frame,std::wstring_view script,std::wstring_view name=L"floggfy-metadata.js") {
+ const auto execute=reinterpret_cast<void(*)(Frame*,const String*,const String*,int)>(frame->methods[14]);
+ if(!execute)return;
+ String code={const_cast<wchar_t*>(script.data()),script.size(),nullptr};
+ String source={const_cast<wchar_t*>(name.data()),name.size(),nullptr};
+ execute(frame,&code,&source,1);
+}
 // CEF's C++ wrapper has private identity fields before the public C structure.
 // Replacing that structure breaks GetClient() round trips (CEF UnwrapDerived).
 // Intercept callback code instead, preserving every object and its references.
@@ -108,9 +122,7 @@ static void PollExecute(Task*) {
   const auto artwork=NativeArtworkScript();
   const auto enrichment=OnlineEnrichmentScript();
   const auto code_text=CollectorOptions()+L"if(window.__floggfyPoll)window.__floggfyPoll();"+artwork+enrichment+MarkedPlaylistScript();
-  String code={const_cast<wchar_t*>(code_text.c_str()),code_text.size(),nullptr};
-  const wchar_t name[]=L"floggfy-metadata.js";String source={const_cast<wchar_t*>(name),wcslen(name),nullptr};
-  reinterpret_cast<void(*)(Frame*,const String*,const String*,int)>(frame->methods[14])(frame,&code,&source,1);
+  RunScript(frame,code_text);
  }catch(...) {/* A failed renderer poll must allow the next heartbeat. */}
 }
 static void SchedulePoll(){
@@ -131,21 +143,24 @@ static bool metadata_prepared=false;
 struct Message { ULONGLONG time=0; char data[131073];size_t length=0;};
 static std::array<Message,4> messages;static size_t head=0,tail=0,count=0;static HANDLE message_event=nullptr;
 static bool Enqueue(const String* value) {
- constexpr wchar_t prefix[]=L"FLOGGFY_METADATA_V1:";constexpr size_t n=sizeof(prefix)/sizeof(*prefix)-1;
- if(!value||value->length<=n||value->length>n+131072||wmemcmp(value->str,prefix,n))return false;
- if(TryAcquireSRWLockExclusive(&message_lock)) {
-  if(count<messages.size()) {
-   auto& m=messages[tail];m.time=GetTickCount64();m.length=value->length-n;bool valid=true;
-   for(size_t i=0;i<m.length;i++){wchar_t c=value->str[n+i];if(c>127){valid=false;break;}m.data[i]=char(c);}
-   if(valid){tail=(tail+1)%messages.size();++count;SetEvent(message_event);}
-  } ReleaseSRWLockExclusive(&message_lock);
- } return true;
+ constexpr std::wstring_view prefix=L"FLOGGFY_METADATA_V1:";
+ const auto text=ConsoleText(value);
+ if(text.size()<=prefix.size()||text.size()>prefix.size()+131072||text.substr(0,prefix.size())!=prefix)return false;
+ const auto payload=text.substr(prefix.size());
+ TryExclusiveSrw guard(message_lock);
+ if(!guard||count==messages.size())return true;
+ auto& m=messages[tail];m.time=GetTickCount64();m.length=payload.size();
+ for(size_t i=0;i<m.length;++i) {
+  if(payload[i]>127)return true;
+  m.data[i]=char(payload[i]);
+ }
+ tail=(tail+1)%messages.size();++count;SetEvent(message_event);
+ return true;
 }
 // One background lane resolves missing fields. Jobs pin the same record used
 // by the matcher; no disk or network work runs on playback/decoder callbacks.
-struct EnrichmentJob {std::shared_ptr<MetadataRecord> record;};
 static SRWLOCK enrichment_lock=SRWLOCK_INIT;
-static std::deque<EnrichmentJob> enrichment_jobs;
+static std::deque<std::shared_ptr<MetadataRecord>> enrichment_jobs;
 static HANDLE enrichment_event=nullptr,enrichment_thread=nullptr;
 static std::atomic<bool> enrichment_running{false};
 struct OnlineEnrichment {std::shared_ptr<MetadataRecord> owner;std::string uri;unsigned needs=0;};
@@ -242,18 +257,18 @@ static std::wstring NativeArtworkScript() {
  return std::exchange(native_artwork_pending.script,{});
 }
 static bool EnqueueNativeArtwork(const String* value) {
- constexpr wchar_t prefix[]=L"FLOGGFY_ARTWORK_V1:";
- constexpr size_t n=sizeof(prefix)/sizeof(*prefix)-1;
- if(!value||!value->str||value->length<n||wmemcmp(value->str,prefix,n))return false;
+ constexpr std::wstring_view prefix=L"FLOGGFY_ARTWORK_V1:";
+ const auto text=ConsoleText(value);
+ if(text.substr(0,prefix.size())!=prefix)return false;
+ const auto payload=text.substr(prefix.size());
  // Even malformed reserved messages must never leak image bytes to logs.
- if(value->length<=n||value->length>n+kArtworkReplyMaxPayloadBytes)return true;
+ if(payload.empty()||payload.size()>kArtworkReplyMaxPayloadBytes)return true;
  try {
   std::string expected;
   {SharedSrw guard(native_artwork_lock);if(native_artwork_pending.id.empty()||native_artwork_pending.received)return true;expected="id="+native_artwork_pending.id+"&";}
-  if(value->length-n<expected.size())return true;
-  for(size_t i=0;i<expected.size();++i)if(value->str[n+i]!=wchar_t(expected[i]))return true;
-  std::string reply;reply.reserve(value->length-n);
-  for(size_t i=n;i<value->length;++i){if(value->str[i]>127)return true;reply+=char(value->str[i]);}
+  if(payload.size()<expected.size()||!std::equal(expected.begin(),expected.end(),payload.begin()))return true;
+  std::string reply;
+  if(!CopyAscii(payload,reply))return true;
   {ExclusiveSrw guard(native_artwork_lock);
    if(native_artwork_pending.received||expected!="id="+native_artwork_pending.id+"&")return true;
    native_artwork_pending.reply=std::move(reply);native_artwork_pending.received=true;
@@ -433,18 +448,27 @@ static void PublishArtwork(const std::shared_ptr<MetadataRecord>& owner,const Ri
  live.artwork=work.artwork;
  metadata_revision.fetch_add(1,std::memory_order_release);
 }
+static void EnrichArtwork(const std::shared_ptr<MetadataRecord>& owner,ArtworkStage stage) {
+ auto work=BeginArtwork(owner,stage);
+ if(work.artwork_urls.empty())return;
+ if(stage!=ArtworkStage::Native)ResolveArtwork(work,stage==ArtworkStage::Online);
+ else if(AttemptNativeArtwork(work)) {
+  ExclusiveSrw guard(cache_lock);
+  owner->native_artwork_attempted=std::move(work.artwork_urls);
+ }
+ PublishArtwork(owner,work);
+}
 static void QueueEnrichment(const std::shared_ptr<MetadataRecord>& record);
 static DWORD WINAPI EnrichmentWorker(LPVOID) {
  SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL);
  while(enrichment_running.load(std::memory_order_acquire)) {
-  EnrichmentJob job;
-  {ExclusiveSrw guard(enrichment_lock);if(!enrichment_jobs.empty()){job=std::move(enrichment_jobs.front());enrichment_jobs.pop_front();}}
-  if(!job.record){WaitForSingleObject(enrichment_event,1000);continue;}
+  std::shared_ptr<MetadataRecord> owner;
+  {ExclusiveSrw guard(enrichment_lock);if(!enrichment_jobs.empty()){owner=std::move(enrichment_jobs.front());enrichment_jobs.pop_front();}}
+  if(!owner){WaitForSingleObject(enrichment_event,1000);continue;}
   {ExclusiveSrw guard(cache_lock);
    // Registry + queued job only: playback/matcher/save no longer needs it.
-   if(job.record.use_count()==2){job.record->queued=false;continue;}
+   if(owner.use_count()==2){owner->queued=false;continue;}
   }
-  auto owner=job.record;
   bool processed=false;
   try {
    RichMetadata local;bool read_local=false;
@@ -457,25 +481,10 @@ static DWORD WINAPI EnrichmentWorker(LPVOID) {
     try{EnrichStoredMetadata(local);}catch(...){QueueDiagnostic("metadata source=local-cache status=failed reason=exception");}
     PublishEnrichment(owner,local); // Local tags are ready even while artwork is pending.
    }
-   auto artwork=BeginArtwork(owner,ArtworkStage::Native);
-   if(!artwork.artwork_urls.empty()) {
-    if(AttemptNativeArtwork(artwork)){
-     ExclusiveSrw guard(cache_lock);
-     owner->native_artwork_attempted=std::move(artwork.artwork_urls);
-    }
-    PublishArtwork(owner,artwork);
-   }
-   artwork=BeginArtwork(owner,ArtworkStage::Cached);
-   if(!artwork.artwork_urls.empty()){
-    ResolveArtwork(artwork,false);
-    PublishArtwork(owner,artwork);
-   }
+   EnrichArtwork(owner,ArtworkStage::Native);
+   EnrichArtwork(owner,ArtworkStage::Cached);
    QueueOnlineEnrichment(owner);
-   artwork=BeginArtwork(owner,ArtworkStage::Online);
-   if(!artwork.artwork_urls.empty()){
-    ResolveArtwork(artwork,true);
-    PublishArtwork(owner,artwork);
-   }
+   EnrichArtwork(owner,ArtworkStage::Online);
    processed=true;
   }catch(...) {QueueDiagnostic("metadata enrichment failed; current client metadata retained");}
   {ExclusiveSrw guard(cache_lock);owner->queued=false;}
@@ -517,8 +526,8 @@ static void QueueEnrichment(const std::shared_ptr<MetadataRecord>& record) {
  try {
   ExclusiveSrw records_guard(cache_lock);ExclusiveSrw jobs_guard(enrichment_lock);
   for(auto it=enrichment_jobs.begin();it!=enrichment_jobs.end();)
-   if(it->record.use_count()==2){it->record->queued=false;it=enrichment_jobs.erase(it);}else ++it;
-  enrichment_jobs.push_back({record});
+   if(it->use_count()==2){(*it)->queued=false;it=enrichment_jobs.erase(it);}else ++it;
+  enrichment_jobs.push_back(record);
  }
  catch(...){ExclusiveSrw guard(cache_lock);record->queued=false;throw;}
  SetEvent(enrichment_event);
@@ -566,14 +575,19 @@ static DWORD WINAPI MetadataWorker(LPVOID) {
  }
  return 0;
 }
-static bool CurrentTimeline(const String* text) {
- constexpr wchar_t prefix[]=L"FLOGGFY_TIMELINE_V1:";
- constexpr size_t n=sizeof(prefix)/sizeof(*prefix)-1;
- if(!text||!text->str||text->length<n||wmemcmp(text->str,prefix,n))return false;
+static Media MediaFromMetadata(const RichMetadata& record) {
+ Media media;media.source=MediaSource::Spotify;media.spotify_uri=record.uri;media.duration=record.duration;
+ media.title=MetadataWide(record.title);media.artist=MetadataWide(record.artist);media.album=MetadataWide(record.album);
+ return media;
+}
+static bool CurrentTimeline(const String* value) {
+ constexpr std::wstring_view prefix=L"FLOGGFY_TIMELINE_V1:";
+ const auto text=ConsoleText(value);
+ if(text.substr(0,prefix.size())!=prefix)return false;
  try {
-  if(text->length>n+16384){PublishClientMediaUnavailable("client-payload-too-large");return true;}
-  std::string payload;payload.reserve(text->length-n);
-  for(size_t i=n;i<text->length;++i){if(text->str[i]>127){PublishClientMediaUnavailable("client-invalid-encoding");return true;}payload+=char(text->str[i]);}
+  if(text.size()>prefix.size()+16384){PublishClientMediaUnavailable("client-payload-too-large");return true;}
+  std::string payload;
+  if(!CopyAscii(text.substr(prefix.size()),payload)){PublishClientMediaUnavailable("client-invalid-encoding");return true;}
   if(payload=="v=1&blocked=buffering"||payload.rfind("v=1&blocked=buffering&",0)==0){
    ClientTransition transition;
    if(ParseClientTransition(payload,transition)) {
@@ -593,9 +607,9 @@ static bool CurrentTimeline(const String* text) {
   if(record.local==0){PublishClientMediaUnavailable("remote-playback",true);return true;}
   if(record.buffering){PublishClientMediaUnavailable("client-buffering",true);return true;}
   if(record.local<0){PublishClientMediaUnavailable("client-device-unknown");return true;}
-  Media media;media.source=MediaSource::Spotify;media.spotify_uri=record.metadata.uri;media.playback_instance=record.instance;
-  media.title=MetadataWide(record.metadata.title);media.artist=MetadataWide(record.metadata.artist);media.album=MetadataWide(record.metadata.album);
-  media.position=record.position;media.duration=record.metadata.duration;media.playback_speed=record.speed;media.playing=record.playing;media.playback_status=record.playing?4:5;
+  auto media=MediaFromMetadata(record.metadata);
+  media.playback_instance=record.instance;
+  media.position=record.position;media.playback_speed=record.speed;media.playing=record.playing;media.playback_status=record.playing?4:5;
   media.explicit_control=record.explicit_control;
   media.prior_control=record.prior_control;
   {ExclusiveSrw guard(cache_lock);media.metadata=cache.Pin(record.metadata);}
@@ -603,82 +617,58 @@ static bool CurrentTimeline(const String* text) {
  }catch(...){InvalidateClientMedia();try{PublishClientMediaUnavailable("client-timeline-exception");}catch(...){}}
  return true;
 }
-static bool CurrentPlayback(const String* text) {
- constexpr wchar_t prefix[]=L"FLOGGFY_PLAYBACK_V1:";
- constexpr size_t n=sizeof(prefix)/sizeof(*prefix)-1;
- if(!text || !text->str || text->length<n || wmemcmp(text->str,prefix,n))return false;
+static bool CurrentPlayback(const String* value) {
+ constexpr std::wstring_view prefix=L"FLOGGFY_PLAYBACK_V1:";
+ const auto text=ConsoleText(value);
+ if(text.substr(0,prefix.size())!=prefix)return false;
  // Bounded cached-state message only: no file reads, enrichment or API calls.
  try {
   PlaybackQualitySnapshot snapshot;
   Media item;
-  if(text->length<=n+4096) {
-   std::string payload;payload.reserve(text->length-n);
-   for(size_t i=n;i<text->length;++i) {
-    if(text->str[i]>127){PublishCurrentItem({});PublishClientPlaybackQuality({});return true;}
-    payload+=char(text->str[i]);
-   }
-   RichMetadata record;std::string error;
-   if(ParseRichMetadata(payload,record,error)) {
-    item.source=MediaSource::Spotify;item.spotify_uri=record.uri;
-    item.title=MetadataWide(record.title);item.artist=MetadataWide(record.artist);item.album=MetadataWide(record.album);
-    item.duration=record.duration;
-    snapshot.identity=PlaybackIdentity(record.uri.empty()
+  std::string payload,error;RichMetadata record;
+  if(text.size()<=prefix.size()+4096&&CopyAscii(text.substr(prefix.size()),payload)&&ParseRichMetadata(payload,record,error)) {
+   item=MediaFromMetadata(record);
+   snapshot.identity=PlaybackIdentity(record.uri.empty()
         ? record.title+"\x1f"+record.artist+"\x1f"+record.album : record.uri);
-    snapshot.level=ParsePlaybackLevel(record.playback_quality);
-    auto count=std::min(item.title.size(),snapshot.title.size()-1);
-    if(count && item.title[count-1]>=0xd800 && item.title[count-1]<=0xdbff)--count;
-    std::copy_n(item.title.begin(),count,snapshot.title.begin());
-   }
+   snapshot.level=ParsePlaybackLevel(record.playback_quality);
+   auto count=std::min(item.title.size(),snapshot.title.size()-1);
+   if(count && item.title[count-1]>=0xd800 && item.title[count-1]<=0xdbff)--count;
+   std::copy_n(item.title.begin(),count,snapshot.title.begin());
   }
   PublishCurrentItem(std::move(item));
   PublishClientPlaybackQuality(snapshot);
  }catch(...){PublishCurrentItem({});PublishClientPlaybackQuality({});}
  return true;
 }
-static int Console(Display* self,Browser* b,int level,const String* text,const String* source,int line) {
- auto callback=metadata_callbacks.Enter();
+static bool ConsumeRendererMessage(const String* text) {
+ const auto message=ConsoleText(text);
  constexpr std::wstring_view marked_prefix=L"FLOGGFY_MARKED_V1:";
- if(text&&text->str&&text->length>=marked_prefix.size()&&
-    !wmemcmp(text->str,marked_prefix.data(),marked_prefix.size())) {
+ if(message.substr(0,marked_prefix.size())==marked_prefix) {
   try {
    std::string request;std::vector<std::string> uris;
-   if(ParseMarkedQuery({text->str,text->length},request,uris))QueueMarkedQuery(request,uris,SchedulePoll);
+   if(ParseMarkedQuery(message,request,uris))QueueMarkedQuery(request,uris,SchedulePoll);
   }catch(...) {/* Invalid or allocation-limited queries cannot escape CEF. */}
-  Release(b);return 1;
+  return true;
  }
- constexpr wchar_t privacy_prefix[]=L"FLOGGFY_PRIVACY_V1:";
- constexpr size_t privacy_prefix_size=sizeof(privacy_prefix)/sizeof(*privacy_prefix)-1;
- if(text&&text->str&&text->length>=privacy_prefix_size&&
-    !wmemcmp(text->str,privacy_prefix,privacy_prefix_size)){
-  privacy::ObserveRenderer({text->str+privacy_prefix_size,text->length-privacy_prefix_size});
-  Release(b);return 1;
+ static constexpr struct {
+  std::wstring_view prefix;
+  void (*observe)(std::wstring_view) noexcept;
+ } privacy_messages[]={
+  {L"FLOGGFY_PRIVACY_V1:",privacy::ObserveRenderer},
+  {L"FLOGGFY_PRIVACY_V2:",privacy::ObserveRendererCapabilities},
+  {L"FLOGGFY_PRIVACY_COUNT_V1:",privacy::ObserveRendererCount},
+  {L"FLOGGFY_PRIVACY_DUMP_V1:",privacy::ObserveRendererDump},
+ };
+ for(const auto& entry:privacy_messages)if(message.substr(0,entry.prefix.size())==entry.prefix) {
+  entry.observe(message.substr(entry.prefix.size()));
+  return true; // Reserved messages are consumed even if validation rejects their payload.
  }
- constexpr wchar_t capability_prefix[]=L"FLOGGFY_PRIVACY_V2:";
- constexpr size_t capability_prefix_size=sizeof(capability_prefix)/sizeof(*capability_prefix)-1;
- if(text&&text->str&&text->length>=capability_prefix_size&&
-    !wmemcmp(text->str,capability_prefix,capability_prefix_size)){
-  privacy::ObserveRendererCapabilities({text->str+capability_prefix_size,text->length-capability_prefix_size});
-  Release(b);return 1;
- }
- constexpr wchar_t count_prefix[]=L"FLOGGFY_PRIVACY_COUNT_V1:";
- constexpr size_t count_prefix_size=sizeof(count_prefix)/sizeof(*count_prefix)-1;
- if(text&&text->str&&text->length>=count_prefix_size&&
-    !wmemcmp(text->str,count_prefix,count_prefix_size)){
-  privacy::ObserveRendererCount({text->str+count_prefix_size,text->length-count_prefix_size});
-  Release(b);return 1;
- }
- constexpr wchar_t dump_prefix[]=L"FLOGGFY_PRIVACY_DUMP_V1:";
- constexpr size_t dump_prefix_size=sizeof(dump_prefix)/sizeof(*dump_prefix)-1;
- if(text&&text->str&&text->length>=dump_prefix_size&&
-    !wmemcmp(text->str,dump_prefix,dump_prefix_size)){
-  privacy::ObserveRendererDump({text->str+dump_prefix_size,text->length-dump_prefix_size});
-  Release(b);return 1; // Payloads never fall through to ordinary console logs.
- }
- if(EnqueueNativeArtwork(text)||CurrentTimeline(text)||CurrentPlayback(text)){Release(b);return 1;}
- if(text&&text->str&&QueueRendererDiagnostic({text->str,text->length})) {
-  Release(b);return 1; // Reserved diagnostics never fall through to raw console logging.
- }
- if(Enqueue(text)){Release(b);return 1;}
+ return EnqueueNativeArtwork(text)||CurrentTimeline(text)||CurrentPlayback(text)||
+        QueueRendererDiagnostic(message)||Enqueue(text);
+}
+static int Console(Display* self,Browser* b,int level,const String* text,const String* source,int line) {
+ auto callback=metadata_callbacks.Enter();
+ if(ConsumeRendererMessage(text)){Release(b);return 1;}
  return console_callback.Original<int(*)(Display*,Browser*,int,const String*,const String*,int)>()(self,b,level,text,source,line);
 }
 static void InjectPrivacy(Frame* frame) {
@@ -697,9 +687,7 @@ static void InjectPrivacy(Frame* frame) {
  script.reserve(script.size()+sizeof(telemetry_script)+5);
  if(!win32::AppendUtf8(script,telemetry_script))return;
  script+=L"})();";
- String code={script.data(),script.size(),nullptr};
- const wchar_t name[]=L"floggfy-privacy.js";String source={const_cast<wchar_t*>(name),wcslen(name),nullptr};
- execute(frame,&code,&source,1);
+ RunScript(frame,script,L"floggfy-privacy.js");
 }
 static void LoadStart(Load* self,Browser* b,Frame* f,int transition){
  auto callback=metadata_callbacks.Enter();
@@ -717,9 +705,7 @@ static void Inject(Frame* frame) {
  code_text.reserve(code_text.size()+sizeof(metadata_script)+marked.size());
  if(!win32::AppendUtf8(code_text,metadata_script))return;
  code_text+=marked;
- String code={const_cast<wchar_t*>(code_text.c_str()),code_text.size(),nullptr};
- const wchar_t name[]=L"floggfy-metadata.js";String source={const_cast<wchar_t*>(name),wcslen(name),nullptr};
- reinterpret_cast<void(*)(Frame*,const String*,const String*,int)>(frame->methods[14])(frame,&code,&source,1);
+ RunScript(frame,code_text);
 }
 static void Loading(Load* self,Browser* b,int loading,int back,int forward){
  auto callback=metadata_callbacks.Enter();
@@ -763,30 +749,32 @@ static void* ViewHook(Client* client,const String* url,const void* settings,void
 std::uint64_t MetadataRevision() {
  return metadata_revision.load(std::memory_order_acquire);
 }
+// The caller holds cache_lock while reading or pinning the returned record.
+static const RichMetadata* FindMediaRecord(const Media& media) {
+ if(media.metadata&&media.metadata->value.uri==media.spotify_uri)return &media.metadata->value;
+ if(!media.spotify_uri.empty())return cache.FindUri(media.spotify_uri);
+ return cache.Find(Utf8(media.title),Utf8(media.artist),Utf8(media.album),media.duration);
+}
 void RetainMetadata(Media& media) {
  if(media.metadata)return;
  ExclusiveSrw guard(cache_lock);
- const auto existing=media.spotify_uri.empty()?cache.Find(Utf8(media.title),Utf8(media.artist),Utf8(media.album),media.duration):cache.FindUri(media.spotify_uri);
+ const auto existing=FindMediaRecord(media);
  if(existing){media.metadata=cache.Pin(*existing);return;}
  if(media.spotify_uri.empty())return;
  RichMetadata basic;basic.uri=media.spotify_uri;basic.title=Utf8(media.title);basic.artist=Utf8(media.artist);basic.album=Utf8(media.album);basic.duration=media.duration;
  media.metadata=cache.Pin(basic);
 }
 static bool ReadCachedMetadata(const Media& media,RichMetadata& metadata) {
- const auto title=Utf8(media.title),artist=Utf8(media.artist),album=Utf8(media.album);
  SharedSrw guard(cache_lock);
- const auto record=media.metadata&&media.metadata->value.uri==media.spotify_uri?&media.metadata->value:
-     media.spotify_uri.empty()?cache.Find(title,artist,album,media.duration):cache.FindUri(media.spotify_uri);
+ const auto* record=FindMediaRecord(media);
  if(!record)return false;
  metadata=*record;
  return true;
 }
 std::string ReadClientPlaybackQuality(const Media& media) {
  if(!GetSettings().metadata)return {};
- const auto title=Utf8(media.title),artist=Utf8(media.artist),album=Utf8(media.album);
  SharedSrw guard(cache_lock);
- const auto record=media.metadata&&media.metadata->value.uri==media.spotify_uri?&media.metadata->value:
-     media.spotify_uri.empty()?cache.Find(title,artist,album,media.duration):cache.FindUri(media.spotify_uri);
+ const auto* record=FindMediaRecord(media);
  const auto now=GetTickCount64();
  return record && record->quality_time && now>=record->quality_time && now-record->quality_time<=20000 ? record->playback_quality : std::string{};
 }
@@ -798,12 +786,10 @@ static unsigned MetadataNumber(const std::string& text) {
 }
 void EnrichCatalog(const Media& media,Catalog& catalog) {
  if(!GetSettings().metadata)return;
- const auto title=Utf8(media.title),artist=Utf8(media.artist),album=Utf8(media.album);
  const char* keys[]={"TITLE","ALBUM","ALBUMARTIST","ARTIST","TRACKNUMBER","DISCNUMBER"};
  std::array<std::string,6> fields;std::string uri,album_uri;
  {SharedSrw guard(cache_lock);
-  const auto record=media.metadata&&media.metadata->value.uri==media.spotify_uri?&media.metadata->value:
-     media.spotify_uri.empty()?cache.Find(title,artist,album,media.duration):cache.FindUri(media.spotify_uri);
+  const auto* record=FindMediaRecord(media);
   if(!record)return;
   uri=record->uri;
   album_uri=record->album_uri;
@@ -835,24 +821,24 @@ void EnrichCatalog(const Media& media,Catalog& catalog) {
 void EnrichTags(const Media& media,Tags& tags) {
  const auto preferences=GetSettings();if(!preferences.metadata)return;
  RichMetadata metadata;if(!ReadCachedMetadata(media,metadata))return;
+ const auto set_tag=[&](std::string key,std::string value) {
+  tags.fields.erase(std::remove_if(tags.fields.begin(),tags.fields.end(),
+      [&](const auto& entry){return entry.first==key;}),tags.fields.end());
+  tags.fields.emplace_back(std::move(key),std::move(value));
+ };
  for(const auto& field:metadata.fields) {
   if(field.first=="FLOGGFY_ARTWORK_SOURCE")continue;
   if(field.first=="LYRICS"&&!preferences.lyrics)continue;
-  tags.fields.erase(std::remove_if(tags.fields.begin(),tags.fields.end(),[&](const auto& entry){return entry.first==field.first;}),tags.fields.end());
-  tags.fields.push_back(field);
+  set_tag(field.first,field.second);
  }
- if(!media.album_artist.empty()) {
-  tags.fields.erase(std::remove_if(tags.fields.begin(),tags.fields.end(),[](const auto& field){return field.first=="ALBUMARTIST";}),tags.fields.end());
-  tags.fields.emplace_back("ALBUMARTIST",Utf8(media.album_artist));
- }
+ if(!media.album_artist.empty())set_tag("ALBUMARTIST",Utf8(media.album_artist));
  if(!metadata.uri.empty()&&metadata.artwork) {
   ImageInfo original;
   if(ReadImageInfo(metadata.artwork->bytes,original)) {
    tags.cover=metadata.artwork->bytes;tags.mime=original.mime;
    // Provenance belongs to the validated client image actually selected above,
    // never to a cached text record or an unchanged embedded cover.
-   tags.fields.erase(std::remove_if(tags.fields.begin(),tags.fields.end(),[](const auto& field){return field.first=="FLOGGFY_ARTWORK_SOURCE";}),tags.fields.end());
-   tags.fields.push_back({"FLOGGFY_ARTWORK_SOURCE","spotify-client"});
+   set_tag("FLOGGFY_ARTWORK_SOURCE","spotify-client");
   }
  }
 }

@@ -100,62 +100,69 @@ inline bool EqualKey(std::wstring_view text,const wchar_t* key) noexcept {
     const auto length=std::wcslen(key);
     return text.size()==length&&_wcsnicmp(text.data(),key,length)==0;
 }
-// The raw value excludes the line ending but retains whitespace for strict opt-ins.
-template<class SelectSection,class Visit>
-inline void VisitEntries(std::wstring_view text,SelectSection select,Visit visit) {
-    bool inside=false;
-    while(!text.empty()) {
-        const auto end=text.find(L'\n');
-        auto physical=text.substr(0,end);
-        text.remove_prefix(end==text.npos?text.size():end+1);
-        if(!physical.empty()&&physical.back()==L'\r')physical.remove_suffix(1);
-        const auto line=TrimView(physical);
-        if(!line.empty()&&line.front()==L'['&&line.back()==L']') {
-            inside=select(line);
-        }else if(inside&&!line.empty()&&line.front()!=L';') {
-            const auto equal=physical.find(L'=');
-            if(equal!=physical.npos)visit(TrimView(physical.substr(0,equal)),physical.substr(equal+1));
-        }
+struct IniLine {
+    std::wstring_view raw,trimmed;
+    size_t next;
+
+    bool IsSection() const noexcept { return !trimmed.empty()&&trimmed.front()==L'['&&trimmed.back()==L']'; }
+    bool HasContent() const noexcept { return !trimmed.empty()&&trimmed.front()!=L';'; }
+    size_t KeySeparator(const wchar_t* key) const noexcept {
+        const auto equal=raw.find(L'=');
+        return equal!=raw.npos&&EqualKey(TrimView(raw.substr(0,equal)),key)?equal:raw.npos;
     }
+};
+inline IniLine LineAt(std::wstring_view text,size_t position) noexcept {
+    const auto end=text.find(L'\n',position);
+    auto raw=text.substr(position,end==text.npos?text.npos:end-position);
+    if(!raw.empty()&&raw.back()==L'\r')raw.remove_suffix(1);
+    return {raw,TrimView(raw),end==text.npos?text.size():end+1};
 }
 inline IniValue Find(std::wstring_view text,const wchar_t* key,const wchar_t* section=L"[To Disk]") noexcept {
     IniValue result;
-    VisitEntries(text,[&](auto name){return EqualKey(name,section);},[&](auto name,auto raw) {
-        if(!EqualKey(name,key))return;
-        if(result.present)result.duplicate=true;
-        else result={true,false,TrimView(raw),raw};
-    });
+    bool inside=false;
+    for(size_t position=0;position<text.size();) {
+        const auto line=LineAt(text,position);
+        position=line.next;
+        if(line.IsSection())inside=EqualKey(line.trimmed,section);
+        else if(inside&&line.HasContent()) {
+            const auto equal=line.KeySeparator(key);
+            if(equal==text.npos)continue;
+            if(result.present) {
+                result.duplicate=true;
+                break;
+            }
+            // The raw value retains whitespace for strict opt-ins.
+            const auto raw=line.raw.substr(equal+1);
+            result={true,false,TrimView(raw),raw};
+        }
+    }
     return result;
 }
 inline void Set(std::wstring& text,const wchar_t* key,const std::wstring& value,const wchar_t* section=L"[To Disk]") {
     bool inside=false,found_section=false,found_key=false;
     size_t insertion=text.size();
     for(size_t p=0;p<text.size();) {
-        const auto end=text.find(L'\n',p);const auto next=end==std::wstring::npos?text.size():end+1;
-        const auto line=TrimView(std::wstring_view(text).substr(p,end==std::wstring::npos?end:end-p));
-        if(!line.empty()&&line.front()==L'['&&line.back()==L']') {
+        const auto line=LineAt(text,p);
+        if(line.IsSection()) {
             if(inside)insertion=p;
-            inside=EqualKey(line,section);
-            if(inside){found_section=true;insertion=next;}
+            inside=EqualKey(line.trimmed,section);
+            if(inside){found_section=true;insertion=line.next;}
         }else if(inside) {
-            insertion=next;
-            const auto equal=line.find(L'=');
-            if(equal!=std::wstring::npos&&EqualKey(TrimView(line.substr(0,equal)),key)) {
+            insertion=line.next;
+            const auto equal=line.KeySeparator(key);
+            if(equal!=text.npos) {
                 if(found_key) {
-                    text.erase(p,next-p);
+                    text.erase(p,line.next-p);
                     continue;
                 }
-                const auto separator=text.find(L'=',p);
-                auto finish=end==std::wstring::npos?text.size():end;
-                if(finish>separator&&text[finish-1]==L'\r')--finish;
-                text.replace(separator+1,finish-separator-1,value);
+                text.replace(p+equal+1,line.raw.size()-equal-1,value);
                 found_key=true;
-                p=separator+1+value.size();
-                const auto newline=text.find(L'\n',p);p=newline==std::wstring::npos?text.size():newline+1;
+                const auto newline=text.find(L'\n',p+equal+1+value.size());
+                p=newline==text.npos?text.size():newline+1;
                 continue;
             }
         }
-        p=next;
+        p=line.next;
     }
     if(found_key)return;
     if(!found_section) {
@@ -168,17 +175,13 @@ inline void Set(std::wstring& text,const wchar_t* key,const std::wstring& value,
 inline void Erase(std::wstring& text,const wchar_t* key,const wchar_t* section=L"[To Disk]") {
     bool inside=false;
     for(size_t p=0;p<text.size();) {
-        const auto end=text.find(L'\n',p);const auto next=end==std::wstring::npos?text.size():end+1;
-        const auto line=TrimView(std::wstring_view(text).substr(p,end==std::wstring::npos?end:end-p));
-        if(!line.empty()&&line.front()==L'['&&line.back()==L']')
-            inside=EqualKey(line,section);
-        else if(inside&&!line.empty()&&line.front()!=L';') {
-            const auto equal=line.find(L'=');
-            if(equal!=std::wstring::npos&&EqualKey(TrimView(line.substr(0,equal)),key)) {
-                text.erase(p,next-p);continue;
-            }
+        const auto line=LineAt(text,p);
+        if(line.IsSection())inside=EqualKey(line.trimmed,section);
+        else if(inside&&line.HasContent()&&line.KeySeparator(key)!=text.npos) {
+            text.erase(p,line.next-p);
+            continue;
         }
-        p=next;
+        p=line.next;
     }
 }
 }}

@@ -5,7 +5,6 @@
 #include <shlobj.h>
 #include <algorithm>
 #include <array>
-#include <optional>
 #include <cstdio>
 #include <cwchar>
 #include <cstring>
@@ -33,17 +32,22 @@ static bool CreateDefaultIni(const std::wstring& path) {
     std::wstring text;for(const char* p=default_ini;*p;++p)text+=wchar_t(*p);
     return settings_file::Write(path,text,true);
 }
-struct SectionOption {const wchar_t* key;const wchar_t* section;const wchar_t* legacy_key=nullptr;};
+struct SectionOption {
+    const wchar_t* key;
+    const wchar_t* section;
+    const wchar_t* legacy_key=nullptr;
+    const wchar_t* duplicate_value=L"0";
+};
 static constexpr std::array<SectionOption,13> section_options{{
     {L"MarkedWhenDownloaded",L"[Misc]"},
     {L"SaveUnmatched",L"[Matcher]"},
     {L"WindowsPlaybackFallback",L"[Fallbacks]",L"Windows Playback Fallback"},
-    {L"LogLevel",L"[Debug]"},
+    {L"LogLevel",L"[Debug]",nullptr,L"1"},
     {L"DebugConnect",L"[Debug]"},
     {L"DebugNetworking",L"[Debug]"},
     {L"DebugHookDiagnostics",L"[Debug]"},
     {L"DumpStreams",L"[Debug]"},
-    {L"MetadataCacheReadMiB",L"[History]"},
+    {L"MetadataCacheReadMiB",L"[History]",nullptr,L"256"},
     {L"NetworkPatch",L"[Misc]"},
     {L"UpdateExistingMetadata",L"[Misc]"},
     {L"TrackNumberInFilename",L"[Misc]"},
@@ -105,10 +109,8 @@ static void MigrateCategories(std::wstring& text) {
         if(!settings_file::Find(text,option.key,option.section).present&&value.present) {
             // Duplicate opt-ins remain disabled after migration; scalar options
             // use their defaults rather than accepting one conflicting value.
-            auto migrated=std::wstring(value.raw_value);
-            if(value.duplicate)migrated=settings_file::EqualKey(option.key,L"LogLevel")?L"1":
-                settings_file::EqualKey(option.key,L"MetadataCacheReadMiB")?L"256":L"0";
-            settings_file::Set(text,option.key,migrated,option.section);
+            const std::wstring_view migrated=value.duplicate?option.duplicate_value:value.raw_value;
+            settings_file::Set(text,option.key,std::wstring(migrated),option.section);
         }
         settings_file::Erase(text,option.key);
         if(option.legacy_key)settings_file::Erase(text,option.legacy_key);
@@ -160,73 +162,51 @@ static constexpr std::array<RestartFlag,6> restart_flags{{
     {L"DebugHookDiagnostics",&Settings::debug_hook_diagnostics,false}
 }};
 struct BlockingOptionValue {
-    std::optional<bool> current,previous,disk;
-    bool Enabled(bool fallback) const {return current.value_or(previous.value_or(disk.value_or(fallback)));}
+    bool enabled,current_present,previous_present,disk_present;
 };
-struct BlockingIni {
-    std::array<BlockingOptionValue,privacy::kTelemetryOptions.size()> values{};
-    bool has_previous_section=false;
-
-    explicit BlockingIni(std::wstring_view text) {
-        using Field=std::optional<bool> BlockingOptionValue::*;
-        Field field=nullptr;
-        settings_file::VisitEntries(text,[&](auto section) {
-            if(settings_file::EqualKey(section,L"[Telemetry]"))field=&BlockingOptionValue::current;
-            else if(settings_file::EqualKey(section,L"[Blocking]")) {
-                field=&BlockingOptionValue::previous;has_previous_section=true;
-            }else if(settings_file::EqualKey(section,L"[To Disk]"))field=&BlockingOptionValue::disk;
-            else field=nullptr;
-            return field!=nullptr;
-        },[&](auto key,auto raw) {
-            for(size_t i=0;i<privacy::kTelemetryOptions.size();++i) {
-                const auto& flag=privacy::kTelemetryOptions[i];
-                if(field==&BlockingOptionValue::disk&&flag.IsCategory())continue;
-                if(!settings_file::EqualKey(key,flag.key))continue;
-                auto& value=values[i].*field;
-                // Duplicate and malformed entries in the winning section disable the option.
-                value=!value.has_value()&&raw==L"1";
-                break;
-            }
-        });
-    }
-};
+static BlockingOptionValue ReadBlockingOption(std::wstring_view text,const privacy::TelemetryOption& flag) {
+    const auto current=settings_file::Find(text,flag.key,L"[Telemetry]");
+    const auto previous=settings_file::Find(text,flag.key,L"[Blocking]");
+    const auto disk=flag.IsCategory()?settings_file::IniValue{}:settings_file::Find(text,flag.key);
+    const auto& value=current.present?current:previous.present?previous:disk;
+    // Duplicate and malformed entries in the winning section disable the option.
+    return {value.present?!value.duplicate&&value.raw_value==L"1":flag.default_value,
+            current.present,previous.present,disk.present};
+}
 static bool ReadBlockingOptionsText(Settings& target,std::wstring_view text) {
-    const BlockingIni ini(text);
     bool migration=false;
-    for(size_t i=0;i<privacy::kTelemetryOptions.size();++i) {
-        const auto& flag=privacy::kTelemetryOptions[i];const auto& value=ini.values[i];
-        target.*(flag.member)=value.Enabled(flag.default_value);
-        migration|=!value.current.has_value()||value.previous.has_value()||value.disk.has_value();
+    for(const auto& flag:privacy::kTelemetryOptions) {
+        const auto value=ReadBlockingOption(text,flag);
+        target.*(flag.member)=value.enabled;
+        migration|=!value.current_present||value.previous_present||value.disk_present;
     }
     return migration;
 }
 static void MigrateBlockingOptions(std::wstring& text) {
-    const BlockingIni ini(text);
+    std::array<BlockingOptionValue,privacy::kTelemetryOptions.size()> values;
+    std::transform(privacy::kTelemetryOptions.begin(),privacy::kTelemetryOptions.end(),values.begin(),
+        [&](const auto& flag){return ReadBlockingOption(text,flag);});
     for(size_t i=0;i<privacy::kTelemetryOptions.size();++i) {
-        const auto& flag=privacy::kTelemetryOptions[i];const auto& value=ini.values[i];
-        if(!value.current.has_value())
-            settings_file::Set(text,flag.key,value.Enabled(flag.default_value)?L"1":L"0",L"[Telemetry]");
-        if(value.previous.has_value())settings_file::Erase(text,flag.key,L"[Blocking]");
-        if(value.disk.has_value())settings_file::Erase(text,flag.key);
+        const auto& flag=privacy::kTelemetryOptions[i];
+        const auto& value=values[i];
+        if(!value.current_present)settings_file::Set(text,flag.key,value.enabled?L"1":L"0",L"[Telemetry]");
+        if(value.previous_present)settings_file::Erase(text,flag.key,L"[Blocking]");
+        if(value.disk_present)settings_file::Erase(text,flag.key);
     }
-    if(!ini.has_previous_section)return;
     // Remove empty legacy headers while retaining comments and unknown keys.
     for(size_t position=0;position<text.size();) {
-        const auto end=text.find(L'\n',position);
-        const auto next=end==text.npos?text.size():end+1;
-        if(settings_file::EqualKey(settings_file::TrimView(std::wstring_view(text).substr(position,(end==text.npos?text.size():end)-position)),L"[Blocking]")) {
+        const auto header=settings_file::LineAt(text,position);
+        if(settings_file::EqualKey(header.trimmed,L"[Blocking]")) {
             bool empty=true;
-            for(size_t scan=next;scan<text.size();) {
-                const auto finish=text.find(L'\n',scan);
-                const auto after=finish==text.npos?text.size():finish+1;
-                const auto line=settings_file::TrimView(std::wstring_view(text).substr(scan,(finish==text.npos?text.size():finish)-scan));
-                if(!line.empty()&&line.front()==L'['&&line.back()==L']')break;
-                if(!line.empty()&&line.front()!=L';'){empty=false;break;}
-                scan=after;
+            for(size_t scan=header.next;scan<text.size();) {
+                const auto line=settings_file::LineAt(text,scan);
+                if(line.IsSection())break;
+                if(line.HasContent()){empty=false;break;}
+                scan=line.next;
             }
-            if(empty){text.erase(position,next-position);continue;}
+            if(empty){text.erase(position,header.next-position);continue;}
         }
-        position=next;
+        position=header.next;
     }
 }
 static bool ParseUnsignedSetting(const settings_file::IniValue& value,unsigned minimum,unsigned maximum,unsigned& parsed) {

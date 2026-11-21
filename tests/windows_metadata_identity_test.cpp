@@ -284,10 +284,17 @@ int main(int argc,char** argv){
     auto l=reinterpret_cast<history::Load*(*)(history::Client*)>(storage.api.methods[14])(&storage.api);
     assert(d==&display.api&&l==&load.api);
     wchar_t ordinary[]=L"ordinary console message";history::String text{ordinary,wcslen(ordinary),nullptr};
-    assert(reinterpret_cast<int(*)(history::Display*,history::Browser*,int,const history::String*,const history::String*,int)>(d->methods[6])(d,&browser.api,2,&text,nullptr,17)==9);
+    const auto console=reinterpret_cast<int(*)(history::Display*,history::Browser*,int,const history::String*,const history::String*,int)>(d->methods[6]);
+    assert(console(d,&browser.api,2,&text,nullptr,17)==9);
     reinterpret_cast<void(*)(history::Load*,history::Browser*,int,int,int)>(l->methods[0])(l,&browser.api,1,0,1);
     reinterpret_cast<void(*)(history::Load*,history::Browser*,history::Frame*,int)>(l->methods[2])(l,&browser.api,nullptr,200);
     assert(console_calls==1&&loading_calls==1&&end_calls==1&&browser_releases==3);
+    for(const auto* message:{L"FLOGGFY_MARKED_V1:invalid",L"FLOGGFY_PRIVACY_V1:invalid",
+        L"FLOGGFY_PRIVACY_V2:invalid",L"FLOGGFY_PRIVACY_COUNT_V1:invalid",L"FLOGGFY_PRIVACY_DUMP_V1:invalid"}) {
+        history::String reserved{const_cast<wchar_t*>(message),wcslen(message),nullptr};
+        assert(console(d,&browser.api,2,&reserved,nullptr,17)==1);
+    }
+    assert(console_calls==1&&browser_releases==8);
     assert(memcmp(&original_client,&storage.api,sizeof(original_client))==0);
     assert(memcmp(&original_display,&display.api,sizeof(original_display))==0);
     assert(memcmp(&original_load,&load.api,sizeof(original_load))==0);

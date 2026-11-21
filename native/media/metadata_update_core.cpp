@@ -24,17 +24,17 @@ std::string Year(const std::string& date) {
     return date.substr(0,4)=="0000" ? std::string{} : date.substr(0,4);
 }
 void ReleaseDateDelta(const Tags& existing,const Tags& incoming,Tags& delta) {
-    const auto old_date=Value(existing,"DATE"),old_year=Value(existing,"YEAR");
-    auto date=old_date;
+    auto date=Value(existing,"DATE");
+    const auto old_year=Value(existing,"YEAR");
     if(date.empty()) {
         const auto candidate=Value(incoming,"DATE");
-        if(!candidate.empty() && (old_year.empty() || (!Year(candidate).empty() && Year(candidate)==Year(old_year)))) {
+        const auto candidate_year=Year(candidate);
+        if(!candidate.empty() && (old_year.empty() || (!candidate_year.empty() && candidate_year==Year(old_year)))) {
             date=candidate;delta.fields.emplace_back("DATE",candidate);
         }
     }
     if(old_year.empty()) {
-        auto year=Year(old_date);
-        if(year.empty())year=Year(date);
+        auto year=Year(date);
         if(year.empty())year=Year(Value(incoming,"YEAR"));
         if(!year.empty())delta.fields.emplace_back("YEAR",year);
     }
@@ -68,8 +68,8 @@ bool BetterArtwork(const RecordingFile& existing,const Tags& incoming) {
     auto smaller=[&](const RecordingArtwork& old){return old.valid && (candidate.width<old.width || candidate.height<old.height);};
     if(smaller(existing.artwork))return false;
     for(const auto& old:existing.artworks)if(smaller(old))return false;
-    if(candidate.width>existing.artwork.width || candidate.height>existing.artwork.height)return true;
-    return Value(incoming,artwork_source)=="spotify-client" && Value(existing.tags,artwork_source)!="spotify-client";
+    return candidate.width>existing.artwork.width || candidate.height>existing.artwork.height ||
+        Value(existing.tags,artwork_source)!="spotify-client";
 }
 struct MetadataPlan {
     Tags delta;
@@ -153,7 +153,9 @@ bool FlacPictures(const std::vector<uint8_t>& source,std::vector<std::vector<uin
     }
     return true;
 }
-
+bool OwnedMatch(const RecordingFile& recording,const Catalog& catalog) {
+    return recording.complete && recording.owned && MatchesRecording(recording,catalog);
+}
 }
 bool NeedsRecordingMetadata(const RecordingFile& existing,const Tags& incoming,bool backfill_saved_date) {
     return (backfill_saved_date && MissingSavedDate(existing)) || PlanMetadata(existing,incoming,false).Needed();
@@ -161,24 +163,28 @@ bool NeedsRecordingMetadata(const RecordingFile& existing,const Tags& incoming,b
 MetadataUpdate FillRecordingMetadata(const std::vector<uint8_t>& source,const Tags& incoming,
     const Catalog& catalog,std::vector<uint8_t>& output,std::string& error) {
     output.clear();error.clear();RecordingFile existing;
-    if(!InspectRecording(source.data(),source.size(),existing) || !existing.complete || !existing.owned || !MatchesRecording(existing,catalog)) {
+    if(!InspectRecording(source.data(),source.size(),existing) || !OwnedMatch(existing,catalog)) {
         error="recording is not complete, owned and identity matched";return MetadataUpdate::Invalid;
     }
     auto plan=PlanMetadata(existing,incoming,true);
     if(!plan.Needed())return MetadataUpdate::Unchanged;
-    auto& delta=plan.delta;std::vector<uint8_t> picture;
-    if(plan.picture) {
-        if(existing.quality.codec!=Codec::Aac && !BuildPicture(incoming,picture)){error="invalid artwork candidate";return MetadataUpdate::Invalid;}
-        delta.cover=incoming.cover;delta.mime=incoming.mime;
+    auto& delta=plan.delta;
+    const auto saved_date=Value(delta,saved_key);
+    const auto codec=existing.quality.codec;
+    bool updated;
+    if(codec==Codec::Flac) {
+        std::vector<uint8_t> picture;
+        if(plan.picture && !BuildPicture(incoming,picture)){error="invalid artwork candidate";return MetadataUpdate::Invalid;}
+        updated=FillFlac(source,delta,picture,output,error);
+    } else if(codec==Codec::Mp3) {
+        updated=AddMp3TextFrame(source,saved_key,saved_date,output);
+    } else {
+        if(plan.picture) {delta.cover=incoming.cover;delta.mime=incoming.mime;}
+        updated=codec==Codec::Aac ? TagAacM4a(source,delta,output,error) : TagOgg(source,delta,output,error);
     }
-    const bool updated=existing.quality.codec==Codec::Flac ? FillFlac(source,delta,picture,output,error) :
-        existing.quality.codec==Codec::Aac ? TagAacM4a(source,delta,output,error) :
-        existing.quality.codec==Codec::Mp3 ? AddMp3TextFrame(source,saved_key,Value(delta,saved_key),output) :
-        TagOgg(source,delta,output,error);
     RecordingFile result;
-    if(!updated || !InspectRecording(output.data(),output.size(),result) || !result.complete || !result.owned ||
-       !MatchesRecording(result,catalog) || !SameQuality(existing.quality,result.quality) ||
-       (!Value(delta,saved_key).empty() && Value(delta,saved_key)!=Value(result.tags,saved_key))) {
+    if(!updated || !InspectRecording(output.data(),output.size(),result) || !OwnedMatch(result,catalog) ||
+       !SameQuality(existing.quality,result.quality) || (!saved_date.empty() && saved_date!=Value(result.tags,saved_key))) {
         if(error.empty())error="updated recording validation failed";
         output.clear();return MetadataUpdate::Invalid;
     }
@@ -190,8 +196,7 @@ bool PreserveUpgradeMetadata(const std::vector<uint8_t>& source,const RecordingF
     output.clear();error.clear();
     const bool representable=old.quality.codec==next.quality.codec ||
         (old.quality.codec==Codec::Vorbis && next.quality.codec==Codec::Flac);
-    if(!old.complete || !old.owned || !MatchesRecording(old,catalog) ||
-       !next.complete || !next.owned || !MatchesRecording(next,catalog) || !representable) {
+    if(!OwnedMatch(old,catalog) || !OwnedMatch(next,catalog) || !representable) {
         error="upgrade metadata requires complete owned matching recordings";
         return false;
     }
@@ -248,8 +253,8 @@ bool PreserveUpgradeMetadata(const std::vector<uint8_t>& source,const RecordingF
         tagged=TagOgg(incoming,merged,output,error);
     }
     RecordingFile result;
-    if(!tagged || !InspectRecording(output.data(),output.size(),result) || !result.complete ||
-       !result.owned || !MatchesRecording(result,catalog) || !SameQuality(result.quality,next.quality)) {
+    if(!tagged || !InspectRecording(output.data(),output.size(),result) || !OwnedMatch(result,catalog) ||
+       !SameQuality(result.quality,next.quality)) {
         if(error.empty())error="preserved upgrade validation failed";
         output.clear();return false;
     }
