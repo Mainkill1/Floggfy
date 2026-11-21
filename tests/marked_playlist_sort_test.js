@@ -118,6 +118,46 @@ test("uses Spotify's already complete cache without another full fetch", async (
     assert.equal(source.items, entries);
 });
 
+test("keeps unplayable rows visible but excludes them from playback order", async () => {
+    const {controller, entries, source, dates, window} = fixture();
+    entries[3].value.isPlayable = false;
+    controller.cycle();await tick();controller.apply(dates);
+    let playback;
+    window.__floggfyUpdateMarkedPlayback = (_, uri, items) => {playback = items;};
+    controller.syncPlayback();
+    assert.ok(source.items.includes(entries[3]));
+    assert.ok(!playback.some(row => row.uid === "3"));
+    assert.ok(playback.some(row => row.uid === "4"), "a separate playable occurrence remains");
+});
+
+test("library playback beyond 150 rows uses an exact UID instead of native page arithmetic", async () => {
+    const {controller, entries, dates, source} = fixture({count: 334});
+    controller.cycle();await tick();assert.equal(controller.apply(dates), true);
+    const target = entries[213];
+    const request = {action: "play", origin: {featureIdentifier: "your_library"},
+        context: {uri: "spotify:playlist:fixture"},
+        options: {skipTo: {uid: target.value.uid, uri: target.value.uri, index: 213}}};
+    controller.preparePlayback(request);
+    // Spotify 1.3.10's PlayerAPI.play rebases your_library numeric indices into
+    // 150-track pages before dispatch. A UID-only anchor avoids that conversion.
+    assert.equal(request.options.skipTo.index, undefined);
+    assert.equal(request.options.skipTo.pageIndex, 0);
+    let options = {...request.options};
+    if (request.origin.featureIdentifier === "your_library" && options.skipTo?.index) {
+        const page = Math.floor(options.skipTo.index / 150);
+        options.skipTo = {...options.skipTo, index: options.skipTo.index - 150 * page, pageIndex: page};
+    }
+    let page = request.context.pages[options.skipTo.pageIndex];
+    let index = page.items.findIndex(row => row.uid === options.skipTo.uid);
+    assert.ok(index >= 150);
+    assert.equal(page.items[index + 1].uid, source.items[index + 1].value.uid);
+    controller.cycle();assert.equal(controller.apply(dates), true);
+    controller.preparePlayback(request); // React can reuse our earlier play context.
+    page = request.context.pages[request.options.skipTo.pageIndex];
+    index = page.items.findIndex(row => row.uid === request.options.skipTo.uid);
+    assert.equal(page.items[index + 1].uid, source.items[index + 1].value.uid);
+});
+
 test("new save dates retain the chosen order until the user changes sort direction", async () => {
     const {controller, dates, source} = fixture();
     controller.cycle();
@@ -569,7 +609,7 @@ test("playing an unsaved row advances in Saved order, including duplicate occurr
         // A playlist URI with no URL goes to Spotify's playlist service.
         // Explicit context pages are consumed by its context player.
         const items = sent.context.url ? sent.context.pages[0].items : entries.map(row => row.value);
-        return {items, index: sent.options.skipTo.index, request};
+        return {items, index: items.findIndex(item => item.uid === sent.options.skipTo.uid), request};
     }
     const {items, index} = play(start);
     assert.equal(items[index].uid, start.value.uid);

@@ -17,6 +17,7 @@
         let session;
         let loaded;
         let nativeRollback;
+        const ownedPlayPages = new WeakSet();
 
         function provider(fiber) {
             let source;
@@ -140,6 +141,8 @@
             const items = [];
             for (const entry of entries) {
                 const value = own(entry, "value");
+                // Keep unavailable rows visible, but follow Spotify's playback eligibility.
+                if (own(value, "isPlayable") === false) continue;
                 const uid = own(value, "uid"), uri = own(value, "uri");
                 if (!uid || typeof uri !== "string" || !uri.startsWith("spotify:")) return null;
                 items.push({uid, uri});
@@ -166,7 +169,8 @@
                 index: own(own(options, "skipTo"), "index"), current: !!active && !!currentFor(active)}, true);
             if (!active?.playItems || active.mode !== mode || own(data, "action") !== "play" ||
                 own(context, "uri") !== playlistUri ||
-                own(context, "url") || own(context, "pages") || !options || own(options, "shuffle") ||
+                ((own(context, "url") || own(context, "pages")) && !ownedPlayPages.has(own(context, "pages"))) ||
+                !options || own(options, "shuffle") ||
                 !currentFor(active)) return;
 
             const skip = own(options, "skipTo");
@@ -186,7 +190,10 @@
             // playlist service. A URL with a loaded page uses the context player.
             context.url = "context://" + playlistUri;
             context.pages = [{items: active.playItems}];
-            options.skipTo = {uid: item.uid, uri: item.uri, index, pageIndex: 0};
+            ownedPlayPages.add(context.pages);
+            // The library player converts numeric indices into 150-track pages.
+            // Our supplied page is complete: anchor its exact occurrence by UID.
+            options.skipTo = {uid: item.uid, uri: item.uri, pageIndex: 0};
             trace?.("prepared", {playlist: playlistUri, uid: item.uid, uri: item.uri, index,
                 rows: active.playItems.length, next_uid: active.playItems[index + 1]?.uid,
                 next_uri: active.playItems[index + 1]?.uri}, true);
@@ -491,6 +498,9 @@
     let savedTarget;
     let pendingRestore;
     const playBindings = new WeakMap();
+    let queueTrace;
+    let aliasSession;
+    const queueAliases = new Map();
     const traces = new Map();
     const trace = (stage, fields, repeat = false) => {
         if (window.__floggfyConfig?.debug !== true) return;
@@ -503,6 +513,24 @@
         } catch { /* Diagnostics cannot affect playback. */ }
     };
     window.__floggfyMarkedTrace = trace;
+
+    function traceQueue(player, state, items) {
+        if (window.__floggfyConfig?.debug !== true || !state?.item) return;
+        const snapshot = player?._queue?.getInternalQueue?.();
+        if (!snapshot || queueTrace?.items === items && queueTrace.uid === state.item.uid &&
+            queueTrace.revision === snapshot.queueRevision) return;
+        queueTrace = {items, uid: state.item.uid, revision: snapshot.queueRevision};
+        const index = items.findIndex(row => row.uid === playlistUid(state.item));
+        const next = index < 0 ? undefined : items[index + 1];
+        const raw = snapshot.nextTracks?.find(row => playlistUid(row.contextTrack) === next?.uid);
+        trace("queue-evidence", {uid: state.item.uid, revision: String(snapshot.queueRevision),
+            expected_uid: next?.uid, expected_uri: next?.uri, found: !!raw,
+            removed: raw?.removed?.join("_"), blocked: raw?.blocked?.join("_"),
+            position: Math.round(state.positionAsOfTimestamp || 0)}, true);
+        for (const [index, row] of (snapshot.nextTracks || []).slice(0, 3).entries())
+            trace("queue-row-" + index, {uid: row.contextTrack?.uid, uri: row.contextTrack?.uri,
+                provider: row.provider, removed: row.removed?.join("_"), blocked: row.blocked?.join("_")}, true);
+    }
 
     function release() {
         order = undefined;
@@ -524,8 +552,90 @@
         return state?.context?.uri === uri && typeof state.sessionId === "string" && !!state.sessionId;
     }
 
+    function playlistUid(track) {
+        const mapped = queueAliases.get(track?.uid);
+        return mapped?.uri === track?.uri ? mapped.uid : track?.uid;
+    }
+
+    function confirmQueue(snapshot, wanted, previousIds) {
+        if (!snapshot || snapshot.nextTracks.length < wanted.length) return false;
+        if (!wanted.every((row, index) => {
+            const actual = snapshot.nextTracks[index].contextTrack;
+            return actual?.uri === row.uri && !!actual.uid && (row.queueUid ? actual.uid === row.queueUid :
+                previousIds && !previousIds.has(actual.uid));
+        })) return false;
+        wanted.forEach((row, index) => queueAliases.set(snapshot.nextTracks[index].contextTrack.uid, row));
+        return true;
+    }
+
+    async function replacePending(player, state, items, attempt) {
+        const queue = player?._queue;
+        const client = player?._contextPlayer || queue?._client;
+        if (typeof queue?.getInternalQueue !== "function" || typeof client?.setQueue !== "function") {
+            trace("queue", {reason: "unsupported"});return;
+        }
+        const current = queue.getInternalQueue();
+        const revision = current?.queueRevision;
+        const live = readState(player);
+        const index = items.findIndex(row => row.uid === playlistUid(state.item) && row.uri === state.item.uri);
+        if (live?.sessionId !== state.sessionId || live?.item?.uid !== state.item.uid ||
+            live.shuffle !== false || live.smartShuffle === true) throw Error("Playback changed before SetQueue");
+        if (index < 0 || current?.track?.contextTrack?.uid !== state.item.uid ||
+            current.track.contextTrack.uri !== state.item.uri || current.queueRevision == null ||
+            !Array.isArray(current.nextTracks) || !Array.isArray(current.prevTracks) ||
+            current.nextTracks.some(track => !["context", "queue"].includes(track.provider))) {
+            trace("queue", {reason: "unverified-queue"});
+            throw Object.assign(Error("Queue snapshot has not caught up"), {queueChanged: true});
+        }
+        const manual = current.nextTracks.filter(track => track.provider === "queue");
+        const available = new Map(current.nextTracks.filter(track => track.provider === "context")
+            .map(track => [playlistUid(track.contextTrack), track]));
+        // SetQueue edits a loaded queue. A playlist UID outside it is silently
+        // ignored by Spotify; new entries must omit UID and use its assigned ID.
+        // Refill a bounded upcoming window at each song start.
+        const upcoming = items.slice(index + 1, index + 51);
+        const next = upcoming.map(row => {
+            const existing = available.get(row.uid);
+            return existing?.contextTrack.uri === row.uri ? existing :
+                {provider: "context", contextTrack: {uri: row.uri, metadata: {}}};
+        });
+        const wanted = [...manual.map(row => ({...row.contextTrack, queueUid: row.contextTrack.uid})),
+            ...upcoming.map((row, index) => ({...row, queueUid: next[index].contextTrack.uid}))];
+        if (confirmQueue(current, wanted)) {
+            trace("queue-result", {reason: "verified", uid: state.item.uid, rows: wanted.length});
+            return;
+        }
+        trace("queue-request", {uid: state.item.uid, rows: next.length, manual: manual.length,
+            next_uid: next[0]?.contextTrack.uid, next_uri: next[0]?.contextTrack.uri}, true);
+        const previousIds = new Set(current.nextTracks.map(row => row.contextTrack?.uid));
+        const result = await client.setQueue({nextTracks: [...manual, ...next],
+            prevTracks: current.prevTracks, queueRevision: BigInt(revision.toString())});
+        if (result?.error !== 0) {
+            trace("queue-result", {reason: "rejected", code: result?.error, detail: result?.reasons}, true);
+            throw Error("SetQueue rejected");
+        }
+        for (let poll = 0; poll < 30; ++poll) {
+            if (lastUpdate !== attempt || readState(player)?.sessionId !== state.sessionId)
+                throw Error("Queue request superseded");
+            const snapshot = queue.getInternalQueue();
+            if (snapshot.queueRevision !== revision && confirmQueue(snapshot, wanted, previousIds)) {
+                trace("queue-result", {reason: "verified", uid: state.item.uid, rows: wanted.length,
+                    next_uri: upcoming[0]?.uri}, true);
+                return;
+            }
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        trace("queue-result", {reason: "order-mismatch", uid: state.item.uid,
+            expected: upcoming[0]?.uri, actual: queue.getInternalQueue()?.nextTracks?.[manual.length]?.contextTrack?.uri}, true);
+        throw Error("Spotify did not retain the requested order");
+    }
+
     function updateOrder(player, playlistUri, state, orderedItems, completed) {
         const {sessionId: session, item} = state;
+        if (aliasSession !== session) {
+            aliasSession = session;
+            queueAliases.clear();
+        }
         if (state.shuffle !== false || state.smartShuffle === true) {
             // Native shuffle may replace the loaded context for this session.
             lastUpdate = undefined;
@@ -545,20 +655,29 @@
             }
             identities = byUid;
         }
-        if (!identities?.has(item.uid) || identities.get(item.uid) !== item.uri) return;
+        const uid = playlistUid(item);
+        if (!identities?.has(uid) || identities.get(uid) !== item.uri) return;
         if (lastUpdate?.player === player && lastUpdate.session === session &&
-            lastUpdate.uri === playlistUri && Date.now() < lastUpdate.retryAt) return true;
+            lastUpdate.uid === item.uid && lastUpdate.uri === playlistUri && Date.now() < lastUpdate.retryAt) return true;
 
         // Use the active session and let Spotify retain its manual queue and transport state.
         const context = {uri: playlistUri, metadata: state.context.metadata, isLoading: false,
             pages: [{tracks: order}]};
-        const attempt = {player, session, uri: playlistUri, retryAt: Infinity};
-        const failed = () => { attempt.retryAt = Date.now() + 3000;trace("context-result", {reason: "rejected"}, true); };
+        const attempt = {player, session, uid: item.uid, uri: playlistUri, retryAt: Infinity};
+        const failed = error => {
+            attempt.retryAt = Date.now() + (error?.queueChanged ? 100 : 3000);
+            trace("context-result", {reason: "rejected", detail: error?.message}, true);
+        };
         lastUpdate = attempt;
         if (!completed) savedTarget = attempt;
         try {
             trace("context-request", {playlist: playlistUri, session, uid: item.uid, rows: order.length}, true);
-            const result = player.updateContext(session, context);
+            const contextClient = player?._contextPlayer || player?._queue?._client;
+            // Newer clients rebuild playlist contexts internally. Edit their real
+            // pending queue; retain UpdateContext for older player interfaces.
+            const result = typeof contextClient?.setQueue === "function" &&
+                typeof player?._queue?.getInternalQueue === "function" ?
+                replacePending(player, state, order, attempt) : player.updateContext(session, context);
             Promise.resolve(result).then(() => trace("context-result", {reason: "resolved"}, true), () => {});
             if (completed) {
                 Promise.resolve(result).then(completed, failed);
@@ -609,6 +728,7 @@
                 discardRestore(pendingRestore);
             }
             const state = readState(player);
+            try { traceQueue(player, state, orderedItems); } catch { /* Diagnostics cannot block queue repair. */ }
             trace("state", {playlist: state?.context?.uri, session: state?.sessionId,
                 uri: state?.item?.uri, uid: state?.item?.uid, provider: state?.item?.provider,
                 shuffle: state?.shuffle, smart: state?.smartShuffle,
