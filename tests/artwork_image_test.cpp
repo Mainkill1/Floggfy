@@ -1,5 +1,5 @@
-#include "../native/artwork_image.h"
-#include "../native/image_info.h"
+#include "../native/media/artwork_image.h"
+#include "../native/media/image_info.h"
 #include "artwork_fixture.h"
 #include "artwork_webp_fixture.h"
 #include <cassert>

@@ -1,11 +1,11 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include "../native/aac_stream.h"
-#include "../native/flac_history_core.h"
-#include "../native/history_settings.h"
-#include "../native/marked_recording.h"
-#include "../native/metadata_update_windows.h"
-#include "../native/mp3_stream.h"
+#include "../native/media/aac_stream.h"
+#include "../native/media/flac_history_core.h"
+#include "../native/tooling/history_settings.h"
+#include "../native/media/marked_recording.h"
+#include "../native/media/metadata_update_windows.h"
+#include "../native/media/mp3_stream.h"
 #include "recording_fixture.h"
 #include <cassert>
 #include <cstdio>

@@ -1,6 +1,6 @@
 # Telemetry protobuf schema source
 
-The field map in [`telemetry-schema-1.3.9.2055.json`](telemetry-schema-1.3.9.2055.json) and [`telemetry_schema.h`](../native/telemetry_schema.h) records protobuf interface metadata extracted offline from the installed Windows `Spotify.dll`. It contains field names, numbers, declared scalar types, repetition labels, and nested message names. It contains no request payloads, account values, executable code, or binary excerpts.
+The field map in [`telemetry-schema-1.3.9.2055.json`](telemetry-schema-1.3.9.2055.json) and [`telemetry_schema.h`](../native/telemetry/telemetry_schema.h) records protobuf interface metadata extracted offline from the installed Windows `Spotify.dll`. It contains field names, numbers, declared scalar types, repetition labels, and nested message names. It contains no request payloads, account values, executable code, or binary excerpts.
 
 File and product version: `1.3.9.2055` (Windows PE version resource). Size: `44,244,864` bytes. SHA-256: `9991ade34f9986ba60dd1122386f4c6cbdd2a167c85a07ce3c30554b7c38153f`.
 

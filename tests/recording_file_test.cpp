@@ -1,8 +1,8 @@
 #include "recording_fixture.h"
-#include "../native/recording_file.h"
-#include "../native/flac_history_core.h"
-#include "../native/vorbis_headers.h"
-#include "../native/mp3_stream.h"
+#include "../native/media/recording_file.h"
+#include "../native/media/flac_history_core.h"
+#include "../native/media/vorbis_headers.h"
+#include "../native/media/mp3_stream.h"
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>

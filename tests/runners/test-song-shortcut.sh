@@ -12,7 +12,7 @@ python3 tools/embed_assets.py
 x86_64-w64-mingw32-g++ "${windows_cxxflags[@]}" -DFLOGGFY_SONG_SHORTCUT_TEST \
     -I native/vendor/libogg/include \
     tests/windows_song_destination_test.cpp tests/windows_menu_quality_test.cpp tests/library_layout_test.cpp tests/marked_catalog_stub.cpp \
-    native/library_layout.cpp native/existing_quality.cpp "${recording_sources[@]}" \
-    "${quality_sources[@]}" native/history_settings.cpp native/async_log.cpp \
+    native/media/library_layout.cpp native/media/existing_quality.cpp "${recording_sources[@]}" \
+    "${quality_sources[@]}" native/tooling/history_settings.cpp native/tooling/async_log.cpp \
     build/song-shortcut/*.o -lole32 -luuid -lshell32 -o "$floggfy_shortcut_root/song-shortcut-test.exe"
 exec "$floggfy_shortcut_root/song-shortcut-test.exe"

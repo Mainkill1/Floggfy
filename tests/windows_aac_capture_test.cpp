@@ -1,7 +1,7 @@
 // Combined AAC gate: core parser/container tests plus actual hook/Windows
 // publication integration. Runtime never invokes Spotify internals.
-#include "../native/audio_history.cpp"
-#include "../native/history_settings.cpp"
+#include "../native/media/audio_history.cpp"
+#include "../native/tooling/history_settings.cpp"
 #include "spac_fixture.h"
 #include "recording_fixture.h"
 #include "artwork_fixture.h"

@@ -1,7 +1,7 @@
 // Removing cancellation, adding a self-reference transfer to get_url, replacing
 // object identity, or forwarding blocked requests must fail these tests.
-#include "../native/history_settings.h"
-#include "../native/telemetry_decode.h"
+#include "../native/tooling/history_settings.h"
+#include "../native/telemetry/telemetry_decode.h"
 static unsigned decode_attempts=0;
 namespace privacy {
 static PayloadDecode CountingDecode(std::string_view body,std::string_view type,std::string_view encoding,bool gabo) {
@@ -9,7 +9,7 @@ static PayloadDecode CountingDecode(std::string_view body,std::string_view type,
 }
 }
 #define DecodeTelemetryPayload CountingDecode
-#include "../native/telemetry_filter.cpp"
+#include "../native/telemetry/telemetry_filter.cpp"
 #undef DecodeTelemetryPayload
 #include <cassert>
 #include <cstring>

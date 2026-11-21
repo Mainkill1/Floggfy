@@ -1,8 +1,8 @@
 // Actual metadata bridge, cache merge and Windows filename operations; no workers
 // or live client/network requests are started by this focused executable.
-#include "../native/metadata_bridge.cpp"
-#include "../native/history_settings.cpp"
-#include "../native/file_publication.h"
+#include "../native/media/metadata_bridge.cpp"
+#include "../native/tooling/history_settings.cpp"
+#include "../native/media/file_publication.h"
 #include "recording_fixture.h"
 #include <cassert>
 namespace history {

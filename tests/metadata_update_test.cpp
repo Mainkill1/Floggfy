@@ -1,5 +1,5 @@
-#include "../native/metadata_update_core.h"
-#include "../native/flac_history_core.h"
+#include "../native/media/metadata_update_core.h"
+#include "../native/media/flac_history_core.h"
 #include "recording_fixture.h"
 #include "artwork_fixture.h"
 #include <algorithm>

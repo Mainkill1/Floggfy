@@ -1,5 +1,5 @@
 // Instrument the real locator without adding counters or test APIs to production.
-#include "../native/playback_identity_bridge.cpp"
+#include "../native/media/playback_identity_bridge.cpp"
 #include <cassert>
 
 static unsigned location_scans=0;

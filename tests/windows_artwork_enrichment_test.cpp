@@ -1,12 +1,12 @@
 // Exercises production enrichment using artwork attached to in-memory recording metadata.
-#include "../native/metadata_bridge.cpp"
-#include "../native/history_settings.cpp"
-#include "../native/file_publication.h"
-#include "../native/flac_history_core.h"
-#include "../native/metadata_update_windows.h"
-#include "../native/recent_downloads.h"
+#include "../native/media/metadata_bridge.cpp"
+#include "../native/tooling/history_settings.cpp"
+#include "../native/media/file_publication.h"
+#include "../native/media/flac_history_core.h"
+#include "../native/media/metadata_update_windows.h"
+#include "../native/ui/recent_downloads.h"
 #include "recording_fixture.h"
-#include "../native/album_artwork.h"
+#include "../native/media/album_artwork.h"
 #include "artwork_fixture.h"
 #include <cassert>
 #include <algorithm>

@@ -1,5 +1,5 @@
 // The real poll/cache worker must stay live while enrichment storage is blocked.
-#include "../native/metadata_bridge.cpp"
+#include "../native/media/metadata_bridge.cpp"
 #include <cassert>
 #include <atomic>
 #include <new>

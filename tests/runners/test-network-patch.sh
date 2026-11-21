@@ -7,6 +7,6 @@ floggfy_network_root="$(wslpath -u "$floggfy_network_temp")/Floggfy-network-patc
 mkdir -p "$floggfy_network_root"
 python3 tools/embed_assets.py
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -municode \
-    -static-libgcc -static-libstdc++ tests/windows_network_patch_test.cpp native/pe_imports.cpp \
+    -static-libgcc -static-libstdc++ tests/windows_network_patch_test.cpp native/tooling/pe_imports.cpp \
     -lole32 -luuid -lshell32 -liphlpapi -lws2_32 -o "$floggfy_network_root/network-patch-test.exe"
 exec "$floggfy_network_root/network-patch-test.exe"

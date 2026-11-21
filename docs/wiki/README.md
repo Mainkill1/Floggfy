@@ -44,16 +44,18 @@ and settings remain in the project [README](../../README.md).
 
 ## Component map
 
+The first-party source has four directories. [Telemetry](../../native/telemetry) owns the privacy settings map, request rules, counters and dumps. [Media](../../native/media) owns capture, matching, recording and metadata. [UI](../../native/ui) owns the To Disk menu, Saved playlists, audio labels and file shortcuts. [Tooling](../../native/tooling) holds shared Windows, settings, filesystem, hashing and hook support. The DLL and launcher entry points are at the root of `native/`.
+
 | Responsibility | Primary implementation |
 | --- | --- |
-| Hook discovery and structural validation | [`spotify_hook_discovery.cpp`](../../native/spotify_hook_discovery.cpp) |
-| Audio hooks, queues, association, and publication scheduling | [`audio_history.cpp`](../../native/audio_history.cpp) |
-| Decoder/playback ownership stages | [`decoder_ownership.cpp`](../../native/decoder_ownership.cpp) |
-| Spotify client timeline and enrichment collector | [`metadata_collector.js`](../../native/metadata_collector.js) |
-| Collector injection and native message bridge | [`metadata_bridge.cpp`](../../native/metadata_bridge.cpp) |
-| Optional Windows media-session fallback | [`media_session.cpp`](../../native/media_session.cpp) |
-| Recording inspection and destination resolution | [`recording_file.cpp`](../../native/recording_file.cpp), [`existing_quality.cpp`](../../native/existing_quality.cpp) |
-| Metadata merge and codec-specific tagging | [`metadata_update_core.cpp`](../../native/metadata_update_core.cpp) |
-| Staged, no-overwrite file publication | [`file_publication.cpp`](../../native/file_publication.cpp) |
-| Folder and filename layout | [`library_layout.cpp`](../../native/library_layout.cpp) |
+| Hook discovery and structural validation | [`spotify_hook_discovery.cpp`](../../native/tooling/spotify_hook_discovery.cpp) |
+| Audio hooks, queues, association, and publication scheduling | [`audio_history.cpp`](../../native/media/audio_history.cpp) |
+| Decoder/playback ownership stages | [`decoder_ownership.cpp`](../../native/media/decoder_ownership.cpp) |
+| Spotify client timeline and enrichment collector | [`metadata_collector.js`](../../native/media/metadata_collector.js) |
+| Collector injection and native message bridge | [`metadata_bridge.cpp`](../../native/media/metadata_bridge.cpp) |
+| Optional Windows media-session fallback | [`media_session.cpp`](../../native/media/media_session.cpp) |
+| Recording inspection and destination resolution | [`recording_file.cpp`](../../native/media/recording_file.cpp), [`existing_quality.cpp`](../../native/media/existing_quality.cpp) |
+| Metadata merge and codec-specific tagging | [`metadata_update_core.cpp`](../../native/media/metadata_update_core.cpp) |
+| Staged, no-overwrite file publication | [`file_publication.cpp`](../../native/media/file_publication.cpp) |
+| Folder and filename layout | [`library_layout.cpp`](../../native/media/library_layout.cpp) |
 

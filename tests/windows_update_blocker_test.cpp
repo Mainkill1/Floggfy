@@ -40,7 +40,7 @@ static DWORD WINAPI TestSetSecurityInfo(HANDLE h, SE_OBJECT_TYPE type, SECURITY_
 #define CoTaskMemFree FixtureFolderFree
 #define GetSecurityInfo TestGetSecurityInfo
 #define SetSecurityInfo TestSetSecurityInfo
-#include "../native/update_blocker.cpp"
+#include "../native/tooling/update_blocker.cpp"
 #undef SHGetKnownFolderPath
 #undef CoTaskMemFree
 #undef GetSecurityInfo

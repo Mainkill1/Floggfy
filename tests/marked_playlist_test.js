@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const { JSDOM } = require("jsdom");
 
-const source = fs.readFileSync(require.resolve("../native/marked_playlist.js"), "utf8");
+const source = fs.readFileSync(require.resolve("../native/ui/marked_playlist.js"), "utf8");
 const playlistId = "A".repeat(22);
 const a = "spotify:track:" + "B".repeat(22);
 const b = "spotify:track:" + "C".repeat(22);

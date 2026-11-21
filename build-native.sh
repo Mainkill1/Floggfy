@@ -12,13 +12,13 @@ for source in buffer hook trampoline hde/hde64; do
 done
 x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include \
     -c native/vendor/libogg/src/framing.c -o build/ogg-framing.o
-x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vorbis_headers_stb.c -o build/vorbis-headers-stb.o
+x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/media/vorbis_headers_stb.c -o build/vorbis-headers-stb.o
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -shared \
     -static-libgcc -static-libstdc++ \
     -Wl,--no-insert-timestamp,--dynamicbase,--nxcompat \
-    native/version_proxy.cpp native/update_blocker.cpp native/network_kill_switch.cpp native/telemetry_crash.cpp native/telemetry_queue.cpp native/telemetry_queue_exit.cpp native/telemetry_filter.cpp native/telemetry_decode.cpp native/telemetry_inflate.cpp native/pe_imports.cpp native/spotify_hook_discovery.cpp native/connect_message.cpp native/connect_messages_windows.cpp native/audio_history.cpp native/playback_identity_bridge.cpp native/auto_skip.cpp native/decoder_ownership.cpp native/playback_quality.cpp native/playback_quality_windows.cpp native/ogg_history_core.cpp \
-    native/media_session.cpp native/image_info.cpp native/album_artwork.cpp native/ogg_tags.cpp native/flac_history_core.cpp native/compressed_buffer.cpp native/history_settings.cpp native/library_layout.cpp \
-    native/recording_file.cpp native/aac_container.cpp native/spac_stream.cpp native/mp3_stream.cpp build/minimp4.o native/vorbis_headers.cpp build/vorbis-headers-stb.o native/existing_quality.cpp native/file_publication.cpp native/metadata_update_core.cpp native/metadata_update_windows.cpp native/recent_downloads.cpp native/marked_recording.cpp native/marked_recording_windows.cpp native/marked_catalog.cpp build/sqlite3.o native/song_destination.cpp native/to_disk_menu.cpp native/rich_metadata.cpp native/artwork_reply.cpp native/cached_metadata.cpp native/cached_metadata_windows.cpp native/cached_artwork_windows.cpp native/artwork_image.cpp native/metadata_bridge.cpp native/async_log.cpp native/version_exports.S native/version.def \
+    native/version_proxy.cpp native/tooling/update_blocker.cpp native/tooling/network_kill_switch.cpp native/telemetry/telemetry_crash.cpp native/telemetry/telemetry_queue.cpp native/telemetry/telemetry_queue_exit.cpp native/telemetry/telemetry_filter.cpp native/telemetry/telemetry_decode.cpp native/telemetry/telemetry_inflate.cpp native/tooling/pe_imports.cpp native/tooling/spotify_hook_discovery.cpp native/media/connect_message.cpp native/media/connect_messages_windows.cpp native/media/audio_history.cpp native/media/playback_identity_bridge.cpp native/media/auto_skip.cpp native/media/decoder_ownership.cpp native/media/playback_quality.cpp native/media/playback_quality_windows.cpp native/media/ogg_history_core.cpp \
+    native/media/media_session.cpp native/media/image_info.cpp native/media/album_artwork.cpp native/media/ogg_tags.cpp native/media/flac_history_core.cpp native/media/compressed_buffer.cpp native/tooling/history_settings.cpp native/media/library_layout.cpp \
+    native/media/recording_file.cpp native/media/aac_container.cpp native/media/spac_stream.cpp native/media/mp3_stream.cpp build/minimp4.o native/media/vorbis_headers.cpp build/vorbis-headers-stb.o native/media/existing_quality.cpp native/media/file_publication.cpp native/media/metadata_update_core.cpp native/media/metadata_update_windows.cpp native/ui/recent_downloads.cpp native/media/marked_recording.cpp native/media/marked_recording_windows.cpp native/ui/marked_catalog.cpp build/sqlite3.o native/ui/song_destination.cpp native/ui/to_disk_menu.cpp native/media/rich_metadata.cpp native/media/artwork_reply.cpp native/media/cached_metadata.cpp native/media/cached_metadata_windows.cpp native/media/cached_artwork_windows.cpp native/media/artwork_image.cpp native/media/metadata_bridge.cpp native/tooling/async_log.cpp native/version_exports.S native/version.def \
     build/minhook-*.o build/ogg-framing.o -I native/vendor/libogg/include \
     -o build/version.dll build/artwork-codecs-windows/libwebpdecoder.a -lole32 -luuid -liphlpapi -lws2_32 -lruntimeobject -lshell32 -lwinhttp -ladvapi32
 # PE rewriting by strip otherwise inserts the current time even though the
@@ -27,5 +27,5 @@ SOURCE_DATE_EPOCH=1 x86_64-w64-mingw32-strip --strip-unneeded build/version.dll
 
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -municode -mwindows \
     -static-libgcc -static-libstdc++ -Wl,--no-insert-timestamp,--dynamicbase,--nxcompat \
-    native/floggfy_launcher.cpp native/startup_launcher.cpp -o build/Floggfy.exe
+    native/floggfy_launcher.cpp native/tooling/startup_launcher.cpp -o build/Floggfy.exe
 SOURCE_DATE_EPOCH=1 x86_64-w64-mingw32-strip --strip-unneeded build/Floggfy.exe

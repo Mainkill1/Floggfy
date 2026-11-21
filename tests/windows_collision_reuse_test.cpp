@@ -1,7 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include "../native/file_publication.h"
-#include "../native/flac_history_core.h"
+#include "../native/media/file_publication.h"
+#include "../native/media/flac_history_core.h"
 #include "recording_fixture.h"
 #include <cassert>
 #include <cstdio>

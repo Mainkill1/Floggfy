@@ -1,8 +1,8 @@
 // Optional real-file test: requires about 1.1 GiB RAM and 513 MiB temporary disk.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include "../native/mp3_stream.h"
-#include "../native/file_publication.h"
+#include "../native/media/mp3_stream.h"
+#include "../native/media/file_publication.h"
 #include <cassert>
 #include <cstdio>
 namespace history {std::wstring WindowsPath(const std::wstring& path){return path;}}

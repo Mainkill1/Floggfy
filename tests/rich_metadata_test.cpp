@@ -1,4 +1,4 @@
-#include "../native/rich_metadata.h"
+#include "../native/media/rich_metadata.h"
 #include <cassert>
 #include <iostream>
 using namespace history;

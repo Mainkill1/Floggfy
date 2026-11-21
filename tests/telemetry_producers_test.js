@@ -1,5 +1,5 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
-const path='native/telemetry_producers.js';
+const path='native/telemetry/telemetry_producers.js';
 const script=fs.existsSync(path)?fs.readFileSync(path,'utf8'):'';
 const defaults={block_telemetry:true,block_event_reports:true,block_playback_reports:true,block_growth_analytics:true,block_sentry:true,block_crash_reports:true,block_internal_logging:true,block_track_errors:true,block_ai_telemetry:true,block_queued_telemetry:true};
 function boot(options={},window={}){

@@ -1,6 +1,6 @@
 // Synthetic import tables and an isolated temporary INI; never touches Spotify.
 #include "../native/version_proxy.cpp"
-#include "../native/history_settings.cpp"
+#include "../native/tooling/history_settings.cpp"
 #include <cassert>
 #include <vector>
 

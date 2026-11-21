@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 const test = require("node:test");
 
-const script = fs.readFileSync(require.resolve("../native/marked_playlist_sort.js"), "utf8");
+const script = fs.readFileSync(require.resolve("../native/ui/marked_playlist_sort.js"), "utf8");
 const playlist = "spotify:playlist:" + "P".repeat(22);
 const a = "spotify:track:" + "A".repeat(22);
 const b = "spotify:track:" + "B".repeat(22);

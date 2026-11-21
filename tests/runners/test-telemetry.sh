@@ -5,7 +5,7 @@ cd -- "$(dirname -- "$0")/../.."
 source tests/runners/windows-common.sh
 mkdir -p build/telemetry-tests
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/telemetry_policy_test.cpp -o build/telemetry-tests/policy
-g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/telemetry_decode_test.cpp native/telemetry_decode.cpp native/telemetry_inflate.cpp -o build/telemetry-tests/decode
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/telemetry_decode_test.cpp native/telemetry/telemetry_decode.cpp native/telemetry/telemetry_inflate.cpp -o build/telemetry-tests/decode
 build/telemetry-tests/decode
 build/telemetry-tests/policy
 node tests/telemetry_producers_test.js
@@ -15,11 +15,11 @@ x86_64-w64-mingw32-g++ "${windows_cxxflags[@]}" \
 "$floggfy_privacy_root/queue.exe"
 build_windows_minhook build/telemetry-tests
 x86_64-w64-mingw32-g++ "${windows_cxxflags[@]}" -municode \
-    tests/windows_telemetry_queue_exit_test.cpp native/telemetry_queue_exit.cpp native/telemetry_queue.cpp \
+    tests/windows_telemetry_queue_exit_test.cpp native/telemetry/telemetry_queue_exit.cpp native/telemetry/telemetry_queue.cpp \
     build/telemetry-tests/minhook-*.o -lole32 -luuid -lshell32 -o "$floggfy_privacy_root/queue-exit.exe"
 "$floggfy_privacy_root/queue-exit.exe"
 x86_64-w64-mingw32-g++ "${windows_cxxflags[@]}" \
-    tests/windows_telemetry_filter_test.cpp native/telemetry_decode.cpp native/telemetry_inflate.cpp build/telemetry-tests/minhook-*.o -o "$floggfy_privacy_root/filter.exe"
+    tests/windows_telemetry_filter_test.cpp native/telemetry/telemetry_decode.cpp native/telemetry/telemetry_inflate.cpp build/telemetry-tests/minhook-*.o -o "$floggfy_privacy_root/filter.exe"
 "$floggfy_privacy_root/filter.exe" --dump
 "$floggfy_privacy_root/filter.exe" --renderer-dump
 "$floggfy_privacy_root/filter.exe" --dump-write-failure

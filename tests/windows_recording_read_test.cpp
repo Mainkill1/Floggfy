@@ -6,10 +6,10 @@
 #include <vector>
 #include <string>
 #include "recording_fixture.h"
-#include "../native/flac_history_core.h"
-#include "../native/history_settings.h"
-#include "../native/mp3_stream.h"
-#include "../native/recording_limits.h"
+#include "../native/media/flac_history_core.h"
+#include "../native/tooling/history_settings.h"
+#include "../native/media/mp3_stream.h"
+#include "../native/media/recording_limits.h"
 namespace {
 enum class Failure {None,ReadError,ShortRead,Oversize,SizeChanged,Allocation};
 Failure failure=Failure::None;
@@ -43,7 +43,7 @@ void operator delete(void* p) noexcept {if(p)HeapFree(GetProcessHeap(),0,p);}
 void operator delete(void* p,std::size_t) noexcept {if(p)HeapFree(GetProcessHeap(),0,p);}
 #define ReadFile CheckedRead
 #define GetFileSizeEx CheckedSize
-#include "../native/existing_quality.cpp"
+#include "../native/media/existing_quality.cpp"
 #undef ReadFile
 #undef GetFileSizeEx
 static void Reset(history::RecordingFile& recording) {

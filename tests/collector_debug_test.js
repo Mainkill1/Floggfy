@@ -1,5 +1,5 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
-const script=fs.readFileSync('native/metadata_collector.js','utf8');
+const script=fs.readFileSync('native/media/metadata_collector.js','utf8');
 const output=[];let getters=0,requests=0;
 const forbidden=()=>{requests++;throw Error('unexpected request');};
 const state={item:{uri:'spotify:track:0000000000000000000001',metadata:{title:'Song',artist_name:'Artist',album_title:'Album',duration:'200000'}},

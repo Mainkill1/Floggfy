@@ -33,14 +33,14 @@ Discovery success is not treated as activation success. If an optional hook cann
 be installed or enabled safely, it is removed and its feature is disabled. Ordinary
 capture remains available at 1x when its required hooks are intact. Hook creation,
 queued activation, rollback, and retained trampoline handling are in
-[`audio_history.cpp`](../../native/audio_history.cpp) and the
-[`hook_startup_*`](../../native/hook_startup_batch.h) helpers.
+[`audio_history.cpp`](../../native/media/audio_history.cpp) and the
+[`hook_startup_*`](../../native/tooling/hook_startup_batch.h) helpers.
 
 ## Settings and live changes
 
 `SpotifyHistory.ini` is loaded through
-[`history_settings.cpp`](../../native/history_settings.cpp). The **To Disk** menu
-updates the same settings through [`to_disk_menu.cpp`](../../native/to_disk_menu.cpp).
+[`history_settings.cpp`](../../native/tooling/history_settings.cpp). The **To Disk** menu
+updates the same settings through [`to_disk_menu.cpp`](../../native/ui/to_disk_menu.cpp).
 Important controls include:
 
 | Control | Effect |
@@ -99,8 +99,8 @@ Recovery never means publishing corrupt bytes or overwriting an unrelated file.
 Normal outcomes go to `Floggfy.log`. Optional detailed ownership, media, hook, and
 network observations go to `Floggfy-diagnostics.log`; both are size bounded. Logs
 use sanitized facts and state transitions rather than credentials, request bodies,
-or arbitrary client exceptions. See [`async_log.cpp`](../../native/async_log.cpp)
-and diagnostic handling in [`metadata_bridge.cpp`](../../native/metadata_bridge.cpp).
+or arbitrary client exceptions. See [`async_log.cpp`](../../native/tooling/async_log.cpp)
+and diagnostic handling in [`metadata_bridge.cpp`](../../native/media/metadata_bridge.cpp).
 
 For a failed save, correlate these stages in order:
 

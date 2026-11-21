@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const test = require("node:test");
 const vm = require("node:vm");
-const sourcePath = require("node:path").join(__dirname, "../native/marked_playlist_sort.js");
+const sourcePath = require("node:path").join(__dirname, "../native/ui/marked_playlist_sort.js");
 const uri = index => "spotify:track:" + String(index).padStart(22, "0");
 const tick = () => new Promise(resolve => setImmediate(resolve));
 

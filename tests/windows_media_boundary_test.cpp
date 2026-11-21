@@ -1,7 +1,7 @@
 // Basic media observation boundary only: no live SMTC, artwork or disk access.
-#include "../native/media_session.h"
-#include "../native/media_timeline.h"
-#include "../native/ogg_history_core.h"
+#include "../native/media/media_session.h"
+#include "../native/media/media_timeline.h"
+#include "../native/media/ogg_history_core.h"
 #include <atomic>
 #include <cassert>
 #include <cstdio>

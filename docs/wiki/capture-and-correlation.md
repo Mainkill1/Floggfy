@@ -6,7 +6,7 @@ Floggfy discovers private Spotify functions from the loaded x64 image. Discovery
 does not trust one byte signature alone: it checks executable sections, x64 unwind
 function boundaries, uniqueness, and expected relationships between targets. If a
 required target is missing or ambiguous, the audio hook transaction is not
-activated. See [`spotify_hook_discovery.cpp`](../../native/spotify_hook_discovery.cpp).
+activated. See [`spotify_hook_discovery.cpp`](../../native/tooling/spotify_hook_discovery.cpp).
 
 | Path | Hooked stage | What Floggfy retains |
 | --- | --- | --- |
@@ -20,7 +20,7 @@ The callbacks do minimal work: call Spotify as required, validate bounds, copy a
 bounded observation, assign a shared producer sequence, and wake the worker. Codec
 parsing, metadata work, and filesystem access stay off Spotify's callback threads.
 The hook implementations are grouped in
-[`audio_history.cpp`](../../native/audio_history.cpp).
+[`audio_history.cpp`](../../native/media/audio_history.cpp).
 
 ## Codec lifecycles
 
@@ -65,7 +65,7 @@ The tracker therefore keeps a current capture and one pending successor. A
 transition registers the possible successor but does not bind it. The following
 Ready stage must corroborate ownership and duration before `audio_history.cpp`
 explicitly selects the capture. Multiple candidates or queue loss prevent a guess. See
-[`decoder_ownership.cpp`](../../native/decoder_ownership.cpp).
+[`decoder_ownership.cpp`](../../native/media/decoder_ownership.cpp).
 
 ## Listen coverage
 
@@ -75,7 +75,7 @@ state, speed, and observed controls. Windows Global System Media Transport Contr
 provide a bounded fallback snapshot only when `Windows Playback Fallback=1`; the
 option defaults to `0`, so unavailable Spotify state otherwise remains unavailable.
 
-[`ogg_history_core.cpp`](../../native/ogg_history_core.cpp) maintains a listen
+[`ogg_history_core.cpp`](../../native/media/ogg_history_core.cpp) maintains a listen
 generation and media-position coverage. Starting mid-track, seeking, skipping,
 remote playback, unknown device ownership, or missing observations cannot become a
 complete listen. Pauses stop progress but do not discard already established
@@ -97,7 +97,7 @@ same compressed input; Floggfy advances the decoded output span so fewer PCM blo
 reach playback. The cached Ogg, FLAC, AAC, or MP3 bytes are not resampled or
 transcoded. If the dispatcher ABI or span movement fails validation, acceleration
 is disabled and capture falls back to 1x. The filtering logic is in
-[`decoded_output_speed.h`](../../native/decoded_output_speed.h).
+[`decoded_output_speed.h`](../../native/media/decoded_output_speed.h).
 
 `CaptureSpeedLimit` is a restart-only switch in `SpotifyHistory.ini`. Explicit `0`
 hides the menu and disables acceleration. A missing value defaults to 0. Any valid nonzero value enables

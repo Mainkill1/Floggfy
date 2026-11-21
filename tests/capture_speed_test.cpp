@@ -1,6 +1,6 @@
-#include "../native/capture_speed.h"
-#include "../native/decoded_output_speed.h"
-#include "../native/ogg_history_core.h"
+#include "../native/media/capture_speed.h"
+#include "../native/media/decoded_output_speed.h"
+#include "../native/media/ogg_history_core.h"
 #include <cassert>
 #include <cstdio>
 

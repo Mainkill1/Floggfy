@@ -1,6 +1,6 @@
 // One executable exercises discovery, read-only forwarding and isolated settings.
-#include "../native/history_settings.cpp"
-#include "../native/connect_messages_windows.cpp"
+#include "../native/tooling/history_settings.cpp"
+#include "../native/media/connect_messages_windows.cpp"
 #include <cassert>
 #include <vector>
 void TestConnectMessages();

@@ -1,16 +1,16 @@
 // One issue-5 gate. Include the real persistence worker; inject only the INI read
 // boundary after a successful read, so the subsequent serialization alloc fails.
 #define WIN32_LEAN_AND_MEAN
-#include "../native/history_settings.h"
+#include "../native/tooling/history_settings.h"
 #include <shobjidl.h>
 #include <shlobj.h>
 #include <algorithm>
 #include <cstdio>
 #include <cwchar>
 #include <cstring>
-#include "../native/async_log.h"
-#include "../native/srw_guard.h"
-#include "../native/settings_file.h"
+#include "../native/tooling/async_log.h"
+#include "../native/tooling/srw_guard.h"
+#include "../native/tooling/settings_file.h"
 #include <atomic>
 #include <cassert>
 #include <new>
@@ -43,7 +43,7 @@ bool ReadWithFault(const std::wstring& path,std::wstring& text,bool& unicode) {
 }}
 #define Read ReadWithFault
 #define WaitForSingleObject ObservedWait
-#include "../native/history_settings.cpp"
+#include "../native/tooling/history_settings.cpp"
 #undef WaitForSingleObject
 #undef Read
 namespace history {

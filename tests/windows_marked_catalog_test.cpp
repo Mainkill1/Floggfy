@@ -1,7 +1,7 @@
-#include "../native/marked_catalog.h"
-#include "../native/marked_recording.h"
-#include "../native/history_settings.h"
-#include "../native/async_log.h"
+#include "../native/ui/marked_catalog.h"
+#include "../native/media/marked_recording.h"
+#include "../native/tooling/history_settings.h"
+#include "../native/tooling/async_log.h"
 #include "../native/vendor/sqlite/sqlite3.h"
 #include <atomic>
 #include <cassert>

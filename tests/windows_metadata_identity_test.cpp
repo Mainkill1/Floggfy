@@ -1,6 +1,6 @@
 // CEF keeps wrapper identity before its public C structure. Exercise the real
 // interception code and MinHook without replacing client/handler objects.
-#include "../native/metadata_bridge.cpp"
+#include "../native/media/metadata_bridge.cpp"
 #include <cassert>
 #include <cstdio>
 
@@ -95,6 +95,9 @@ int main(int argc,char** argv){
     assert(WaitForSingleObject(activation_worker,5000)==WAIT_OBJECT_0);CloseHandle(activation_worker);
     CloseHandle(activation_event);history::message_event=nullptr;
 
+    std::wstring script_text=L"prefix:";
+    assert(win32::AppendUtf8(script_text,u8"Saved … ▼ ▲ 🎵") && script_text==L"prefix:Saved \u2026 \u25bc \u25b2 \U0001f3b5");
+    assert(!win32::AppendUtf8(script_text,"\xf0\x80") && script_text==L"prefix:Saved \u2026 \u25bc \u25b2 \U0001f3b5");
     // Collector normalization produces this UTF-8 protocol for either raw or
     // normalized lyric lines; native enrichment preserves it without an open UI.
     history::RichMetadata lyric_record;std::string parse_error;

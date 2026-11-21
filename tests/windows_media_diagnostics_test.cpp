@@ -7,7 +7,7 @@
 #include <cstdio>
 static HRESULT FakeFactory(HSTRING,REFIID,void**);
 #define RoGetActivationFactory FakeFactory
-#include "../native/media_session.cpp"
+#include "../native/media/media_session.cpp"
 #undef RoGetActivationFactory
 namespace {
 struct Object { void** table;unsigned refs=1;unsigned kind=0; };

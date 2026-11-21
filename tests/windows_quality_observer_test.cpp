@@ -6,7 +6,7 @@
 #define UpdateRecordingMetadata CountedMetadataUpdate
 #define PublishBytes ControlledPublishBytes
 #define TagFlac ControlledTagFlac
-#include "../native/audio_history.cpp"
+#include "../native/media/audio_history.cpp"
 #undef UpdateRecordingMetadata
 #undef PublishBytes
 #undef TagFlac

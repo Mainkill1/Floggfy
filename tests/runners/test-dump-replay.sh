@@ -35,7 +35,7 @@ common=("${windows_cxxflags[@]}" -municode)
 python3 tools/embed_assets.py
 x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include \
     tests/windows_playback_diagnostics_test.cpp tests/marked_catalog_stub.cpp \
-    "${capture_sources[@]}" native/existing_quality.cpp native/song_destination.cpp native/rich_metadata.cpp \
+    "${capture_sources[@]}" native/media/existing_quality.cpp native/ui/song_destination.cpp native/media/rich_metadata.cpp \
     "$floggfy_replay_build"/*.o -lole32 -luuid -lshell32 -lruntimeobject \
     -o "$floggfy_replay_root/test.exe"
 

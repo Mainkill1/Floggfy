@@ -28,18 +28,18 @@ static HANDLE WINAPI CountOpen(LPCWSTR path,DWORD access,DWORD sharing,LPSECURIT
 #define FindNextFileW CountFindNext
 #define GetFileAttributesW CountAttributes
 #define CreateFileW CountOpen
-#include "../native/existing_quality.cpp"
+#include "../native/media/existing_quality.cpp"
 #undef CreateFileW
 #undef GetFileAttributesW
 #undef FindNextFileW
 #undef FindFirstFileExW
-#include "../native/audio_history.cpp"
-#include "../native/history_settings.cpp"
+#include "../native/media/audio_history.cpp"
+#include "../native/tooling/history_settings.cpp"
 static BOOL WINAPI CountSignature(LPCWSTR path,GET_FILEEX_INFO_LEVELS level,LPVOID data) {
     ++signature_checks;return GetFileAttributesExW(path,level,data);
 }
 #define GetFileAttributesExW CountSignature
-#include "../native/song_destination.cpp"
+#include "../native/ui/song_destination.cpp"
 #undef GetFileAttributesExW
 #include "recording_fixture.h"
 #include "spac_fixture.h"

@@ -12,7 +12,7 @@ mkdir -p "$floggfy_matrix_root"
 matrix="$floggfy_matrix_root/discovery.exe"
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -municode \
     -static-libgcc -static-libstdc++ tests/windows_decoded_output_discovery_test.cpp \
-    native/spotify_hook_discovery.cpp -lole32 -luuid -lshell32 -o "$matrix"
+    native/tooling/spotify_hook_discovery.cpp -lole32 -luuid -lshell32 -o "$matrix"
 for dll in "$@"; do
     if [[ ! -f "$dll" ]]; then
         echo "Missing Spotify DLL: $dll" >&2

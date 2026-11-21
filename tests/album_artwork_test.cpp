@@ -1,5 +1,5 @@
-#include "../native/album_artwork.h"
-#include "../native/image_info.h"
+#include "../native/media/album_artwork.h"
+#include "../native/media/image_info.h"
 #include "artwork_fixture.h"
 #include <cstdio>
 #include <cstdlib>

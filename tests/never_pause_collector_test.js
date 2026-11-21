@@ -1,6 +1,6 @@
 // Run the real renderer collector; replace only Spotify's external player API.
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
-const script=fs.readFileSync('native/metadata_collector.js','utf8');
+const script=fs.readFileSync('native/media/metadata_collector.js','utf8');
 function fixture({enabled=true,paused=true,local=true,mode='resume',pending=false}={}) {
  let now=1793300000000,settle;
  const calls=[],handlers=new Map();

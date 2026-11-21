@@ -1,5 +1,5 @@
 // Isolated files/settings only. Never loads Spotify or sends network requests.
-#include "../native/history_settings.cpp"
+#include "../native/tooling/history_settings.cpp"
 // Count actual Win32 I/O in the production capped writer, not elapsed wall time.
 static unsigned writes=0,compactions=0,reads=0;
 static unsigned long long written_bytes=0,read_bytes=0;
@@ -13,7 +13,7 @@ static BOOL WINAPI CountedSetEndOfFile(HANDLE file) {++compactions;return ::SetE
 #define WriteFile CountedWriteFile
 #define ReadFile CountedReadFile
 #define SetEndOfFile CountedSetEndOfFile
-#include "../native/async_log.cpp"
+#include "../native/tooling/async_log.cpp"
 #undef WriteFile
 #undef ReadFile
 #undef SetEndOfFile

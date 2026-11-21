@@ -1,6 +1,6 @@
 // Exercise the real renderer gateway and every logger path, with isolated files.
-#include "../native/history_settings.cpp"
-#include "../native/async_log.cpp"
+#include "../native/tooling/history_settings.cpp"
+#include "../native/tooling/async_log.cpp"
 #include <cassert>
 #include <vector>
 

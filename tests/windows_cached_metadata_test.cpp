@@ -1,6 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
-#include "../native/cached_metadata.h"
-#include "../native/history_settings.h"
+#include "../native/media/cached_metadata.h"
+#include "../native/tooling/history_settings.h"
 namespace history {
 Settings settings;
 Settings GetSettings() { return settings; }

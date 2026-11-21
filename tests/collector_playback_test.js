@@ -1,5 +1,5 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
-const script=fs.readFileSync('native/metadata_collector.js','utf8');
+const script=fs.readFileSync('native/media/metadata_collector.js','utf8');
 let now=1793300000000,local=true,getters=0,requests=0;
 const state={timestamp:now-5000,positionAsOfTimestamp:1000,duration:180000,isPaused:false,isBuffering:false,speed:1,
  item:{uri:'spotify:track:0000000000000000000001',metadata:{title:'Song',artist_name:'Artist',album_title:'Album',duration:'180000'}}};

@@ -1,5 +1,5 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
-const script=fs.readFileSync('native/metadata_collector.js','utf8');
+const script=fs.readFileSync('native/media/metadata_collector.js','utf8');
 async function scenario(enabled){
  const output=[],pending=[];let now=10,sends=0,getters=0;
  const config={metadata:true,lyrics:true,debug:true,networking:enabled};

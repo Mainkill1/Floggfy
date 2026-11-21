@@ -1,0 +1,206 @@
+#include "playback_quality.h"
+#include "../tooling/fnv1a.h"
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+namespace history {
+PlaybackQualityTracker::Candidate *PlaybackQualityTracker::Find(uintptr_t context,
+                                                                PlaybackFormat format) {
+  auto it = std::find_if(streams_.begin(), streams_.end(),
+                         [&](const auto &c) { return c.context == context && c.format == format; });
+  return it == streams_.end() ? nullptr : &*it;
+}
+PlaybackQualityTracker::Candidate &
+PlaybackQualityTracker::Begin(uintptr_t context, PlaybackFormat format, double time) {
+  streams_.erase(std::remove_if(streams_.begin(), streams_.end(),
+                                [&](const auto &c) { return c.context == context; }),
+                 streams_.end());
+  if (streams_.size() >= 16)
+    streams_.pop_front();
+  streams_.emplace_back();
+  auto &c = streams_.back();
+  c.context = context;
+  c.format = format;
+  c.born = time;
+  return c;
+}
+void PlaybackQualityTracker::Media(const std::string &key, const std::wstring &title,
+                                   double position, double duration, double time, bool playing,
+                                   const std::string &playback_instance) {
+  if (key.empty() || title.empty() || !std::isfinite(position) || !std::isfinite(duration) ||
+      !std::isfinite(time) || position < 0 || duration <= 0 || duration > 86400) {
+    identity_.clear();
+    playback_instance_.clear();
+    title_.clear();
+    playing_ = false;
+    return;
+  }
+  const bool same_song = identity_ == key;
+  const bool new_instance = same_song && playback_instance_ != playback_instance;
+  const bool same = same_song && std::fabs(duration_ - duration) <= 1.0;
+  if (!same) {
+    // A title change completes a separate SMTC timeline/title update. The prior
+    // track's replay floor must not discard a next-track decoder buffered earlier.
+    generation_floor_ = -1;
+    settle_until_ = 0;
+  }
+  const double elapsed = time - last_time_;
+  const double expected = last_position_ + (playing_ ? std::max(0.0, elapsed) : 0);
+  const bool discontinuity = same && (elapsed < 0 || position < last_position_ - 1.5 ||
+                                     position > expected + 3);
+  if (discontinuity || new_instance) {
+    // Retire old decoder instances. New callbacks may precede this SMTC poll,
+    // but instances already present at the previous poll cannot prove a restart.
+    generation_floor_ = last_time_;
+    settle_until_ = time + 2; // SMTC title and timeline can update separately.
+  }
+  if (!same || discontinuity || new_instance ||
+      (playing && !playing_ && Snapshot().format == PlaybackFormat::Unknown)) {
+    start_ = time - std::min(position, duration);
+    arrival_ = time;
+  }
+  last_position_ = position;
+  last_time_ = time;
+  playing_ = playing;
+  identity_ = key;
+  playback_instance_ = playback_instance;
+  title_.assign(title, 0, 190);
+  duration_ = duration;
+}
+void PlaybackQualityTracker::Ogg(uintptr_t context, const uint8_t *bytes, size_t length,
+                                 double time) {
+  if (!bytes || length < 27 || !std::isfinite(time))
+    return;
+  auto c = Find(context, PlaybackFormat::Ogg);
+  if (!c || (bytes[5] & 2))
+    c = &Begin(context, PlaybackFormat::Ogg, time);
+  auto result = c->ogg.Push(bytes, length);
+  if (result == Result::Invalid || result == Result::Ignore) {
+    c->broken = true;
+    return;
+  }
+  c->metadata = c->ogg.rate != 0;
+  c->complete = result == Result::Complete;
+}
+void PlaybackQualityTracker::FlacBegin(uintptr_t context, double time) {
+  if (std::isfinite(time))
+    Begin(context, PlaybackFormat::Flac, time);
+}
+void PlaybackQualityTracker::FlacBytes(uintptr_t context, const uint8_t *bytes, size_t length,
+                                       size_t encoded_bytes) {
+  auto c = Find(context, PlaybackFormat::Flac);
+  if (!c || c->broken)
+    return;
+  if (length > encoded_bytes || (length && !bytes)) {
+    c->broken = true;
+    return;
+  }
+  const auto n = std::min(length, c->prefix.size() - c->prefix_size);
+  if (n) memcpy(c->prefix.data() + c->prefix_size, bytes, n);
+  c->prefix_size += n;
+  if (c->metadata) return;
+  const auto status = ParseFlacStreamInfo(c->prefix.data(), c->prefix_size, c->flac);
+  if (status == FlacParse::Invalid) c->broken = true;
+  else if (status == FlacParse::Valid) c->metadata = true;
+}
+void PlaybackQualityTracker::FlacFrame(uintptr_t context, const uint8_t *bytes, size_t length) {
+  auto c = Find(context, PlaybackFormat::Flac);
+  if (!c || c->broken)
+    return;
+  if (!c->metadata || !bytes || length != 32) {
+    c->broken = true;
+    return;
+  }
+  uint32_t frame[6];
+  uint64_t number;
+  memcpy(frame, bytes, 24);
+  memcpy(&number, bytes + 24, 8);
+  if (frame[5] == 0)
+    number = uint32_t(number);
+  if (frame[1] != c->flac.rate || frame[2] != c->flac.channels || frame[4] != c->flac.bits ||
+      !frame[0] || frame[0] > c->flac.max_block || frame[5] > 1) {
+    c->broken = true;
+    return;
+  }
+  if (!c->coverage_valid) return;
+  if (!c->coverage.Frame(c->flac, frame[0], frame[1], frame[2], frame[4], frame[5], number)) {
+    // Seeking can skip decoded frames without changing the validated header.
+    // Preserve codec/rate; the compressed-byte average is no longer measurable.
+    c->coverage_valid = false;
+    c->complete = false;
+    return;
+  }
+  c->complete = c->coverage.Complete(c->flac);
+}
+void PlaybackQualityTracker::FlacEnd(uintptr_t context, bool failed) {
+  auto c = Find(context, PlaybackFormat::Flac);
+  if (c && failed) c->broken = true;
+  else if (c && !c->complete) c->coverage_valid = false;
+}
+void PlaybackQualityTracker::ClearStreams() { streams_.clear(); }
+PlaybackLevel ParsePlaybackLevel(const std::string &value) {
+  if(value == "low") return PlaybackLevel::Low;
+  if(value == "normal") return PlaybackLevel::Normal;
+  if(value == "high") return PlaybackLevel::High;
+  if(value == "very_high") return PlaybackLevel::VeryHigh;
+  if(value == "lossless" || value == "hifi") return PlaybackLevel::Lossless;
+  if(value == "lossless_24") return PlaybackLevel::Lossless24;
+  return PlaybackLevel::Unknown;
+}
+PlaybackQualitySnapshot WithPlaybackEncoding(PlaybackQualitySnapshot out,const Quality& encoding) {
+  switch(encoding.codec) {
+    case Codec::Vorbis:out.format=PlaybackFormat::Ogg;break;
+    case Codec::Flac:out.format=PlaybackFormat::Flac;break;
+    case Codec::Mp3:out.format=PlaybackFormat::Mp3;break;
+    case Codec::Aac:out.format=PlaybackFormat::Aac;break;
+  }
+  out.rate=encoding.rate;out.channels=encoding.channels;
+  out.bits=encoding.codec==Codec::Flac?encoding.bits:0;
+  if(encoding.codec==Codec::Flac)
+    out.level=encoding.bits==24?PlaybackLevel::Lossless24:PlaybackLevel::Lossless;
+  else if(out.level==PlaybackLevel::Unknown||out.level==PlaybackLevel::Lossless||out.level==PlaybackLevel::Lossless24)
+    out.level=encoding.codec==Codec::Vorbis&&encoding.bitrate==320000?PlaybackLevel::VeryHigh:
+              encoding.codec==Codec::Vorbis&&encoding.bitrate==160000?PlaybackLevel::High:
+              encoding.codec==Codec::Vorbis&&encoding.bitrate==96000?PlaybackLevel::Normal:PlaybackLevel::Lossy;
+  return out;
+}
+PlaybackQualitySnapshot PlaybackQualityTracker::Snapshot(const std::string &client_quality) const {
+  PlaybackQualitySnapshot out;
+  out.identity = PlaybackIdentity(identity_);
+  std::copy(title_.begin(), title_.end(), out.title.begin());
+  if (identity_.empty() || last_time_ < settle_until_)
+    return out;
+  out.level = ParsePlaybackLevel(client_quality);
+  const Candidate *selected = nullptr;
+  for (const auto &c : streams_) {
+    if (c.broken || !c.metadata || c.born <= generation_floor_ ||
+        c.born < start_ - 20 || c.born > arrival_ + 3)
+      continue;
+    double length = c.format == PlaybackFormat::Flac && c.flac.rate
+                        ? double(c.flac.total_samples) / c.flac.rate
+                        : (c.complete ? c.ogg.Duration() : 0);
+    // A Vorbis BOS has no duration or track identity; read-ahead alone is not evidence.
+    if (length <= 0 || std::fabs(length - duration_) > 1.0)
+      continue;
+    if (selected)
+      return out; // Read-ahead and same-duration streams must not be guessed.
+    selected = &c;
+  }
+  if (!selected)
+    return out;
+  const auto &c = *selected;
+  // A current client quality that contradicts a decoder is a reason to wait,
+  // not to assign a read-ahead decoder's codec to that song.
+  const bool lossless = out.level == PlaybackLevel::Lossless || out.level == PlaybackLevel::Lossless24;
+  if (out.level != PlaybackLevel::Unknown &&
+      ((c.format == PlaybackFormat::Flac && !lossless) || (c.format == PlaybackFormat::Ogg && lossless)))
+    return out;
+  return WithPlaybackEncoding(out,c.format==PlaybackFormat::Flac?
+    Quality{Codec::Flac,c.flac.rate,c.flac.channels,c.flac.bits,0}:
+    Quality{Codec::Vorbis,c.ogg.rate,c.ogg.channels,0,c.ogg.bitrate});
+}
+uint64_t PlaybackIdentity(const std::string &key) {
+  return key.empty() ? 0 : Fnv1a64(key.data(), key.size());
+}
+} // namespace history

@@ -1,4 +1,4 @@
-#include "../native/telemetry_queue.h"
+#include "../native/telemetry/telemetry_queue.h"
 #include <cassert>
 #include <cstdio>
 #include <string>
@@ -16,7 +16,7 @@ static BOOL WINAPI GuardedDisposition(HANDLE file,FILE_INFO_BY_HANDLE_CLASS type
     return SetFileInformationByHandle(file,type,info,size);
 }
 #define SetFileInformationByHandle GuardedDisposition
-#include "../native/telemetry_queue.cpp"
+#include "../native/telemetry/telemetry_queue.cpp"
 #undef SetFileInformationByHandle
 
 static void Make(const std::wstring& path) {assert(CreateDirectoryW(path.c_str(),nullptr));}

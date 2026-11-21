@@ -1,14 +1,14 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include "../native/bounded_queue.h"
-#include "../native/ogg_history_core.h"
+#include "../native/tooling/bounded_queue.h"
+#include "../native/media/ogg_history_core.h"
 #include <atomic>
 static HANDLE probe_entered=nullptr,probe_release=nullptr;
 static std::atomic<bool> hold_probe{false};
-#include "../native/existing_quality.h"
-#include "../native/flac_history_core.h"
-#include "../native/aac_stream.h"
-#include "../native/mp3_stream.h"
+#include "../native/media/existing_quality.h"
+#include "../native/media/flac_history_core.h"
+#include "../native/media/aac_stream.h"
+#include "../native/media/mp3_stream.h"
 #include "recording_fixture.h"
 static std::atomic<unsigned> verification_reads{0},probe_attempts{0},collision_searches{0},path_builds{0};
 static BOOL WINAPI BlockingAttributes(LPCWSTR path,GET_FILEEX_INFO_LEVELS level,LPVOID data) {
@@ -37,7 +37,7 @@ static bool CountingRecording(const std::wstring& path,const Catalog& catalog,Qu
 #define ExistingRecording CountingRecording
 #define GetFileAttributesExW BlockingAttributes
 #define OutputPath CountingOutputPath
-#include "../native/song_destination.cpp"
+#include "../native/ui/song_destination.cpp"
 #undef OutputPath
 #undef GetFileAttributesExW
 #undef ListRecordingDirectory
@@ -49,7 +49,7 @@ static void AwaitProbe() {
     const auto deadline=GetTickCount64()+5000;
     for(;;) {
         {
-            history::DestinationExclusive guard;
+            history::ExclusiveSrw guard(history::destination_lock);
             if(history::result_serial==history::request_serial && !history::probing && !history::pending_request && !history::refresh_pending.load()) return;
         }
         assert(GetTickCount64()<deadline);Sleep(1);
@@ -60,7 +60,7 @@ static void SubmitSong(std::uint64_t identity,const std::wstring& root,const his
     history::RefreshSongDestination();
     const auto deadline=GetTickCount64()+5000;
     for(;;) {
-        {history::DestinationExclusive guard;
+        {history::ExclusiveSrw guard(history::destination_lock);
          if(history::result_serial==history::request_serial && !history::probing && !history::pending_request && !history::refresh_pending.load())return;}
         assert(GetTickCount64()<deadline);Sleep(10);
         history::PublishSongDestination(identity,root,item,music_folder,generation);
@@ -173,7 +173,7 @@ int main() {
     }
     assert(drained>100 && observed.eligible && WaitForSingleObject(probe_release,0)==WAIT_TIMEOUT);
     {
-        DestinationExclusive guard;
+        ExclusiveSrw guard(destination_lock);
         assert(pending_request && pending_request->identity==9 && latest_request->identity==9);
     }
     hold_probe=false;SetEvent(probe_release);
@@ -181,7 +181,7 @@ int main() {
     AwaitProbe();
     std::wstring stale;
     assert(!ReadSongDestination(7,11,stale));
-    {DestinationExclusive guard;assert(destination_identity==9 && destination_generation==12);}
+    {ExclusiveSrw guard(destination_lock);assert(destination_identity==9 && destination_generation==12);}
 
     CloseHandle(submit_thread);CloseHandle(submit.returned);
     assert(returned_without_storage); // Capture submission must not perform a blocked probe.
@@ -206,7 +206,7 @@ int main() {
             WriteAudio(ogg,item);SubmitSong(7,root,item,music_folder,11);
             assert(ReadSongDestination(7,11,saved_file) && saved_file==ogg);
             DestinationRequest ogg_request;
-            {DestinationExclusive guard;ogg_request=*latest_request;}
+            {ExclusiveSrw guard(destination_lock);ogg_request=*latest_request;}
             VerificationCache ogg_direct;
             const auto ogg_searches=collision_searches.load(),ogg_reads=verification_reads.load();
             assert(ProbeSavedSong(ogg_request,ogg_direct)==ogg);
@@ -215,7 +215,7 @@ int main() {
             assert(ReadSongDestination(7,11,saved_file) && saved_file==flac); // Prefer FLAC when both exist.
             // One verification of an ordinary saved file, no collision scan.
             DestinationRequest request;
-            {DestinationExclusive guard;request=*latest_request;}
+            {ExclusiveSrw guard(destination_lock);request=*latest_request;}
             VerificationCache direct;
             const auto searches=collision_searches.load(),reads=verification_reads.load();
             assert(ProbeSavedSong(request,direct)==flac);
@@ -340,7 +340,7 @@ int main() {
     PublishSongDestination(99,root,item,true,55);
     hold_probe=false;SetEvent(probe_release);
     const auto disabled_deadline=GetTickCount64()+5000;
-    for(;;) {bool done=false;{DestinationExclusive guard;done=!probing;}if(done)break;assert(GetTickCount64()<disabled_deadline);Sleep(1);}
+    for(;;) {bool done=false;{ExclusiveSrw guard(destination_lock);done=!probing;}if(done)break;assert(GetTickCount64()<disabled_deadline);Sleep(1);}
     assert(probe_attempts.load()==attempts_when_disabled && !ReadSongDestination(7,11,saved_file));
     StartSongDestinationWorker(true);
     PublishSongDestination(0,L"",{},false,11);

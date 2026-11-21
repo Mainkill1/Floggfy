@@ -4,12 +4,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-audio = Path('native/audio_history.cpp').read_text()
+audio = Path('native/media/audio_history.cpp').read_text()
 for retired in ('FormatHook', 'FormatDetected', 'original_sniff', 'status calls=', 'prefix=%s'):
     assert retired not in audio, f'diagnostic-only capture work returned: {retired}'
-discovery = Path('native/spotify_hook_discovery.cpp').read_text()
+discovery = Path('native/tooling/spotify_hook_discovery.cpp').read_text()
 assert 'kFormatSniff' in discovery and 'TargetKind::FormatSniff' in discovery
-settings = Path('native/history_settings.cpp').read_text()
+settings = Path('native/tooling/history_settings.cpp').read_text()
 assert 'void HistoryLog(' not in settings and 'std::strstr(message,' not in settings
 subprocess.run([sys.executable, 'tools/embed_assets.py'], check=True)
 header = Path('build/default_ini.h').read_text()

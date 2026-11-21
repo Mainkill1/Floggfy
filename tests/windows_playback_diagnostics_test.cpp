@@ -1,7 +1,8 @@
 // Exercise real hooks/worker diagnostics without patching or controlling Spotify.
-#include "../native/async_log.h"
-#include "../native/client_playback.h"
-#include "../native/retry_schedule.h"
+#include "../native/ui/playback_labels.h"
+#include "../native/tooling/async_log.h"
+#include "../native/media/client_playback.h"
+#include "../native/tooling/retry_schedule.h"
 #include <atomic>
 namespace {
 std::atomic<bool> fail_retry_node{false};
@@ -24,10 +25,10 @@ void ReleaseAuditTestPhase();
 #define FLOGGFY_RELEASE_AUDIT_TEST
 #define LogEvent CaptureLogEvent
 #define RetrySchedule FaultableRetrySchedule
-#include "../native/audio_history.cpp"
+#include "../native/media/audio_history.cpp"
 #undef RetrySchedule
 #undef LogEvent
-#include "../native/history_settings.cpp"
+#include "../native/tooling/history_settings.cpp"
 #include "recording_fixture.h"
 #include "spac_fixture.h"
 #include <cassert>

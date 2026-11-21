@@ -1,5 +1,5 @@
 // Isolated temporary INI only; no Spotify process or network operations.
-#include "../native/history_settings.cpp"
+#include "../native/tooling/history_settings.cpp"
 #include <cassert>
 namespace history {
 void StartLogger(){}

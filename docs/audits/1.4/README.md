@@ -53,3 +53,17 @@ Split `audio_history.cpp` by owned state and queue boundaries. Start with public
 For validation tools, both `validate_flac.py::validate` and `validate_showcase.py::validate` read a whole encoded recording into memory. Stream the container and update the hash incrementally if large-podcast validation is limited by peak RAM. Compare metadata, sample counts, hashes and error detection against the current tools. In `analyze_decoder_ownership.py::analyze`, an output or ambiguous binding can scan the capture history. An owner index and a maintained unresolved count could replace those scans. Verify the same violation messages on out-of-order, repeated and partially missing records before changing the analyzer.
 
 The repository already has targeted Windows fixtures and replay runners. Keep these separate from production build dependencies and preserve the historical commands in dated validation records. Use the new paths under `tests/runners/` for current runs.
+
+## Follow-up on telemetry, UI and tooling
+
+The inventories above retain source coordinates from the revisions they reviewed. The [component map](../../wiki/README.md#component-map) points to the current directories.
+
+| Operation | Before | After |
+|---|---:|---:|
+| Telemetry option read, whole-file INI scans | 24 | 1 |
+| Passive Saved refresh with 128 mounted rows, header layout probes | 129 | 1 |
+| Same refresh, grid width reads | 129 | 2 |
+| Native menu requests one audio label, labels built | 4 | 1 |
+| Renderer resolves one relative URL each for fetch, beacon and XHR | 6 | 3 |
+
+The telemetry fixture exercised 5,040 URL classifications with the same results. The Windows INI fixture retained strict duplicate handling and section precedence. Two embedded renderer bundles totaling 121,506 UTF-8 bytes round-tripped byte-for-byte through the Windows conversion. The directory race fixture covers a competing creator producing either a file or a folder. These are fixture measurements. Live playback and end-to-end UI latency were outside this pass.

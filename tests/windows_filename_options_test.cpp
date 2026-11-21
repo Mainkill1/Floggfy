@@ -1,6 +1,6 @@
 // One focused integration executable; only isolated Windows TEMP fixtures.
-#include "../native/audio_history.cpp"
-#include "../native/history_settings.cpp"
+#include "../native/media/audio_history.cpp"
+#include "../native/tooling/history_settings.cpp"
 #include "recording_fixture.h"
 #include "artwork_fixture.h"
 #include <cassert>

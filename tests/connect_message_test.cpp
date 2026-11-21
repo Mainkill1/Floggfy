@@ -1,4 +1,4 @@
-#include "../native/connect_message.h"
+#include "../native/media/connect_message.h"
 #include <cassert>
 #include <string>
 void TestConnectMessages() {

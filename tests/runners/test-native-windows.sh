@@ -16,59 +16,59 @@ mkdir -p "$floggfy_test_root/cache-users/synthetic-user/primary.ldb"
 cp "$floggfy_test_root/cache-fixtures/separate-album.ldb" "$floggfy_test_root/cache-users/synthetic-user/primary.ldb/000001.ldb"
 mkdir -p build/windows-tests
 x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vendor/minimp4/minimp4.c -o build/windows-tests/minimp4.o
-x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vorbis_headers_stb.c -o build/windows-tests/vorbis-headers-stb.o
+x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/media/vorbis_headers_stb.c -o build/windows-tests/vorbis-headers-stb.o
 python3 tools/embed_assets.py
 build_windows_minhook build/windows-tests
 x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/windows-tests/history-ogg.o
 recording_inputs=("${recording_sources[@]}" build/windows-tests/minimp4.o build/windows-tests/vorbis-headers-stb.o)
 common=("${windows_cxxflags[@]}" tests/marked_catalog_stub.cpp)
 x86_64-w64-mingw32-g++ "${common[@]}" -ffunction-sections -fdata-sections tests/recording_metadata_test.cpp \
- native/media_session.cpp -Wl,--gc-sections -lole32 -luuid -lruntimeobject -o "$floggfy_test_root/recording-metadata-test.exe"
+ native/media/media_session.cpp -Wl,--gc-sections -lole32 -luuid -lruntimeobject -o "$floggfy_test_root/recording-metadata-test.exe"
 "$floggfy_test_root/recording-metadata-test.exe"
 x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_history_test.cpp \
- "${recording_inputs[@]}" native/existing_quality.cpp native/file_publication.cpp native/metadata_update_core.cpp native/history_settings.cpp \
- native/async_log.cpp native/library_layout.cpp native/ogg_history_core.cpp native/image_info.cpp \
- native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp build/windows-tests/history-ogg.o \
+ "${recording_inputs[@]}" native/media/existing_quality.cpp native/media/file_publication.cpp native/media/metadata_update_core.cpp native/tooling/history_settings.cpp \
+ native/tooling/async_log.cpp native/media/library_layout.cpp native/media/ogg_history_core.cpp native/media/image_info.cpp \
+ native/media/flac_history_core.cpp native/media/compressed_buffer.cpp native/media/ogg_tags.cpp build/windows-tests/history-ogg.o \
  -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-history-test.exe"
 x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/windows-tests/metadata-ogg.o
-x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_metadata_identity_test.cpp native/telemetry_filter.cpp native/telemetry_decode.cpp native/telemetry_inflate.cpp -I native/vendor/libogg/include \
- native/rich_metadata.cpp native/artwork_reply.cpp native/cached_metadata.cpp native/cached_metadata_windows.cpp native/cached_artwork_windows.cpp native/artwork_image.cpp native/history_settings.cpp native/async_log.cpp \
- native/media_session.cpp native/auto_skip.cpp native/library_layout.cpp native/album_artwork.cpp native/playback_quality_windows.cpp "${quality_sources[@]}" build/windows-tests/metadata-ogg.o build/windows-tests/minhook-*.o build/artwork-codecs-windows/libwebpdecoder.a -lole32 -luuid -lshell32 \
+x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_metadata_identity_test.cpp native/telemetry/telemetry_filter.cpp native/telemetry/telemetry_decode.cpp native/telemetry/telemetry_inflate.cpp -I native/vendor/libogg/include \
+ native/media/rich_metadata.cpp native/media/artwork_reply.cpp native/media/cached_metadata.cpp native/media/cached_metadata_windows.cpp native/media/cached_artwork_windows.cpp native/media/artwork_image.cpp native/tooling/history_settings.cpp native/tooling/async_log.cpp \
+ native/media/media_session.cpp native/media/auto_skip.cpp native/media/library_layout.cpp native/media/album_artwork.cpp native/media/playback_quality_windows.cpp "${quality_sources[@]}" build/windows-tests/metadata-ogg.o build/windows-tests/minhook-*.o build/artwork-codecs-windows/libwebpdecoder.a -lole32 -luuid -lshell32 \
  -lruntimeobject -lwinhttp -o "$floggfy_test_root/windows-metadata-identity-test.exe"
 "$floggfy_test_root/windows-history-test.exe"
 "$floggfy_test_root/windows-metadata-identity-test.exe"
 "$floggfy_test_root/windows-metadata-identity-test.exe" --unknown-cef
 "$floggfy_test_root/windows-metadata-identity-test.exe" --missing-cef-exports
 
-x86_64-w64-mingw32-g++ "${common[@]}" tests/cached_metadata_test.cpp native/cached_metadata.cpp native/rich_metadata.cpp -o "$floggfy_test_root/cached-metadata-test.exe"
+x86_64-w64-mingw32-g++ "${common[@]}" tests/cached_metadata_test.cpp native/media/cached_metadata.cpp native/media/rich_metadata.cpp -o "$floggfy_test_root/cached-metadata-test.exe"
 "$floggfy_test_root/cached-metadata-test.exe" "$(wslpath -w "$floggfy_test_root/cache-fixtures")"
-x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_cached_metadata_test.cpp native/cached_metadata.cpp native/cached_metadata_windows.cpp native/rich_metadata.cpp -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-cached-metadata-test.exe"
+x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_cached_metadata_test.cpp native/media/cached_metadata.cpp native/media/cached_metadata_windows.cpp native/media/rich_metadata.cpp -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-cached-metadata-test.exe"
 "$floggfy_test_root/windows-cached-metadata-test.exe" "$(wslpath -w "$floggfy_test_root/cache-users")"
-x86_64-w64-mingw32-g++ "${common[@]}" tests/artwork_image_test.cpp native/artwork_image.cpp native/image_info.cpp build/artwork-codecs-windows/libwebpdecoder.a -o "$floggfy_test_root/artwork-image-test.exe"
+x86_64-w64-mingw32-g++ "${common[@]}" tests/artwork_image_test.cpp native/media/artwork_image.cpp native/media/image_info.cpp build/artwork-codecs-windows/libwebpdecoder.a -o "$floggfy_test_root/artwork-image-test.exe"
 "$floggfy_test_root/artwork-image-test.exe" "$(wslpath -w "$floggfy_test_root/artwork-alpha.png")"
 python3 tests/check_artwork_png.py "$floggfy_test_root/artwork-alpha.png"
-x86_64-w64-mingw32-g++ "${common[@]}" tests/artwork_image_allocation_test.cpp native/image_info.cpp build/artwork-codecs-windows/libwebpdecoder.a -o "$floggfy_test_root/artwork-image-allocation-test.exe"
+x86_64-w64-mingw32-g++ "${common[@]}" tests/artwork_image_allocation_test.cpp native/media/image_info.cpp build/artwork-codecs-windows/libwebpdecoder.a -o "$floggfy_test_root/artwork-image-allocation-test.exe"
 "$floggfy_test_root/artwork-image-allocation-test.exe"
 mkdir -p "$floggfy_test_root/artwork-cache"
-x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_cached_artwork_test.cpp native/image_info.cpp native/artwork_image.cpp build/artwork-codecs-windows/libwebpdecoder.a -lole32 -luuid -o "$floggfy_test_root/windows-cached-artwork-test.exe"
+x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_cached_artwork_test.cpp native/media/image_info.cpp native/media/artwork_image.cpp build/artwork-codecs-windows/libwebpdecoder.a -lole32 -luuid -o "$floggfy_test_root/windows-cached-artwork-test.exe"
 "$floggfy_test_root/windows-cached-artwork-test.exe" "$(wslpath -w "$floggfy_test_root/artwork-cache")"
 
 x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/windows-tests/ogg-framing.o
 quality_inputs=("${quality_sources[@]}" build/windows-tests/ogg-framing.o)
-x86_64-w64-mingw32-g++ "${common[@]}" tests/auto_skip_test.cpp native/auto_skip.cpp native/library_layout.cpp -o "$floggfy_test_root/auto-skip-test.exe"
+x86_64-w64-mingw32-g++ "${common[@]}" tests/auto_skip_test.cpp native/media/auto_skip.cpp native/media/library_layout.cpp -o "$floggfy_test_root/auto-skip-test.exe"
 "$floggfy_test_root/auto-skip-test.exe"
 x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/playback_quality_test.cpp "${quality_inputs[@]}" -o "$floggfy_test_root/playback-quality-test.exe"
 "$floggfy_test_root/playback-quality-test.exe"
-x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_menu_quality_test.cpp native/library_layout.cpp "${quality_inputs[@]}" native/history_settings.cpp native/async_log.cpp build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-menu-quality-test.exe"
+x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_menu_quality_test.cpp native/media/library_layout.cpp "${quality_inputs[@]}" native/tooling/history_settings.cpp native/tooling/async_log.cpp build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-menu-quality-test.exe"
 "$floggfy_test_root/windows-menu-quality-test.exe" --never-pause-hidden
 "$floggfy_test_root/windows-menu-quality-test.exe"
 
-x86_64-w64-mingw32-g++ "${common[@]}" -DFLOGGFY_PUBLICATION_TEST -I native/vendor/libogg/include tests/windows_quality_observer_test.cpp "${capture_sources[@]}" build/windows-tests/ogg-framing.o build/windows-tests/minimp4.o build/windows-tests/vorbis-headers-stb.o native/existing_quality.cpp native/song_destination.cpp native/history_settings.cpp build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_test_root/windows-quality-observer-test.exe"
+x86_64-w64-mingw32-g++ "${common[@]}" -DFLOGGFY_PUBLICATION_TEST -I native/vendor/libogg/include tests/windows_quality_observer_test.cpp "${capture_sources[@]}" build/windows-tests/ogg-framing.o build/windows-tests/minimp4.o build/windows-tests/vorbis-headers-stb.o native/media/existing_quality.cpp native/ui/song_destination.cpp native/tooling/history_settings.cpp build/windows-tests/minhook-*.o -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_test_root/windows-quality-observer-test.exe"
 "$floggfy_test_root/windows-quality-observer-test.exe"
 
 # Synthetic host preloads System32 VERSION.dll before its entry point.
 x86_64-w64-mingw32-g++ "${common[@]}" -municode tests/windows_startup_host.cpp -o "$floggfy_test_root/Spotify-startup-host.exe"
-x86_64-w64-mingw32-g++ "${common[@]}" -municode tests/windows_startup_test.cpp native/startup_launcher.cpp -ladvapi32 -o "$floggfy_test_root/windows-startup-test.exe"
+x86_64-w64-mingw32-g++ "${common[@]}" -municode tests/windows_startup_test.cpp native/tooling/startup_launcher.cpp -ladvapi32 -o "$floggfy_test_root/windows-startup-test.exe"
 # Build the complete proxy so its ordinary startup readiness is tested too.
 bash build-native.sh
 python3 - "$floggfy_test_root" <<'PYFIXTURE'
@@ -84,8 +84,8 @@ location=subprocess.check_output(['wslpath','-w',str(fixture/'Media')],text=True
 PYFIXTURE
 "$floggfy_test_root/windows-startup-test.exe" "$(wslpath -w "$floggfy_test_root/startup-fixture")"
 
-x86_64-w64-mingw32-g++ "${common[@]}" tests/album_artwork_test.cpp native/album_artwork.cpp native/image_info.cpp \
- native/async_log.cpp native/history_settings.cpp -lole32 -luuid -lshell32 -lwinhttp -o "$floggfy_test_root/album-artwork-test.exe"
+x86_64-w64-mingw32-g++ "${common[@]}" tests/album_artwork_test.cpp native/media/album_artwork.cpp native/media/image_info.cpp \
+ native/tooling/async_log.cpp native/tooling/history_settings.cpp -lole32 -luuid -lshell32 -lwinhttp -o "$floggfy_test_root/album-artwork-test.exe"
 "$floggfy_test_root/album-artwork-test.exe"
 
 # Keep defaults fixtures separate from the other tests' explicit settings.
@@ -102,10 +102,10 @@ bash tests/runners/test-update-blocker.sh
 
 bash tests/runners/test-artwork-policy.sh
 
-x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_recent_downloads_test.cpp native/recent_downloads.cpp -o "$floggfy_test_root/windows-recent-downloads-test.exe"
+x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_recent_downloads_test.cpp native/ui/recent_downloads.cpp -o "$floggfy_test_root/windows-recent-downloads-test.exe"
 "$floggfy_test_root/windows-recent-downloads-test.exe"
 
-x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_song_destination_test.cpp native/library_layout.cpp native/existing_quality.cpp "${recording_inputs[@]}" "${quality_inputs[@]}" native/history_settings.cpp native/async_log.cpp -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-song-destination-test.exe"
+x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_song_destination_test.cpp native/media/library_layout.cpp native/media/existing_quality.cpp "${recording_inputs[@]}" "${quality_inputs[@]}" native/tooling/history_settings.cpp native/tooling/async_log.cpp -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-song-destination-test.exe"
 "$floggfy_test_root/windows-song-destination-test.exe"
 
 # Unicode persistence is checked in a fresh child process, including migration.
@@ -113,9 +113,9 @@ x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_settings_unicode_test.cpp -l
 "$floggfy_settings_test_root/windows-settings-unicode-test.exe"
 
 # Deliberately blocked enrichment must not delay the metadata heartbeat.
-x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_metadata_liveness_test.cpp native/telemetry_filter.cpp native/telemetry_decode.cpp native/telemetry_inflate.cpp \
- native/rich_metadata.cpp native/artwork_reply.cpp native/artwork_image.cpp native/cached_metadata.cpp native/auto_skip.cpp native/library_layout.cpp native/history_settings.cpp native/async_log.cpp \
- native/media_session.cpp "${quality_sources[@]}" native/playback_quality_windows.cpp build/windows-tests/metadata-ogg.o build/windows-tests/minhook-*.o \
+x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_metadata_liveness_test.cpp native/telemetry/telemetry_filter.cpp native/telemetry/telemetry_decode.cpp native/telemetry/telemetry_inflate.cpp \
+ native/media/rich_metadata.cpp native/media/artwork_reply.cpp native/media/artwork_image.cpp native/media/cached_metadata.cpp native/media/auto_skip.cpp native/media/library_layout.cpp native/tooling/history_settings.cpp native/tooling/async_log.cpp \
+ native/media/media_session.cpp "${quality_sources[@]}" native/media/playback_quality_windows.cpp build/windows-tests/metadata-ogg.o build/windows-tests/minhook-*.o \
  build/artwork-codecs-windows/libwebpdecoder.a -lole32 -luuid -lshell32 -lruntimeobject -o "$floggfy_test_root/windows-metadata-liveness-test.exe"
 "$floggfy_test_root/windows-metadata-liveness-test.exe"
 "$floggfy_test_root/windows-metadata-liveness-test.exe" --ambiguous-refresh
@@ -128,18 +128,18 @@ x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/wind
 
 # Publication tests include real process termination and conflicting path races.
 x86_64-w64-mingw32-g++ "${common[@]}" -municode -DFLOGGFY_PUBLICATION_TEST -I native/vendor/libogg/include \
- tests/windows_publication_test.cpp "${recording_inputs[@]}" native/existing_quality.cpp native/file_publication.cpp native/metadata_update_core.cpp native/library_layout.cpp "${quality_inputs[@]}" -o "$floggfy_test_root/windows-publication-test.exe"
+ tests/windows_publication_test.cpp "${recording_inputs[@]}" native/media/existing_quality.cpp native/media/file_publication.cpp native/media/metadata_update_core.cpp native/media/library_layout.cpp "${quality_inputs[@]}" -o "$floggfy_test_root/windows-publication-test.exe"
 "$floggfy_test_root/windows-publication-test.exe"
 
 # Metadata fills work for existing FLAC and Ogg without publishing new audio.
 x86_64-w64-mingw32-g++ "${common[@]}" -DFLOGGFY_PUBLICATION_TEST -I native/vendor/libogg/include \
- tests/windows_metadata_update_test.cpp native/metadata_update_windows.cpp native/metadata_update_core.cpp "${recording_inputs[@]}" native/existing_quality.cpp native/file_publication.cpp native/library_layout.cpp "${quality_inputs[@]}" native/history_settings.cpp native/async_log.cpp \
+ tests/windows_metadata_update_test.cpp native/media/metadata_update_windows.cpp native/media/metadata_update_core.cpp "${recording_inputs[@]}" native/media/existing_quality.cpp native/media/file_publication.cpp native/media/library_layout.cpp "${quality_inputs[@]}" native/tooling/history_settings.cpp native/tooling/async_log.cpp \
  -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-metadata-update-test.exe"
 "$floggfy_test_root/windows-metadata-update-test.exe"
 
 # Storage failure returns an error without dereferencing a failed file mapping.
 x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include \
- tests/windows_recording_read_test.cpp "${recording_inputs[@]}" native/library_layout.cpp "${quality_inputs[@]}" native/history_settings.cpp native/async_log.cpp \
+ tests/windows_recording_read_test.cpp "${recording_inputs[@]}" native/media/library_layout.cpp "${quality_inputs[@]}" native/tooling/history_settings.cpp native/tooling/async_log.cpp \
  -lole32 -luuid -lshell32 -o "$floggfy_test_root/windows-recording-read-test.exe"
 "$floggfy_test_root/windows-recording-read-test.exe"
 

@@ -1,7 +1,7 @@
 // Standalone test includes the adapter to exercise a private synthetic directory.
-#include "../native/cached_artwork_windows.cpp"
+#include "../native/media/cached_artwork_windows.cpp"
 #include "artwork_fixture.h"
-#include "../native/image_info.h"
+#include "../native/media/image_info.h"
 #include <cassert>
 #include <fstream>
 #include <iostream>

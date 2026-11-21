@@ -1,6 +1,6 @@
 // One VM gate for guarded cached Connect observations and passive local actions.
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
-const script=fs.readFileSync('native/metadata_collector.js','utf8');
+const script=fs.readFileSync('native/media/metadata_collector.js','utf8');
 let network=0,getters=0,added=0,removed=0;
 const output=[],listeners=new Map();
 const forbidden=()=>{network++;throw Error('unexpected network/control request');};

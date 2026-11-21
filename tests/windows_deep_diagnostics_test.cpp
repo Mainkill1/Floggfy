@@ -1,9 +1,9 @@
 // Synthetic headers and deterministic clocks only; no Spotify/network operations.
-#include "../native/history_settings.cpp"
-#include "../native/async_log.cpp"
-#include "../native/hook_diagnostics.h"
-#include "../native/launcher_architecture.h"
-#include "../native/startup_launcher.h"
+#include "../native/tooling/history_settings.cpp"
+#include "../native/tooling/async_log.cpp"
+#include "../native/tooling/hook_diagnostics.h"
+#include "../native/tooling/launcher_architecture.h"
+#include "../native/tooling/startup_launcher.h"
 #include <cassert>
 #include <filesystem>
 #include <system_error>

@@ -1,5 +1,5 @@
 // Configuration regression fixtures only; no installed Spotify or networking.
-#include "../native/history_settings.cpp"
+#include "../native/tooling/history_settings.cpp"
 #include <cassert>
 #include <iostream>
 namespace history {

@@ -20,7 +20,7 @@ BOOL CreateDirectoryWithRacer(LPCWSTR path, LPSECURITY_ATTRIBUTES security) {
 }
 }
 #define CreateDirectoryW CreateDirectoryWithRacer
-#include "../native/history_settings.cpp"
+#include "../native/tooling/history_settings.cpp"
 #undef CreateDirectoryW
 namespace history {
 void StartLogger() {}
@@ -108,7 +108,7 @@ int main(int argc,char** argv) {
       if(scenario=="blocking-precedence")assert(WritePrivateProfileStringW(L"Telemetry",L"BlockTelemetry",L"0",path.c_str()));
     }
     if(scenario=="blocking-category-zero") {
-      for(const auto& flag:history::blocking_flags)
+      for(const auto& flag:privacy::kTelemetryOptions)
         assert(WritePrivateProfileStringW(L"Telemetry",flag.key,flag.member==&history::Settings::block_telemetry?L"1":L"0",path.c_str()));
     }
     if(scenario=="aac-one") assert(WritePrivateProfileStringW(L"To Disk",L"AAC",L"1",path.c_str()));
@@ -171,7 +171,7 @@ int main(int argc,char** argv) {
   assert(s.metadata_cache_read_mib==(scenario=="metadata-cache-custom"?512u:256u));
   assert(s.block_telemetry==(scenario=="blocking-legacy-one"||scenario=="blocking-category-zero"));
   assert(s.dump_telemetry==(scenario=="blocking-legacy-one"));
-  for(const auto& flag:history::blocking_flags)
+  for(const auto& flag:privacy::kTelemetryOptions)
     if(flag.default_value)assert((s.*(flag.member))==(scenario!="blocking-category-zero"));
   assert(s.downloads==(scenario!="zero" && scenario!="legacy-zero"));
   assert(s.max_buffered_mib==(scenario=="buffer-1024"||scenario=="buffer-over"?1024u:scenario=="buffer-under"?8u:512u));
@@ -283,7 +283,7 @@ int main(int argc,char** argv) {
   std::wstring persisted;bool unicode=false;assert(history::settings_file::Read(path,persisted,unicode));
   assert(!history::settings_file::Find(persisted,L"BlockTelemetry").present);
   assert(!history::settings_file::Find(persisted,L"DumpTelemetry").present);
-  for(const auto& flag:history::blocking_flags) {
+  for(const auto& flag:privacy::kTelemetryOptions) {
     const auto value=history::settings_file::Find(persisted,flag.key,L"[Telemetry]");
     assert(value.present&&!value.duplicate&&value.value==(s.*(flag.member)?L"1":L"0"));
   }

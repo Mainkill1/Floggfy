@@ -13,10 +13,10 @@ build_windows_minhook build/artwork-policy
 # Link the capture worker too, so removed Media fields/providers cannot survive
 # as unnoticed integration dependencies. Hooks and live SMTC reads are not run.
 x86_64-w64-mingw32-g++ "${windows_cxxflags[@]}" tests/marked_catalog_stub.cpp \
-    -I native/vendor/libogg/include tests/windows_artwork_enrichment_test.cpp native/telemetry_filter.cpp native/telemetry_decode.cpp native/telemetry_inflate.cpp \
-    native/audio_history.cpp "${capture_sources[@]}" \
-    native/rich_metadata.cpp native/artwork_reply.cpp native/cached_metadata.cpp native/cached_metadata_windows.cpp native/cached_artwork_windows.cpp native/artwork_image.cpp \
-    native/existing_quality.cpp native/song_destination.cpp \
+    -I native/vendor/libogg/include tests/windows_artwork_enrichment_test.cpp native/telemetry/telemetry_filter.cpp native/telemetry/telemetry_decode.cpp native/telemetry/telemetry_inflate.cpp \
+    native/media/audio_history.cpp "${capture_sources[@]}" \
+    native/media/rich_metadata.cpp native/media/artwork_reply.cpp native/media/cached_metadata.cpp native/media/cached_metadata_windows.cpp native/media/cached_artwork_windows.cpp native/media/artwork_image.cpp \
+    native/media/existing_quality.cpp native/ui/song_destination.cpp \
     build/artwork-policy/*.o build/artwork-codecs-windows/libwebpdecoder.a -lole32 -luuid -lshell32 -lruntimeobject \
     -o "$floggfy_artwork_root/artwork-policy.exe"
 exec "$floggfy_artwork_root/artwork-policy.exe"

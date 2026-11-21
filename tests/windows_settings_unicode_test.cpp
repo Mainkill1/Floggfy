@@ -1,5 +1,5 @@
 // Runs only beside this test executable, never an installed client.
-#include "../native/history_settings.cpp"
+#include "../native/tooling/history_settings.cpp"
 #include <cassert>
 #include <vector>
 #include <thread>
