@@ -4,6 +4,7 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 namespace history {
 struct CachedRecord {
@@ -17,9 +18,16 @@ struct CachedTrackMetadata {
   double duration = 0;
   std::map<std::string, std::string> fields;
 };
-bool CollectMetadataTable(const std::vector<std::uint8_t> &, const std::string &uri,
-                          CachedRecords &);
-bool CollectMetadataLog(const std::vector<std::uint8_t> &, const std::string &uri, CachedRecords &);
+struct CachedMetadataUris {
+  std::string_view track, album;
+};
+struct CachedMetadataRecords {
+  CachedRecords tracks, albums;
+};
+bool CollectMetadataTable(const std::vector<std::uint8_t> &, CachedMetadataUris,
+                          CachedMetadataRecords &);
+bool CollectMetadataLog(const std::vector<std::uint8_t> &, CachedMetadataUris,
+                        CachedMetadataRecords &);
 bool DecodeCachedTrack(const CachedRecords &, const std::string &uri, CachedTrackMetadata &);
 bool DecodeCachedAlbum(const CachedRecords &, const std::string &uri,
                        std::map<std::string, std::string> &);

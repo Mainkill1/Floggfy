@@ -12,11 +12,13 @@ std::vector<uint8_t> Read(const std::string &name) {
 int main(int argc, char **argv) {
   const std::string root = argc > 1 ? argv[1] : "build/cache-fixtures",
                     uri = "spotify:track:0000000000000000000001";
+  const std::string album_uri = "spotify:album:0000000000000000000002";
+  const CachedMetadataUris track_only{uri, {}}, uris{uri, album_uri};
   for (const auto *name : {"table.ldb", "snappy.ldb"}) {
-    CachedRecords records;
-    assert(CollectMetadataTable(Read(root + "/" + name), uri, records));
+    CachedMetadataRecords records;
+    assert(CollectMetadataTable(Read(root + "/" + name), track_only, records));
     CachedTrackMetadata m;
-    assert(DecodeCachedTrack(records, uri, m));
+    assert(DecodeCachedTrack(records.tracks, uri, m));
     assert(m.title == "Song" && m.album == "Album" && m.duration == 200);
     assert(m.fields.at("ARTIST") == "Lead; Guest" && m.fields.at("ALBUMARTIST") == "Lead; Guest");
     assert(m.fields.at("DATE") == "2024-05-06" && m.fields.at("YEAR") == "2024");
@@ -40,38 +42,63 @@ int main(int argc, char **argv) {
     live.duration = 215;
     assert(!MergeCachedMetadata(m, live));
     auto previous = records;
-    assert(!CollectMetadataTable(Read(root + "/corrupt.ldb"), uri, records));
-    assert(records.size() == previous.size());
-    assert(CollectMetadataLog(Read(root + "/deleted.log"), uri, records));
-    assert(!DecodeCachedTrack(records, uri, m));
+    assert(!CollectMetadataTable(Read(root + "/corrupt.ldb"), track_only, records));
+    assert(records.tracks.size() == previous.tracks.size());
+    assert(CollectMetadataLog(Read(root + "/deleted.log"), track_only, records));
+    assert(!DecodeCachedTrack(records.tracks, uri, m));
   }
   for (const auto *name : {"complete.log", "fragmented.log", "truncated.log"}) {
-    CachedRecords r;
-    assert(CollectMetadataLog(Read(root + "/" + name), uri, r));
+    CachedMetadataRecords r;
+    assert(CollectMetadataLog(Read(root + "/" + name), track_only, r));
     CachedTrackMetadata m;
-    assert(DecodeCachedTrack(r, uri, m));
+    assert(DecodeCachedTrack(r.tracks, uri, m));
   }
-  CachedRecords repeated;
-  assert(!CollectMetadataTable(Read(root + "/repeated-handle.ldb"), uri, repeated));
-  assert(repeated.empty());
-  assert(!CollectMetadataTable(Read(root + "/expansion-limit.ldb"), uri, repeated));
-  assert(repeated.empty());
-  CachedRecords mismatch;
-  assert(CollectMetadataTable(Read(root + "/wrong-gid.ldb"), uri, mismatch));
+  CachedMetadataRecords repeated;
+  assert(!CollectMetadataTable(Read(root + "/repeated-handle.ldb"), uris, repeated));
+  assert(repeated.tracks.empty() && repeated.albums.empty());
+  assert(!CollectMetadataTable(Read(root + "/expansion-limit.ldb"), track_only, repeated));
+  assert(repeated.tracks.empty());
+  CachedMetadataRecords mismatch;
+  assert(CollectMetadataTable(Read(root + "/wrong-gid.ldb"), track_only, mismatch));
   CachedTrackMetadata invalid;
-  assert(!DecodeCachedTrack(mismatch, uri, invalid));
-  CachedRecords partial, album;
-  assert(CollectMetadataTable(Read(root + "/separate-album.ldb"), uri, partial));
-  assert(DecodeCachedTrack(partial, uri, invalid) && invalid.fields.at("DATE") == "2024");
-  const std::string album_uri = "spotify:album:0000000000000000000002";
-  assert(CollectMetadataTable(Read(root + "/separate-album.ldb"), album_uri, album));
+  assert(!DecodeCachedTrack(mismatch.tracks, uri, invalid));
+  CachedMetadataRecords records;
+  const auto table = Read(root + "/separate-album.ldb");
+  assert(CollectMetadataTable(table, uris, records));
+  assert(records.tracks.size() == 1 && records.albums.size() == 1);
+  assert(DecodeCachedTrack(records.tracks, uri, invalid) && invalid.fields.at("DATE") == "2024");
   std::map<std::string, std::string> complete;
-  assert(DecodeCachedAlbum(album, album_uri, complete));
+  assert(DecodeCachedAlbum(records.albums, album_uri, complete));
   assert(complete.at("DATE") == "2024-05-06" && complete.at("LABEL") == "Example Records");
-  CachedRecords wrong;
-  assert(CollectMetadataTable(Read(root + "/table.ldb"), "spotify:track:0000000000000000000003",
-                              wrong));
-  assert(wrong.empty());
+
+  CachedMetadataRecords full;
+  for (unsigned i = 0; i < 31; ++i) {
+    full.tracks[std::to_string(i)] = {};
+    full.albums[std::to_string(i)] = {};
+  }
+  assert(CollectMetadataTable(table, uris, full));
+  assert(full.tracks.size() == 32 && full.albums.size() == 32);
+  // The table visits the album before the track. A full track map must roll both back.
+  full.tracks.erase(records.tracks.begin()->first);
+  full.tracks["last"] = {};
+  full.albums.clear();
+  assert(!CollectMetadataTable(table, uris, full));
+  assert(full.albums.empty() && full.tracks.size() == 32 && full.tracks.count("last"));
+
+  const auto updated = Read(root + "/paired.log");
+  auto corrupt = updated;
+  corrupt.insert(corrupt.end(), {0, 0, 0, 0, 0, 0, 1});
+  assert(!CollectMetadataLog(corrupt, uris, records));
+  assert(records.tracks.begin()->second.sequence == 100 &&
+         records.albums.begin()->second.sequence == 100);
+  assert(CollectMetadataLog(updated, uris, records));
+  assert(CollectMetadataTable(table, uris, records));
+  assert(records.tracks.begin()->second.sequence == 103 && records.tracks.begin()->second.deleted);
+  assert(records.albums.begin()->second.sequence == 104 && records.albums.begin()->second.deleted);
+
+  CachedMetadataRecords wrong;
+  assert(CollectMetadataTable(table, {"spotify:track:0000000000000000000003", {}}, wrong));
+  assert(wrong.tracks.empty() && wrong.albums.empty());
   std::cout << "PASS: exact cached identity, signed protobuf fields, all artists, dates, labels, "
-               "compressed tables, WAL fragments/tails, CRC rejection and deletion precedence\n";
+               "paired table/WAL collection, per-target limits, rollback and deletion precedence\n";
 }

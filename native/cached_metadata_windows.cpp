@@ -83,9 +83,8 @@ std::vector<File> Files(const std::wstring &directory, const char* &failure) {
     failure = "file-count";
   return files;
 }
-bool Collect(const std::vector<File> &files, const std::string &uri, CachedRecords &records,
-             StoredMetadataRead &result, const std::string &album_uri = {},
-             CachedRecords* albums = nullptr) {
+bool Collect(const std::vector<File> &files, CachedMetadataUris uris, CachedMetadataRecords &records,
+             StoredMetadataRead &result) {
   for (const auto &file : files) {
     if (file.size > result.budget_bytes - result.read_bytes) {
       result.reason = "read-budget";
@@ -120,11 +119,8 @@ bool Collect(const std::vector<File> &files, const std::string &uri, CachedRecor
       result.reason = "unreadable";
       return false;
     }
-    bool valid = file.log ? CollectMetadataLog(bytes, uri, records)
-                          : CollectMetadataTable(bytes, uri, records);
-    if (valid && albums && !album_uri.empty())
-      valid = file.log ? CollectMetadataLog(bytes, album_uri, *albums)
-                       : CollectMetadataTable(bytes, album_uri, *albums);
+    const bool valid = file.log ? CollectMetadataLog(bytes, uris, records)
+                                : CollectMetadataTable(bytes, uris, records);
     if (!valid) {
       result.reason = "invalid-record";
       return false;
@@ -162,13 +158,14 @@ bool ReadStoredMetadata(const std::wstring &users_root, RichMetadata &live,
       result.reason = failure;
       continue;
     }
-    CachedRecords records, albums;
-    if (!Collect(files, live.uri, records, result, live.album_uri, &albums))
+    CachedMetadataRecords records;
+    if (!Collect(files, {live.uri, live.album_uri}, records, result))
       continue;
     CachedTrackMetadata track;
-    if (!DecodeCachedTrack(records, live.uri, track)) {
-      result.reason = std::any_of(records.begin(),records.end(),[](const auto& item){return !item.second.deleted;})
-          ? "invalid-record" : "missing-record";
+    if (!DecodeCachedTrack(records.tracks, live.uri, track)) {
+      const bool has_track = std::any_of(records.tracks.begin(), records.tracks.end(),
+                                         [](const auto &item) { return !item.second.deleted; });
+      result.reason = has_track ? "invalid-record" : "missing-record";
       continue;
     }
     if (track.title != live.title || track.album != live.album ||
@@ -177,10 +174,13 @@ bool ReadStoredMetadata(const std::wstring &users_root, RichMetadata &live,
       result.reason = "identity-mismatch";
       continue;
     }
-    if (live.album_uri.empty() && !Collect(files, track.album_uri, albums, result))
-      continue;
+    if (live.album_uri.empty()) {
+      records.tracks.clear();
+      if (!Collect(files, {{}, track.album_uri}, records, result))
+        continue;
+    }
     std::map<std::string, std::string> fields;
-    if (DecodeCachedAlbum(albums, track.album_uri, fields)) {
+    if (DecodeCachedAlbum(records.albums, track.album_uri, fields)) {
       RichMetadata embedded;
       embedded.uri = track.uri;
       embedded.title = track.title;

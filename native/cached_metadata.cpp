@@ -156,9 +156,9 @@ template <class F> bool Entries(Bytes b, F visit) {
   }
   return p == end;
 }
-bool Wanted(Bytes key, const std::string &uri) {
+bool Wanted(Bytes key, Bytes uri) {
   constexpr Bytes prefix = "!xmeta#cache#";
-  if (key.substr(0, prefix.size()) != prefix)
+  if (uri.empty() || key.substr(0, prefix.size()) != prefix)
     return false;
 
   if (key.back() != '#' || key.size() - 1 < uri.size())
@@ -167,10 +167,7 @@ bool Wanted(Bytes key, const std::string &uri) {
   const auto uri_start = key.size() - uri.size();
   return uri_start >= 2 && key.substr(uri_start - 2, 2) == "#$" && key.substr(uri_start) == uri;
 }
-bool Record(CachedRecords &out, Bytes key, Bytes value, uint64_t sequence, bool deleted,
-            const std::string &uri) {
-  if (!Wanted(key, uri))
-    return true;
+bool StoreRecord(CachedRecords &out, Bytes key, Bytes value, uint64_t sequence, bool deleted) {
   if (key.size() > 16384 || value.size() > max_value)
     return false;
 
@@ -185,7 +182,12 @@ bool Record(CachedRecords &out, Bytes key, Bytes value, uint64_t sequence, bool 
     old = {sequence, deleted, std::string(value)};
   return true;
 }
-bool Batch(Bytes b, const std::string &uri, CachedRecords &out) {
+bool Record(CachedMetadataRecords &out, Bytes key, Bytes value, uint64_t sequence, bool deleted,
+            CachedMetadataUris uris) {
+  return (!Wanted(key, uris.track) || StoreRecord(out.tracks, key, value, sequence, deleted)) &&
+         (!Wanted(key, uris.album) || StoreRecord(out.albums, key, value, sequence, deleted));
+}
+bool Batch(Bytes b, CachedMetadataUris uris, CachedMetadataRecords &out) {
   if (b.size() < 12)
     return false;
   uint64_t sequence = Little(b.substr(0, 8)), count = Little(b.substr(8, 4));
@@ -199,7 +201,7 @@ bool Batch(Bytes b, const std::string &uri, CachedRecords &out) {
     uint8_t kind = uint8_t(b[p++]);
     Bytes key, value;
     if (kind > 1 || !Sized(b, p, key) || (kind == 1 && !Sized(b, p, value)) ||
-        !Record(out, key, value, sequence + i, kind == 0, uri))
+        !Record(out, key, value, sequence + i, kind == 0, uris))
       return false;
   }
   return p == b.size();
@@ -391,8 +393,8 @@ bool Payload(const CachedRecord &r, const char *type, Message &out) {
   return slash != std::string::npos && name.substr(slash + 1) == type && Proto(Data(any, 2), out);
 }
 } // namespace
-bool CollectMetadataTable(const std::vector<uint8_t> &bytes, const std::string &uri,
-                          CachedRecords &out) {
+bool CollectMetadataTable(const std::vector<uint8_t> &bytes, CachedMetadataUris uris,
+                          CachedMetadataRecords &out) {
   if (bytes.size() < 48 || bytes.size() > max_file)
     return false;
   Bytes file(reinterpret_cast<const char *>(bytes.data()), bytes.size());
@@ -431,15 +433,15 @@ bool CollectMetadataTable(const std::vector<uint8_t> &bytes, const std::string &
       key.remove_suffix(8);
       if (kind > 1)
         return false;
-      return Record(staged, key, value, trailer >> 8, kind == 0, uri);
+      return Record(staged, key, value, trailer >> 8, kind == 0, uris);
     });
   });
   if (valid)
     out = std::move(staged);
   return valid;
 }
-bool CollectMetadataLog(const std::vector<uint8_t> &bytes, const std::string &uri,
-                        CachedRecords &out) {
+bool CollectMetadataLog(const std::vector<uint8_t> &bytes, CachedMetadataUris uris,
+                        CachedMetadataRecords &out) {
   if (bytes.size() > max_file)
     return false;
   Bytes file(reinterpret_cast<const char *>(bytes.data()), bytes.size());
@@ -473,7 +475,7 @@ bool CollectMetadataLog(const std::vector<uint8_t> &bytes, const std::string &ur
       return false;
 
     if (kind == 1) {
-      if (!Batch(payload, uri, staged))
+      if (!Batch(payload, uris, staged))
         return false;
       complete = true;
       first = false;
@@ -486,7 +488,7 @@ bool CollectMetadataLog(const std::vector<uint8_t> &bytes, const std::string &ur
         return false;
       assembling.append(payload);
       if (kind == 4) {
-        if (!Batch(assembling, uri, staged))
+        if (!Batch(assembling, uris, staged))
           return false;
         complete = true;
         first = false;
