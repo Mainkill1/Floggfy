@@ -47,14 +47,12 @@ static std::wstring RelativeDirectory(const Catalog& c) {
     if(!path.empty())component(c.album,L"Unknown Album");
     return path;
 }
-static std::wstring TrackPrefix(const Catalog& c,bool track_numbers) {
-    if(track_numbers && c.track) {
-        wchar_t number[20];swprintf(number,20,L"%02u - ",c.track);return number;
-    }
-    return {};
+std::wstring TrackNumberPrefix(unsigned track) {
+    if(!track)return {};
+    wchar_t number[20];std::swprintf(number,20,L"%02u - ",track);return number;
 }
 std::wstring RelativePath(const Catalog& c,const std::wstring& extension,bool track_numbers) {
-    return RelativeDirectory(c)+TrackPrefix(c,track_numbers)+Safe(c.title,L"Untitled")+extension;
+    return RelativeDirectory(c)+TrackNumberPrefix(track_numbers?c.track:0)+Safe(c.title,L"Untitled")+extension;
 }
 static std::wstring RootedDirectory(std::wstring_view root,const Catalog& item,bool music_folder,bool duplicate) {
     while(!root.empty() && (root.back()==L'\\' || root.back()==L'/'))root.remove_suffix(1);
@@ -67,7 +65,7 @@ static std::wstring RootedDirectory(std::wstring_view root,const Catalog& item,b
     return path;
 }
 std::wstring OutputPath(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder,bool track_numbers) {
-    return RootedDirectory(root,item,music_folder,false)+TrackPrefix(item,track_numbers)+Safe(item.title,L"Untitled")+extension;
+    return RootedDirectory(root,item,music_folder,false)+TrackNumberPrefix(track_numbers?item.track:0)+Safe(item.title,L"Untitled")+extension;
 }
 static std::wstring MissingTrackIdSuffix(const Catalog& item) {
     const auto identity=item.artist+L'\0'+item.album+L'\0'+item.title+L'\0'+
@@ -90,7 +88,7 @@ static std::wstring MissingTrackIdSuffix(const Catalog& item) {
 static std::vector<std::wstring> DuplicatePaths(const std::wstring& root,const Catalog& item,const std::wstring& extension,
     bool music_folder,bool track_numbers,bool include_missing_id,size_t id_lengths=3) {
     const auto directory=RootedDirectory(root,item,music_folder,true);
-    const auto prefix=TrackPrefix(item,track_numbers);
+    const auto prefix=TrackNumberPrefix(track_numbers?item.track:0);
     const auto title=Safe(item.title,L"Untitled");
     auto with_suffix=[&](const std::wstring& suffix) {
         constexpr size_t component_limit=100;

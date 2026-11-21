@@ -25,8 +25,8 @@ static bool BlockingListing(const std::wstring& path,RecordingDirectory& directo
     if(hold_probe) {SetEvent(probe_entered);WaitForSingleObject(probe_release,INFINITE);}
     return ListRecordingDirectory(path,directory,catalog);
 }
-static std::vector<std::wstring> CountingCandidates(const std::wstring& path,const Catalog& catalog,bool legacy,bool numbered) {
-    ++collision_searches;return RecordingPathCandidates(path,catalog,legacy,numbered);
+static std::vector<RecordingPathCandidate> CountingCandidates(const std::wstring& path,const Catalog& catalog,bool numbered) {
+    ++collision_searches;return RecordingPathCandidates(path,catalog,numbered);
 }
 static bool CountingRecording(const std::wstring& path,const Catalog& catalog,Quality& quality) {
     ++verification_reads;return ExistingRecording(path,catalog,quality);
@@ -275,12 +275,14 @@ int main() {
     assert(MoveFileW(WindowsPath(mp3).c_str(),WindowsPath(numbered).c_str()));
     RefreshSongDestination();AwaitProbe();
     assert(ReadSongDestination(18,11,saved_file)&&saved_file==numbered);
-    const auto candidates=RecordingPathCandidates(mp3,episode,true,false);
-    const auto suffixed=std::find_if(candidates.begin(),candidates.end(),[&](const auto& path){return path!=mp3&&path!=numbered&&path.find(L" [")!=std::wstring::npos;});
-    assert(suffixed!=candidates.end()&&MoveFileW(WindowsPath(numbered).c_str(),WindowsPath(*suffixed).c_str()));
+    const auto candidates=RecordingPathCandidates(mp3,episode);
+    const auto suffixed=std::find_if(candidates.begin(),candidates.end(),[&](const auto& candidate){
+        return candidate.path.find(L" [")!=std::wstring::npos;
+    });
+    assert(suffixed!=candidates.end()&&suffixed->writable&&MoveFileW(WindowsPath(numbered).c_str(),WindowsPath(suffixed->path).c_str()));
     RefreshSongDestination();AwaitProbe();
-    assert(ReadSongDestination(18,11,saved_file)&&saved_file==*suffixed);
-    assert(DeleteFileW(WindowsPath(*suffixed).c_str()));
+    assert(ReadSongDestination(18,11,saved_file)&&saved_file==suffixed->path);
+    assert(DeleteFileW(WindowsPath(suffixed->path).c_str()));
     for(const auto* extension:{L".ogg",L".flac",L".m4a"}) {
         const auto native_episode=OutputPath(root,episode,extension);
         WriteAudio(native_episode,episode);

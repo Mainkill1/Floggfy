@@ -210,7 +210,8 @@ static std::wstring ProbeSavedSong(const DestinationRequest& request,Verificatio
     for(const auto* base:paths) {
         if(!base)break;
         if(!CurrentRequest(request))return {};
-        for(const auto& file:RecordingPathCandidates(*base,request.catalog,true,request.track_numbers)) {
+        for(const auto& candidate:RecordingPathCandidates(*base,request.catalog,request.track_numbers)) {
+            const auto& file=candidate.path;
             if(file==*base)continue; // Already verified above.
             if(!CurrentRequest(request))return {};
             FileSignature signature;
@@ -244,7 +245,8 @@ static std::wstring ProbeSavedSong(const DestinationRequest& request,Verificatio
         if(!base)break;
         if(base->empty())continue;
         if(!CurrentRequest(request))return {};
-        for(const auto& file:RecordingPathCandidates(*base,request.catalog,true,request.track_numbers)) {
+        for(const auto& candidate:RecordingPathCandidates(*base,request.catalog,request.track_numbers)) {
+            const auto& file=candidate.path;
             if(file==*base)continue;
             FileSignature signature;
             if(VerifySavedFile(file,request,duplicate_directory,signature)) {

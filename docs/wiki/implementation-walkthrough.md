@@ -133,6 +133,14 @@ paths went from 116,000 allocations to 13,000 and 1,000 four-name duplicate
 lookups went from 714,000 to 36,000. The old and new builds produced the same
 108,800 paths in both the Windows and portable comparisons.
 
+The resolver and filename conversion also share one ordered candidate list.
+Each entry records whether the current naming style allows a new file there.
+The generator builds the identity hashes once and checks generated suffixes
+only against the ordinary aliases. A Windows comparison of 7,776 inputs
+preserved every candidate, its order, and its write eligibility. In 5,000
+lookups of a numbered track with old artist and disc aliases, allocations fell
+from 7,665,000 to 2,325,000. This measurement covers candidate generation.
+
 ## To Disk and Saved
 
 To Disk reads a playback and quality snapshot. A separate worker checks whether
@@ -184,7 +192,7 @@ Fixtures, fault injection, fuzzers, and replay runners live under `tests/`.
 | Area | Evidence to collect and work to remove |
 |---|---|
 | Capture and matcher | The worker wakes for queued events or after a 50 ms wait, then rechecks retained captures, matching evidence, retirement, and quality. Count scans on idle playback, skips, and a long episode. If unchanged ticks dominate, gate matching on changes to capture, metadata, decoded ownership, or settings and retain the deadlines and save-queue retry path. Compare the exact match, archive, and retry results in capture replays. |
-| Save worker | A destination resolution builds both a search list and a writable list. Generate candidates once with their write eligibility if the lists dominate a directory-first lookup. Compare candidate order, old aliases, occupied paths, and backup recovery. Measure the incoming-file copy during a large quality upgrade separately. |
+| Save worker | Measure the incoming-file copy during a large quality upgrade. Determine how much scratch memory remains after the locked destination parse is reused, and how much the codec tag writer actually needs. |
 | Saved column | Measure one large playlist with a cold catalog and again after dates settle. Time SQL, filesystem stamp checks, and rendering separately. Keep the index if filesystem or UI work dominates. A replacement would also need to preserve rebuilds, duplicate paths, and stale-file detection. |
 | Enrichment | Count disk-cache reads, artwork attempts, and online requests per recording with warm and cold caches. Track and album already share a scan when both IDs are known. Target repeated attempts for the same pinned metadata and artwork before widening cache scope. |
 | Startup and tooling | Settings already read one startup snapshot. Measure module readiness and activation separately. Share work only when the same startup attempt asks for the same capability, and preserve fallback when an older client supplies fewer capabilities. |

@@ -9,7 +9,6 @@
 #include <algorithm>
 #include <cstring>
 #include <vector>
-#include <cwchar>
 #include <new>
 namespace history {
 #ifdef FLOGGFY_PUBLICATION_TEST
@@ -170,17 +169,18 @@ FilenameConversion ConvertRecordingFilename(const std::wstring& source,const std
         auto same=[](const std::wstring& a,const std::wstring& b) {
             return CompareStringOrdinal(a.c_str(),int(a.size()),b.c_str(),int(b.size()),TRUE)==CSTR_EQUAL;
         };
-        const auto plain=RecordingPathCandidates(title_path,catalog,false);
-        if(std::any_of(plain.begin(),plain.end(),[&](const auto& path){return same(path,source);}))
-            return FilenameConversion::Unchanged;
-        const auto known=RecordingPathCandidates(title_path,catalog,true);
-        if(std::none_of(known.begin(),known.end(),[&](const auto& path){return same(path,source);}))
+        const auto candidates=RecordingPathCandidates(title_path,catalog);
+        auto contains=[&](const std::wstring& name,bool writable_only) {
+            return std::any_of(candidates.begin(),candidates.end(),[&](const auto& item) {
+                return (!writable_only||item.writable)&&same(item.path,name);
+            });
+        };
+        if(contains(source,true)||!contains(source,false))
             return FilenameConversion::Unchanged;
         const auto slash=source.find_last_of(L"\\/");
         if(slash==std::wstring::npos)return FilenameConversion::Unchanged;
         const auto filename=source.substr(slash+1);
-        std::wstring track;
-        if(catalog.track){wchar_t prefix[20];std::swprintf(prefix,20,L"%02u - ",catalog.track);track=prefix;}
+        const auto track=TrackNumberPrefix(catalog.track);
         std::vector<std::wstring> prefixes;
         if(catalog.disc>1)prefixes.push_back(L"Disc "+std::to_wstring(catalog.disc)+L" - "+track);
         if(!track.empty())prefixes.push_back(track);
@@ -188,7 +188,7 @@ FilenameConversion ConvertRecordingFilename(const std::wstring& source,const std
         for(const auto& prefix:prefixes)if(filename.rfind(prefix,0)==0) {
             target=source.substr(0,slash+1)+filename.substr(prefix.size());break;
         }
-        if(target.empty() || std::none_of(plain.begin(),plain.end(),[&](const auto& path){return same(path,target);}))
+        if(target.empty()||!contains(target,true))
             return FilenameConversion::Unchanged;
 
         // Freeze the exact source against writes/deletion before validating

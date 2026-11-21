@@ -72,8 +72,8 @@ public:
 private:
     friend bool ListRecordingDirectory(const std::wstring&,RecordingDirectory&,const Catalog*);
     struct Listing {std::wstring directory;std::vector<std::wstring> names;};
+    const Listing* FindListing(const std::wstring& file) const;
     std::vector<Listing> listings_;
-    bool complete_=false;
 };
 // A missing directory is an empty listing; access/enumeration errors and more
 // than 16,384 entries per directory fail closed. The optional catalog adds only
@@ -96,7 +96,11 @@ RecordingDestination ResolveRecordingDestination(const std::wstring& base,const 
     const RecordingDirectory* directory=nullptr);
 // Pure, bounded naming rule shared by publication and folder lookup. The menu
 // can stop at its first complete matching file; replacement must examine all.
-std::vector<std::wstring> RecordingPathCandidates(const std::wstring& base,const Catalog& catalog,bool legacy_names=true,bool track_numbers=false);
+struct RecordingPathCandidate {
+    std::wstring path;
+    bool writable; // Uses the configured naming style and directory.
+};
+std::vector<RecordingPathCandidate> RecordingPathCandidates(const std::wstring& base,const Catalog& catalog,bool track_numbers=false);
 enum class SaveDecision { NewFile, Upgrade, Skip };
 inline bool CanUpgradeRecording(const RecordingFile& existing,const Quality& incoming,const Catalog& catalog) {
     return existing.owned && (!existing.complete || HigherQuality(incoming,existing.quality)) &&

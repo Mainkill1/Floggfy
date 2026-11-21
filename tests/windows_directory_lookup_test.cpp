@@ -95,6 +95,15 @@ void Lookups(const std::wstring& root) {
     Write(base+L".previous",Audio(c,24));ResetCounts();resolved=ResolveRecordingDestination(base,c);
     assert(resolved.path==base&&resolved.recording.quality.bits==24&&listings==1);
     assert(DeleteFileW(WindowsPath(base).c_str()));
+    // A reserved ordinary name must recover under its first writable suffix,
+    // even though unused legacy numbered names precede it in lookup order.
+    Write(base,Audio(other));Write(base+L".previous",Audio(c,24));
+    resolved=ResolveRecordingDestination(base,c);
+    assert(resolved.state==RecordingDestinationState::Existing&&resolved.path==suffix&&
+           resolved.recording.quality.bits==24&&resolved.explicit_uid_conflict);
+    Quality unchanged;
+    assert(ExistingRecording(base,other,unchanged));
+    assert(DeleteFileW(WindowsPath(base).c_str())&&DeleteFileW(WindowsPath(suffix).c_str()));
     // A directory occupying a candidate is not a safe vacancy.
     assert(CreateDirectoryW(WindowsPath(base).c_str(),nullptr));
     assert(ResolveRecordingDestination(base,c).state==RecordingDestinationState::Blocked);

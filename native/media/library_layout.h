@@ -18,6 +18,7 @@ struct Catalog {
     std::string spotify_uri,spotify_album_uri;
     double duration=0;
 };
+std::wstring TrackNumberPrefix(unsigned track);
 std::wstring RelativePath(const Catalog& item,const std::wstring& extension,bool track_numbers=false);
 std::wstring OutputPath(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder=false,bool track_numbers=false);
 // Additive fallbacks for unresolved filename collisions. Valid track IDs use
