@@ -140,7 +140,8 @@ static void TestBoundPlaybackQuality() {
   CaptureBuffers legacy;legacy.ownership_tracker=&tracker;
   Media media;media.source=MediaSource::Spotify;media.title=L"Legacy binding";
   media.spotify_uri="spotify:track:0000000000000000000002";
-  media.playback_instance="legacy-play";media.duration=100;
+  media.playback_instance="legacy-play";media.duration=100;media.playing=true;
+  const auto generation=legacy.history.Observe(media,100.1).metadata.generation;
   auto capture=std::make_unique<Capture>();
   capture->stream.rate=44100;capture->stream.channels=2;capture->stream.pages=1;
   capture->decoder_owner=0x5000;
@@ -149,18 +150,21 @@ static void TestBoundPlaybackQuality() {
   ownership::DecodedActivity decoded{};decoded.owner=0x5000;decoded.calls=1;decoded.produced_floats=8192;
   decoded.first=decoded.last=100;decoded.epoch=5;decoded.sequence=2;tracker.ObserveDecoded(decoded);
   PlaybackQualitySnapshot base;base.identity=PlaybackIdentity(media.PlaybackKey());
-  const auto playback=BindReadyCapture(legacy,media,7,100.1);
+  const auto playback=BindReadyCapture(legacy,media,generation,100.1);
   assert(playback);
   const Quality saved_ogg{Codec::Vorbis,44100,2,0,320000};
-  assert(ShouldAutoSkipDownloaded(BoundPlaybackQuality(legacy,media,7,base),base.identity,
+  assert(ShouldAutoSkipDownloaded(BoundPlaybackQuality(legacy,media,generation,base),base.identity,
                                   media.playback_instance,saved_ogg));
-  RememberBoundCaptureIdentity(legacy,media,7,playback);
+  RememberBoundCaptureIdentity(legacy,media,generation,playback);
   legacy.active.clear();
-  assert(ShouldAutoSkipDownloaded(BoundPlaybackQuality(legacy,media,7,base),base.identity,
+  assert(ShouldAutoSkipDownloaded(BoundPlaybackQuality(legacy,media,generation,base),base.identity,
                                   media.playback_instance,saved_ogg));
   auto successor=media;successor.playback_instance="successor";
-  assert(!ShouldAutoSkipDownloaded(BoundPlaybackQuality(legacy,successor,7,base),base.identity,
+  assert(!ShouldAutoSkipDownloaded(BoundPlaybackQuality(legacy,successor,generation,base),base.identity,
                                    successor.playback_instance,saved_ogg));
+  legacy.history.Observe(successor,101);
+  legacy.history.Prune(1);
+  assert(BoundPlaybackQuality(legacy,media,generation,base).format==PlaybackFormat::Unknown);
   // Disabling a format's saving must still allow its bounded header observer.
   CaptureBuffers buffers;PlaybackQualityTracker quality;
   quality.Media("disabled-format",L"Disabled format",0,16.0/44100,100);

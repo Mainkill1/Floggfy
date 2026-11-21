@@ -1,4 +1,5 @@
 #pragma once
+#include "library_layout.h"
 #include "media_session.h"
 #include "recording_counters.h"
 #include <deque>
@@ -18,6 +19,8 @@ public:
         bool started=false;
         bool assigned=false;
         RecordCounter metadata_counter{};
+        Quality bound_quality{};
+        std::uint64_t bound_playback=0;
     };
 private:
     std::deque<Record> records_;
@@ -77,8 +80,12 @@ public:
         return nullptr;
     }
     const Record* Current() const noexcept{return Find(current_);}
-    void MarkAssigned(std::uint64_t generation) noexcept {
-        for(auto& record:records_)if(record.metadata.generation==generation){record.assigned=true;return;}
+    void MarkAssigned(std::uint64_t generation,Quality quality={},std::uint64_t playback=0) noexcept {
+        for(auto& record:records_)if(record.metadata.generation==generation) {
+            record.assigned=true;
+            if(quality.rate){record.bound_quality=quality;record.bound_playback=playback;}
+            return;
+        }
     }
     RecordCounter TakePending(std::uint64_t generation) noexcept {
         for(auto& record:records_)if(record.metadata.generation==generation)

@@ -92,6 +92,22 @@ For 10,000 parses of a buffering-transition fixture they went from 160,000 to
 30,000. These are parser measurements. Live playback timing was outside the
 measurement.
 
+The matcher still calibrates against new playback metadata when audio has yet
+to arrive. With no retained audio, it skips candidate searches. An unchanged
+expected identity skips the exclusive bridge lock when diagnostics are off.
+A Windows fixture with five metadata records and no audio counted 100,000
+shared and 10,000 exclusive lock acquisitions over 10,000 passes before the
+change and zero after it. Both revisions calibrated a subsequent identity.
+
+Bound audio quality now belongs to the metadata record it describes. It can
+remain visible after the save worker takes the audio buffer, then retires with
+the playback occurrence. The matcher shares one traversal for active decoder
+buffers and completed sources. The weak match check stops on the first native
+identity result because any such evidence is enough to withhold a timing-only
+assignment. The exact matcher still reads all matching observations. Two
+recorded Ogg replays queued the exact source bytes in both builds with identical
+logs. A third replay did not queue a validated save in either build.
+
 ## Metadata, artwork, and lyrics
 
 The metadata record stays alive while a capture or save job uses it. The bridge
@@ -191,7 +207,7 @@ Fixtures, fault injection, fuzzers, and replay runners live under `tests/`.
 
 | Area | Evidence to collect and work to remove |
 |---|---|
-| Capture and matcher | The worker wakes for queued events or after a 50 ms wait, then rechecks retained captures, matching evidence, retirement, and quality. Count scans on idle playback, skips, and a long episode. If unchanged ticks dominate, gate matching on changes to capture, metadata, decoded ownership, or settings and retain the deadlines and save-queue retry path. Compare the exact match, archive, and retry results in capture replays. |
+| Capture and matcher | With audio retained, the worker still rechecks matching, retirement, and quality after a 50 ms wait or a queued event. Count scans on pauses, skips, and a long episode. If unchanged ticks dominate, gate matching on evidence changes while retaining capture retirement and save-queue retries. Compare match, archive, and retry results in capture replays. |
 | Save worker | Measure the incoming-file copy during a large quality upgrade. Determine how much scratch memory remains after the locked destination parse is reused, and how much the codec tag writer actually needs. |
 | Saved column | Measure one large playlist with a cold catalog and again after dates settle. Time SQL, filesystem stamp checks, and rendering separately. Keep the index if filesystem or UI work dominates. A replacement would also need to preserve rebuilds, duplicate paths, and stale-file detection. |
 | Enrichment | Count disk-cache reads, artwork attempts, and online requests per recording with warm and cold caches. Track and album already share a scan when both IDs are known. Target repeated attempts for the same pinned metadata and artwork before widening cache scope. |
