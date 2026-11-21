@@ -6,7 +6,6 @@
 #include <cassert>
 #include <cstdio>
 using namespace history;
-namespace history { std::wstring WindowsPath(const std::wstring& path) {return path;} }
 static void Write(const std::wstring& path,const std::vector<uint8_t>& bytes) {
     HANDLE file=CreateFileW(path.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,0,nullptr);assert(file!=INVALID_HANDLE_VALUE);
     DWORD written=0;assert(WriteFile(file,bytes.data(),DWORD(bytes.size()),&written,nullptr) && written==bytes.size());CloseHandle(file);

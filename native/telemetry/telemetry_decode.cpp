@@ -1,3 +1,4 @@
+#include "../tooling/varint.h"
 #include "telemetry_decode.h"
 #include "telemetry_schema.h"
 #include <cstdint>
@@ -70,15 +71,7 @@ bool Text(std::string_view input,bool printable=true){
  }
  return true;
 }
-bool Varint(std::string_view input,size_t& position,uint64_t& value){
- value=0;
- for(unsigned i=0;i<10;++i){
-  if(position==input.size())return false;
-  const auto c=Byte(input[position++]);
-  if(i==9&&c>1)return false;
-  value|=uint64_t(c&127)<<(i*7);if(!(c&128))return true;
- }return false;
-}
+using wire::Varint;
 struct WireField {unsigned number=0,wire=0;uint64_t value=0;std::string_view bytes,raw;};
 bool ReadFields(std::string_view input,std::vector<WireField>& fields){
  size_t position=0;

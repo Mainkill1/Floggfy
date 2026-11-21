@@ -16,12 +16,6 @@ void* operator new(std::size_t size) {
 __attribute__((noinline)) void operator delete(void* memory) noexcept {std::free(memory);}
 __attribute__((noinline)) void operator delete(void* memory,std::size_t) noexcept {std::free(memory);}
 using namespace history;
-namespace history { std::wstring WindowsPath(const std::wstring& value) {
-    if(value.rfind(L"\\\\?\\",0)==0) return value;
-    if(value.rfind(L"\\\\",0)==0) return L"\\\\?\\UNC\\"+value.substr(2);
-    if(value.size()>2 && value[1]==L':') return L"\\\\?\\"+value;
-    return value;
-} }
 static void check(bool value,const char* label) { if(!value) { std::fprintf(stderr,"FAIL: %s (error %lu)\n",label,GetLastError()); std::exit(1); } }
 static void write(const std::wstring& path,const std::vector<uint8_t>& bytes) {
     HANDLE file=CreateFileW(path.c_str(),GENERIC_WRITE,FILE_SHARE_READ,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);

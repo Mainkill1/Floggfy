@@ -60,10 +60,13 @@ The inventories above retain source coordinates from the revisions they reviewed
 
 | Operation | Before | After |
 |---|---:|---:|
+| Saved catalog lookup for one saved URI and one missing URI, SELECT executions | 3 | 2 |
 | Telemetry option read, whole-file INI scans | 24 | 1 |
 | Passive Saved refresh with 128 mounted rows, header layout probes | 129 | 1 |
 | Same refresh, grid width reads | 129 | 2 |
 | Native menu requests one audio label, labels built | 4 | 1 |
 | Renderer resolves one relative URL each for fetch, beacon and XHR | 6 | 3 |
+
+The SQLite fixture counted three prepared statements for the open catalog across repeated lookups and writes. It also exercised an exclusive lock, retry, pagination and save-root changes. The offline metadata fixture checked that reading an unrelated LevelDB table or log preserves previously collected records in place.
 
 The telemetry fixture exercised 5,040 URL classifications with the same results. The Windows INI fixture retained strict duplicate handling and section precedence. Two embedded renderer bundles totaling 121,506 UTF-8 bytes round-tripped byte-for-byte through the Windows conversion. The directory race fixture covers a competing creator producing either a file or a folder. These are fixture measurements. Live playback and end-to-end UI latency were outside this pass.

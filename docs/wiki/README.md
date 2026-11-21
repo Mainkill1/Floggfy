@@ -44,10 +44,13 @@ and settings remain in the project [README](../../README.md).
 
 ## Component map
 
-The first-party source has four directories. [Telemetry](../../native/telemetry) owns the privacy settings map, request rules, counters and dumps. [Media](../../native/media) owns capture, matching, recording and metadata. [UI](../../native/ui) owns the To Disk menu, Saved playlists, audio labels and file shortcuts. [Tooling](../../native/tooling) holds shared Windows, settings, filesystem, hashing and hook support. The DLL and launcher entry points are at the root of `native/`.
+The first-party source has four directories. [Telemetry](../../native/telemetry) owns the privacy settings map, request rules, counters and dumps. [Media](../../native/media) owns capture, matching, recording and metadata. [UI](../../native/ui) owns the To Disk menu, Saved playlists, audio labels and file shortcuts. [Tooling](../../native/tooling) holds shared Windows, settings, filesystem, SQLite and LevelDB access, hashing and hook support. The DLL and launcher entry points are at the root of `native/`.
 
 | Responsibility | Primary implementation |
 | --- | --- |
+| Long paths, directory creation and search handles | [Windows paths](../../native/tooling/windows_path.h), [Windows handles](../../native/tooling/windows_handle.h) |
+| SQLite connections, prepared statements and parameter binding | [SQLite tooling](../../native/tooling/sqlite.h) |
+| Read-only LevelDB table and log traversal | [LevelDB reader](../../native/tooling/leveldb_reader.h) |
 | Hook discovery and structural validation | [`spotify_hook_discovery.cpp`](../../native/tooling/spotify_hook_discovery.cpp) |
 | Audio hooks, queues, association, and publication scheduling | [`audio_history.cpp`](../../native/media/audio_history.cpp) |
 | Decoder/playback ownership stages | [`decoder_ownership.cpp`](../../native/media/decoder_ownership.cpp) |

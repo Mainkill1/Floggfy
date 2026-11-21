@@ -8,7 +8,6 @@
 #include <cassert>
 #include <cstdio>
 using namespace history;
-namespace history { std::wstring WindowsPath(const std::wstring& path) {return path;} }
 namespace {
 std::string Value(const Tags& tags,const char* key) {
     for(const auto& field:tags.fields)if(field.first==key)return field.second;

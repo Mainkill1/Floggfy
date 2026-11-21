@@ -1,7 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include "song_destination.h"
 #include "../tooling/fnv1a.h"
-#include "../tooling/history_settings.h"
+#include "../tooling/windows_path.h"
 #include "../tooling/srw_guard.h"
 #include "../media/existing_quality.h"
 #include "../media/recording_formats.h"
@@ -126,7 +126,7 @@ struct FileSignature {
     WIN32_FILE_ATTRIBUTE_DATA data{};
     bool Read(const std::wstring& path) {
         return GetFileAttributesExW(WindowsPath(path).c_str(),GetFileExInfoStandard,&data) &&
-               !(data.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY);
+               win32::IsFile(data.dwFileAttributes);
     }
     bool operator==(const FileSignature& other) const {
         const auto& a=data;const auto& b=other.data;

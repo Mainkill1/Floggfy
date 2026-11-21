@@ -1,5 +1,8 @@
 #pragma once
-#include <windows.h>
+#include "windows_path.h"
+#include <cstdint>
+#include <cstring>
+#include <vector>
 #include <cstddef>
 
 namespace history {
@@ -13,5 +16,16 @@ inline bool WriteAllBytes(HANDLE file,const void* bytes,std::size_t size) {
         size-=written;
     }
     return true;
+}
+
+// Rename the object verified by the caller. An occupied destination must survive.
+inline bool RenameWithoutReplacing(HANDLE file, const std::wstring& destination) {
+    const auto path = WindowsPath(destination);
+    const auto bytes = offsetof(FILE_RENAME_INFO, FileName) + (path.size() + 1) * sizeof(wchar_t);
+    std::vector<std::uint8_t> buffer(bytes, 0);
+    auto* info = reinterpret_cast<FILE_RENAME_INFO*>(buffer.data());
+    info->FileNameLength = static_cast<DWORD>(path.size() * sizeof(wchar_t));
+    std::memcpy(info->FileName, path.data(), info->FileNameLength);
+    return SetFileInformationByHandle(file, FileRenameInfo, info, static_cast<DWORD>(bytes)) != 0;
 }
 }

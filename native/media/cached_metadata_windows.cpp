@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include "cached_metadata.h"
 #include "../tooling/history_settings.h"
+#include "../tooling/windows_handle.h"
 #include "../tooling/async_log.h"
 #include <algorithm>
 #include <cmath>
@@ -18,16 +19,6 @@ struct File {
   uint64_t size = 0, modified = 0;
   bool log = false;
 };
-class FindHandle {
-  HANDLE handle_;
-
-public:
-  explicit FindHandle(HANDLE h) : handle_(h) {}
-  ~FindHandle() {
-    if (handle_ != INVALID_HANDLE_VALUE)
-      FindClose(handle_);
-  }
-};
 class BackgroundIo {
   bool changed_ = SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN) != 0;
 
@@ -40,10 +31,9 @@ public:
 std::vector<File> Files(const std::wstring &directory, const char* &failure) {
   std::vector<File> files;
   WIN32_FIND_DATAW data{};
-  HANDLE h = FindFirstFileW((directory + L"\\*").c_str(), &data);
-  FindHandle guard(h);
-  if (h == INVALID_HANDLE_VALUE) {
-    failure = GetLastError()==ERROR_PATH_NOT_FOUND || GetLastError()==ERROR_FILE_NOT_FOUND
+  win32::FindHandle search{FindFirstFileW((directory + L"\\*").c_str(), &data)};
+  if (search.value == INVALID_HANDLE_VALUE) {
+    failure = win32::PathMissing(GetLastError())
         ? "missing-cache" : "unreadable";
     return files;
   }
@@ -73,7 +63,7 @@ std::vector<File> Files(const std::wstring &directory, const char* &failure) {
         {directory + L"\\" + name, size,
          (uint64_t(data.ftLastWriteTime.dwHighDateTime) << 32) | data.ftLastWriteTime.dwLowDateTime,
          log});
-  } while (FindNextFileW(h, &data));
+  } while (FindNextFileW(search.value, &data));
   if (inspected <= 512 && GetLastError() != ERROR_NO_MORE_FILES)
     failure = "unreadable";
   std::sort(files.begin(), files.end(), [](const File &a, const File &b) {
@@ -137,10 +127,9 @@ bool ReadStoredMetadata(const std::wstring &users_root, RichMetadata &live,
   result = {};
   result.budget_bytes = uint64_t(GetSettings().metadata_cache_read_mib) * 1024 * 1024;
   WIN32_FIND_DATAW data{};
-  HANDLE h = FindFirstFileW((users_root + L"\\*").c_str(), &data);
-  FindHandle guard(h);
-  if (h == INVALID_HANDLE_VALUE) {
-    result.reason = GetLastError()==ERROR_PATH_NOT_FOUND || GetLastError()==ERROR_FILE_NOT_FOUND
+  win32::FindHandle search{FindFirstFileW((users_root + L"\\*").c_str(), &data)};
+  if (search.value == INVALID_HANDLE_VALUE) {
+    result.reason = win32::PathMissing(GetLastError())
         ? "missing-cache" : "unreadable";
     return false;
   }
@@ -196,7 +185,7 @@ bool ReadStoredMetadata(const std::wstring &users_root, RichMetadata &live,
     const bool merged = MergeCachedMetadata(track, live);
     result.reason = merged ? "found" : "identity-mismatch";
     return merged;
-  } while (FindNextFileW(h, &data));
+  } while (FindNextFileW(search.value, &data));
   if (accounts <= 8 && GetLastError()!=ERROR_NO_MORE_FILES)
     result.reason = "unreadable";
   return false;

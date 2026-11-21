@@ -1,4 +1,5 @@
 #include "../tooling/windows_handle.h"
+#include "../tooling/windows_path.h"
 #include "telemetry_queue.h"
 #include "../tooling/windows_last_error.h"
 #include "../tooling/windows_known_folder.h"
@@ -7,11 +8,6 @@
 namespace privacy {
 namespace {
 using win32::Handle;
-struct Search {
-    HANDLE value=INVALID_HANDLE_VALUE;
-    ~Search(){if(value!=INVALID_HANDLE_VALUE)FindClose(value);}
-};
-bool Missing(DWORD error){return error==ERROR_FILE_NOT_FOUND||error==ERROR_PATH_NOT_FOUND;}
 void Failed(QueueCleanupResult& result,DWORD error){++result.failed;result.last_error=error;}
 std::wstring Ordinary(std::wstring path) {
     if(path.compare(0,8,L"\\\\?\\UNC\\")==0)return L"\\\\"+path.substr(8);
@@ -41,12 +37,12 @@ HANDLE OpenDirectory(const std::wstring& path) {
 }
 void RemoveQueue(const std::wstring& account,QueueCleanupResult& result) {
     Handle directory(OpenDirectory(account));
-    if(directory.value==INVALID_HANDLE_VALUE){const auto error=GetLastError();if(!Missing(error))Failed(result,error);return;}
+    if(directory.value==INVALID_HANDLE_VALUE){const auto error=GetLastError();if(!win32::PathMissing(error))Failed(result,error);return;}
     if(!Directory(directory.value,account,result))return;
     const auto path=account+L"\\pending-tracking.pb";
     Handle file(CreateFileW(path.c_str(),DELETE|FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE,
         nullptr,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_BACKUP_SEMANTICS,nullptr));
-    if(file.value==INVALID_HANDLE_VALUE){const auto error=GetLastError();if(!Missing(error))Failed(result,error);return;}
+    if(file.value==INVALID_HANDLE_VALUE){const auto error=GetLastError();if(!win32::PathMissing(error))Failed(result,error);return;}
     BY_HANDLE_FILE_INFORMATION info{};
     if(!GetFileInformationByHandle(file.value,&info)){Failed(result,GetLastError());return;}
     if((info.dwFileAttributes&(FILE_ATTRIBUTE_DIRECTORY|FILE_ATTRIBUTE_REPARSE_POINT))||!ExactPath(file.value,path)){
@@ -63,11 +59,11 @@ QueueCleanupResult ClearTrackingQueues(const std::wstring& users_root,bool enabl
     if(!enabled)return result;
     try {
         Handle directory(OpenDirectory(users_root));
-        if(directory.value==INVALID_HANDLE_VALUE){const auto error=GetLastError();if(!Missing(error))Failed(result,error);return result;}
+        if(directory.value==INVALID_HANDLE_VALUE){const auto error=GetLastError();if(!win32::PathMissing(error))Failed(result,error);return result;}
         if(!Directory(directory.value,users_root,result))return result;
-        WIN32_FIND_DATAW entry{};Search search;
-        search.value=FindFirstFileW((users_root+L"\\*-user").c_str(),&entry);
-        if(search.value==INVALID_HANDLE_VALUE){const auto error=GetLastError();if(!Missing(error))Failed(result,error);return result;}
+        WIN32_FIND_DATAW entry{};
+        win32::FindHandle search(FindFirstFileW((users_root+L"\\*-user").c_str(),&entry));
+        if(search.value==INVALID_HANDLE_VALUE){const auto error=GetLastError();if(!win32::PathMissing(error))Failed(result,error);return result;}
         do {
             if(!(entry.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY))continue;
             const std::wstring name=entry.cFileName;

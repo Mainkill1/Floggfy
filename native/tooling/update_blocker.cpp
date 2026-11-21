@@ -1,4 +1,5 @@
 #include "windows_handle.h"
+#include "windows_path.h"
 #include "update_blocker.h"
 #include <aclapi.h>
 #include "windows_known_folder.h"
@@ -106,7 +107,7 @@ bool Change(bool enable, bool startup = false) {
     Handle parent;
     if (!OpenDirectory(parent_path, READ_CONTROL, parent)) {
         DWORD error = GetLastError();
-        if (!enable && (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)) {
+        if (!enable && win32::PathMissing(error)) {
             blocked = false; available = true; last_error = ERROR_SUCCESS; return true;
         }
         return Fail(error);
@@ -114,7 +115,7 @@ bool Change(bool enable, bool startup = false) {
     Handle target;
     if (!OpenDirectory(update_path, READ_CONTROL | WRITE_DAC, target)) {
         DWORD error = GetLastError();
-        if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) return Fail(error);
+        if (!win32::PathMissing(error)) return Fail(error);
         if (!enable) {
             blocked = false; available = true; last_error = ERROR_SUCCESS; return true;
         }

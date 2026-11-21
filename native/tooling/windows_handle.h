@@ -9,4 +9,13 @@ struct Handle {
     Handle(const Handle&) = delete;
     Handle& operator=(const Handle&) = delete;
 };
+
+// FindFirstFile handles must be released with FindClose.
+struct FindHandle {
+    HANDLE value;
+    explicit FindHandle(HANDLE handle=INVALID_HANDLE_VALUE) noexcept : value(handle) {}
+    ~FindHandle() { if (value != INVALID_HANDLE_VALUE) FindClose(value); }
+    FindHandle(const FindHandle&) = delete;
+    FindHandle& operator=(const FindHandle&) = delete;
+};
 }

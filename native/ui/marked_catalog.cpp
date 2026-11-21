@@ -2,8 +2,9 @@
 #include "../media/marked_recording.h"
 #include "../tooling/async_log.h"
 #include "../tooling/history_settings.h"
+#include "../tooling/windows_handle.h"
 #include "../media/recording_formats.h"
-#include "../vendor/sqlite/sqlite3.h"
+#include "../tooling/sqlite.h"
 #include <algorithm>
 #include <condition_variable>
 #include <deque>
@@ -19,6 +20,7 @@ namespace {
 namespace fs = std::filesystem;
 constexpr std::size_t kFileQueueLimit = 512;
 constexpr std::size_t kQueryLimit = 256;
+constexpr std::size_t kRowsPerPage = 32;
 
 struct Query {
     std::string request;
@@ -143,7 +145,7 @@ FileStatus ReadStamp(const fs::path& root, const fs::path& relative, Stamp& stam
         WIN32_FILE_ATTRIBUTE_DATA data{};
         if (!GetFileAttributesExW(WindowsPath(path.native()).c_str(), GetFileExInfoStandard, &data)) {
             const auto error = GetLastError();
-            return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND
+            return win32::PathMissing(error)
                 ? FileStatus::Missing : FileStatus::Unavailable;
         }
         if (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) return FileStatus::Missing;
@@ -157,31 +159,6 @@ FileStatus ReadStamp(const fs::path& root, const fs::path& relative, Stamp& stam
     return FileStatus::Available;
 }
 
-class Statement {
-    sqlite3_stmt* statement_ = nullptr;
-public:
-    Statement(sqlite3* db, const char* sql) {
-        sqlite3_prepare_v2(db, sql, -1, &statement_, nullptr);
-    }
-    ~Statement() { sqlite3_finalize(statement_); }
-    Statement(const Statement&) = delete;
-    Statement& operator=(const Statement&) = delete;
-    explicit operator bool() const { return statement_ != nullptr; }
-    bool Text(int index, const std::string& value) {
-        return sqlite3_bind_text(statement_, index, value.c_str(), -1, SQLITE_TRANSIENT) == SQLITE_OK;
-    }
-    void Number(int index, std::uint64_t value) {
-        sqlite3_bind_int64(statement_, index, static_cast<sqlite3_int64>(value));
-    }
-    int Step() { return sqlite3_step(statement_); }
-    std::string Text(int column) const {
-        const auto* value = sqlite3_column_text(statement_, column);
-        return value ? std::string(reinterpret_cast<const char*>(value),
-            sqlite3_column_bytes(statement_, column)) : std::string{};
-    }
-    std::uint64_t Number(int column) const { return sqlite3_column_int64(statement_, column); }
-};
-
 struct Row {
     std::string path, uri, date;
     Stamp stamp;
@@ -190,85 +167,86 @@ struct Row {
 enum class Mutation { Unchanged, Changed, Failed };
 
 class Database {
-    sqlite3* db_ = nullptr;
+    struct Queries {
+        sqlite::Connection db;
+        sqlite::Statement select, upsert, erase;
+
+        explicit Queries(sqlite::Connection connection)
+            : db(std::move(connection)),
+              select(sqlite::Prepare(db, "SELECT path,saved_utc,bytes,write_time FROM marked_files"
+                  " WHERE uri=? AND path>? ORDER BY path LIMIT ?")),
+              upsert(sqlite::Prepare(db,
+                  "INSERT INTO marked_files(path,uri,saved_utc,bytes,write_time) VALUES(?,?,?,?,?)"
+                  " ON CONFLICT(path) DO UPDATE SET uri=excluded.uri,saved_utc=excluded.saved_utc,"
+                  " bytes=excluded.bytes,write_time=excluded.write_time"
+                  " WHERE uri<>excluded.uri OR saved_utc<>excluded.saved_utc OR bytes<>excluded.bytes"
+                  " OR write_time<>excluded.write_time")),
+              erase(sqlite::Prepare(db, "DELETE FROM marked_files WHERE path=?")) {}
+    };
+    std::optional<Queries> queries_;
 public:
-    Database() = default;
-    Database(const Database&) = delete;
-    Database& operator=(const Database&) = delete;
-    ~Database() { Close(); }
-    void Close() {
-        sqlite3_close(db_);
-        db_ = nullptr;
-    }
+    void Close() { queries_.reset(); }
 
     bool Open(const fs::path& root) {
-        if (db_) return true;
+        if (queries_) return true;
         if (!IsPlainDirectory(root)) return false;
         const auto path = root / L"Floggfy-marked.db";
         const auto db_attributes = GetFileAttributesW(WindowsPath(path.native()).c_str());
         if (db_attributes != INVALID_FILE_ATTRIBUTES &&
             (db_attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))) return false;
         const int flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX;
-        if (sqlite3_open_v2(path.u8string().c_str(), &db_, flags, "win32-longpath") != SQLITE_OK) {
-            Close();
-            return false;
-        }
-        sqlite3_busy_timeout(db_, 100);
+        auto db = sqlite::Open(path.u8string(), flags, "win32-longpath");
+        if (!db || sqlite3_busy_timeout(db.get(), 100) != SQLITE_OK) return false;
         constexpr auto schema =
             "CREATE TABLE IF NOT EXISTS marked_files("
             "path TEXT PRIMARY KEY COLLATE NOCASE, uri TEXT NOT NULL, saved_utc TEXT NOT NULL,"
             "bytes INTEGER NOT NULL, write_time INTEGER NOT NULL);"
             "CREATE INDEX IF NOT EXISTS marked_files_uri_path ON marked_files(uri,path);";
-        if (sqlite3_exec(db_, schema, nullptr, nullptr, nullptr) == SQLITE_OK) return true;
+        if (sqlite3_exec(db.get(), schema, nullptr, nullptr, nullptr) != SQLITE_OK) return false;
+        queries_.emplace(std::move(db));
+        if (queries_->select && queries_->upsert && queries_->erase) return true;
         Close();
         return false;
     }
 
     std::optional<std::vector<Row>> Rows(const std::string& uri, const std::string& after) {
-        Statement select(db_, "SELECT path,saved_utc,bytes,write_time FROM marked_files"
-            " WHERE uri=? AND path>? ORDER BY path LIMIT 32");
-        if (!select || !select.Text(1, uri) || !select.Text(2, after)) return std::nullopt;
+        sqlite::Execution select(queries_->select);
+        if (!select.BindText(1, uri) || !select.BindText(2, after) ||
+            !select.BindInteger(3, kRowsPerPage)) return std::nullopt;
         std::vector<Row> rows;
         int status;
         while ((status = select.Step()) == SQLITE_ROW) {
-            rows.push_back({select.Text(0), uri, select.Text(1), {select.Number(2), select.Number(3)}});
+            const Stamp stamp{static_cast<std::uint64_t>(select.Integer(2)),
+                              static_cast<std::uint64_t>(select.Integer(3))};
+            rows.push_back({select.Text(0), uri, select.Text(1), stamp});
         }
         if (status != SQLITE_DONE) return std::nullopt;
         return rows;
     }
 
     Mutation Upsert(const Row& row) {
-        Statement insert(db_,
-            "INSERT INTO marked_files(path,uri,saved_utc,bytes,write_time) VALUES(?,?,?,?,?)"
-            " ON CONFLICT(path) DO UPDATE SET uri=excluded.uri,saved_utc=excluded.saved_utc,"
-            " bytes=excluded.bytes,write_time=excluded.write_time"
-            " WHERE uri<>excluded.uri OR saved_utc<>excluded.saved_utc OR bytes<>excluded.bytes"
-            " OR write_time<>excluded.write_time");
-        if (!insert) {
-            WarnFile("could not prepare file update", row.path);
+        sqlite::Execution insert(queries_->upsert);
+        if (!insert.BindText(1, row.path) || !insert.BindText(2, row.uri) ||
+            !insert.BindText(3, row.date) || !insert.BindInteger(4, row.stamp.bytes) ||
+            !insert.BindInteger(5, row.stamp.written)) {
+            WarnFile("could not bind file update", row.path);
             return Mutation::Failed;
         }
-        insert.Text(1, row.path);
-        insert.Text(2, row.uri);
-        insert.Text(3, row.date);
-        insert.Number(4, row.stamp.bytes);
-        insert.Number(5, row.stamp.written);
         return Update(insert, row.path);
     }
 
     Mutation Erase(const std::string& path) {
-        Statement erase(db_, "DELETE FROM marked_files WHERE path=?");
-        if (!erase) {
-            WarnFile("could not prepare file removal", path);
+        sqlite::Execution erase(queries_->erase);
+        if (!erase.BindText(1, path)) {
+            WarnFile("could not bind file removal", path);
             return Mutation::Failed;
         }
-        erase.Text(1, path);
         return Update(erase, path);
     }
 private:
-    Mutation Update(Statement& statement, const std::string& path) {
+    Mutation Update(sqlite::Execution& statement, const std::string& path) {
         if (statement.Step() == SQLITE_DONE) {
-            return sqlite3_changes(db_) != 0 ? Mutation::Changed : Mutation::Unchanged;
+            return sqlite3_changes(queries_->db.get()) != 0 ? Mutation::Changed : Mutation::Unchanged;
         }
         WarnFile("could not change file evidence", path);
         return Mutation::Failed;
@@ -369,12 +347,9 @@ struct Scan {
     // Win32 enumeration uses extended paths and exposes the reparse bit before descent.
     struct Directory {
         fs::path relative;
-        HANDLE handle = INVALID_HANDLE_VALUE;
+        win32::FindHandle search;
         bool started = false;
         explicit Directory(fs::path path) : relative(std::move(path)) {}
-        ~Directory() { if (handle != INVALID_HANDLE_VALUE) FindClose(handle); }
-        Directory(const Directory&) = delete;
-        Directory& operator=(const Directory&) = delete;
     };
     std::deque<Directory> directories;
     std::uint64_t sequence = 0;
@@ -406,10 +381,10 @@ struct Scan {
                 return true;
             }
             const auto pattern = (path / L"*").native();
-            directory.handle = FindFirstFileW(WindowsPath(pattern).c_str(), &entry);
-            found = directory.handle != INVALID_HANDLE_VALUE;
+            directory.search.value = FindFirstFileW(WindowsPath(pattern).c_str(), &entry);
+            found = directory.search.value != INVALID_HANDLE_VALUE;
         } else {
-            found = FindNextFileW(directory.handle, &entry) != FALSE;
+            found = FindNextFileW(directory.search.value, &entry) != FALSE;
         }
         if (!found) {
             const auto error = GetLastError();
@@ -468,8 +443,6 @@ void AnswerQuery(Database& db, bool available, const fs::path& root, const Query
                 Warn("could not read saved dates; query can be retried");
                 return;
             }
-            if (rows->empty()) break;
-            after = rows->back().path;
             for (const auto& cached : *rows) {
                 if (!QueryCurrent(epoch, query.sequence)) return;
                 const auto row = Refresh(db, root, fs::u8path(cached.path), epoch, 0, &cached);
@@ -477,6 +450,8 @@ void AnswerQuery(Database& db, bool available, const fs::path& root, const Query
                 const auto date = latest.find(row->uri);
                 if (date != latest.end() && date->second < row->date) date->second = row->date;
             }
+            if (rows->size() < kRowsPerPage) break;
+            after = rows->back().path;
         }
     }
     for (const auto& uri : query.uris) {

@@ -5,7 +5,6 @@
 #include "../native/media/file_publication.h"
 #include <cassert>
 #include <cstdio>
-namespace history {std::wstring WindowsPath(const std::wstring& path){return path;}}
 int main() {
     using namespace history;
     // Structurally valid 320 kbps MP3 frames, just above the old 512 MiB cutoff.

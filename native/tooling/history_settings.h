@@ -1,5 +1,5 @@
 #pragma once
-#include <windows.h>
+#include "windows_path.h"
 #include <string>
 #include <cstdint>
 #include "../media/recording_limits.h"
@@ -70,8 +70,6 @@ bool CaptureSpeedAvailable(unsigned speed);
 bool SetCaptureSpeed(unsigned speed);
 bool CaptureAccelerationAvailable();
 void SetCaptureAccelerationAvailable(bool available);
-bool EnsureDirectory(const std::wstring& path);
-std::wstring WindowsPath(const std::wstring& path);
 void PickSaveLocation(HWND owner);
 bool LoggingEnabled();
 unsigned LogLevel();

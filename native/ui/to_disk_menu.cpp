@@ -352,7 +352,7 @@ static DWORD WINAPI RevealRecentWorker(void* argument) {
     HRESULT result=HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
     try {
         attributes=GetFileAttributesW(history::WindowsPath(*path).c_str());
-        if(attributes!=INVALID_FILE_ATTRIBUTES && !(attributes&FILE_ATTRIBUTE_DIRECTORY)) {
+        if(win32::IsFile(attributes)) {
             PIDLIST_ABSOLUTE item=nullptr;
             result=SHParseDisplayName(path->c_str(),nullptr,&item,0,nullptr);
             if(SUCCEEDED(result)) result=SHOpenFolderAndSelectItems(item,0,nullptr,0);
@@ -360,7 +360,7 @@ static DWORD WINAPI RevealRecentWorker(void* argument) {
         }
     } catch(...) { result=E_OUTOFMEMORY; }
     if(FAILED(result)) MessageBoxW(nullptr,
-        attributes==INVALID_FILE_ATTRIBUTES || (attributes&FILE_ATTRIBUTE_DIRECTORY) ?
+        !win32::IsFile(attributes) ?
         L"This download is no longer available at its saved location." :
         L"Explorer could not show this download.",L"Latest Downloads",MB_OK|MB_ICONINFORMATION);
     if(SUCCEEDED(initialized)) CoUninitialize();
@@ -374,7 +374,7 @@ static DWORD WINAPI RevealSongWorker(void* argument) {
         // A file may disappear after the worker snapshot was displayed. Check
         // the bound file again on this click, without recreating its folder.
         const auto attributes=GetFileAttributesW(history::WindowsPath(*saved_file).c_str());
-        available=attributes!=INVALID_FILE_ATTRIBUTES && !(attributes&FILE_ATTRIBUTE_DIRECTORY);
+        available=win32::IsFile(attributes);
         const auto slash=saved_file->find_last_of(L"\\/");
         if(available && slash!=std::wstring::npos) {
             const auto folder=saved_file->substr(0,slash);

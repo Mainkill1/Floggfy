@@ -364,25 +364,6 @@ bool FlushSettings(unsigned timeout_ms) {
         WaitForSingleObject(persist_done,10);
     }
 }
-std::wstring WindowsPath(const std::wstring& p) {
-    if(p.rfind(L"\\\\?\\",0)==0) return p;
-    if(p.rfind(L"\\\\",0)==0) return L"\\\\?\\UNC\\"+p.substr(2);
-    if(p.size()>2 && p[1]==L':') return L"\\\\?\\"+p;
-    return p;
-}
-bool EnsureDirectory(const std::wstring& path) {
-    if(path.empty()) return false;
-    const auto native_path=WindowsPath(path);
-    DWORD attributes=GetFileAttributesW(native_path.c_str());
-    if(attributes==INVALID_FILE_ATTRIBUTES) {
-        const auto slash=path.find_last_of(L"\\/");
-        if(slash!=std::wstring::npos && slash>2 && !EnsureDirectory(path.substr(0,slash))) return false;
-        if(CreateDirectoryW(native_path.c_str(),nullptr)) return true;
-        if(GetLastError()!=ERROR_ALREADY_EXISTS) return false;
-        attributes=GetFileAttributesW(native_path.c_str());
-    }
-    return attributes!=INVALID_FILE_ATTRIBUTES && (attributes&FILE_ATTRIBUTE_DIRECTORY)!=0;
-}
 void InitSettings(HMODULE proxy) {
     wchar_t path[2048]; DWORD n=GetModuleFileNameW(proxy,path,2048);
     if(!n || n>=2048) return;
@@ -390,7 +371,7 @@ void InitSettings(HMODULE proxy) {
     ini=std::wstring(path)+L"\\SpotifyHistory.ini";
     DWORD attributes=GetFileAttributesW(ini.c_str());
     const bool default_ini_failed=attributes==INVALID_FILE_ATTRIBUTES &&
-       (GetLastError()==ERROR_FILE_NOT_FOUND || GetLastError()==ERROR_PATH_NOT_FOUND) &&
+       win32::PathMissing(GetLastError()) &&
        !CreateDefaultIni(ini);
     const settings_file::Snapshot file(ini);
     const bool migration_failed=!default_ini_failed&&(!file.readable||(!file.unicode&&!settings_file::Write(ini,file.text)));
@@ -531,7 +512,7 @@ bool SetSaveLocation(const std::wstring& root) {
     if(root.empty() || root.size()>2047 || !(root.size()>2 && (root[1]==L':' || root.rfind(L"\\\\",0)==0))) return false;
     DWORD attributes=GetFileAttributesW(WindowsPath(root).c_str());
     if(attributes!=INVALID_FILE_ATTRIBUTES && !(attributes&FILE_ATTRIBUTE_DIRECTORY)) return false;
-    if(attributes==INVALID_FILE_ATTRIBUTES && GetLastError()!=ERROR_FILE_NOT_FOUND && GetLastError()!=ERROR_PATH_NOT_FOUND) return false;
+    if(attributes==INVALID_FILE_ATTRIBUTES && !win32::PathMissing(GetLastError())) return false;
     auto next_root=root,next_location=root;const bool music=IsMusic(root);
     return ChangeSettings([&] {
         if(settings.root!=next_root||settings.music_folder!=music)++settings.destination_revision;

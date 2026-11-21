@@ -86,6 +86,13 @@ int main(int argc, char **argv) {
   assert(full.albums.empty() && full.tracks.size() == 32 && full.tracks.count("last"));
 
   const auto updated = Read(root + "/paired.log");
+  // Unrelated tables and logs must leave the previously collected record in place.
+  const auto original = reinterpret_cast<std::uintptr_t>(&records.tracks.begin()->second);
+  const CachedMetadataUris unrelated{"spotify:track:unrelated", {}};
+  assert(CollectMetadataTable(table, unrelated, records));
+  assert(reinterpret_cast<std::uintptr_t>(&records.tracks.begin()->second) == original);
+  assert(CollectMetadataLog(updated, unrelated, records));
+  assert(reinterpret_cast<std::uintptr_t>(&records.tracks.begin()->second) == original);
   auto corrupt = updated;
   corrupt.insert(corrupt.end(), {0, 0, 0, 0, 0, 0, 1});
   assert(!CollectMetadataLog(corrupt, uris, records));

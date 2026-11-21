@@ -5,6 +5,7 @@
 #include "../native/vendor/sqlite/sqlite3.h"
 #include <atomic>
 #include <cassert>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <thread>
@@ -47,13 +48,26 @@ std::string Query() {
 }
 }
 
+// Count only application prepares, independent of SQLite's internal schema work.
+static std::atomic<unsigned> catalog_prepares{0}, catalog_selects{0};
+extern "C" int __real_sqlite3_step(sqlite3_stmt*);
+extern "C" int __wrap_sqlite3_step(sqlite3_stmt* statement) {
+    if (!sqlite3_stmt_busy(statement) && sqlite3_stmt_readonly(statement)) ++catalog_selects;
+    return __real_sqlite3_step(statement);
+}
+extern "C" int __real_sqlite3_prepare_v2(sqlite3*, const char*, int, sqlite3_stmt**, const char**);
+extern "C" int __wrap_sqlite3_prepare_v2(sqlite3* db, const char* sql, int length,
+                                        sqlite3_stmt** statement, const char** tail) {
+    if (std::strstr(sql, "marked_files")) ++catalog_prepares;
+    return __real_sqlite3_prepare_v2(db, sql, length, statement, tail);
+}
+
 namespace history {
 Settings GetSettings() {
     Settings settings;
     settings.metadata = backfill;
     return settings;
 }
-std::wstring WindowsPath(const std::wstring& path) { return path; }
 void LogEvent(LogKind kind, const char*, const std::string& detail) {
     if (kind == LogKind::Warning && detail == "could not read saved dates; query can be retried") ++query_failures;
     if (kind == LogKind::Activity && detail == "rebuild started") ++starts;
@@ -113,6 +127,14 @@ int main() {
     history::QueueMarkedFile(root.wstring(), b.wstring());
     WaitFor([&] { return Query() == late; });
     assert(fs::is_regular_file(root / L"Floggfy-marked.db"));
+
+    const char* missing_uri = "spotify:track:0000000000000000000000";
+    const auto before_mixed = catalog_selects.load();
+    assert(history::QueueMarkedQuery("mixed", {missing_uri, uri}));
+    history::MarkedQueryReply mixed;
+    WaitFor([&] { return history::TakeMarkedReply(mixed); });
+    assert(mixed.dates.size() == 1 && mixed.dates.front() == std::make_pair(uri, late));
+    assert(catalog_prepares == 3 && catalog_selects == before_mixed + 2);
 
     sqlite3* competing = nullptr;
     assert(sqlite3_open((root / L"Floggfy-marked.db").u8string().c_str(), &competing) == SQLITE_OK);

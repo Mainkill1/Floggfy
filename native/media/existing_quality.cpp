@@ -2,8 +2,8 @@
 #include "../tooling/windows_handle.h"
 #include <windows.h>
 #include "existing_quality.h"
-#include "../tooling/history_settings.h"
-#include <cstring>
+#include "../tooling/windows_path.h"
+#include "../tooling/windows_file_write.h"
 #include <algorithm>
 #include <vector>
 #include <utility>
@@ -11,10 +11,6 @@
 namespace history {
 namespace {
 using win32::Handle;
-struct FindHandle {
-    HANDLE value=INVALID_HANDLE_VALUE;
-    ~FindHandle(){if(value!=INVALID_HANDLE_VALUE)FindClose(value);}
-};
 std::wstring LookupPath(std::wstring path) {
     std::replace(path.begin(),path.end(),L'/',L'\\');
     return WindowsPath(path);
@@ -55,7 +51,7 @@ std::wstring ArtistFolderAlias(const std::wstring& base,const Catalog& catalog) 
 bool Missing(const std::wstring& path) {
     if(GetFileAttributesW(WindowsPath(path).c_str())!=INVALID_FILE_ATTRIBUTES) return false;
     DWORD error=GetLastError();
-    return error==ERROR_FILE_NOT_FOUND || error==ERROR_PATH_NOT_FOUND;
+    return win32::PathMissing(error);
 }
 bool Reusable(const std::wstring& path,const Catalog& catalog) {
     RecordingFile existing;
@@ -68,13 +64,7 @@ bool RestoreBackup(const std::wstring& backup,const std::wstring& destination,co
         nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
     RecordingFile old;
     if(file.value==INVALID_HANDLE_VALUE || !ReadRecording(backup,old) || !old.owned || !MatchesRecording(old,catalog)) return false;
-    auto path=WindowsPath(destination);
-    size_t bytes=offsetof(FILE_RENAME_INFO,FileName)+(path.size()+1)*sizeof(wchar_t);
-    std::vector<uint8_t> buffer(bytes,0);
-    auto info=reinterpret_cast<FILE_RENAME_INFO*>(buffer.data());
-    info->FileNameLength=DWORD(path.size()*sizeof(wchar_t));
-    std::memcpy(info->FileName,path.data(),info->FileNameLength);
-    return SetFileInformationByHandle(file.value,FileRenameInfo,info,DWORD(bytes))!=0;
+    return RenameWithoutReplacing(file.value, destination);
 }
 }
 bool RecordingDirectory::Covers(const std::wstring& file) const {
@@ -107,11 +97,11 @@ bool ListRecordingDirectory(const std::wstring& file,RecordingDirectory& out,con
             RecordingDirectory::Listing directory;
             directory.directory=ContainingDirectory(lookup);
             WIN32_FIND_DATAW entry{};
-            FindHandle find{FindFirstFileExW((directory.directory+L"*").c_str(),FindExInfoBasic,
+            win32::FindHandle find{FindFirstFileExW((directory.directory+L"*").c_str(),FindExInfoBasic,
                 &entry,FindExSearchNameMatch,nullptr,0)};
             if(find.value==INVALID_HANDLE_VALUE) {
                 const auto error=GetLastError();
-                if(error!=ERROR_FILE_NOT_FOUND && error!=ERROR_PATH_NOT_FOUND)return false;
+                if(!win32::PathMissing(error))return false;
             } else {
                 constexpr size_t max_entries=16384;
                 size_t entries=0;

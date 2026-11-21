@@ -4,7 +4,7 @@
 #include "file_publication.h"
 #include "../tooling/fnv1a.h"
 #include "../tooling/windows_file_write.h"
-#include "../tooling/history_settings.h"
+#include "../tooling/windows_path.h"
 #include "metadata_update_core.h"
 #include <algorithm>
 #include <cstring>
@@ -44,16 +44,6 @@ std::wstring UniqueSibling(const std::wstring& path,const wchar_t* label) {
     static volatile LONG sequence=0;
     return path+label+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(InterlockedIncrement(&sequence));
 }
-bool RenameHandle(HANDLE file,const std::wstring& destination) {
-    auto path=WindowsPath(destination);
-    // FILE_RENAME_INFO uses an absolute path. ReplaceIfExists remains false.
-    size_t bytes=offsetof(FILE_RENAME_INFO,FileName)+(path.size()+1)*sizeof(wchar_t);
-    std::vector<uint8_t> buffer(bytes,0);
-    auto info=reinterpret_cast<FILE_RENAME_INFO*>(buffer.data());
-    info->FileNameLength=DWORD(path.size()*sizeof(wchar_t));
-    std::memcpy(info->FileName,path.data(),info->FileNameLength);
-    return SetFileInformationByHandle(file,FileRenameInfo,info,DWORD(bytes))!=0;
-}
 class StagingFile {
     Handle file_;
     bool published_=false;
@@ -74,7 +64,7 @@ public:
         return file_.value!=INVALID_HANDLE_VALUE && WriteAllBytes(file_.value,bytes,size) && FlushFileBuffers(file_.value);
     }
     bool Publish(const std::wstring& path) {
-        published_=RenameHandle(file_.value,path);
+        published_=RenameWithoutReplacing(file_.value,path);
         return published_;
     }
 };
@@ -92,7 +82,7 @@ bool PrepareBackupSlot(const std::wstring& path,const Catalog& catalog) {
         nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
     if(backup.value==INVALID_HANDLE_VALUE) {
         const auto error=GetLastError();
-        return error==ERROR_FILE_NOT_FOUND || error==ERROR_PATH_NOT_FOUND;
+        return win32::PathMissing(error);
     }
     // The caller holds the current target against writes/deletion. Lock the
     // backup too, then inspect both exact objects before retiring any bytes.
@@ -115,7 +105,7 @@ bool PrepareBackupSlot(const std::wstring& path,const Catalog& catalog) {
     const auto extension=dot==std::wstring::npos?std::wstring():path.substr(dot);
     for(unsigned attempt=0;attempt<32;++attempt) {
         const auto target=stem+L" [recovered"+(attempt?L"-"+std::to_wstring(attempt):L"")+L"]"+extension;
-        if(RenameHandle(backup.value,target))return true;
+        if(RenameWithoutReplacing(backup.value,target))return true;
         const auto error=GetLastError();
         if(error!=ERROR_ALREADY_EXISTS && error!=ERROR_FILE_EXISTS)return false;
     }
@@ -123,13 +113,13 @@ bool PrepareBackupSlot(const std::wstring& path,const Catalog& catalog) {
 }
 FilePublication PromoteReplacement(const std::wstring& path,StagingFile& staging,const Catalog& catalog,HANDLE old) {
     auto backup=path+L".previous";
-    bool moved=PrepareBackupSlot(path,catalog) && RenameHandle(old,backup);
+    bool moved=PrepareBackupSlot(path,catalog) && RenameWithoutReplacing(old,backup);
     if(moved) TestPhase(L"reserved",path);
     bool published=moved && staging.Publish(path);
     if(published) {
         FILE_DISPOSITION_INFO disposition={TRUE};
         SetFileInformationByHandle(old,FileDispositionInfo,&disposition,sizeof(disposition));
-    } else if(moved) RenameHandle(old,path); // no replacement; preserve any raced file
+    } else if(moved) RenameWithoutReplacing(old,path); // no replacement; preserve any raced file
     return published?FilePublication::Upgraded:FilePublication::Failed;
 }
 }
@@ -152,7 +142,7 @@ bool VerifiedArchiveFile(const std::wstring& path,const void* bytes,size_t size,
     auto file=CreateFileW(WindowsPath(path).c_str(),GENERIC_READ|(remove?DELETE:0),FILE_SHARE_READ,
         nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(file==INVALID_HANDLE_VALUE) {
-        const auto error=GetLastError();return remove&&(error==ERROR_FILE_NOT_FOUND||error==ERROR_PATH_NOT_FOUND);
+        const auto error=GetLastError();return remove&&win32::PathMissing(error);
     }
     if(!ArchiveFileMatches(file,bytes,size)) {
         // A readable changed object is foreign and preserved. I/O failures keep
@@ -183,7 +173,7 @@ bool WriteArchiveFile(const std::wstring& destination,const void* bytes,size_t s
     TestPhase(L"archive-stage-held",stage);
     // Both fresh and recovered stages remain held from verification through the
     // no-overwrite rename. A raced pathname never selects a different object.
-    return RenameHandle(file.value,destination);
+    return RenameWithoutReplacing(file.value,destination);
 }
 FilenameConversion ConvertRecordingFilename(const std::wstring& source,const std::wstring& title_path,
     const Catalog& catalog,std::wstring& renamed_path,FilenameRenamePermit is_current,void* context) {
@@ -227,7 +217,7 @@ FilenameConversion ConvertRecordingFilename(const std::wstring& source,const std
         // Inspection may have waited on slow storage. Recheck cancellation and
         // settings at commit, after allocation and before the atomic rename.
         if(is_current && !is_current(context))return FilenameConversion::Unchanged;
-        if(!RenameHandle(file.value,target)) {
+        if(!RenameWithoutReplacing(file.value,target)) {
             const auto error=GetLastError();
             return error==ERROR_ALREADY_EXISTS || error==ERROR_FILE_EXISTS
                 ?FilenameConversion::Unchanged:FilenameConversion::Failed;
@@ -390,7 +380,7 @@ FilePublication CompleteFormatUpgrade(FormatUpgradeReceipt& receipt,size_t* publ
             nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
         if(old.value==INVALID_HANDLE_VALUE) {
             const auto error=GetLastError();
-            if(error!=ERROR_FILE_NOT_FOUND&&error!=ERROR_PATH_NOT_FOUND)return FilePublication::Failed;
+            if(!win32::PathMissing(error))return FilePublication::Failed;
         } else {
             BY_HANDLE_FILE_INFORMATION info{};
             if(!GetFileInformationByHandle(old.value,&info))return FilePublication::Failed;
