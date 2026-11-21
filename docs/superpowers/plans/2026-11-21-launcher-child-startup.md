@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Load `Floggfy.dll` into every covered Spotify child before its entry point executes in launcher mode.
+**Goal:** Load `Floggfy.dll` into Spotify's ordinary network helper before entry in launcher mode.
 
-**Architecture:** Extract the launcher's stopped-process loader into shared tooling, then extend the existing `CreateProcessW` hook to apply it to every spawned child according to `HookAllSubProcesses`. The hook continues to own crash URL rewriting and becomes recursively active when each child loads Floggfy.
+**Architecture:** Extract the launcher's stopped-process loader into shared tooling, then reuse it when the existing `CreateProcessW` hook sees an ordinary `Spotify.exe` launch. Forward Chromium-managed suspended sandbox launches unchanged.
 
 **Tech Stack:** C++17, Win32 process/debug APIs, MinHook, MinGW-w64 Windows integration tests
 
@@ -13,17 +13,17 @@
 ## Global Constraints
 
 - Use `HookAllSubProcesses=0/1/2` for off, launcher-only, or every-load-method coverage.
-- Cover every child created through the hooked `CreateProcessW`; do not scan processes.
+- Cover ordinary `Spotify.exe` children created through the hooked `CreateProcessW`; do not scan processes.
 - Load and verify Floggfy before child application entry.
-- Preserve the caller's suspended/running intent and all unrelated CreateProcess arguments.
+- Forward caller-suspended launches and all unrelated CreateProcess calls unchanged.
 - Keep one MinHook detour on `CreateProcessW`.
 - Fail closed for a covered child whose DLL load cannot be verified.
 
 ## Review Focus
 
-- Child loading does not depend on executable names, paths, or command-line parsing.
+- Child loading requires an exact `Spotify.exe` target and rejects lookalike names.
 - Modes 0, 1, and 2 retain their documented load-method boundaries.
-- An originally suspended child remains suspended after Floggfy is loaded.
+- An originally suspended child is not modified or loaded by this hook.
 - A load failure terminates the covered child, closes Floggfy-owned handles, and returns a stable native error.
 - Crash-report URL filtering still works when child loading owns the same process hook.
 
@@ -66,13 +66,13 @@
 - Produces: child launch status counters for requested, loaded, failed, and unsupported-debug launches.
 
 - [ ] Write a real-process failing test where a parent creates `Spotify.exe`, the child checks Floggfy before entry, and a descendant repeats the check.
-- [ ] Add failing cases for preserved suspension, arbitrary child names/paths, mode 0/1/2, load failure cleanup, and null application names.
+- [ ] Add failing cases for suspended-process forwarding, lookalike names, mode 0/1/2, load failure cleanup, and null application names.
 - [ ] Run the focused test and confirm failure because the current hook forwards children without loading Floggfy.
-- [ ] Implement the mode gate without executable-name or path filtering.
+- [ ] Implement the mode gate with exact `Spotify.exe` target filtering.
 - [ ] Extend the existing `CreateProcessW` detour to stop, load, verify, and resume covered children while retaining crash URL rewriting.
 - [ ] Activate the hook whenever launcher child coverage or crash blocking requires it.
 - [ ] Run the child and crash-hook tests until green.
-- [ ] Commit recursive child coverage.
+- [ ] Commit targeted Spotify child coverage.
 
 ### Task 3: Packaging, diagnostics, and live validation
 

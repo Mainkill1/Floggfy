@@ -2,23 +2,23 @@
 
 ## Intent
 
-Launcher mode must give every Spotify process the same Floggfy coverage as the first process. The released launcher loads `Floggfy.dll` into the first `Spotify.exe` before its entry point, but Spotify creates its network helper later and that helper currently starts without Floggfy.
+Launcher mode must carry Floggfy into Spotify's ordinary network helper. The released launcher loads `Floggfy.dll` into the first `Spotify.exe` before its entry point, but the later network helper currently starts without it.
 
 ## Design
 
-Floggfy will own one `CreateProcessW` detour inside each covered process. The detour creates every child under the debugger, stops it at its entry point, loads the current Floggfy module with the existing validated loader, verifies the exact module path, and then restores the caller's requested running or suspended state. The loaded child installs the same detour, so coverage follows later descendants recursively.
+Floggfy owns one `CreateProcessW` detour inside each covered process. When an ordinary launch targets `Spotify.exe`, the detour reuses the launcher's validated pre-entry loader. Other executables and caller-suspended Chromium sandbox launches pass through unchanged.
 
 The detour will also retain the existing crash-report URL rewrite. Keeping both behaviors behind one hook prevents competing MinHook detours on `CreateProcessW`.
 
 ## Scope
 
 - `HookAllSubProcesses=0` disables child loading, `1` enables it only for launcher-loaded `Floggfy.dll`, and `2` enables it for every load method, including `version.dll`.
-- Cover every child created through `CreateProcessW`; do not scan or attach to existing processes.
+- Cover ordinary `Spotify.exe` children created through `CreateProcessW`; do not scan or attach to existing processes.
 - Preserve process attributes, thread attributes, handle inheritance, environment, working directory, startup information, command line, and caller-owned process handles.
-- Preserve an original `CREATE_SUSPENDED` request. Resume an originally running child after Floggfy initialization.
+- Forward caller-requested `CREATE_SUSPENDED` launches unchanged because Chromium still owns their sandbox setup.
 - Reject inherited debugger flags because Floggfy cannot safely share ownership of the child's debug events.
 - Terminate a covered child and return a native creation failure when pre-entry loading or verification fails.
-- Leave automatic `version.dll` mode unchanged at the default mode `1`; mode `2` explicitly opts it into recursive child loading.
+- Leave automatic `version.dll` mode unchanged at the default mode `1`; mode `2` explicitly opts ordinary Spotify child launches into loading.
 - Keep other executables and unsupported process-launch APIs outside this change.
 
 ## Approaches
@@ -27,4 +27,4 @@ The selected approach reuses the launcher's pre-entry debugger and loader sequen
 
 ## Verification
 
-Automated Windows fixtures will prove pre-entry loading, recursive descendant coverage, original suspension preservation, unrelated-process forwarding, crash URL rewriting, and fail-closed cleanup. A Fiddler capture will then compare released launcher behavior with the fixed launcher while `BlockTelemetry=0` and Network Kill Switch is enabled.
+Automated Windows fixtures will prove pre-entry network-helper loading, suspended sandbox forwarding, unrelated-process forwarding, crash URL rewriting, and fail-closed cleanup. A Fiddler capture will compare released launcher behavior with the fixed launcher while `BlockTelemetry=0` and Network Kill Switch is enabled.

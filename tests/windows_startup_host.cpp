@@ -105,8 +105,9 @@ int wmain(int argc,wchar_t** argv) {
     const std::wstring exe=path,install=exe.substr(0,exe.find_last_of(L'\\')),other=install+L"\\other-install";
     std::wstring line=L"\""+exe+L"\" --type=network-service --spawn-descendant";
     int code=RunChild(exe,line,0,local,true);if(code)return 40+code;
+    line=L"\""+exe+L"\" --expect-unloaded";
+    code=RunChild(exe,line,CREATE_SUSPENDED,local,false);if(code)return 80+code;
     line=L"\""+exe+L"\" --type=network-service --loaded-check";
-    code=RunChild(exe,line,CREATE_SUSPENDED,local,true);if(code)return 80+code;
     code=RunChild(exe,line,0,local,true,true);if(code)return 120+code;
     STARTUPINFOW startup{};startup.cb=sizeof(startup);PROCESS_INFORMATION debugged{};
     std::wstring debug_line=line;SetLastError(ERROR_SUCCESS);
@@ -116,8 +117,8 @@ int wmain(int argc,wchar_t** argv) {
     if(GetLastError()!=ERROR_NOT_SUPPORTED||debugged.hProcess||debugged.hThread)return 151;
     const std::wstring lookalike=install+L"\\Spotify.exe.evil.exe";
     if(!CopyFileW(exe.c_str(),lookalike.c_str(),FALSE))return 152;
-    line=L"\""+lookalike+L"\" --type=utility --loaded-check";
-    code=RunChild(lookalike,line,0,local,true);DeleteFileW(lookalike.c_str());
+    line=L"\""+lookalike+L"\" --expect-unloaded";
+    code=RunChild(lookalike,line,0,local,false);DeleteFileW(lookalike.c_str());
     if(code)return 152+code;
     const std::wstring hidden=local+L".child-load-test";
     DeleteFileW(hidden.c_str());
@@ -134,8 +135,8 @@ int wmain(int argc,wchar_t** argv) {
     CreateDirectoryW(other.c_str(),nullptr);
     const std::wstring other_exe=other+L"\\Spotify.exe";
     if(!CopyFileW(exe.c_str(),other_exe.c_str(),FALSE))return 160;
-    line=L"\""+other_exe+L"\" --type=utility --loaded-check";
-    code=RunChild(other_exe,line,CREATE_SUSPENDED,local,true);DeleteFileW(other_exe.c_str());RemoveDirectoryW(other.c_str());
+    line=L"\""+other_exe+L"\" --expect-unloaded";
+    code=RunChild(other_exe,line,CREATE_SUSPENDED,local,false);DeleteFileW(other_exe.c_str());RemoveDirectoryW(other.c_str());
     if(code)return 160+code;
   }
   return 0;

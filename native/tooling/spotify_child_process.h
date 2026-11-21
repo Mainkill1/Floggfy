@@ -14,8 +14,8 @@ struct Status {
 };
 
 // 0 disables recursion, 1 accepts only launcher-loaded Floggfy.dll, and 2
-// accepts any module path. Covered children receive that exact module before
-// application entry and recursively cover their own descendants.
+// accepts any module path. Ordinary Spotify child launches receive that exact
+// module before entry; caller-suspended Chromium sandbox children are unchanged.
 int ConfiguredMode(HMODULE module) noexcept;
 bool Configure(HMODULE module,int mode) noexcept;
 bool Enabled() noexcept;

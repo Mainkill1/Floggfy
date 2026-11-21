@@ -16,9 +16,9 @@ runtime helper.
 - Launcher mode checks both adjacent binary headers before stopping existing
   Spotify processes and reports architecture/header-read errors. This does not
   validate every loader dependency or guarantee Spotify-version compatibility.
-- Launcher mode also loads the adjacent `Floggfy.dll` into every child created
-  through its covered `CreateProcessW` path before application entry. Each child
-  applies the same process-launch and network hooks before creating descendants.
+- Launcher mode also loads the adjacent `Floggfy.dll` into ordinary
+  `Spotify.exe` network helpers before application entry. Chromium-managed
+  suspended sandbox processes are forwarded unchanged.
 - A mismatched automatic-mode DLL cannot run its own error-reporting code.
 
 ## Settings
@@ -135,7 +135,8 @@ NetworkPatch=0
 ; Nuke all networking abilities (AKA Offline mode only with no telemetry)
 ; -1 hidden from menu, 0 disabled, 1 enabled
 NetworkKillSwitch=0
-; Load Floggfy into spawned children so Network Kill Switch covers network helpers.
+; Load Floggfy into ordinary Spotify children so Network Kill Switch covers network helpers.
+; Caller-suspended Chromium sandbox processes are left unchanged.
 ; 0 disabled, 1 launcher/Floggfy.dll only, 2 all load methods including version.dll.
 HookAllSubProcesses=1
 ; Fill missing tags, artwork and lyrics in existing recordings.
@@ -170,10 +171,12 @@ ConvertNumberedFilenames=0
   disables its hooks; `1` shows it on. Menu changes apply live. It blocks
   covered IPv4/IPv6 Winsock operations in processes loading Floggfy, including
   functional traffic needed for login, playback and online metadata.
-  `HookAllSubProcesses=1` (default) loads `Floggfy.dll` into every child spawned
-  from launcher-covered processes before its entry point. `0` disables child
-  loading. `2` applies the same behavior to every Floggfy load method, including
-  automatic `version.dll`, by loading that exact module path into children.
+  `HookAllSubProcesses=1` (default) loads `Floggfy.dll` into ordinary
+  `Spotify.exe` children, including the network helper, before entry. `0`
+  disables child loading. `2` applies the same behavior to every Floggfy load
+  method, including automatic `version.dll`. Chromium-managed launches that
+  already request `CREATE_SUSPENDED` are forwarded unchanged so their sandbox
+  setup retains control of startup.
   Already queued I/O is not cancelled; uninjected
   processes, external DNS services,
   provider pointers obtained before hook startup, direct native I/O and cached

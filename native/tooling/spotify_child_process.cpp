@@ -6,6 +6,21 @@ namespace spotify_child { namespace {
 std::wstring dll_path;
 std::atomic<bool> enabled{false};
 std::atomic<std::uint64_t> loaded{0},failed{0},unsupported_debug{0};
+std::wstring_view Executable(LPCWSTR application,LPCWSTR command) {
+ if(application&&*application)return application;
+ if(!command)return {};
+ while(*command==L' '||*command==L'\t')++command;
+ const wchar_t quote=*command==L'"'?*command++:0;
+ const wchar_t* end=command;
+ while(*end&&(quote?*end!=quote:*end!=L' '&&*end!=L'\t'))++end;
+ return {command,static_cast<size_t>(end-command)};
+}
+bool IsSpotify(LPCWSTR application,LPCWSTR command) {
+ const auto executable=Executable(application,command);
+ const auto slash=executable.find_last_of(L"/\\");
+ const auto name=slash==executable.npos?executable:executable.substr(slash+1);
+ return name.size()==11&&!_wcsnicmp(name.data(),L"Spotify.exe",name.size());
+}
 } // namespace
 
 int ConfiguredMode(HMODULE module) noexcept {
@@ -38,7 +53,9 @@ BOOL Create(CreateProcessFunction original,LPCWSTR application,LPWSTR command,
  LPSECURITY_ATTRIBUTES process_attributes,LPSECURITY_ATTRIBUTES thread_attributes,
  BOOL inherit,DWORD flags,LPVOID environment,LPCWSTR directory,
  LPSTARTUPINFOW startup,LPPROCESS_INFORMATION process) noexcept {
- if(!original||!Enabled()) {
+ // Chromium's sandbox owns CREATE_SUSPENDED children and must configure them
+ // before resume. Only ordinary Spotify launches use the proven launcher path.
+ if(!original||!Enabled()||(flags&CREATE_SUSPENDED)||!IsSpotify(application,command)) {
   return original?original(application,command,process_attributes,thread_attributes,inherit,flags,environment,directory,startup,process):FALSE;
  }
  const BOOL result=startup::CreateWithDll(original,application,command,process_attributes,thread_attributes,
