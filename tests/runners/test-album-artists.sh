@@ -3,7 +3,8 @@
 set -euo pipefail
 cd -- "$(dirname -- "$0")/../.."
 mkdir -p build/album-artists
-bash build-artwork-codecs.sh x86_64-w64-mingw32-gcc x86_64-w64-mingw32-ar build/artwork-codecs-windows
+# The host archiver packages the cross-compiled objects, as in the Windows umbrella.
+bash build-artwork-codecs.sh x86_64-w64-mingw32-gcc ar build/artwork-codecs-windows
 python3 - <<'PY'
 from pathlib import Path
 script=Path('native/marked_playlist_sort.js').read_text()+'\n'+Path('native/marked_playlist.js').read_text()+'\n'+Path('native/artwork_collector.js').read_text()+'\n'+Path('native/metadata_collector.js').read_text()
