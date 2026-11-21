@@ -27,7 +27,7 @@ Capabilities are activated independently where possible:
    MP3 input, and acceleration.
 4. Client metadata injection provides the preferred timeline and enrichment.
 5. Windows media sessions provide fallback playback observations only when the
-   default-off `Windows Playback Fallback=1` INI option explicitly enables them.
+   default-off `WindowsPlaybackFallback=1` INI option explicitly enables them.
 
 Discovery success is not treated as activation success. If an optional hook cannot
 be installed or enabled safely, it is removed and its feature is disabled. Ordinary
@@ -47,12 +47,11 @@ Important controls include:
 | --- | --- |
 | Downloads | Master capture/publication switch |
 | Save Location | Root of the managed library |
-| FLAC / Ogg / AAC | Enable publication of each source format for music and podcasts; AAC is INI-only by default |
+| FLAC / Ogg / AAC | Enable publication of each source format for music and podcasts; AAC is disabled by default |
 | Podcasts | Allow associated episodes to publish in their native format under the Podcasts layout |
 | Lyrics / Metadata | Control enrichment and later metadata filling |
-| Capture Speed | Select 1x or any supported accelerated mode when the native capability is available |
-| CaptureSpeedLimit | INI-only, restart-only visibility switch; defaults to 0, missing/0 hides the menu and disables acceleration, any valid nonzero value enables it |
-| Windows Playback Fallback | INI-only, default-off compatibility source when Spotify state is unavailable |
+| CaptureSpeed | `-1` hides the speed menu. `0` and `1` select normal speed. Higher choices require capture acceleration support. |
+| WindowsPlaybackFallback | Default-off compatibility source when Spotify state is unavailable |
 | TrackNumberInFilename | Add track prefixes to filenames |
 | ConvertNumberedFilenames | Safely remove recognized old prefixes when numbering is disabled |
 

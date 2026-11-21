@@ -99,8 +99,6 @@ transcoded. If the dispatcher ABI or span movement fails validation, acceleratio
 is disabled and capture falls back to 1x. The filtering logic is in
 [`decoded_output_speed.h`](../../native/media/decoded_output_speed.h).
 
-`CaptureSpeedLimit` is a restart-only switch in `SpotifyHistory.ini`. Explicit `0`
-hides the menu and disables acceleration. A missing value defaults to 0. Any valid nonzero value enables
-all supported speeds after the decoded-output hook is active; 1x remains available
-in every capability state.
-
+`CaptureSpeed=-1` hides the speed menu and uses normal speed. `0` and `1`
+select normal speed. Speeds `2`, `4`, `8`, and `10` require working capture
+acceleration support.

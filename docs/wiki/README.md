@@ -28,6 +28,7 @@ PCM to disk and does not independently fetch audio.
 
 ## Read next
 
+- [Implementation walkthrough and optimization review](implementation-walkthrough.md) follows the release code across media, UI, telemetry, and tooling.
 - [Capture and correlation](capture-and-correlation.md) — hook points, codec paths,
   listen coverage, decoder ownership, and capture speed.
 - [Metadata and publication](metadata-and-publication.md) — enrichment, tag merge,
