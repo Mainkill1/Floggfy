@@ -67,7 +67,7 @@ x86_64-w64-mingw32-g++ "${common[@]}" -DFLOGGFY_PUBLICATION_TEST -I native/vendo
 "$floggfy_test_root/windows-quality-observer-test.exe"
 
 # Synthetic host preloads System32 VERSION.dll before its entry point.
-x86_64-w64-mingw32-g++ "${common[@]}" -municode tests/windows_startup_host.cpp -o "$floggfy_test_root/Spotify-startup-host.exe"
+x86_64-w64-mingw32-g++ "${common[@]}" -municode tests/windows_startup_host.cpp -lws2_32 -o "$floggfy_test_root/Spotify-startup-host.exe"
 x86_64-w64-mingw32-g++ "${common[@]}" -municode tests/windows_startup_test.cpp native/tooling/startup_launcher.cpp native/tooling/process_startup_loader.cpp -ladvapi32 -o "$floggfy_test_root/windows-startup-test.exe"
 # Build the complete proxy so its ordinary startup readiness is tested too.
 bash build-native.sh

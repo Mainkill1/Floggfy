@@ -1,6 +1,7 @@
 // Synthetic startup reproducing issue #2: System32 VERSION.dll is loaded
 // before application entry, so a bare-name request ignores the adjacent proxy.
 #define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
 #include <windows.h>
 #include <tlhelp32.h>
 #include <string>
@@ -34,6 +35,12 @@ static int RunChild(const std::wstring& exe,const std::wstring& line,DWORD flags
   if(WaitForSingleObject(process.hProcess,10000)!=WAIT_OBJECT_0)return 33;
   DWORD code=99;if(!GetExitCodeProcess(process.hProcess,&code))return 34;
   CloseHandle(process.hThread);CloseHandle(process.hProcess);return static_cast<int>(code);
+}
+static bool NetworkBlocked() {
+  WSADATA data{};if(WSAStartup(MAKEWORD(2,2),&data))return false;
+  const SOCKET value=socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);const int error=WSAGetLastError();
+  if(value!=INVALID_SOCKET)closesocket(value);
+  WSACleanup();return value==INVALID_SOCKET&&error==WSAENETDOWN;
 }
 int wmain(int argc,wchar_t** argv) {
   if(!system_version || LoadLibraryW(L"version.dll")!=system_version)return 10;
@@ -74,6 +81,8 @@ int wmain(int argc,wchar_t** argv) {
   const bool loaded=proxy&&proxy!=system_version;
   if(argc>1&&!wcsncmp(argv[1],L"--type=",7)) {
     if(!loaded)return 11;
+    wchar_t network_test[4]{};
+    if(GetEnvironmentVariableW(L"FLOGGFY_STARTUP_NETWORK_TEST",network_test,4)&&!NetworkBlocked())return 15;
     if(argc>2&&!wcscmp(argv[2],L"--spawn-descendant")) {
       std::wstring exe=path,line=L"\""+exe+L"\" --type=renderer --loaded-check";
       return RunChild(exe,line,0,local,true);

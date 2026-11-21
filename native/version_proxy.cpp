@@ -408,12 +408,8 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
     wchar_t* name = length && length < MAX_PATH ? wcsrchr(path, L'\\') : nullptr;
     const bool spotify_main = name && !_wcsicmp(name + 1, L"Spotify.exe") && !wcsstr(GetCommandLineW(), L"--type=");
     if (!spotify_main) {
-        // CEF helpers and the crash uploader have independent Winsock state.
-        // Only Spotify's own executables participate in the shared switch.
-        if(name&&(!_wcsicmp(name+1,L"Spotify.exe")||!_wcsicmp(name+1,L"crashpad_handler.exe")||
-                  !_wcsicmp(name+1,L"SpotifyLauncher.exe")||!_wcsicmp(name+1,L"spotify_cli.exe")||
-                  !_wcsicmp(name+1,L"save-to-spotify.exe")))
-            if(!network::Initialize(proxy_module,false,-1))LogHelperNetworkFailure();
+        // Every recursively loaded child has independent Winsock state.
+        if(!network::Initialize(proxy_module,false,-1))LogHelperNetworkFailure();
         if(privacy::PrepareCrash(false,proxy_module))privacy::FinalizeCrash(MH_ApplyQueued()==MH_OK);
         startup::SignalReady();
         return 0;

@@ -46,6 +46,8 @@ int wmain(int argc,wchar_t** argv) {
   // The proxy must bootstrap without any of its version exports being called,
   // even when the System32 DLL was loaded first and remains the bare-name result.
   const auto second_proxy=folder+L"\\version.dll";
+  assert(WritePrivateProfileStringW(L"Misc",L"NetworkKillSwitch",L"1",ini.c_str()));
+  assert(SetEnvironmentVariableW(L"FLOGGFY_STARTUP_NETWORK_TEST",L"1"));
   assert(WritePrivateProfileStringW(L"Misc",L"HookAllSubProcesses",L"2",ini.c_str()));
   assert(CopyFileW(dll.c_str(),second_proxy.c_str(),TRUE));
   assert(SetEnvironmentVariableW(L"FLOGGFY_STARTUP_VERSION_CHILD_TEST",L"1"));
@@ -74,6 +76,7 @@ int wmain(int argc,wchar_t** argv) {
   assert(code==0);
   CloseHandle(process.hThread);CloseHandle(process.hProcess);
   assert(SetEnvironmentVariableW(L"FLOGGFY_STARTUP_CHILD_TEST",nullptr));
+  assert(SetEnvironmentVariableW(L"FLOGGFY_STARTUP_NETWORK_TEST",nullptr));
   assert(!AnyRunning(exe));
   // Mode 0 keeps launcher-loaded Floggfy in the parent without touching children.
   assert(WritePrivateProfileStringW(L"Misc",L"HookAllSubProcesses",L"0",ini.c_str()));
