@@ -18,7 +18,7 @@ class PackageReleaseTests(unittest.TestCase):
         source = Path(__file__).resolve().parents[1]
         self.script = self.root / 'package-release.py'
         shutil.copyfile(source / self.script.name, self.script)
-        for name in ('README.md', 'AUDIO-HISTORY.md', 'LICENSE', 'SpotifyHistory.ini'):
+        for name in ('README.md', 'AUDIO-HISTORY.md', 'LICENSE', 'SpotifyHistory.ini', 'VERSION'):
             shutil.copyfile(source / name, self.root / name)
         for name in ('docs', 'native/vendor'):
             shutil.copytree(source / name, self.root / name)
@@ -30,7 +30,8 @@ class PackageReleaseTests(unittest.TestCase):
         self.dist = self.root / 'dist'
         self.dist.mkdir()
         self.dll = self.dist / 'version.dll'
-        self.archive = self.dist / 'Floggfy-v1.4-Launcher-Windows-x64.zip'
+        version = (self.root / 'VERSION').read_text(encoding='ascii').strip()
+        self.archive = self.dist / f'Floggfy-v{version}-Launcher-Windows-x64.zip'
         self.old_files = {
             self.archive.name: b'previous same-version launcher archive',
             'Floggfy-v1.3-Launcher-Windows-x64.zip': b'previous launcher archive',

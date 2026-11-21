@@ -1,5 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include "to_disk_menu.h"
+#include "../../build/version_info.h"
 #include "cef_menu_capability.h"
 #include "cef_menu_abi.h"
 #include "../tooling/hook_init_state.h"
@@ -70,7 +71,7 @@ constexpr int project_id=28463;
 constexpr int marked_id=28458,marked_rebuild_id=28457;
 constexpr wchar_t root_label[]=L"To Disk";
 constexpr wchar_t recent_label[]=L"Latest Downloads";
-constexpr wchar_t project_label[]=L"Floggfy - v1.4";
+constexpr wchar_t project_label[]=L"Floggfy - " FLOGGFY_VERSION_W;
 struct ToggleItem {
     int id;
     const wchar_t* label;

@@ -28,7 +28,9 @@ x86_64-w64-mingw32-g++ -std=c++17 -O2 -DNDEBUG -Wall -Wextra -shared \
 # linker timestamp is disabled, producing a different DLL hash on every build.
 SOURCE_DATE_EPOCH=1 x86_64-w64-mingw32-strip --strip-unneeded build/version.dll
 
+python3 tools/embed_icon.py
+x86_64-w64-mingw32-windres -I . native/floggfy_launcher.rc -O coff -o build/launcher-resources.o
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -municode -mwindows \
     -static-libgcc -static-libstdc++ -Wl,--no-insert-timestamp,--dynamicbase,--nxcompat \
-    native/floggfy_launcher.cpp native/tooling/startup_launcher.cpp native/tooling/process_startup_loader.cpp -o build/Floggfy.exe
+    native/floggfy_launcher.cpp native/tooling/startup_launcher.cpp native/tooling/process_startup_loader.cpp build/launcher-resources.o -o build/Floggfy.exe
 SOURCE_DATE_EPOCH=1 x86_64-w64-mingw32-strip --strip-unneeded build/Floggfy.exe

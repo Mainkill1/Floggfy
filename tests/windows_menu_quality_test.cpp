@@ -340,7 +340,7 @@ int main(int argc,char** argv) {
   assert(root.child);
   auto &child = *root.child;
   assert(root.entries.back().label==L"To Disk");
-  assert(child.entries[0].id==project_id&&child.entries[0].label==L"Floggfy - v1.4");
+  assert(child.entries[0].id==project_id&&child.entries[0].label==std::wstring(L"Floggfy - ")+FLOGGFY_VERSION_W);
   assert(child.entries[0].type==1&&!child.entries[0].enabled&&!child.entries[0].checked);
   assert(child.entries[1].type==4&&child.entries[2].id==downloads_id);
   assert(Index(&child.api,recent_id)==Index(&child.api,downloads_id)+1);

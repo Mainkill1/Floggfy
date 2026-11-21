@@ -8,7 +8,7 @@ import tempfile
 import zipfile
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--version', default='1.4')
+parser.add_argument('--version', default=Path(__file__).with_name('VERSION').read_text(encoding='ascii').strip())
 version = parser.parse_args().version
 if not version or any(c not in '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.-' for c in version):
     parser.error('version must contain only ASCII letters, digits, dots and hyphens')

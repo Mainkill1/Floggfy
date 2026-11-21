@@ -1,0 +1,26 @@
+#include <windows.h>
+#include "build/version_info.h"
+
+1 ICON "build/Floggfy.ico"
+
+1 VERSIONINFO
+FILEVERSION FLOGGFY_VERSION_RESOURCE
+PRODUCTVERSION FLOGGFY_VERSION_RESOURCE
+FILETYPE VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "FileDescription", "Floggfy Launcher"
+            VALUE "FileVersion", FLOGGFY_VERSION
+            VALUE "ProductName", "Floggfy"
+            VALUE "ProductVersion", FLOGGFY_VERSION
+            VALUE "OriginalFilename", "Floggfy.exe"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

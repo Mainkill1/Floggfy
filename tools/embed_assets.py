@@ -6,6 +6,15 @@ from tempfile import NamedTemporaryFile
 root = Path(__file__).resolve().parents[1]
 build = root / "build"
 build.mkdir(exist_ok=True)
+version = (root / "VERSION").read_text(encoding="ascii").strip()
+parts = version.split(".")
+if len(parts) != 3 or any(not part.isascii() or not part.isdecimal() or int(part) > 65535 for part in parts):
+    raise ValueError("VERSION must contain major.minor.patch")
+resource_version = ",".join(parts + ["0"])
+(build / "version_info.h").write_text(
+    f'#define FLOGGFY_VERSION "{version}"\n'
+    f'#define FLOGGFY_VERSION_W L"{version}"\n'
+    f'#define FLOGGFY_VERSION_RESOURCE {resource_version}\n', encoding="ascii")
 
 
 def write_header(symbol, declaration):
