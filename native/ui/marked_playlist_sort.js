@@ -159,6 +159,11 @@
         function preparePlayback(data) {
             const active = session;
             const context = own(data, "context"), options = own(data, "options");
+            const trace = window.__floggfyMarkedTrace;
+            trace?.("prepare", {active: !!active?.playItems, mode, origin: own(own(data, "origin"), "featureIdentifier"),
+                playlist: own(context, "uri"), url: !!own(context, "url"), pages: !!own(context, "pages"),
+                shuffle: own(options, "shuffle"), uid: own(own(options, "skipTo"), "uid"),
+                index: own(own(options, "skipTo"), "index"), current: !!active && !!currentFor(active)}, true);
             if (!active?.playItems || active.mode !== mode || own(data, "action") !== "play" ||
                 own(own(data, "origin"), "featureIdentifier") !== "playlist" || own(context, "uri") !== playlistUri ||
                 own(context, "url") || own(context, "pages") || !options || own(options, "shuffle") ||
@@ -172,7 +177,7 @@
                 // A URI can occur more than once. Use the clicked occurrence and
                 // disregard its index in the old native order.
                 index = active.playItems.findIndex(item => item.uid === uid && (!uri || item.uri === uri));
-                if (index < 0) return;
+                if (index < 0) {trace?.("prepare-skipped", {reason: "occurrence-not-found"}, true);return;}
             }
             if (!active.playItems.length || !writable(context, "url") || !writable(context, "pages") ||
                 !writable(options, "skipTo")) return;
@@ -182,6 +187,9 @@
             context.url = "context://" + playlistUri;
             context.pages = [{items: active.playItems}];
             options.skipTo = {uid: item.uid, uri: item.uri, index, pageIndex: 0};
+            trace?.("prepared", {playlist: playlistUri, uid: item.uid, uri: item.uri, index,
+                rows: active.playItems.length, next_uid: active.playItems[index + 1]?.uid,
+                next_uri: active.playItems[index + 1]?.uri}, true);
         }
 
         function selectionFailed(previousMode) {
@@ -483,6 +491,18 @@
     let savedTarget;
     let pendingRestore;
     const playBindings = new WeakMap();
+    const traces = new Map();
+    const trace = (stage, fields, repeat = false) => {
+        if (window.__floggfyConfig?.debug !== true) return;
+        try {
+            const text = "stage=" + stage + Object.entries(fields).map(([key, value]) =>
+                " " + key + "=" + String(value ?? "missing").replace(/[^A-Za-z0-9:._/-]/g, "_").slice(0, 80)).join("");
+            if (!repeat && traces.get(stage) === text) return;
+            traces.set(stage, text);
+            console.info("FLOGGFY_SAVED_V1:" + text);
+        } catch { /* Diagnostics cannot affect playback. */ }
+    };
+    window.__floggfyMarkedTrace = trace;
 
     function release() {
         order = undefined;
@@ -533,11 +553,13 @@
         const context = {uri: playlistUri, metadata: state.context.metadata, isLoading: false,
             pages: [{tracks: order}]};
         const attempt = {player, session, uri: playlistUri, retryAt: Infinity};
-        const failed = () => { attempt.retryAt = Date.now() + 3000; };
+        const failed = () => { attempt.retryAt = Date.now() + 3000;trace("context-result", {reason: "rejected"}, true); };
         lastUpdate = attempt;
         if (!completed) savedTarget = attempt;
         try {
+            trace("context-request", {playlist: playlistUri, session, uid: item.uid, rows: order.length}, true);
             const result = player.updateContext(session, context);
+            Promise.resolve(result).then(() => trace("context-result", {reason: "resolved"}, true), () => {});
             if (completed) {
                 Promise.resolve(result).then(completed, failed);
             } else if (result && typeof result.catch === "function") {
@@ -587,6 +609,12 @@
                 discardRestore(pendingRestore);
             }
             const state = readState(player);
+            trace("state", {playlist: state?.context?.uri, session: state?.sessionId,
+                uri: state?.item?.uri, uid: state?.item?.uid, provider: state?.item?.provider,
+                shuffle: state?.shuffle, smart: state?.smartShuffle,
+                next_uri: state?.nextItems?.[0]?.uri, next_uid: state?.nextItems?.[0]?.uid,
+                next_provider: state?.nextItems?.[0]?.provider,
+                get_state: typeof player?.getState, update_context: typeof player?.updateContext});
             if (restore) {
                 let target = savedTarget?.uri === playlistUri ? savedTarget : null;
                 savedTarget = undefined;
@@ -615,11 +643,16 @@
         }
     };
     update.bindPlay = player => {
-        if (!player || typeof player.play !== "function" || playBindings.get(player) === player.play) return;
+        if (!player || typeof player.play !== "function") {trace("bind", {reason: "play-unavailable"});return;}
+        if (playBindings.get(player) === player.play) return;
         const field = Object.getOwnPropertyDescriptor(player, "play");
-        if (field ? !("value" in field) || !field.writable : !Object.isExtensible(player)) return;
+        if (field ? !("value" in field) || !field.writable : !Object.isExtensible(player)) {
+            trace("bind", {reason: "play-readonly"});return;
+        }
         const original = player.play;
         function play(...args) {
+            trace("native-play", {args: args.length, receiver: this === player,
+                playlist: args[0]?.uri, origin: args[1]?.featureIdentifier, uid: args[2]?.skipTo?.uid}, true);
             const request = {action: "play", context: args[0], origin: args[1], options: args[2] || {}};
             const pages = request.context?.pages;
             try {
@@ -633,7 +666,8 @@
             Object.defineProperty(player, "play", field ? {...field, value: play} :
                 {value: play, writable: true, configurable: true});
             playBindings.set(player, play);
-        } catch { /* Older clients can retain the existing event fallback. */ }
+            trace("bind", {reason: "installed"}, true);
+        } catch {trace("bind", {reason: "install-failed"});}
     };
     window.__floggfyUpdateMarkedPlayback = update;
 })();

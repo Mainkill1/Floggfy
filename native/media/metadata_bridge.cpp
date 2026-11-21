@@ -647,6 +647,18 @@ static bool CurrentPlayback(const String* value) {
 }
 static bool ConsumeRendererMessage(const String* text) {
  const auto message=ConsoleText(text);
+ constexpr std::wstring_view saved_trace=L"FLOGGFY_SAVED_V1:";
+ if(message.substr(0,saved_trace.size())==saved_trace) {
+  // Bounded fixed-field diagnostics only; never accept multiline console text.
+  if(DebugLoggingEnabled()&&message.size()<=1400)try {
+   const auto payload=message.substr(saved_trace.size());std::string ascii;
+   if(CopyAscii(payload,ascii)&&std::all_of(ascii.begin(),ascii.end(),[](unsigned char c){return
+       (c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9')||
+       c==' '||c=='='||c==':'||c=='.'||c=='_'||c=='/'||c=='-';}))
+    LogEvent(LogKind::Diagnostic,"saved-playback",ascii);
+  }catch(...) {/* Diagnostic allocation failure cannot escape CEF. */}
+  return true;
+ }
  constexpr std::wstring_view marked_prefix=L"FLOGGFY_MARKED_V1:";
  if(message.substr(0,marked_prefix.size())==marked_prefix) {
   try {
