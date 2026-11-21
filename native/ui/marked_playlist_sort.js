@@ -165,7 +165,7 @@
                 shuffle: own(options, "shuffle"), uid: own(own(options, "skipTo"), "uid"),
                 index: own(own(options, "skipTo"), "index"), current: !!active && !!currentFor(active)}, true);
             if (!active?.playItems || active.mode !== mode || own(data, "action") !== "play" ||
-                own(own(data, "origin"), "featureIdentifier") !== "playlist" || own(context, "uri") !== playlistUri ||
+                own(context, "uri") !== playlistUri ||
                 own(context, "url") || own(context, "pages") || !options || own(options, "shuffle") ||
                 !currentFor(active)) return;
 

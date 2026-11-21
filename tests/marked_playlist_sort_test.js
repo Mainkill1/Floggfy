@@ -574,6 +574,11 @@ test("playing an unsaved row advances in Saved order, including duplicate occurr
     const {items, index} = play(start);
     assert.equal(items[index].uid, start.value.uid);
     assert.equal(items[index + 1].uid, expectedNext.value.uid);
+    for (const origin of ["your_library", "playlist", "search", undefined]) {
+        const started = play(start, request => {request.origin.featureIdentifier = origin;});
+        assert.equal(started.items[started.index + 1].uid, expectedNext.value.uid,
+            "matching playlist playback uses Saved order regardless of the UI origin label");
+    }
     const displayedOrder = source.items;
     dates.set(start.value.uri, {utc: "2027-01-01T00:00:00Z"});
     assert.equal(controller.apply(dates, 2), true);
@@ -582,7 +587,6 @@ test("playing an unsaved row advances in Saved order, including duplicate occurr
     for (const configure of [
         req => { req.context.uri = "spotify:playlist:other"; },
         req => { req.options.shuffle = true; },
-        req => { req.origin.featureIdentifier = "search"; },
         req => { req.options.skipTo.uid = "missing"; },
         req => { Object.freeze(req.options); },
     ]) {
