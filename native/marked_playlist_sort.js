@@ -127,6 +127,53 @@
             redraw(dispatch);
         }
 
+        function playbackItems(entries) {
+            const items = [];
+            for (const entry of entries) {
+                const value = own(entry, "value");
+                const uid = own(value, "uid"), uri = own(value, "uri");
+                if (!uid || typeof uri !== "string" || !uri.startsWith("spotify:")) return null;
+                items.push({uid, uri});
+            }
+            return items;
+        }
+
+        function updatePlayback(items, restore = false) {
+            window.__floggfyUpdateMarkedPlayback?.(window.__floggfyMarkedCurrentPlayer?.(), playlistUri, items, restore);
+        }
+
+        function writable(object, key) {
+            const field = Object.getOwnPropertyDescriptor(object, key);
+            return field ? field.writable === true : Object.isExtensible(object);
+        }
+
+        function preparePlayback(data) {
+            const active = session;
+            const context = own(data, "context"), options = own(data, "options");
+            if (!active?.playItems || active.mode !== mode || own(data, "action") !== "play" ||
+                own(own(data, "origin"), "featureIdentifier") !== "playlist" || own(context, "uri") !== playlistUri ||
+                own(context, "url") || own(context, "pages") || !options || own(options, "shuffle") ||
+                !currentFor(active)) return;
+
+            const skip = own(options, "skipTo");
+            let index = 0;
+            if (skip && (own(skip, "uid") != null || own(skip, "uri") != null || own(skip, "index") != null)) {
+                // A URI can occur more than once. Use the clicked occurrence and
+                // disregard its index in the old native order.
+                index = active.playItems.findIndex(item => item.uid === own(skip, "uid") &&
+                    (!own(skip, "uri") || item.uri === own(skip, "uri")));
+                if (index < 0) return;
+            }
+            if (!active.playItems.length || !writable(context, "url") || !writable(context, "pages") ||
+                !writable(options, "skipTo")) return;
+            const item = active.playItems[index];
+            // A playlist URI alone asks Spotify to rebuild the order from its
+            // playlist service. A URL with a loaded page uses the context player.
+            context.url = "context://" + playlistUri;
+            context.pages = [{items: active.playItems}];
+            options.skipTo = {uid: item.uid, uri: item.uri, index, pageIndex: 0};
+        }
+
         function reset(message = "") {
             try {
                 if (restore(session) === false) {
@@ -140,6 +187,7 @@
                 message = unsupported;
             }
             const notify = mode !== "none" || loading || error !== message;
+            if (session?.playItems) updatePlayback(null);
             session = null;
             mode = "none";
             loading = false;
@@ -294,7 +342,8 @@
             },
             cycle() {
                 if (mode === "ascending") {
-                    reset();
+                    const original = session?.playItems && currentFor(session) ? session.original : null;
+                    if (reset() && original) updatePlayback(playbackItems(original), true);
                     return;
                 }
                 if (mode === "descending") {
@@ -311,6 +360,8 @@
                 void load(session);
             },
             refresh,
+            preparePlayback,
+            syncPlayback() { if (session?.playItems && session.mode === mode) updatePlayback(session.playItems); },
             get state() { return {mode, loading, error}; },
             get uris() { return session?.uris || null; },
             apply(dates, dateGeneration) {
@@ -364,6 +415,7 @@
                     }
                     view.source.items = ordered;
                     active.owned = ordered;
+                    active.playItems = playbackItems(ordered);
                     const modeChanged = active.mode !== mode;
                     active.mode = mode;
                     active.timestamps = timestamps;
@@ -382,5 +434,79 @@
             },
             reset: () => reset()
         };
+    };
+})();
+
+// The context player's UpdateContext command takes protobuf context pages
+// (tracks). The UI play command takes renderer context pages (items).
+(() => {
+    "use strict";
+    if (typeof window.__floggfyUpdateMarkedPlayback === "function") return;
+
+    let order;
+    let identities;
+    let lastUpdate;
+
+    function release() {
+        order = undefined;
+        identities = undefined;
+        lastUpdate = undefined;
+    }
+
+    window.__floggfyUpdateMarkedPlayback = (player, playlistUri, orderedItems, restore = false) => {
+        if (!orderedItems) {
+            release();
+            return;
+        }
+        try {
+            if (!Array.isArray(orderedItems) || !/^spotify:playlist:[A-Za-z0-9]{22}$/.test(playlistUri) ||
+                typeof player?.getState !== "function" || typeof player.updateContext !== "function") return;
+            const state = player.getState();
+            const session = state?.sessionId;
+            const item = state?.item;
+            if (state?.context?.uri !== playlistUri || typeof session !== "string" || !session) return;
+            if (state.shuffle !== false || state.smartShuffle === true) {
+                // Native shuffle may replace the loaded context for this session.
+                lastUpdate = undefined;
+                return;
+            }
+            if (item?.provider !== "context") return;
+
+            if (order !== orderedItems) {
+                order = orderedItems;
+                identities = undefined;
+                lastUpdate = undefined;
+                const byUid = new Map();
+                for (const row of order) {
+                    if (typeof row?.uid !== "string" || !row.uid || typeof row.uri !== "string" ||
+                        !row.uri || byUid.has(row.uid)) return;
+                    byUid.set(row.uid, row.uri);
+                }
+                identities = byUid;
+            }
+            if (!identities?.has(item.uid) || identities.get(item.uid) !== item.uri) return;
+            if (lastUpdate?.player === player && lastUpdate.session === session &&
+                lastUpdate.uri === playlistUri && Date.now() < lastUpdate.retryAt) return;
+
+            // Use the existing session so a stale UI pass cannot retarget a new
+            // play session. Its manual queue and transport state belong to Spotify.
+            const context = {uri: playlistUri, metadata: state.context.metadata, isLoading: false,
+                pages: [{tracks: order}]};
+            const attempt = {player, session, uri: playlistUri, retryAt: Infinity};
+            const failed = () => { attempt.retryAt = Date.now() + 3000; };
+            lastUpdate = attempt;
+            try {
+                const result = player.updateContext(session, context);
+                if (result && typeof result.catch === "function") {
+                    result.catch(failed);
+                }
+            } catch {
+                failed();
+            }
+        } catch {
+            // An older player may lack a readable active context.
+        } finally {
+            if (restore) release();
+        }
     };
 })();

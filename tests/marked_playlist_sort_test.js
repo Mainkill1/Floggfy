@@ -441,3 +441,78 @@ test("discards a full cache load when the playlist changes before its render set
     assert.equal(controller.apply(dates), false);
     assert.equal(source.items, entries);
 });
+
+test("playing an unsaved row advances in Saved order, including duplicate occurrences", async () => {
+    const {controller, entries, dates} = fixture({count: 8});
+    // Native playlist order is 23, 7 Years, 911. Saving 7 Years moves it
+    // above the other two and leaves 911 immediately after 23.
+    const [start, previouslyNext, expectedNext] = entries;
+    previouslyNext.value.uri = uri(1);
+    dates.set(uri(1), {utc: "2026-01-02T00:00:00Z"});
+    dates.set(start.value.uri, {});
+    controller.cycle();
+    await tick();
+    assert.equal(controller.apply(dates, 1), true);
+
+    function play(entry, configure = () => {}) {
+        const request = {
+            action: "play", origin: {featureIdentifier: "playlist"},
+            context: {uri: "spotify:playlist:fixture", playlistQueryOptions: {}},
+            options: {skipTo: {uid: entry.value.uid, uri: entry.value.uri, index: entry.index}}
+        };
+        configure(request);
+        controller.preparePlayback(request);
+        // A playlist URI with no URL goes to Spotify's playlist service.
+        // Explicit context pages are consumed by its context player.
+        const items = request.context.url ? request.context.pages[0].items : entries.map(row => row.value);
+        return {items, index: request.options.skipTo.index, request};
+    }
+    const {items, index} = play(start);
+    assert.equal(items[index].uid, start.value.uid);
+    assert.equal(items[index + 1].uid, expectedNext.value.uid);
+    for (const configure of [
+        req => { req.context.uri = "spotify:playlist:other"; },
+        req => { req.options.shuffle = true; },
+        req => { req.origin.featureIdentifier = "search"; },
+        req => { req.options.skipTo.uid = "missing"; },
+        req => { Object.freeze(req.options); },
+    ]) {
+        const {request} = play(start, configure);
+        assert.equal(request.context.pages, undefined);
+        assert.equal(request.context.url, undefined);
+    }
+    const duplicate = play(entries[4]);
+    assert.equal(duplicate.items[duplicate.index].uid, entries[4].value.uid);
+    controller.cycle();
+    controller.apply(dates, 1);
+    assert.equal(play(start).items[0].uid, entries[1].value.uid);
+    controller.cycle();
+    assert.equal(play(start).items[1].uid, previouslyNext.value.uid);
+});
+
+test("a Saved sort changes the active playlist context and neutral restores the baseline", async () => {
+    const {controller, entries, dates, grid, window} = fixture({count: 8});
+    const playlist = "spotify:playlist:" + "A".repeat(22);
+    controller.setContext(grid, playlist);
+    const updated = [];
+    window.__floggfyMarkedCurrentPlayer = () => player;
+    const player = {
+        getState: () => ({sessionId: "current", context: {uri: playlist}, shuffle: false,
+            item: {...entries[3].value, provider: "context"}}),
+        updateContext(session, context) {
+            assert.equal(session, "current");
+            updated.push(Array.from(context.pages[0].tracks, item => item.uid));
+        }
+    };
+    controller.cycle();
+    await tick();
+    controller.apply(dates, 1);
+    controller.syncPlayback();
+    assert.deepEqual(updated[0].slice(0, 4), ["7", "3", "4", "0"]);
+    controller.cycle();
+    controller.apply(dates, 1);
+    controller.syncPlayback();
+    assert.deepEqual(updated[1].slice(0, 4), ["0", "3", "4", "7"]);
+    controller.cycle();
+    assert.deepEqual(updated[2], entries.map(row => row.value.uid));
+});

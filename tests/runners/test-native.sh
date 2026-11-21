@@ -112,6 +112,7 @@ node tests/collector_native_boundary_test.js --transition | build/client-playbac
 node tests/collector_native_boundary_test.js --reused-transition | build/client-playback-test --reused-transition-stdin
 node tests/collector_native_boundary_test.js --terminal | build/client-playback-test --terminal-stdin
 node tests/collector_playback_test.js
+node --test tests/marked_playlist_sort_test.js tests/marked_playback_test.js
 
 # Exact telemetry routes preserve functional requests on shared domains.
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/telemetry_policy_test.cpp -o build/telemetry-policy-test

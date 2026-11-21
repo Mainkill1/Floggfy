@@ -30,6 +30,14 @@ let count=relevant().length;poll();poll();assert.equal(relevant().length,count);
 playerState.isPaused=true;poll();assert(has('state=paused target=local initiator=unknown'));
 count=relevant().length;for(let i=0;i<12;i++)poll();assert.equal(relevant().length,count);
 // Local requests are observations only; their callback never prevents the action.
+// Pass the same native play arguments through to the Saved playlist view.
+const playData={action:'play',context:{uri:'spotify:playlist:test'},options:{}};
+let observedPlay;
+context.window.__floggfyMarkedPlay=data=>{observedPlay=data;};
+assert.equal(context.window.__floggfyMarkedCurrentPlayer(),player);
+for(const listener of listeners.keys())listener({data:playData});
+assert.equal(observedPlay,playData);
+delete context.window.__floggfyMarkedPlay;
 action('pause');assert.equal(relevant().length,count);poll();assert(has('request=pause source=local-client'));
 connectState={connectionStatus:'CONNECTED',activeDevice:{id:'PRIVATE_REMOTE_ID',isLocal:false,name:'PRIVATE_REMOTE_NAME'},devices:[]};
 poll();assert(has('target=remote device_changed=1 controller=unknown'));

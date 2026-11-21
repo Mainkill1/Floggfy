@@ -259,13 +259,17 @@
    binding.listener=event=>{
     try{
      if(!binding.active)return;
-     const action=own(own(event,'data'),'action');
+     const data=own(event,'data'),action=own(data,'action');
      // Any observed control action (including changed/unknown seek names)
      // breaks the evidence chain used for natural-transition recovery.
      const ready=lastReadyTimeline;lastReadyTimeline=undefined;episodeEndAnchor=undefined;
      if(action==='play'||action==='resume'){
       if(pendingControl?.action==='pause')pendingControl=undefined;
      }else pendingControl={action,instance:ready?.player===player?ready.instance:''};
+     if(action==='play') {
+      const prepare=own(window,'__floggfyMarkedPlay');
+      if(typeof prepare==='function')try{prepare(data);}catch{}
+     }
      if(!['play','pause','resume','skipToNext','skipToPrevious'].includes(action))return;
      if(!connectEnabled())return;
      if(controlQueue.length<16)controlQueue.push(action);else controlOmitted=Math.min(1000000,controlOmitted+1);
@@ -602,6 +606,7 @@
    emitMetadata(data);
   }catch{debugPrevious=undefined;unavailableTimeline('player-exception');/* Missing caches leave ordinary tags intact. */}
  }
+ window.__floggfyMarkedCurrentPlayer=()=>player;
  window.__floggfyPoll=tick;
  tick();
  // The native metadata worker owns the only heartbeat (and supplies settings).

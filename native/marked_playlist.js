@@ -481,7 +481,9 @@
             pending = undefined;
         }
         const missingDates = requestDates(lookupUris);
-        updateNativeSortIndicators(header.row, sorter?.apply(dates, dateGeneration));
+        const sorted = sorter?.apply(dates, dateGeneration);
+        if (sorted) sorter.syncPlayback?.();
+        updateNativeSortIndicators(header.row, sorted);
         paint(header.row, header.layout, "", true, sortable, missingDates);
         for (const [row, { rowLayout, identityUri }] of layouts) {
             paint(row, rowLayout, visible.has(identityUri) ? identityUri : "");
@@ -531,6 +533,8 @@
             sorter?.reset();
         }
     }, true);
+
+    window.__floggfyMarkedPlay = data => { if (enabled) sorter?.preparePlayback?.(data); };
 
     window.__floggfyMarkedPoll = (nextEnabled, nextRevision) => {
         if (!nextEnabled) {
