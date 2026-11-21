@@ -5,7 +5,8 @@
 namespace history { namespace {
 constexpr size_t page_limit=65536,config_limit=64;
 constexpr uint64_t frame_limit=uint64_t{1}<<20,audio_limit=uint64_t{512}<<20;
-struct PageLayout {
+}
+struct SpacStream::PageLayout {
     bool setup=false,shared=false;
     uint64_t base=0;
     size_t body=0,total=0,count=0;
@@ -14,7 +15,7 @@ struct PageLayout {
 // Determine the next bounded prefix needed, without buffering another page.
 // A page is magic/flags/count, optional frame index, laces, optional common
 // packet prefix, payload, Fletcher32. There is no Ogg-style EOS flag.
-AacParse Layout(const uint8_t* data,size_t size,PageLayout& out,size_t& needed) {
+AacParse SpacStream::MeasurePage(const uint8_t* data,size_t size,PageLayout& out,size_t& needed) {
     out={};needed=6;
     for(size_t i=0;i<std::min(size,size_t{4});++i)
         if(data[i]!=uint8_t("SpAC"[i]))return AacParse::Invalid;
@@ -49,6 +50,7 @@ AacParse Layout(const uint8_t* data,size_t size,PageLayout& out,size_t& needed) 
     needed=out.total;
     return size<needed?AacParse::NeedMore:AacParse::Complete;
 }
+namespace {
 uint32_t Checksum(const uint8_t* bytes,size_t size) {
     uint32_t first=65535,second=65535;
     for(size_t at=0;at<size;) {
@@ -117,11 +119,9 @@ AacParse ReadConfig(const std::vector<uint8_t>& packet,AacInfo& info) {
     info.config.assign(packet.begin()+20,packet.end());return DecoderConfig(info);
 }
 } // namespace
-AacParse SpacStream::ParsePage(const uint8_t* page,size_t size,std::vector<std::vector<uint8_t>>* packets) {
-    PageLayout layout;size_t needed=0;
-    const auto measured=Layout(page,size,layout,needed);
-    if(measured!=AacParse::Complete||layout.total!=size)return measured==AacParse::Complete?AacParse::Invalid:measured;
-    if(Checksum(page,size-4)!=Little(page+size-4,4))return AacParse::Invalid;
+AacParse SpacStream::ParsePage(const uint8_t* page,const PageLayout& layout,std::vector<std::vector<uint8_t>>* packets) {
+    const size_t payload=layout.total-4;
+    if(Checksum(page,payload)!=Little(page+payload,4))return AacParse::Invalid;
     if(complete_ || (layout.setup&&configured_) || (!layout.setup&&!configured_))return AacParse::Invalid;
     if(!layout.setup&&layout.base!=frames_)return AacParse::Invalid;
     const uint64_t expected=configured_?(uint64_t(info.total_samples)+info.priming+info.samples_per_packet-1)/info.samples_per_packet:0;
@@ -167,16 +167,16 @@ AacParse SpacStream::Push(const uint8_t* bytes,size_t size) {
     if(size&&pending_.capacity()<page_limit)pending_.reserve(page_limit);
     while(size) {
         PageLayout layout;size_t needed=0;
-        auto result=Layout(pending_.data(),pending_.size(),layout,needed);
+        auto result=MeasurePage(pending_.data(),pending_.size(),layout,needed);
         if(result==AacParse::Invalid||result==AacParse::Unsupported)return fail(result);
         if(pending_.size()<needed) {
             const size_t amount=std::min(size,needed-pending_.size());
             pending_.insert(pending_.end(),bytes,bytes+amount);bytes+=amount;size-=amount;
-            result=Layout(pending_.data(),pending_.size(),layout,needed);
+            result=MeasurePage(pending_.data(),pending_.size(),layout,needed);
         }
         if(result==AacParse::Invalid||result==AacParse::Unsupported)return fail(result);
         if(result==AacParse::Complete) {
-            result=ParsePage(pending_.data(),pending_.size(),nullptr);pending_.clear();
+            result=ParsePage(pending_.data(),layout,nullptr);pending_.clear();
             if(result==AacParse::Invalid||result==AacParse::Unsupported)return fail(result);
             if(complete_&&size)return fail(AacParse::Invalid);
         }
@@ -215,10 +215,10 @@ bool ReadSpac(const std::vector<uint8_t>& source,AacInfo& info,std::vector<std::
     SpacStream stream;std::vector<std::vector<uint8_t>> extracted;
     size_t cursor=0;
     while(cursor<source.size()) {
-        PageLayout layout;size_t needed=0;
-        const auto measured=Layout(source.data()+cursor,source.size()-cursor,layout,needed);
+        SpacStream::PageLayout layout;size_t needed=0;
+        const auto measured=SpacStream::MeasurePage(source.data()+cursor,source.size()-cursor,layout,needed);
         if(measured!=AacParse::Complete){error="invalid, truncated or unsupported SpAC page";return false;}
-        const auto result=stream.ParsePage(source.data()+cursor,layout.total,&extracted);
+        const auto result=stream.ParsePage(source.data()+cursor,layout,&extracted);
         if(result==AacParse::Invalid||result==AacParse::Unsupported){error="SpAC checksum, codec or frame continuity rejected";return false;}
         if(layout.setup) {
             const auto& config=stream.info;

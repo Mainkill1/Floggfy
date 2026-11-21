@@ -1,5 +1,4 @@
 #include "album_artwork.h"
-#include "image_info.h"
 #include <algorithm>
 #ifdef _WIN32
 #include <windows.h>
@@ -7,6 +6,7 @@
 #include "async_log.h"
 #include "history_settings.h"
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #endif
 namespace history {
@@ -15,46 +15,8 @@ bool IsAlbumArtworkUrl(const std::string& url){
     if(url.size()!=prefix.size()+40 || url.compare(0,prefix.size(),prefix))return false;
     return std::all_of(url.begin()+prefix.size(),url.end(),[](char c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');});
 }
-bool AlbumArtworkCache::Cache(const std::string& uri,const std::string& url){
-    if(uri.size()>256||uri.compare(0,14,"spotify:track:")||uri.size()==14||!IsAlbumArtworkUrl(url))return false;
-    auto now=std::chrono::steady_clock::now();uint64_t order;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto it=entries_.find(uri);
-        if(it!=entries_.end()){
-            const auto& e=it->second;
-            if(e.pending || (e.url==url && (e.ready_url==url||now-e.attempted<std::chrono::seconds(60))))return false;
-        }else if(entries_.size()>=8){
-            auto victim=entries_.end();
-            for(auto p=entries_.begin();p!=entries_.end();++p)if(!p->second.pending&&(victim==entries_.end()||p->second.order<victim->second.order))victim=p;
-            if(victim==entries_.end())return false;
-            const bool visible=!victim->second.bytes.empty();
-            entries_.erase(victim);
-            if(visible)revision_.fetch_add(1,std::memory_order_release);
-        }
-        auto& e=entries_[uri];e.url=url;e.attempted=now;e.pending=true;e.order=order=++order_;
-    }
-    std::vector<uint8_t> bytes;ImageInfo info;std::string ready_url;bool ok=false;
-    // Prepare all allocating replacement state before changing visible content.
-    try{ok=fetch_(url,bytes)&&ReadImageInfo(bytes,info);if(ok)ready_url=url;}catch(...){ok=false;}
-    std::lock_guard<std::mutex> lock(mutex_);auto it=entries_.find(uri);
-    if(it==entries_.end()||it->second.order!=order)return false;
-    auto& e=it->second;e.pending=false;
-    if(ok){
-        const bool changed=e.bytes!=bytes||e.mime!=info.mime;
-        e.bytes=std::move(bytes);e.mime=std::move(info.mime);e.ready_url=std::move(ready_url);
-        if(changed)revision_.fetch_add(1,std::memory_order_release);
-        return true;
-    }
-    return false;
-}
-bool AlbumArtworkCache::Get(const std::string& uri,std::vector<uint8_t>& bytes,std::string& mime){
-    std::unique_lock<std::mutex> lock(mutex_,std::try_to_lock);
-    if(!lock)return false;
-    auto it=entries_.find(uri);if(it==entries_.end()||it->second.bytes.empty())return false;
-    bytes=it->second.bytes;mime=it->second.mime;return true;
-}
-static bool Fetch(const std::string& url,std::vector<uint8_t>& bytes){
+bool DownloadAlbumArtwork(const std::string& url,std::vector<uint8_t>& bytes){
+    if(!IsAlbumArtworkUrl(url))return false;
 #ifdef _WIN32
     // This observes only Floggfy's own fixed-host request. Never log the URL,
     // response bytes, headers, cookies or user identifiers.
@@ -122,14 +84,7 @@ static bool Fetch(const std::string& url,std::vector<uint8_t>& bytes){
         bytes.insert(bytes.end(),chunk,chunk+read);
     }
 #else
-    (void)url;(void)bytes;return false;
+    (void)bytes;return false;
 #endif
 }
-bool DownloadAlbumArtwork(const std::string& url,std::vector<uint8_t>& bytes){
-    return IsAlbumArtworkUrl(url)&&Fetch(url,bytes);
-}
-static AlbumArtworkCache& Cache(){static AlbumArtworkCache cache(Fetch);return cache;}
-std::uint64_t AlbumArtworkRevision() noexcept {return Cache().Revision();}
-bool CacheAlbumArtwork(const std::string& uri,const std::string& url){return Cache().Cache(uri,url);}
-bool GetAlbumArtwork(const std::string& uri,std::vector<uint8_t>& bytes,std::string& mime){return Cache().Get(uri,bytes,mime);}
 }

@@ -3359,8 +3359,8 @@ static void ProcessMp3Capture(const Slot& s,CaptureBuffers& buffers) {
 static void ProcessCaptureEvent(const Slot& s,CaptureBuffers& buffers,PlaybackQualityTracker& quality,
                                 bool observing_quality,bool enabled,unsigned epoch) {
     if(observing_quality&&(!enabled||!s.capture)) ObserveCodecQuality(s,quality);
-    CaptureBudgetScope budget(buffers);
     if(!enabled || !s.capture || s.epoch!=epoch) return;
+    CaptureBudgetScope budget(buffers);
     if(s.kind>=AudioEventKind::Mp3Begin)ProcessMp3Capture(s,buffers);
     else if(s.kind>=AudioEventKind::AacBegin)ProcessAacCapture(s,buffers);
     else if(s.kind>=AudioEventKind::FlacBegin) ProcessFlacCapture(s,buffers);

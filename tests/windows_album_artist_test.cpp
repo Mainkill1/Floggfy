@@ -7,12 +7,9 @@
 #include <cassert>
 namespace history {
 void EnrichStoredMetadata(RichMetadata&) {}
-std::uint64_t AlbumArtworkRevision() noexcept {return 0;}
-bool CacheAlbumArtwork(const std::string&,const std::string&) {return false;}
 bool IsAlbumArtworkUrl(const std::string& url){return url.rfind("https://i.scdn.co/image/",0)==0;}
 bool DownloadAlbumArtwork(const std::string&,std::vector<uint8_t>&){return false;}
 bool ReadCachedArtwork(const std::string&,std::vector<uint8_t>&,std::string&){return false;}
-bool GetAlbumArtwork(const std::string&,std::vector<uint8_t>&,std::string&) {return false;}
 }
 using namespace history;
 static std::string Value(const Tags& tags,const char* key) {

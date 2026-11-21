@@ -1,4 +1,5 @@
 #pragma once
+#include "srw_guard.h"
 #include "windows_file_write.h"
 #include <windows.h>
 #include <shlobj.h>
@@ -374,7 +375,7 @@ inline bool Start(const std::wstring& root) {
     if(!next->thread){enabled.store(false,std::memory_order_release);if(next->signal)CloseHandle(next->signal);ReleaseSRWLockExclusive(&lock);return false;}
     SetThreadPriority(next->thread,THREAD_PRIORITY_BELOW_NORMAL);state=next.release();ReleaseSRWLockExclusive(&lock);return true;
 }
-inline std::wstring SessionFolder() {AcquireSRWLockShared(&lock);auto folder=state?state->folder:std::wstring{};ReleaseSRWLockShared(&lock);return folder;}
+inline std::wstring SessionFolder() {SharedSrw guard(lock);return state?state->folder:std::wstring{};}
 inline bool Stop(DWORD timeout=5000) {
     enabled.store(false,std::memory_order_release);AcquireSRWLockExclusive(&lock);auto* current=state;
     if(!current){ReleaseSRWLockExclusive(&lock);return true;}

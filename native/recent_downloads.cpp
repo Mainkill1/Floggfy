@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include "recent_downloads.h"
+#include "srw_guard.h"
 #include <algorithm>
 #include <utility>
 
@@ -8,10 +9,6 @@ namespace history { namespace {
 constexpr size_t max_title=1024, max_path=32767;
 SRWLOCK lock=SRWLOCK_INIT;
 std::vector<RecentDownload> rows;
-struct Exclusive {
-    Exclusive(){AcquireSRWLockExclusive(&lock);}
-    ~Exclusive(){ReleaseSRWLockExclusive(&lock);}
-};
 bool SamePath(const std::wstring& a,const std::wstring& b) {
     return CompareStringOrdinal(a.c_str(),int(a.size()),b.c_str(),int(b.size()),TRUE)==CSTR_EQUAL;
 }
@@ -40,7 +37,7 @@ void RecordRecentDownload(const std::wstring& title,const std::wstring& path,std
         if(path.empty()||path.size()>max_path)return;
         RecentDownload row{title.substr(0,max_title),path,bytes};
         if(!Clean(row))return;
-        Exclusive guard;
+        ExclusiveSrw guard(lock);
         // Reserve before mutation so allocation failure retains the old snapshot.
         rows.reserve(kRecentDownloadLimit+1);
         rows.erase(std::remove_if(rows.begin(),rows.end(),[&](const RecentDownload& old){return SamePath(old.path,row.path);}),rows.end());
@@ -57,7 +54,7 @@ void RelocateRecentDownload(const std::wstring& old_path,const std::wstring& new
     try {
         RecentDownload old{L"",old_path,0},next{L"",new_path,0};
         if(!Clean(old)||!Clean(next)||SamePath(old.path,next.path))return;
-        Exclusive guard;
+        ExclusiveSrw guard(lock);
         if(std::none_of(rows.begin(),rows.end(),[&](const auto& row){return SamePath(row.path,old.path);}))return;
         // Work on a bounded copy so allocation failure retains every old row.
         auto updated=rows;

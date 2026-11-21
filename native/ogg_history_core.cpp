@@ -25,8 +25,7 @@ bool ParsePage(const uint8_t* b, size_t n, Page& out) {
     (void)initialized;
     uint32_t serial=0,sequence=0;
     if(!ParsePageIdentity(b,n,serial,sequence))return false;
-    const size_t header=27+b[26];size_t body=0;
-    for(size_t i=27;i<header;i++)body+=b[i];
+    const size_t header=27+b[26],body=n-header; // ParsePageIdentity verified the lacing sum.
     uint32_t crc=0;
     for(size_t i=0;i<n;i++) {
         uint8_t v = i>=22 && i<26 ? 0 : b[i];

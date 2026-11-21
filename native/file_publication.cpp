@@ -25,10 +25,6 @@ struct Handle {
     HANDLE value=INVALID_HANDLE_VALUE;
     ~Handle() { if(value!=INVALID_HANDLE_VALUE) CloseHandle(value); }
 };
-struct StagingFile {
-    std::wstring windows_path;
-    ~StagingFile() { DeleteFileW(windows_path.c_str()); }
-};
 bool ReadLockedRecording(HANDLE file,std::vector<uint8_t>& bytes) {
     LARGE_INTEGER size{};
     if(!GetFileSizeEx(file,&size) || size.QuadPart<4 || size.QuadPart>static_cast<LONGLONG>(kMaximumRecordingBytes))return false;
@@ -49,18 +45,6 @@ std::wstring UniqueSibling(const std::wstring& path,const wchar_t* label) {
     static volatile LONG sequence=0;
     return path+label+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(InterlockedIncrement(&sequence));
 }
-bool WriteNew(const std::wstring& path,const void* bytes,size_t size) {
-    if(!bytes || !size || size>MAXDWORD) return false;
-    auto name=WindowsPath(path);
-    bool ok=false;
-    {
-        Handle file{CreateFileW(name.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr)};
-        if(file.value==INVALID_HANDLE_VALUE) return false;
-        ok=WriteAllBytes(file.value,bytes,size) && FlushFileBuffers(file.value);
-    }
-    if(!ok) DeleteFileW(name.c_str());
-    return ok;
-}
 bool RenameHandle(HANDLE file,const std::wstring& destination) {
     auto path=WindowsPath(destination);
     // FILE_RENAME_INFO uses an absolute path. ReplaceIfExists remains false.
@@ -71,6 +55,30 @@ bool RenameHandle(HANDLE file,const std::wstring& destination) {
     std::memcpy(info->FileName,path.data(),info->FileNameLength);
     return SetFileInformationByHandle(file,FileRenameInfo,info,DWORD(bytes))!=0;
 }
+class StagingFile {
+    Handle file_;
+    bool published_=false;
+public:
+    StagingFile()=default;
+    StagingFile(const StagingFile&)=delete;
+    StagingFile& operator=(const StagingFile&)=delete;
+    ~StagingFile() {
+        if(file_.value!=INVALID_HANDLE_VALUE && !published_) {
+            FILE_DISPOSITION_INFO remove{TRUE};
+            SetFileInformationByHandle(file_.value,FileDispositionInfo,&remove,sizeof(remove));
+        }
+    }
+    bool WriteNew(const std::wstring& path,const void* bytes,size_t size) {
+        if(!bytes || !size || size>MAXDWORD)return false;
+        file_.value=CreateFileW(WindowsPath(path).c_str(),GENERIC_WRITE|DELETE,0,nullptr,
+                                CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
+        return file_.value!=INVALID_HANDLE_VALUE && WriteAllBytes(file_.value,bytes,size) && FlushFileBuffers(file_.value);
+    }
+    bool Publish(const std::wstring& path) {
+        published_=RenameHandle(file_.value,path);
+        return published_;
+    }
+};
 bool SameFile(HANDLE handle,const std::wstring& path) {
     Handle current{CreateFileW(WindowsPath(path).c_str(),0,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
         nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
@@ -114,18 +122,15 @@ bool PrepareBackupSlot(const std::wstring& path,const Catalog& catalog) {
     }
     return false;
 }
-FilePublication PromoteReplacement(const std::wstring& path,const std::wstring& staging,const Catalog& catalog,HANDLE old) {
+FilePublication PromoteReplacement(const std::wstring& path,StagingFile& staging,const Catalog& catalog,HANDLE old) {
     auto backup=path+L".previous";
     bool moved=PrepareBackupSlot(path,catalog) && RenameHandle(old,backup);
     if(moved) TestPhase(L"reserved",path);
-    bool published=moved && MoveFileExW(WindowsPath(staging).c_str(),WindowsPath(path).c_str(),MOVEFILE_WRITE_THROUGH);
+    bool published=moved && staging.Publish(path);
     if(published) {
         FILE_DISPOSITION_INFO disposition={TRUE};
         SetFileInformationByHandle(old,FileDispositionInfo,&disposition,sizeof(disposition));
-    } else {
-        if(moved) RenameHandle(old,path); // no replacement; preserve any raced file
-        DeleteFileW(WindowsPath(staging).c_str());
-    }
+    } else if(moved) RenameHandle(old,path); // no replacement; preserve any raced file
     return published?FilePublication::Upgraded:FilePublication::Failed;
 }
 }
@@ -288,15 +293,14 @@ FilePublication PublishBytes(const std::wstring& path,const Quality& quality,con
         // capture; their unverified metadata cannot authorize preservation.
     }
     memory.SetRetainedBytes(RecordingMetadataMemoryUsage(incoming)+preserved.capacity());
-    auto staging=UniqueSibling(path,L".complete-");
-    StagingFile cleanup{WindowsPath(staging)};
-    if(!WriteNew(staging,bytes,size)) return FilePublication::Failed;
+    StagingFile staging;
+    if(!staging.WriteNew(UniqueSibling(path,L".complete-"),bytes,size)) return FilePublication::Failed;
     TestPhase(L"staged",path);
     if(permit&&!permit(context))return FilePublication::Replan;
     if(decision==SaveDecision::NewFile) {
         // No replace flag: a destination created during staging belongs to the
         // other writer, even when its quality happens to be lower.
-        bool ok=MoveFileExW(WindowsPath(staging).c_str(),WindowsPath(path).c_str(),MOVEFILE_WRITE_THROUGH)!=0;
+        bool ok=staging.Publish(path);
         if(ok && published_bytes)*published_bytes=size;
         return ok?FilePublication::Saved:FilePublication::Failed;
     }
@@ -491,9 +495,8 @@ FilePublication PublishMetadataBytes(const std::wstring& path,const void* bytes,
     if(a.codec!=b.codec || a.rate!=b.rate || a.channels!=b.channels || a.bits!=b.bits || a.bitrate!=b.bitrate)
         return FilePublication::Failed;
     memory.SetRetainedBytes(RecordingMetadataMemoryUsage(current)+RecordingMetadataMemoryUsage(incoming));
-    const auto staging=UniqueSibling(path,L".complete-lyrics-");
-    StagingFile cleanup{WindowsPath(staging)};
-    if(!WriteNew(staging,bytes,size))return FilePublication::Failed;
+    StagingFile staging;
+    if(!staging.WriteNew(UniqueSibling(path,L".complete-lyrics-"),bytes,size))return FilePublication::Failed;
     TestPhase(L"staged",path);
     const auto result=PromoteReplacement(path,staging,catalog,locked_file);
     return memory.Denied()?FilePublication::ResourceWait:result;

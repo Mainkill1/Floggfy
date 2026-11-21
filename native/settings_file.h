@@ -72,11 +72,6 @@ inline bool Write(const std::wstring& path,const std::wstring& text,bool create=
     else WritePrivateProfileStringW(nullptr,nullptr,nullptr,path.c_str());
     return ok;
 }
-inline std::wstring Trim(std::wstring text) {
-    const auto first=text.find_first_not_of(L" \t\r");
-    if(first==std::wstring::npos)return {};
-    return text.substr(first,text.find_last_not_of(L" \t\r")-first+1);
-}
 struct IniValue {
     bool present=false,duplicate=false;
     std::wstring_view value,raw_value;
@@ -144,15 +139,15 @@ inline void Set(std::wstring& text,const wchar_t* key,const std::wstring& value,
     size_t insertion=text.size();
     for(size_t p=0;p<text.size();) {
         const auto end=text.find(L'\n',p);const auto next=end==std::wstring::npos?text.size():end+1;
-        const auto line=Trim(text.substr(p,(end==std::wstring::npos?text.size():end)-p));
+        const auto line=TrimView(std::wstring_view(text).substr(p,end==std::wstring::npos?end:end-p));
         if(!line.empty()&&line.front()==L'['&&line.back()==L']') {
             if(inside)insertion=p;
-            inside=_wcsicmp(line.c_str(),section)==0;
+            inside=EqualKey(line,section);
             if(inside){found_section=true;insertion=next;}
         }else if(inside) {
             insertion=next;
             const auto equal=line.find(L'=');
-            if(equal!=std::wstring::npos&&_wcsicmp(Trim(line.substr(0,equal)).c_str(),key)==0) {
+            if(equal!=std::wstring::npos&&EqualKey(TrimView(line.substr(0,equal)),key)) {
                 if(found_key) {
                     text.erase(p,next-p);
                     continue;
@@ -181,13 +176,12 @@ inline void Erase(std::wstring& text,const wchar_t* key,const wchar_t* section=L
     bool inside=false;
     for(size_t p=0;p<text.size();) {
         const auto end=text.find(L'\n',p);const auto next=end==std::wstring::npos?text.size():end+1;
-        const auto physical=text.substr(p,(end==std::wstring::npos?text.size():end)-p);
-        const auto line=Trim(physical);
+        const auto line=TrimView(std::wstring_view(text).substr(p,end==std::wstring::npos?end:end-p));
         if(!line.empty()&&line.front()==L'['&&line.back()==L']')
-            inside=_wcsicmp(line.c_str(),section)==0;
+            inside=EqualKey(line,section);
         else if(inside&&!line.empty()&&line.front()!=L';') {
             const auto equal=line.find(L'=');
-            if(equal!=std::wstring::npos&&_wcsicmp(Trim(line.substr(0,equal)).c_str(),key)==0) {
+            if(equal!=std::wstring::npos&&EqualKey(TrimView(line.substr(0,equal)),key)) {
                 text.erase(p,next-p);continue;
             }
         }

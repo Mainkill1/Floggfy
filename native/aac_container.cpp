@@ -317,10 +317,12 @@ Bytes MetadataMovie(const uint8_t* source,const Layout& layout,const AacFile& fi
     }
     if(cover){ImageInfo image;Need(ReadImageInfo(delta.cover,image)&&image.mime==delta.mime&&(image.mime=="image/png"||image.mime=="image/jpeg"));Add(entries,Boxed(covr,Data(image.mime=="image/png"?14:13,delta.cover)));}
     Need(entries.size()<=metadata_limit);
-    auto metadata=Rebox(source,layout.metadata.metadata,meta,ilst,Boxed(ilst,entries),4);
-    if(!layout.metadata.metadata.size){
+    const auto items=Boxed(ilst,entries);
+    Bytes metadata;
+    if(layout.metadata.metadata.size)metadata=Rebox(source,layout.metadata.metadata,meta,ilst,items,4);
+    else {
         Bytes handler(8);N32(handler,Code('m','d','i','r'));handler.resize(25);
-        Bytes content(4);Add(content,Boxed(Code('h','d','l','r'),handler));Add(content,Boxed(ilst,entries));metadata=Boxed(meta,content);
+        Bytes content(4);Add(content,Boxed(Code('h','d','l','r'),handler));Add(content,items);metadata=Boxed(meta,content);
     }
     const auto user=Rebox(source,layout.metadata.user,udta,meta,metadata);
     return Rebox(source,layout.movie,moov,udta,user);

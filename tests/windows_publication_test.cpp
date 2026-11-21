@@ -56,6 +56,15 @@ static bool deny_memory(void*,size_t peak) {++memory_requests;check(peak>0,"none
 
 namespace history {
 void PublicationTestPhase(const wchar_t* phase,const std::wstring& path) {
+    if(test_mode==L"stage-held" && std::wstring(phase)==L"staged") {
+        WIN32_FIND_DATAW entry{};
+        HANDLE listing=FindFirstFileW((path+L".complete-*").c_str(),&entry);
+        check(listing!=INVALID_HANDLE_VALUE,"locate created stage before publication");
+        FindClose(listing);
+        const auto stage=path.substr(0,path.find_last_of(L'\\')+1)+entry.cFileName;
+        check(!MoveFileW(stage.c_str(),(stage+L".moved").c_str()) && GetLastError()==ERROR_SHARING_VIOLATION,
+              "created stage stays held against rename before publication");
+    }
     if((test_mode==L"invalidate-staged"&&std::wstring(phase)==L"staged")||
        (test_mode==L"invalidate-reserved"&&std::wstring(phase)==L"reserved"))permit_current=false;
     if((test_mode==L"crash" && std::wstring(phase)==L"reserved") ||
@@ -78,7 +87,29 @@ int wmain(int argc,wchar_t** argv) {
     auto bytes=tagged(catalog),high=tagged(catalog,24);
     Quality quality{Codec::Flac,44100,2,16,0},better{Codec::Flac,44100,2,24,0},actual;
     auto path=root+L"\\Track.flac";
+    // A previous process with the same PID can leave either staging name occupied.
+    // These are the first two staging attempts in this process.
+    const auto pid=std::to_wstring(GetCurrentProcessId());
+    const std::vector<uint8_t> sentinel{1,3,5,7};
+    const auto occupied=path+L".complete-"+pid+L"-1";
+    write(occupied,sentinel);
+    check(PublishBytes(path,quality,bytes.data(),bytes.size(),catalog)==FilePublication::Failed,"first-save stage collision");
+    check(VerifiedArchiveFile(occupied,sentinel.data(),sentinel.size()),"preserve occupied first-save stage");
+    check(GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES,"first-save collision leaves destination vacant");
+    check(DeleteFileW(occupied.c_str()),"remove first-save collision fixture");
+    write(path,bytes);
+    const auto occupied_metadata=path+L".complete-lyrics-"+pid+L"-2";
+    write(occupied_metadata,sentinel);
+    HANDLE existing=CreateFileW(path.c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr);
+    check(existing!=INVALID_HANDLE_VALUE,"hold metadata update source");
+    check(PublishMetadataBytes(path,bytes.data(),bytes.size(),catalog,existing)==FilePublication::Failed,"metadata stage collision");
+    CloseHandle(existing);
+    check(VerifiedArchiveFile(occupied_metadata,sentinel.data(),sentinel.size()),"preserve occupied metadata stage");
+    check(VerifiedArchiveFile(path,bytes.data(),bytes.size()),"retain recording on metadata stage collision");
+    check(DeleteFileW(occupied_metadata.c_str())&&DeleteFileW(path.c_str()),"remove metadata collision fixtures");
+    test_mode=L"stage-held";
     check(PublishBytes(path,quality,bytes.data(),bytes.size(),catalog)==FilePublication::Saved,"first save stages and publishes");
+    test_mode.clear();
     check(ExistingRecording(path,catalog,actual)&&actual.bits==16,"first published file is complete matching recording");
     check(PublishBytes(path,quality,bytes.data(),bytes.size(),catalog)==FilePublication::Skipped,"same recording and quality skipped");
     check(PublishBytes(path,better,high.data(),high.size(),catalog)==FilePublication::Upgraded,"quality upgrade safely promoted");

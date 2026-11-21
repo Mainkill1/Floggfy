@@ -45,10 +45,7 @@ public:
         // identity enriches the same uninterrupted fallback occurrence.
         if(found==records_.end()&&current!=records_.end()) {
             const auto& prior=current->metadata.media;
-            const auto key=[](const Media& item) {
-                return item.spotify_uri.empty()?item.Key():item.spotify_uri;
-            };
-            if((media.playback_instance.empty()||prior.playback_instance.empty())&&key(prior)==key(media))
+            if((media.playback_instance.empty()||prior.playback_instance.empty())&&prior.PlaybackKey()==media.PlaybackKey())
                 found=current;
         }
         if(found==records_.end()) {

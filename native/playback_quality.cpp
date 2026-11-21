@@ -64,7 +64,7 @@ void PlaybackQualityTracker::Media(const std::string &key, const std::wstring &t
   playing_ = playing;
   identity_ = key;
   playback_instance_ = playback_instance;
-  title_ = title.substr(0, 190);
+  title_.assign(title, 0, 190);
   duration_ = duration;
 }
 void PlaybackQualityTracker::Ogg(uintptr_t context, const uint8_t *bytes, size_t length,

@@ -1,4 +1,4 @@
-// Exercises production enrichment with an offline artwork-cache boundary.
+// Exercises production enrichment using artwork attached to in-memory recording metadata.
 #include "../native/metadata_bridge.cpp"
 #include "../native/history_settings.cpp"
 #include "../native/file_publication.h"
@@ -11,21 +11,16 @@
 #include <cassert>
 #include <algorithm>
 namespace {
-std::string ready_uri;
-std::vector<uint8_t> ready_cover;
-std::string ready_mime;
-unsigned artwork_reads=0;
+const std::string ready_uri="spotify:track:0000000000000000000001";
+void SetFixtureArtwork(history::RichMetadata& record,const std::vector<uint8_t>& bytes,const std::string& mime={}) {
+ auto image=std::make_shared<history::MetadataArtwork>();
+ image->bytes=bytes;image->mime=mime;record.artwork=image;
+ history::cache.Put(record);
+}
 }
 namespace history {
-std::uint64_t AlbumArtworkRevision() noexcept {return 0;}
-bool CacheAlbumArtwork(const std::string&,const std::string&) {return false;}
 bool IsAlbumArtworkUrl(const std::string& url){return url.rfind("https://i.scdn.co/image/",0)==0;}
 bool DownloadAlbumArtwork(const std::string&,std::vector<uint8_t>&){return false;}
-bool GetAlbumArtwork(const std::string& uri,std::vector<uint8_t>& bytes,std::string& mime) {
- ++artwork_reads;
- if(uri!=ready_uri || ready_cover.empty())return false;
- bytes=ready_cover;mime=ready_mime;return true;
-}
 }
 static std::string ArtworkSource(const history::Tags& tags) {
  const auto found=std::find_if(tags.fields.begin(),tags.fields.end(),[](const auto& field){return field.first=="FLOGGFY_ARTWORK_SOURCE";});
@@ -33,36 +28,36 @@ static std::string ArtworkSource(const history::Tags& tags) {
 }
 static void CheckClientArtwork() {
  history::RichMetadata record;record.title="Song";record.artist="Artist";record.album="Album";
- record.uri="spotify:track:0000000000000000000001";record.duration=200;
+ record.uri=ready_uri;record.duration=200;
  record.fields["FLOGGFY_ARTWORK_SOURCE"]="untrusted text marker";
  history::cache.Put(record);
  history::Media media;media.title=L"Song";media.artist=L"Artist";media.album=L"Album";media.duration=200;
- ready_uri=record.uri;
+ const auto jpeg=artwork_fixture::jpeg(),png=artwork_fixture::png();
  history::Tags existing_tags;existing_tags.cover=artwork_fixture::png();existing_tags.mime="image/png";
  const auto embedded_cover=existing_tags.cover;
  history::EnrichTags(media,existing_tags);
  assert(existing_tags.cover==embedded_cover&&ArtworkSource(existing_tags).empty()); // No ready client image.
- ready_cover={1,2,3};history::EnrichTags(media,existing_tags);
+ SetFixtureArtwork(record,{1,2,3});history::EnrichTags(media,existing_tags);
  assert(existing_tags.cover==embedded_cover&&ArtworkSource(existing_tags).empty()); // Invalid client image.
- ready_cover=artwork_fixture::jpeg();ready_mime="image/jpeg";
+ SetFixtureArtwork(record,jpeg,"image/jpeg");
  history::Tags tags;tags.cover=artwork_fixture::png();tags.mime="image/png";
  history::EnrichTags(media,tags);
- assert(tags.cover==ready_cover && tags.mime==ready_mime && "validated client artwork is selected");
+ assert(tags.cover==jpeg && tags.mime=="image/jpeg" && "validated client artwork is selected");
  assert(ArtworkSource(tags)=="spotify-client");
  tags.fields.push_back({"FLOGGFY_ARTWORK_SOURCE","stale"});
- ready_cover=artwork_fixture::png();ready_mime="image/png";
+ SetFixtureArtwork(record,png,"image/png");
  history::EnrichTags(media,tags);
- assert(tags.cover==ready_cover && tags.mime=="image/png" && "client image selection is independent of existing-file preservation policy");
+ assert(tags.cover==png && tags.mime=="image/png" && "client image selection is independent of existing-file preservation policy");
  assert(ArtworkSource(tags)=="spotify-client"&&std::count_if(tags.fields.begin(),tags.fields.end(),[](const auto& field){return field.first=="FLOGGFY_ARTWORK_SOURCE";})==1);
  const auto original=tags.cover;
- ready_cover={1,2,3};
+ SetFixtureArtwork(record,{1,2,3});
  history::EnrichTags(media,tags);
  assert(tags.cover==original && tags.mime=="image/png");
- ready_cover=artwork_fixture::jpeg();ready_mime="image/jpeg";tags.cover.clear();tags.mime.clear();
- history::EnrichTags(media,tags);assert(tags.cover==ready_cover);
- const auto reads=artwork_reads;media.artist=L"Other";tags.cover=artwork_fixture::png();
+ SetFixtureArtwork(record,jpeg,"image/jpeg");tags.cover.clear();tags.mime.clear();
+ history::EnrichTags(media,tags);assert(tags.cover==jpeg);
+ media.artist=L"Other";tags.cover=artwork_fixture::png();
  const auto retained=tags.cover;history::Tags unmatched;unmatched.cover=retained;unmatched.mime="image/png";history::EnrichTags(media,unmatched);
- assert(unmatched.cover==retained && ArtworkSource(unmatched).empty() && artwork_reads==reads && "unmatched track must not receive another track's cover");
+ assert(unmatched.cover==retained && ArtworkSource(unmatched).empty() && "unmatched track must not receive another track's cover");
 
 }
 
@@ -87,9 +82,9 @@ static void CheckOwnedMetadata() {
  cache.Put(sparse);media.metadata=cache.Pin(sparse);
  for(int i=0;i<80;++i){auto other=first;other.uri="spotify:episode:other"+std::to_string(i);cache.Put(other);}
  settings.fetch_missing_artwork=false;
- Tags tags;const auto reads=artwork_reads;EnrichTags(media,tags);
+ Tags tags;EnrichTags(media,tags);
  settings.fetch_missing_artwork=true;
- assert(tags.cover==artwork->bytes&&artwork_reads==reads&&ArtworkSource(tags)=="spotify-client");
+ assert(tags.cover==artwork->bytes&&ArtworkSource(tags)=="spotify-client");
  auto corrected=sparse;corrected.artwork.reset();corrected.artwork_url="https://i.scdn.co/image/"+std::string(40,'b');corrected.artwork_urls={corrected.artwork_url};
  MergeAvailableFields(first,corrected);assert(!corrected.artwork);
  auto late=first;late.metadata_source="online";late.fields["LYRICS"]="later words";
@@ -202,7 +197,8 @@ static void CheckPublication(const std::wstring& root,bool flac) {
  using namespace history;
  Media media;media.title=L"Song";media.artist=L"Artist";media.album=L"Album";media.duration=200;
  RichMetadata fixture;fixture.uri=ready_uri;fixture.title="Song";fixture.artist="Artist";fixture.album="Album";fixture.duration=200;
- cache.Put(fixture);
+ const auto png=artwork_fixture::png(),jpeg=artwork_fixture::jpeg();
+ SetFixtureArtwork(fixture,png,"image/png");
  Catalog catalog;catalog.spotify_uri=ready_uri;
  const auto path=root+(flac?L"\\recording.flac":L"\\recording.ogg");
  Tags basic;
@@ -221,32 +217,32 @@ static void CheckPublication(const std::wstring& root,bool flac) {
   return file;
  };
  // Metadata=0 leaves basic Windows track fields intact and never requests art.
- Preferences(false,true);const auto reads=artwork_reads;
- auto tags=basic;EnrichTags(media,tags);assert(artwork_reads==reads&&tags.cover.empty());
+ Preferences(false,true);
+ auto tags=basic;EnrichTags(media,tags);assert(tags.cover.empty());
  save_tags(tags);RecordingFile incoming;
  assert(InspectRecording(tagged.data(),tagged.size(),incoming)&&incoming.complete);
  assert(PublishBytes(path,incoming.quality,tagged.data(),tagged.size(),catalog)==FilePublication::Saved);
  assert(!inspect().has_artwork);
  const auto coverless=ReadBytes(path);assert(AudioBytes(coverless,flac)==AudioBytes(source,flac));
  // With metadata enabled, unavailable/invalid client images also save coverless.
- Preferences(true,true);ready_cover.clear();tags=basic;EnrichTags(media,tags);assert(tags.cover.empty());
- ready_cover={1,2,3};EnrichTags(media,tags);assert(tags.cover.empty());
+ Preferences(true,true);fixture.artwork.reset();cache.Put(fixture);tags=basic;EnrichTags(media,tags);assert(tags.cover.empty());
+ SetFixtureArtwork(fixture,{1,2,3});EnrichTags(media,tags);assert(tags.cover.empty());
  save_tags(tags);const auto missing=root+(flac?L"\\unavailable.flac":L"\\unavailable.ogg");
  assert(PublishBytes(missing,incoming.quality,tagged.data(),tagged.size(),catalog)==FilePublication::Saved);
  assert(DeleteFileW(missing.c_str()));
  // A later client cover fills the existing file, respecting opt-out first.
- ready_cover=artwork_fixture::png();ready_mime="image/png";
+ SetFixtureArtwork(fixture,png,"image/png");
  auto generation=Preferences(true,false);tags=basic;EnrichTags(media,tags);
- assert(tags.cover==ready_cover&&ArtworkSource(tags)=="spotify-client");
+ assert(tags.cover==png&&ArtworkSource(tags)=="spotify-client");
  assert(UpdateRecordingMetadata(path,tags,catalog,generation)==FileMetadataUpdate::Skipped&&ReadBytes(path)==coverless);
  generation=Preferences(true,true);
  assert(UpdateRecordingMetadata(path,tags,catalog,generation)==FileMetadataUpdate::Updated);
- assert(inspect().tags.cover==ready_cover&&AudioBytes(ReadBytes(path),flac)==AudioBytes(coverless,flac));
+ assert(inspect().tags.cover==png&&AudioBytes(ReadBytes(path),flac)==AudioBytes(coverless,flac));
  // Better client artwork upgrades metadata only; a second identical pass is a no-op.
- ready_cover=artwork_fixture::jpeg();ready_mime="image/jpeg";tags=basic;EnrichTags(media,tags);
+ SetFixtureArtwork(fixture,jpeg,"image/jpeg");tags=basic;EnrichTags(media,tags);
  assert(UpdateRecordingMetadata(path,tags,catalog,generation)==FileMetadataUpdate::Updated);
  const auto enriched=ReadBytes(path);
- assert(inspect().tags.cover==ready_cover&&AudioBytes(enriched,flac)==AudioBytes(coverless,flac));
+ assert(inspect().tags.cover==jpeg&&AudioBytes(enriched,flac)==AudioBytes(coverless,flac));
  assert(UpdateRecordingMetadata(path,tags,catalog,generation)==FileMetadataUpdate::Skipped&&ReadBytes(path)==enriched);
  generation=Preferences(false,true);
  assert(UpdateRecordingMetadata(path,basic,catalog,generation)==FileMetadataUpdate::Skipped&&ReadBytes(path)==enriched);
@@ -258,7 +254,7 @@ static void CheckPublication(const std::wstring& root,bool flac) {
   assert(TagFlac(recording_fixture::fixture(44100,24),replacement,tagged,error));
   const Quality better{Codec::Flac,44100,2,24,0};
   assert(PublishBytes(path,better,tagged.data(),tagged.size(),catalog)==FilePublication::Upgraded);
-  const auto upgraded=inspect();assert(upgraded.quality.bits==24&&upgraded.tags.cover==ready_cover);
+  const auto upgraded=inspect();assert(upgraded.quality.bits==24&&upgraded.tags.cover==jpeg);
   assert(AudioBytes(ReadBytes(path),true)==AudioBytes(tagged,true));
  }
  assert(DeleteFileW(path.c_str()));

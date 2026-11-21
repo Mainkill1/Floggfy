@@ -541,7 +541,12 @@ static DWORD WINAPI MetadataWorker(LPVOID) {
   if(metadata_polling.load(std::memory_order_acquire))SchedulePoll();
   bool got=false;
   {ExclusiveSrw guard(message_lock);
-   if(count){message=messages[head];head=(head+1)%messages.size();--count;got=true;}}
+   if(count) {
+    const auto& queued=messages[head];
+    message.time=queued.time;message.length=queued.length;
+    std::memcpy(message.data,queued.data,queued.length);
+    head=(head+1)%messages.size();--count;got=true;
+   }}
   if(!got){WaitForSingleObject(message_event,500);continue;}
   try {
    const auto preferences=GetSettings();if(!preferences.metadata)continue;
@@ -765,9 +770,7 @@ static Browser* SyncHook(const void* win,Client* client,const String* url,const 
 static void* ViewHook(Client* client,const String* url,const void* settings,void* extra,void* context,void* delegate){auto callback=metadata_callbacks.Enter();return original_view(ObserveClient(client),url,settings,extra,context,delegate);}
 }
 std::uint64_t MetadataRevision() {
- // Both counters are monotonic. Artwork freshness becomes visible while its
- // bytes are committed, before this worker reacquires the metadata cache lock.
- return metadata_revision.load(std::memory_order_acquire)+AlbumArtworkRevision();
+ return metadata_revision.load(std::memory_order_acquire);
 }
 void RetainMetadata(Media& media) {
  if(media.metadata)return;
@@ -851,12 +854,10 @@ void EnrichTags(const Media& media,Tags& tags) {
   tags.fields.erase(std::remove_if(tags.fields.begin(),tags.fields.end(),[](const auto& field){return field.first=="ALBUMARTIST";}),tags.fields.end());
   tags.fields.emplace_back("ALBUMARTIST",Utf8(media.album_artist));
  }
- if(!metadata.uri.empty()) {
-  std::vector<uint8_t> cover;std::string mime;ImageInfo original;
-  if(metadata.artwork){cover=metadata.artwork->bytes;mime=metadata.artwork->mime;}
-  else if(!media.metadata)GetAlbumArtwork(metadata.uri,cover,mime); // Legacy callers without an owned record.
-  if(ReadImageInfo(cover,original)) {
-   tags.cover=std::move(cover);tags.mime=original.mime;
+ if(!metadata.uri.empty()&&metadata.artwork) {
+  ImageInfo original;
+  if(ReadImageInfo(metadata.artwork->bytes,original)) {
+   tags.cover=metadata.artwork->bytes;tags.mime=original.mime;
    // Provenance belongs to the validated client image actually selected above,
    // never to a cached text record or an unchanged embedded cover.
    tags.fields.erase(std::remove_if(tags.fields.begin(),tags.fields.end(),[](const auto& field){return field.first=="FLOGGFY_ARTWORK_SOURCE";}),tags.fields.end());

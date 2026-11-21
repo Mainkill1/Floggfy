@@ -30,7 +30,7 @@ static bool CreateDefaultIni(const std::wstring& path) {
     std::wstring text;for(const char* p=default_ini;*p;++p)text+=wchar_t(*p);
     return settings_file::Write(path,text,true);
 }
-struct SectionOption {const wchar_t* key;const wchar_t* section;const wchar_t* legacy_key=key;};
+struct SectionOption {const wchar_t* key;const wchar_t* section;const wchar_t* legacy_key=nullptr;};
 static constexpr std::array<SectionOption,13> section_options{{
     {L"MarkedWhenDownloaded",L"[Misc]"},
     {L"SaveUnmatched",L"[Matcher]"},
@@ -54,7 +54,7 @@ static settings_file::IniValue CategorizedValue(std::wstring_view text,const wch
     const auto* option=SectionFor(key);if(!option)return settings_file::Find(text,key);
     auto value=settings_file::Find(text,key,option->section);
     if(!value.present)value=settings_file::Find(text,key);
-    if(!value.present)value=settings_file::Find(text,option->legacy_key);
+    if(!value.present && option->legacy_key)value=settings_file::Find(text,option->legacy_key);
     return value;
 }
 // Keep Win32 integer semantics for existing boolean preferences. Presence in
@@ -92,7 +92,8 @@ static bool ReadCaptureSpeed(Settings& target,const settings_file::Snapshot& fil
 }
 static bool CategoriesNeedMigration(std::wstring_view text) {
     for(const auto& option:section_options)
-        if(!settings_file::Find(text,option.key,option.section).present||settings_file::Find(text,option.key).present||settings_file::Find(text,option.legacy_key).present)return true;
+        if(!settings_file::Find(text,option.key,option.section).present||settings_file::Find(text,option.key).present||
+           (option.legacy_key && settings_file::Find(text,option.legacy_key).present))return true;
     return settings_file::Find(text,L"CaptureSpeedLimit").present;
 }
 static void MigrateCategories(std::wstring& text) {
@@ -106,7 +107,8 @@ static void MigrateCategories(std::wstring& text) {
                 settings_file::EqualKey(option.key,L"MetadataCacheReadMiB")?L"256":L"0";
             settings_file::Set(text,option.key,migrated,option.section);
         }
-        settings_file::Erase(text,option.key);settings_file::Erase(text,option.legacy_key);
+        settings_file::Erase(text,option.key);
+        if(option.legacy_key)settings_file::Erase(text,option.legacy_key);
     }
     settings_file::Erase(text,L"CaptureSpeedLimit");
     // These exact old generated comments describe the removed setting.

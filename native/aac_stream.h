@@ -17,7 +17,9 @@ class SpacStream {
     uint64_t frames_=0,audio_bytes_=0;
     bool configured_=false,complete_=false,failed_=false;
     AacParse failure_=AacParse::Invalid;
-    AacParse ParsePage(const uint8_t* page,size_t size,
+    struct PageLayout;
+    static AacParse MeasurePage(const uint8_t* bytes,size_t size,PageLayout& layout,size_t& needed);
+    AacParse ParsePage(const uint8_t* page,const PageLayout& layout,
                        std::vector<std::vector<uint8_t>>* packets);
 public:
     AacInfo info;
