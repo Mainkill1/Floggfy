@@ -56,6 +56,10 @@ enum class RecordingRead { ValidComplete, Incomplete, InvalidContainer, ReadErro
 // error outcomes clear out; identity is checked separately by the caller.
 RecordingRead InspectRecordingFile(const std::wstring& file,RecordingFile& out);
 bool ReadRecording(const std::wstring& file,RecordingFile& out);
+// Read the held object from the beginning. The byte-retaining overload lets
+// publication handle allocation failure as a resource wait.
+bool ReadLockedRecording(void* file,RecordingFile& out) noexcept;
+bool ReadLockedRecording(void* file,std::vector<uint8_t>& bytes,RecordingFile& out);
 bool ExistingRecording(const std::wstring& file,const Catalog& catalog,Quality& out);
 // Empty means no safe destination could be established. No directories created.
 // Recover only a verified same-recording backup left by an interrupted upgrade.

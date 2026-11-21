@@ -4,15 +4,14 @@
 #include "metadata_update_core.h"
 #include "file_publication.h"
 #include "../tooling/history_settings.h"
+#include "../tooling/windows_file_read.h"
+#include "../tooling/windows_handle.h"
 #include "marked_recording.h"
 #include <algorithm>
 #include <cstdio>
-#include <memory>
 #include <string_view>
 namespace history {
 namespace {
-struct CloseFile {void operator()(void* file)const{if(file&&file!=INVALID_HANDLE_VALUE)CloseHandle(file);}};
-using File=std::unique_ptr<void,CloseFile>;
 bool SavedDateField(const std::string& key) {
     constexpr std::string_view date="HISTORY_SAVED_UTC";
     return key.size()==date.size() && std::equal(key.begin(),key.end(),date.begin(),[](char a,char b){
@@ -41,15 +40,13 @@ FileMetadataUpdate UpdateRecordingMetadata(const std::wstring& path,const Tags& 
     if(!UpdateEnabled(expected_generation))return FileMetadataUpdate::Skipped;
     // Retain the exact source object through promotion, preventing a metadata
     // update from replacing another process's newly created recording.
-    File file(CreateFileW(WindowsPath(path).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,
-                         nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr));
-    if(file.get()==INVALID_HANDLE_VALUE)return FileMetadataUpdate::Failed;
+    const win32::Handle file{CreateFileW(WindowsPath(path).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,
+                         nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
     LARGE_INTEGER size{};
-    if(!GetFileSizeEx(file.get(),&size)||size.QuadPart<=0||size.QuadPart>500LL*1024*1024)
+    if(file.value==INVALID_HANDLE_VALUE||!GetFileSizeEx(file.value,&size)||size.QuadPart<=0||size.QuadPart>500LL*1024*1024)
         return FileMetadataUpdate::Failed;
-    std::vector<uint8_t> source(size_t(size.QuadPart));
-    DWORD read=0;
-    if(!ReadFile(file.get(),source.data(),DWORD(source.size()),&read,nullptr)||read!=source.size())
+    std::vector<uint8_t> source;
+    if(!win32::ReadFileBytes(file.value,size_t(size.QuadPart),source))
         return FileMetadataUpdate::Failed;
     std::vector<uint8_t> patched;std::string error;
     Tags candidates=incoming;
@@ -57,14 +54,14 @@ FileMetadataUpdate UpdateRecordingMetadata(const std::wstring& path,const Tags& 
         [](const auto& field){return SavedDateField(field.first);}),candidates.fields.end());
     const auto settings=GetSettings();
     if(settings.generation==expected_generation && settings.marked_when_downloaded) {
-        auto saved=CreationStamp(file.get());
+        auto saved=CreationStamp(file.value);
         if(!saved.empty())candidates.fields.emplace_back("HISTORY_SAVED_UTC",std::move(saved));
     }
     const auto result=FillRecordingMetadata(source,candidates,catalog,patched,error);
     if(result==MetadataUpdate::Unchanged)return FileMetadataUpdate::Skipped;
     if(result!=MetadataUpdate::Updated)return FileMetadataUpdate::Failed;
     if(!UpdateEnabled(expected_generation))return FileMetadataUpdate::Skipped;
-    return PublishMetadataBytes(path,patched.data(),patched.size(),catalog,file.get())==FilePublication::Upgraded
+    return PublishMetadataBytes(path,patched.data(),patched.size(),catalog,file.value)==FilePublication::Upgraded
         ? FileMetadataUpdate::Updated : FileMetadataUpdate::Failed;
 }
 }

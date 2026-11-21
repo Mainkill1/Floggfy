@@ -80,6 +80,17 @@ int main() {
  }
  failure=Failure::None;Reset(recording);
  assert(ReadRecording(path,recording)&&recording.complete&&recording.owned&&MatchesRecording(recording,catalog)&&read_calls>=3&&size_calls==2);
+ {
+  // Recovery and promotion may reuse a handle after its byte read reached EOF.
+  const win32::Handle held{CreateFileW(path.c_str(),GENERIC_READ,0,nullptr,OPEN_EXISTING,0,nullptr)};
+  assert(held.value!=INVALID_HANDLE_VALUE&&SetFilePointerEx(held.value,LARGE_INTEGER{},nullptr,FILE_END));
+  std::vector<uint8_t> retained;
+  Reset(recording);
+  assert(ReadLockedRecording(held.value,retained,recording)&&retained==bytes&&MatchesRecording(recording,catalog));
+  failure=Failure::ShortRead;Reset(recording);
+  assert(!ReadLockedRecording(held.value,recording));Empty(recording);
+  failure=Failure::None;
+ }
 
  // Parser resource exhaustion is an unreadable-file result, never corruption
  // that permits a collision-suffixed duplicate beside a valid podcast.

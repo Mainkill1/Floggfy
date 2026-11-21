@@ -33,7 +33,9 @@ static HANDLE WINAPI CountOpen(LPCWSTR path,DWORD access,DWORD sharing,LPSECURIT
 #undef GetFileAttributesW
 #undef FindNextFileW
 #undef FindFirstFileExW
+#define CreateFileW CountOpen
 #include "../native/media/audio_history.cpp"
+#undef CreateFileW
 #include "../native/tooling/history_settings.cpp"
 static BOOL WINAPI CountSignature(LPCWSTR path,GET_FILEEX_INFO_LEVELS level,LPVOID data) {
     ++signature_checks;return GetFileAttributesExW(path,level,data);

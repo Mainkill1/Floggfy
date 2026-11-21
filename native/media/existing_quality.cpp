@@ -2,6 +2,7 @@
 #include "../tooling/windows_handle.h"
 #include <windows.h>
 #include "existing_quality.h"
+#include "../tooling/windows_file_read.h"
 #include "../tooling/windows_path.h"
 #include "../tooling/windows_file_write.h"
 #include <algorithm>
@@ -61,7 +62,7 @@ bool RestoreBackup(const std::wstring& backup,const std::wstring& destination,co
     Handle file{CreateFileW(WindowsPath(backup).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,
         nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
     RecordingFile old;
-    if(file.value==INVALID_HANDLE_VALUE || !ReadRecording(backup,old) || !old.owned || !MatchesRecording(old,catalog)) return false;
+    if(!ReadLockedRecording(file.value,old) || !old.owned || !MatchesRecording(old,catalog)) return false;
     return RenameWithoutReplacing(file.value, destination);
 }
 }
@@ -121,15 +122,47 @@ bool ListRecordingDirectory(const std::wstring& file,RecordingDirectory& out,con
         return true;
     }catch(...) {return false;}
 }
-bool PlanLockedRecordingMemory(void* locked_file,RecordingMemoryPlan& plan) {
-    plan={};const auto file=static_cast<HANDLE>(locked_file);LARGE_INTEGER size{};
-    if(!file||file==INVALID_HANDLE_VALUE||!GetFileSizeEx(file,&size)||size.QuadPart<4||
-       size.QuadPart>static_cast<LONGLONG>(kMaximumRecordingBytes))return false;
-    const bool result=ProbeRecordingMemory(size_t(size.QuadPart),[&](size_t offset,uint8_t* bytes,size_t count) {
+namespace {
+bool PlanRecordingMemory(HANDLE file,size_t size,RecordingMemoryPlan& plan) {
+    const bool result=ProbeRecordingMemory(size,[&](size_t offset,uint8_t* bytes,size_t count) {
         LARGE_INTEGER at{};at.QuadPart=static_cast<LONGLONG>(offset);DWORD copied=0;
         return SetFilePointerEx(file,at,nullptr,FILE_BEGIN)&&ReadFile(file,bytes,DWORD(count),&copied,nullptr)&&copied==count;
     },plan);
     LARGE_INTEGER zero{};return SetFilePointerEx(file,zero,nullptr,FILE_BEGIN)&&result;
+}
+RecordingRead InspectLockedRecording(HANDLE file,std::vector<uint8_t>& bytes,RecordingFile& out) {
+    out={};
+    LARGE_INTEGER size{};
+    if(!file||file==INVALID_HANDLE_VALUE||!GetFileSizeEx(file,&size))return RecordingRead::ReadError;
+    if(size.QuadPart<4||size.QuadPart>static_cast<LONGLONG>(kMaximumRecordingBytes))return RecordingRead::InvalidContainer;
+    if(RecordingReadMemoryScope::HasPermit()) {
+        RecordingMemoryPlan memory;
+        if(!PlanRecordingMemory(file,size_t(size.QuadPart),memory))return RecordingRead::InvalidContainer;
+        if(!RecordingReadMemoryScope::AdmitCurrent(memory.inspection_peak))return RecordingRead::ReadError;
+    }
+    if(!win32::ReadFileBytes(file,size_t(size.QuadPart),bytes))return RecordingRead::ReadError;
+    RecordingFile inspected;
+    if(!InspectRecording(bytes.data(),bytes.size(),inspected))
+        return inspected.inspection_resource_failure?RecordingRead::ReadError:RecordingRead::InvalidContainer;
+    out=std::move(inspected);
+    return out.complete?RecordingRead::ValidComplete:RecordingRead::Incomplete;
+}
+bool ParsedRecording(RecordingRead result) {
+    return result==RecordingRead::ValidComplete||result==RecordingRead::Incomplete;
+}
+}
+bool PlanLockedRecordingMemory(void* file,RecordingMemoryPlan& plan) {
+    plan={};LARGE_INTEGER size{};
+    return file&&file!=INVALID_HANDLE_VALUE&&GetFileSizeEx(file,&size)&&size.QuadPart>=4&&
+           size.QuadPart<=static_cast<LONGLONG>(kMaximumRecordingBytes)&&PlanRecordingMemory(file,size_t(size.QuadPart),plan);
+}
+bool ReadLockedRecording(void* file,std::vector<uint8_t>& bytes,RecordingFile& out) {
+    return ParsedRecording(InspectLockedRecording(file,bytes,out));
+}
+bool ReadLockedRecording(void* file,RecordingFile& out) noexcept {
+    std::vector<uint8_t> bytes;
+    try {return ReadLockedRecording(file,bytes,out);}
+    catch(...) {return false;}
 }
 RecordingRead InspectRecordingFile(const std::wstring& path,RecordingFile& out) {
     out={};
@@ -139,37 +172,15 @@ RecordingRead InspectRecordingFile(const std::wstring& path,RecordingFile& out) 
         // owned buffer is bounded to 1 GiB and is never used on capture paths.
         Handle file{CreateFileW(WindowsPath(path).c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_DELETE,
             nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
-        if(file.value==INVALID_HANDLE_VALUE)return RecordingRead::ReadError;
-        LARGE_INTEGER size={};
-        if(!GetFileSizeEx(file.value,&size))return RecordingRead::ReadError;
-        if(size.QuadPart<4||size.QuadPart>static_cast<LONGLONG>(kMaximumRecordingBytes))return RecordingRead::InvalidContainer;
-        if(RecordingReadMemoryScope::HasPermit()) {
-            RecordingMemoryPlan memory;
-            if(!PlanLockedRecordingMemory(file.value,memory))return RecordingRead::InvalidContainer;
-            if(!RecordingReadMemoryScope::AdmitCurrent(memory.inspection_peak))return RecordingRead::ReadError;
-        }
-        std::vector<uint8_t> bytes(size_t(size.QuadPart));
-        constexpr size_t chunk=1024*1024;
-        for(size_t offset=0;offset<bytes.size();) {
-            const DWORD wanted=DWORD(std::min(chunk,bytes.size()-offset));DWORD read=0;
-            if(!ReadFile(file.value,bytes.data()+offset,wanted,&read,nullptr)||read!=wanted)return RecordingRead::ReadError;
-            offset+=read;
-        }
-        LARGE_INTEGER after={};
-        if(!GetFileSizeEx(file.value,&after)||after.QuadPart!=size.QuadPart)return RecordingRead::ReadError;
-        RecordingFile inspected;
-        if(!InspectRecording(bytes.data(),bytes.size(),inspected))
-            return inspected.inspection_resource_failure?RecordingRead::ReadError:RecordingRead::InvalidContainer;
-        out=std::move(inspected);
-        return out.complete?RecordingRead::ValidComplete:RecordingRead::Incomplete;
+        std::vector<uint8_t> bytes;
+        return InspectLockedRecording(file.value,bytes,out);
     }catch(...) {
         // Allocation/parser failures leave no trusted quality or partial tags.
         return RecordingRead::ReadError;
     }
 }
 bool ReadRecording(const std::wstring& path,RecordingFile& out) {
-    const auto result=InspectRecordingFile(path,out);
-    return result==RecordingRead::ValidComplete || result==RecordingRead::Incomplete;
+    return ParsedRecording(InspectRecordingFile(path,out));
 }
 bool ExistingRecording(const std::wstring& path,const Catalog& catalog,Quality& out) {
     RecordingFile file;

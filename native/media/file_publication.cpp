@@ -21,22 +21,6 @@ using win32::Handle;
 HANDLE OpenLockedFile(const std::wstring& path,DWORD access=GENERIC_READ|DELETE) {
     return CreateFileW(WindowsPath(path).c_str(),access,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
 }
-bool ReadLockedRecording(HANDLE file,std::vector<uint8_t>& bytes,RecordingFile& recording) {
-    LARGE_INTEGER size{};
-    if(!GetFileSizeEx(file,&size) || size.QuadPart<4 || size.QuadPart>static_cast<LONGLONG>(kMaximumRecordingBytes))return false;
-    if(RecordingReadMemoryScope::HasPermit()) {
-        RecordingMemoryPlan memory;
-        if(!PlanLockedRecordingMemory(file,memory)||!RecordingReadMemoryScope::AdmitCurrent(memory.inspection_peak))return false;
-    }
-    bytes.resize(size_t(size.QuadPart));
-    for(size_t offset=0;offset<bytes.size();) {
-        const DWORD wanted=DWORD(std::min<size_t>(1024*1024,bytes.size()-offset));
-        DWORD read=0;
-        if(!ReadFile(file,bytes.data()+offset,wanted,&read,nullptr) || read!=wanted)return false;
-        offset+=read;
-    }
-    return InspectRecording(bytes.data(),bytes.size(),recording);
-}
 std::wstring UniqueSibling(const std::wstring& path,const wchar_t* label) {
     static volatile LONG sequence=0;
     return path+label+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(InterlockedIncrement(&sequence));
@@ -71,22 +55,20 @@ bool SameFile(HANDLE handle,const std::wstring& path) {
         GetFileInformationByHandle(current.value,&b) && a.dwVolumeSerialNumber==b.dwVolumeSerialNumber &&
         a.nFileIndexHigh==b.nFileIndexHigh && a.nFileIndexLow==b.nFileIndexLow;
 }
-bool PrepareBackupSlot(const std::wstring& path,const Catalog& catalog) {
+struct PreviousRecording {Quality quality;bool complete=false;};
+bool PrepareBackupSlot(const std::wstring& path,const Catalog& catalog,HANDLE old,const PreviousRecording& current) {
     const auto previous=path+L".previous";
     Handle backup{OpenLockedFile(previous)};
     if(backup.value==INVALID_HANDLE_VALUE) {
         const auto error=GetLastError();
         return win32::PathMissing(error);
     }
-    // The caller holds the current target against writes/deletion. Lock the
-    // backup too, then inspect both exact objects before retiring any bytes.
-    RecordingReadMemoryScope memory;RecordingFile current,retained;
-    if(!SameFile(backup.value,previous) || !ReadRecording(path,current) ||
-       (!current.complete && !current.owned) || !MatchesRecording(current,catalog))return false;
-    memory.SetRetainedBytes(RecordingMetadataMemoryUsage(current));
-    if(!ReadRecording(previous,retained) || !retained.owned || !MatchesRecording(retained,catalog))return false;
-    const auto& a=current.quality;const auto& b=retained.quality;
-    if(current.complete && (!retained.complete || SameQuality(a,b) || HigherQuality(a,b))) {
+    // Reuse the inspection of the still-held target. Lock and validate the backup.
+    RecordingFile retained;
+    if(!SameFile(old,path)||!SameFile(backup.value,previous)||!ReadLockedRecording(backup.value,retained)||
+       !retained.owned||!MatchesRecording(retained,catalog))return false;
+    if(current.complete&&(!retained.complete||SameQuality(current.quality,retained.quality)||
+                         HigherQuality(current.quality,retained.quality))) {
         return win32::DeleteOnClose(backup.value);
     }
     // Keep a better or incomparable old recording as an ordinary audio file.
@@ -102,9 +84,10 @@ bool PrepareBackupSlot(const std::wstring& path,const Catalog& catalog) {
     }
     return false;
 }
-FilePublication PromoteReplacement(const std::wstring& path,StagingFile& staging,const Catalog& catalog,HANDLE old) {
+FilePublication PromoteReplacement(const std::wstring& path,StagingFile& staging,const Catalog& catalog,HANDLE old,
+                                   const PreviousRecording& current) {
     const auto backup=path+L".previous";
-    if(!PrepareBackupSlot(path,catalog) || !RenameWithoutReplacing(old,backup))return FilePublication::Failed;
+    if(!PrepareBackupSlot(path,catalog,old,current) || !RenameWithoutReplacing(old,backup))return FilePublication::Failed;
     PUBLICATION_CHECKPOINT(L"reserved",path);
     if(!staging.Publish(path)) {
         RenameWithoutReplacing(old,path); // Preserve any file created since reservation.
@@ -198,7 +181,7 @@ FilenameConversion ConvertRecordingFilename(const std::wstring& source,const std
         Handle file{OpenLockedFile(source)};
         RecordingFile existing;
         if(file.value==INVALID_HANDLE_VALUE || !SameFile(file.value,source) ||
-           !ReadRecording(source,existing) || !existing.complete || !existing.owned ||
+           !ReadLockedRecording(file.value,existing) || !existing.complete || !existing.owned ||
            !MatchesRecording(existing,catalog))return FilenameConversion::Failed;
         // Allocate the caller's result before committing the
         // pathname change, so allocation failure cannot hide a successful move.
@@ -235,6 +218,7 @@ FilePublication PublishBytes(const std::wstring& path,const Quality& quality,con
     if(memory.Denied())return FilePublication::ResourceWait;
     if(decision==SaveDecision::Skip) return permit&&!permit(context)?FilePublication::Replan:FilePublication::Skipped;
     Handle old;
+    PreviousRecording previous;
     std::vector<uint8_t> preserved;
     if(decision==SaveDecision::Upgrade) {
         // Freeze the exact existing object BEFORE composing replacement tags.
@@ -246,6 +230,7 @@ FilePublication PublishBytes(const std::wstring& path,const Quality& quality,con
            !ReadLockedRecording(old.value,existing,current) ||
            !CanUpgradeRecording(current,quality,catalog))
             return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
+        previous={current.quality,current.complete};
         if(current.complete) {
             if(RecordingReadMemoryScope::HasPermit()) {
                 RecordingMemoryPlan old_memory;size_t peak=0;
@@ -271,7 +256,7 @@ FilePublication PublishBytes(const std::wstring& path,const Quality& quality,con
     auto result=FilePublication::Failed;
     if(decision==SaveDecision::Upgrade) {
         // An interruption leaves .previous for recovery on the next lookup.
-        result=PromoteReplacement(path,staging,catalog,old.value);
+        result=PromoteReplacement(path,staging,catalog,old.value,previous);
         if(memory.Denied())return FilePublication::ResourceWait;
     } else if(staging.Publish(path)) {
         result=FilePublication::Saved;
@@ -433,7 +418,6 @@ FilePublication PublishFormatUpgrade(const std::wstring& source,const std::wstri
         // Close the large construction snapshots before the verification pass.
         std::vector<uint8_t>().swap(incoming);std::vector<uint8_t>().swap(old_bytes);std::vector<uint8_t>().swap(preserved);
         memory.SetRetainedBytes(parsed_memory);
-        LARGE_INTEGER zero{};if(!SetFilePointerEx(old.value,zero,nullptr,FILE_BEGIN))return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
         return CompleteFormatUpgradeHeld(receipt,old.value,published_bytes);
     }catch(const std::bad_alloc&){return FilePublication::ResourceWait;}
     catch(...){return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;}
@@ -441,7 +425,7 @@ FilePublication PublishFormatUpgrade(const std::wstring& source,const std::wstri
 FilePublication PublishMetadataBytes(const std::wstring& path,const void* bytes,size_t size,const Catalog& catalog,void* locked_file) {
     RecordingReadMemoryScope memory;RecordingFile incoming,current;
     if(!locked_file || locked_file==INVALID_HANDLE_VALUE || !SameFile(locked_file,path) ||
-       !ReadRecording(path,current) || !current.complete || !current.owned || !MatchesRecording(current,catalog))
+       !ReadLockedRecording(locked_file,current) || !current.complete || !current.owned || !MatchesRecording(current,catalog))
         return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
     memory.SetRetainedBytes(RecordingMetadataMemoryUsage(current));
     if(RecordingReadMemoryScope::HasPermit()) {
@@ -456,7 +440,7 @@ FilePublication PublishMetadataBytes(const std::wstring& path,const void* bytes,
     StagingFile staging;
     if(!staging.WriteNew(UniqueSibling(path,L".complete-lyrics-"),bytes,size))return FilePublication::Failed;
     PUBLICATION_CHECKPOINT(L"staged",path);
-    const auto result=PromoteReplacement(path,staging,catalog,locked_file);
+    const auto result=PromoteReplacement(path,staging,catalog,locked_file,{current.quality,current.complete});
     return memory.Denied()?FilePublication::ResourceWait:result;
 }
 }
