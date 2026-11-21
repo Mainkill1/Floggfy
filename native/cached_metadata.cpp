@@ -161,18 +161,26 @@ bool Wanted(Bytes key, const std::string &uri) {
   if (key.substr(0, prefix.size()) != prefix)
     return false;
 
-  const auto suffix = "#$" + uri + "#";
-  return key.size() >= suffix.size() && key.substr(key.size() - suffix.size()) == suffix;
+  if (key.back() != '#' || key.size() - 1 < uri.size())
+    return false;
+  key.remove_suffix(1);
+  const auto uri_start = key.size() - uri.size();
+  return uri_start >= 2 && key.substr(uri_start - 2, 2) == "#$" && key.substr(uri_start) == uri;
 }
 bool Record(CachedRecords &out, Bytes key, Bytes value, uint64_t sequence, bool deleted,
             const std::string &uri) {
   if (!Wanted(key, uri))
     return true;
-  if (key.size() > 16384 || value.size() > max_value ||
-      (!out.count(std::string(key)) && out.size() >= 32))
+  if (key.size() > 16384 || value.size() > max_value)
     return false;
 
-  auto &old = out[std::string(key)];
+  auto entry = out.lower_bound(key);
+  if (entry == out.end() || entry->first != key) {
+    if (out.size() >= 32)
+      return false;
+    entry = out.emplace_hint(entry, std::string(key), CachedRecord{});
+  }
+  auto &old = entry->second;
   if (sequence >= old.sequence)
     old = {sequence, deleted, std::string(value)};
   return true;

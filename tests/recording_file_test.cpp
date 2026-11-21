@@ -342,7 +342,7 @@ int main(int argc,char** argv) {
     check(InspectRecording(tagged.data(),tagged.size(),file)&&file.complete&&file.owned&&
           file.quality.codec==Codec::Mp3&&MatchesRecording(file,episode),"owned podcast MP3 recognized");
     Mp3Info complete_info;Tags complete_tags;
-    check(InspectOwnedMp3(tagged.data(),tagged.size(),complete_info,complete_tags,error),"owned MP3 bounds available");
+    check(InspectOwnedMp3Result(tagged.data(),tagged.size(),complete_info,complete_tags,error)==Mp3InspectionResult::Valid,"owned MP3 bounds available");
     auto frame_boundary=tagged;frame_boundary.resize(complete_info.audio_offset+417);
     check(InspectRecording(frame_boundary.data(),frame_boundary.size(),file)&&!file.complete&&file.owned&&
           MatchesRecording(file,episode),"frame-aligned owned MP3 truncation remains repairable");

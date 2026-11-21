@@ -140,7 +140,7 @@ int wmain(int argc,wchar_t** argv) {
     auto complete_mp3=podcast(episode);RecordingFile mp3_recording;
     check(InspectRecording(complete_mp3.data(),complete_mp3.size(),mp3_recording)&&mp3_recording.complete,"complete podcast fixture");
     Mp3Info mp3_info;Tags mp3_tags;std::string mp3_error;
-    check(InspectOwnedMp3(complete_mp3.data(),complete_mp3.size(),mp3_info,mp3_tags,mp3_error),"podcast audio bounds");
+    check(InspectOwnedMp3Result(complete_mp3.data(),complete_mp3.size(),mp3_info,mp3_tags,mp3_error)==Mp3InspectionResult::Valid,"podcast audio bounds");
     auto partial_mp3=root+L"\\partial.mp3";auto frame_aligned=complete_mp3;
     frame_aligned.resize(mp3_info.audio_offset+417*2);write(partial_mp3,frame_aligned);
     check(ResolveRecordingDestination(partial_mp3,episode).path==partial_mp3,"frame-aligned owned MP3 remains at its repair path");

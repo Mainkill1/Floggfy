@@ -45,7 +45,7 @@ static void GatingAndSettings() {
     assert(GetLastError()==0x87654321&&HookDiagnosticsEnabled());
     signal=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(signal);
     QueueHookDiagnostic("hook lane test");assert(hook_queue.count==1&&networking_queue.count==0);
-    Record hook_record{};assert(Take(hook_queue,hook_record));
+    Record hook_record{};assert(TakeBatch(hook_queue,&hook_record,1)==1);
     CloseHandle(signal);signal=nullptr;
     InterlockedExchange(&networking_enabled,0);assert(HookDiagnosticsEnabled());
     InterlockedExchange(&networking_enabled,1);InterlockedExchange(&log_level_value,2);assert(!HookDiagnosticsEnabled());
@@ -55,13 +55,13 @@ static void GatingAndSettings() {
     const std::wstring full=exe,path=full.substr(0,full.find_last_of(L'\\'))+L"\\SpotifyHistory.ini";
     assert(CreateDefaultIni(path));Settings parsed;
     assert(!ReadRestartOptions(parsed,path)&&!parsed.debug_hook_diagnostics);
-    assert(WritePrivateProfileStringW(L"To Disk",L"DebugHookDiagnostics",L"1",path.c_str()));
+    assert(WritePrivateProfileStringW(L"Debug",L"DebugHookDiagnostics",L"1",path.c_str()));
     assert(!ReadRestartOptions(parsed,path)&&parsed.debug_hook_diagnostics);
-    assert(WritePrivateProfileStringW(L"To Disk",L"DebugHookDiagnostics",nullptr,path.c_str()));
+    assert(WritePrivateProfileStringW(L"Debug",L"DebugHookDiagnostics",nullptr,path.c_str()));
     assert(ReadRestartOptions(parsed,path)&&!parsed.debug_hook_diagnostics);
     assert(WritePrivateProfileStringW(L"Other",L"Keep",L"\u97f3\u697d",path.c_str()));
     InitSettings(nullptr);assert(!HookDiagnosticsEnabled()&&FlushSettings(5000));
-    assert(GetPrivateProfileIntW(L"To Disk",L"DebugHookDiagnostics",9,path.c_str())==0);
+    assert(GetPrivateProfileIntW(L"Debug",L"DebugHookDiagnostics",9,path.c_str())==0);
     wchar_t text[16];assert(GetPrivateProfileStringW(L"Other",L"Keep",L"",text,16,path.c_str())==2);
     assert(std::wstring(text)==L"\u97f3\u697d");
 }

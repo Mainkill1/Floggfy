@@ -1,6 +1,7 @@
 #pragma once
 #include "rich_metadata.h"
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -10,7 +11,7 @@ struct CachedRecord {
   bool deleted = false;
   std::string value;
 };
-using CachedRecords = std::map<std::string, CachedRecord>;
+using CachedRecords = std::map<std::string, CachedRecord, std::less<>>;
 struct CachedTrackMetadata {
   std::string uri, title, album, album_uri;
   double duration = 0;

@@ -78,7 +78,6 @@ static size_t TakeBatch(LogQueue& queue,Record* records,size_t capacity) noexcep
  }
  queue.count-=count;ReleaseSRWLockExclusive(&queue.lock);return count;
 }
-[[maybe_unused]] static bool Take(LogQueue& queue,Record& record) noexcept {return TakeBatch(queue,&record,1)==1;}
 struct LocalStamp {SYSTEMTIME time{};LONGLONG offset_minutes=0;};
 static LocalStamp ToLocalStamp(const SYSTEMTIME& utc) noexcept {
  LocalStamp result;result.time=utc;
@@ -133,7 +132,6 @@ static void WriteBatch(const Record* records,size_t count,LogLane lane) noexcept
   WriteCappedLog(settings.root+LaneFile(lane),batch);
  }catch(...) {/* Logging failures must not stop capture or either log queue. */}
 }
-[[maybe_unused]] static void WriteRecord(const Record& record,LogLane lane) noexcept {WriteBatch(&record,1,lane);}
 static bool Drain(LogQueue& queue,LogLane lane) noexcept {
  std::array<Record,batch_size+1> records{};
  auto count=TakeBatch(queue,records.data(),batch_size);
@@ -181,7 +179,11 @@ bool WriteCappedLog(const std::wstring& path,const std::string& line){
    pos.QuadPart=size.QuadPart-static_cast<LONGLONG>(budget)-1;
    tail.assign(budget+1,'\0');DWORD read=0;
    ok=SetFilePointerEx(h,pos,nullptr,FILE_BEGIN)&&ReadFile(h,tail.data(),DWORD(tail.size()),&read,nullptr)&&read==tail.size();
-   if(ok){const auto boundary=tail.find('\n');tail=boundary==std::string::npos?std::string{}:tail.substr(boundary+1);}
+   if(ok) {
+    const auto boundary=tail.find('\n');
+    if(boundary==std::string::npos)tail.clear();
+    else tail.erase(0,boundary+1);
+   }
   }
   if(ok) {
    pos.QuadPart=0;DWORD retained=0;

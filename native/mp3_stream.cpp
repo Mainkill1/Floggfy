@@ -324,8 +324,4 @@ Mp3InspectionResult InspectOwnedMp3Result(const std::uint8_t* bytes,std::size_t 
         return inspect()?Mp3InspectionResult::Valid:Mp3InspectionResult::Invalid;
     } catch(...) {info={};tags={};error.clear();return Mp3InspectionResult::ResourceFailure;}
 }
-bool InspectOwnedMp3(const std::uint8_t* bytes,std::size_t size,Mp3Info& info,
-                     Tags& tags,std::string& error) noexcept {
-    return InspectOwnedMp3Result(bytes,size,info,tags,error)==Mp3InspectionResult::Valid;
-}
 }

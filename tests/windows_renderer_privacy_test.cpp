@@ -21,18 +21,18 @@ std::string ReadText(const std::wstring& path) {
 }
 void FlushAndCheck() {
     history::Record record;
-    while(history::Take(history::activity_queue,record)) {
+    while(history::TakeBatch(history::activity_queue,&record,1)==1) {
         assert(std::string(record.detail).find(marker)==std::string::npos);
         assert(std::string(record.detail).find("FLOGGFY_")==std::string::npos);
-        history::WriteRecord(record,history::LogLane::Activity);
+        history::WriteBatch(&record,1,history::LogLane::Activity);
     }
-    while(history::Take(history::diagnostic_queue,record)) {
+    while(history::TakeBatch(history::diagnostic_queue,&record,1)==1) {
         assert(std::string(record.detail).find(marker)==std::string::npos);
         assert(std::string(record.detail).find("FLOGGFY_")==std::string::npos);
-        history::WriteRecord(record,history::LogLane::Diagnostic);
+        history::WriteBatch(&record,1,history::LogLane::Diagnostic);
     }
-    while(history::Take(history::networking_queue,record))history::WriteRecord(record,history::LogLane::Networking);
-    while(history::Take(history::hook_queue,record))history::WriteRecord(record,history::LogLane::Hook);
+    while(history::TakeBatch(history::networking_queue,&record,1)==1)history::WriteBatch(&record,1,history::LogLane::Networking);
+    while(history::TakeBatch(history::hook_queue,&record,1)==1)history::WriteBatch(&record,1,history::LogLane::Hook);
     for(const auto name:{L"Floggfy.log",L"Floggfy-diagnostics.log",L"Floggfy-networking.log",L"Floggfy-hook-diagnostics.log"}) {
         const auto text=ReadText(test_root+L"\\"+name);
         assert(text.find(marker)==std::string::npos&&text.find("FLOGGFY_")==std::string::npos);
