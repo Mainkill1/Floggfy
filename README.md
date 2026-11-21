@@ -14,7 +14,7 @@ Development checks covered Spotify 1.2.97, 1.3.9, and 1.3.10 on Windows x64. The
 - Quit Spotify completely before installing or upgrading.
 - Download your preferred option from [Releases](https://github.com/Mainkill1/Floggfy/releases):
 - **Always on:** put `version.dll` beside `Spotify.exe`, then start Spotify normally.
-- **Launcher:** put `Floggfy.exe` and `Floggfy.dll` beside `Spotify.exe`, then run `Floggfy.exe`. Launcher mode loads the same DLL into supported Spotify child processes before they start.
+- **Launcher:** put `Floggfy.exe` and `Floggfy.dll` beside `Spotify.exe`, then run `Floggfy.exe`. Launcher mode loads the same DLL into spawned child processes before they start.
 - The Spotify folder is usually `%APPDATA%\Spotify`.
 - Use **one installation option**. Remove Floggfy's `version.dll` when switching to the launcher.
 - The launcher closes and restarts Spotify. To run without Floggfy, quit Spotify and start it normally.
@@ -71,7 +71,7 @@ Development checks covered Spotify 1.2.97, 1.3.9, and 1.3.10 on Windows x64. The
 - **Marked When Downloaded** (`MarkedWhenDownloaded=1` under `[Misc]`) adds a Saved date to supported playlist layouts. It uses the latest recording's `HISTORY_SAVED_UTC` tag and a local `Floggfy-marked.db` in Save Location; unknown tracks stay blank. Click Saved for newest first, oldest first, then original playlist order. Sorting covers the whole playlist, with unmarked songs last. With shuffle off, playlist playback follows the Saved order. Turn it off to hide the column and stop indexing.
 - **Marked DB Rebuild** starts or cancels a background scan of existing music. New recordings are indexed automatically. The scan imports tagged dates; when Downloads, Metadata and UpdateExistingMetadata are on, missing dates are filled from file creation time. Metadata updates preserve existing saved dates. DumpStreams and Unmatched are excluded. External moves into the library require another rebuild; visible indexed files are rechecked about every 30 seconds.
 - **Block Updates** under Misc (`BlockUpdates=0` by default) restricts the local Spotify Update folder. Enabled startup checks the restriction; disabling restores parent-folder permissions. Disable it before uninstalling Floggfy to restore updates.
-- **Network Kill Switch** blocks covered IPv4/IPv6 Winsock operations in processes loading Floggfy. Launcher mode carries that coverage into supported same-installation Spotify children as they are created. It cannot cancel already queued I/O or cover unrelated processes, direct native I/O or cached RIO paths; it is not a firewall guarantee. See [settings and coverage](AUDIO-HISTORY.md#settings).
+- **Network Kill Switch** blocks covered IPv4/IPv6 Winsock operations in processes loading Floggfy. `HookAllSubProcesses=1` (default) carries launcher coverage into spawned network helpers; `0` disables child loading and `2` enables it for every load method, including `version.dll`. It cannot cancel already queued I/O, direct native I/O or cached RIO paths; it is not a firewall guarantee. See [settings and coverage](AUDIO-HISTORY.md#settings).
 - See [settings and troubleshooting](AUDIO-HISTORY.md) for all options, including advanced diagnostics.
 
 ## Having trouble?

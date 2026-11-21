@@ -21,7 +21,7 @@ static bool AnyRunning(const std::wstring& exe) {
   CloseHandle(snapshot);return found;
 }
 int wmain(int argc,wchar_t** argv) {
-  assert(argc==2);std::wstring folder=argv[1],exe=folder+L"\\Spotify.exe",dll=folder+L"\\Floggfy.dll";
+  assert(argc==2);std::wstring folder=argv[1],exe=folder+L"\\Spotify.exe",dll=folder+L"\\Floggfy.dll",ini=folder+L"\\SpotifyHistory.ini";
   PROCESS_INFORMATION process{};std::wstring error;
   auto command=L"\""+exe+L"\"";STARTUPINFOW info{};info.cb=sizeof(info);
   // The issue's normal startup skips the adjacent DLL.
@@ -46,12 +46,23 @@ int wmain(int argc,wchar_t** argv) {
   // The proxy must bootstrap without any of its version exports being called,
   // even when the System32 DLL was loaded first and remains the bare-name result.
   const auto second_proxy=folder+L"\\version.dll";
+  assert(WritePrivateProfileStringW(L"Misc",L"HookAllSubProcesses",L"2",ini.c_str()));
   assert(CopyFileW(dll.c_str(),second_proxy.c_str(),TRUE));
+  assert(SetEnvironmentVariableW(L"FLOGGFY_STARTUP_VERSION_CHILD_TEST",L"1"));
   command=L"\""+exe+L"\" --load-local-version";
   assert(CreateProcessW(exe.c_str(),command.data(),nullptr,nullptr,FALSE,0,nullptr,folder.c_str(),&info,&process));
   assert(WaitForSingleObject(process.hProcess,15000)==WAIT_OBJECT_0);
   assert(GetExitCodeProcess(process.hProcess,&code) && code==0);
   CloseHandle(process.hThread);CloseHandle(process.hProcess);
+  assert(SetEnvironmentVariableW(L"FLOGGFY_STARTUP_VERSION_CHILD_TEST",nullptr));
+  assert(WritePrivateProfileStringW(L"Misc",L"HookAllSubProcesses",L"1",ini.c_str()));
+  assert(SetEnvironmentVariableW(L"FLOGGFY_STARTUP_VERSION_CHILD_DISABLED_TEST",L"1"));
+  command=L"\""+exe+L"\" --load-local-version";
+  assert(CreateProcessW(exe.c_str(),command.data(),nullptr,nullptr,FALSE,0,nullptr,folder.c_str(),&info,&process));
+  assert(WaitForSingleObject(process.hProcess,15000)==WAIT_OBJECT_0);
+  assert(GetExitCodeProcess(process.hProcess,&code)&&code==0);
+  CloseHandle(process.hThread);CloseHandle(process.hProcess);
+  assert(SetEnvironmentVariableW(L"FLOGGFY_STARTUP_VERSION_CHILD_DISABLED_TEST",nullptr));
   assert(DeleteFileW(second_proxy.c_str()));
   // The fallback loads it before the host entry point and detaches its debugger.
   assert(SetEnvironmentVariableW(L"FLOGGFY_STARTUP_CHILD_TEST",L"1"));
@@ -64,6 +75,15 @@ int wmain(int argc,wchar_t** argv) {
   CloseHandle(process.hThread);CloseHandle(process.hProcess);
   assert(SetEnvironmentVariableW(L"FLOGGFY_STARTUP_CHILD_TEST",nullptr));
   assert(!AnyRunning(exe));
+  // Mode 0 keeps launcher-loaded Floggfy in the parent without touching children.
+  assert(WritePrivateProfileStringW(L"Misc",L"HookAllSubProcesses",L"0",ini.c_str()));
+  assert(SetEnvironmentVariableW(L"FLOGGFY_STARTUP_CHILD_DISABLED_TEST",L"1"));
+  if(!startup::Launch(folder,process,error))std::fwprintf(stderr,L"%ls\n",error.c_str());
+  assert(process.hProcess&&WaitForSingleObject(process.hProcess,10000)==WAIT_OBJECT_0);
+  assert(GetExitCodeProcess(process.hProcess,&code)&&code==0);
+  CloseHandle(process.hThread);CloseHandle(process.hProcess);
+  assert(SetEnvironmentVariableW(L"FLOGGFY_STARTUP_CHILD_DISABLED_TEST",nullptr));
+  assert(WritePrivateProfileStringW(L"Misc",L"HookAllSubProcesses",L"1",ini.c_str()));
   // Missing and invalid DLLs must fail without leaving a child behind.
   assert(MoveFileW(dll.c_str(),(dll+L".saved").c_str()));
   assert(!startup::Launch(folder,process,error) && !process.hProcess && !error.empty());

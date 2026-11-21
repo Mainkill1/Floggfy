@@ -17,7 +17,7 @@ struct CrashStatus {
 // Restart-only. Queue the shared CreateProcessW hook used by launcher child
 // loading and crash URL filtering; the caller owns ApplyQueued. Existing
 // processes, launches before activation, and other launch APIs are uncovered.
-bool PrepareCrash(bool enabled,HMODULE floggfy_module=nullptr) noexcept;
+bool PrepareCrash(bool enabled,HMODULE floggfy_module=nullptr,int child_mode=-1) noexcept;
 void FinalizeCrash(bool applied) noexcept;
 CrashStatus GetCrashStatus() noexcept;
 }

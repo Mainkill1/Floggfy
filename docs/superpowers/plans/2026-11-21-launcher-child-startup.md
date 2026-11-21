@@ -4,7 +4,7 @@
 
 **Goal:** Load `Floggfy.dll` into every covered Spotify child before its entry point executes in launcher mode.
 
-**Architecture:** Extract the launcher's stopped-process loader into shared tooling, then extend the existing `CreateProcessW` hook to apply it to same-installation Spotify children. The hook continues to own crash URL rewriting and becomes recursively active when each child loads Floggfy.
+**Architecture:** Extract the launcher's stopped-process loader into shared tooling, then extend the existing `CreateProcessW` hook to apply it to every spawned child according to `HookAllSubProcesses`. The hook continues to own crash URL rewriting and becomes recursively active when each child loads Floggfy.
 
 **Tech Stack:** C++17, Win32 process/debug APIs, MinHook, MinGW-w64 Windows integration tests
 
@@ -12,8 +12,8 @@
 
 ## Global Constraints
 
-- Enable recursive child loading only when the active module is named `Floggfy.dll`.
-- Match approved executable names and require the same installation directory.
+- Use `HookAllSubProcesses=0/1/2` for off, launcher-only, or every-load-method coverage.
+- Cover every child created through the hooked `CreateProcessW`; do not scan processes.
 - Load and verify Floggfy before child application entry.
 - Preserve the caller's suspended/running intent and all unrelated CreateProcess arguments.
 - Keep one MinHook detour on `CreateProcessW`.
@@ -21,8 +21,8 @@
 
 ## Review Focus
 
-- A child command with quoted paths and a null application name resolves to the exact same-installation executable.
-- A lookalike executable name or a matching name from another directory forwards unchanged.
+- Child loading does not depend on executable names, paths, or command-line parsing.
+- Modes 0, 1, and 2 retain their documented load-method boundaries.
 - An originally suspended child remains suspended after Floggfy is loaded.
 - A load failure terminates the covered child, closes Floggfy-owned handles, and returns a stable native error.
 - Crash-report URL filtering still works when child loading owns the same process hook.
@@ -61,14 +61,14 @@
 - Modify: `tests/runners/test-native-windows.sh`
 
 **Interfaces:**
-- Produces: child configuration derived from the loaded module path and approved executable names.
+- Produces: child configuration derived from the loaded module path and mode 0/1/2.
 - Consumes: `startup::StopAtEntry` and `startup::LoadStoppedProcess`.
 - Produces: child launch status counters for requested, loaded, failed, and unsupported-debug launches.
 
 - [ ] Write a real-process failing test where a parent creates `Spotify.exe`, the child checks Floggfy before entry, and a descendant repeats the check.
-- [ ] Add failing cases for preserved suspension, another installation, a lookalike name, load failure cleanup, and null application names.
+- [ ] Add failing cases for preserved suspension, arbitrary child names/paths, mode 0/1/2, load failure cleanup, and null application names.
 - [ ] Run the focused test and confirm failure because the current hook forwards children without loading Floggfy.
-- [ ] Implement exact executable resolution and same-directory policy.
+- [ ] Implement the mode gate without executable-name or path filtering.
 - [ ] Extend the existing `CreateProcessW` detour to stop, load, verify, and resume covered children while retaining crash URL rewriting.
 - [ ] Activate the hook whenever launcher child coverage or crash blocking requires it.
 - [ ] Run the child and crash-hook tests until green.

@@ -448,7 +448,8 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
                                  "NetworkKillSwitch=0; Winsock hooks ready, networking allowed");
     // Attach this independent launch guard as early as the settings allow.
     // Do not wait for CEF: it cannot cover the separate crash reporter process.
-    if(privacy::PrepareCrash(startup_settings.block_telemetry&&startup_settings.block_crash_reports,proxy_module))
+    if(privacy::PrepareCrash(startup_settings.block_telemetry&&startup_settings.block_crash_reports,
+                             proxy_module,startup_settings.hook_all_sub_processes))
         privacy::FinalizeCrash(MH_ApplyQueued()==MH_OK);
     const bool network_patch_enabled=startup_settings.network_patch;
     const bool decoded_messages_enabled=startup_settings.debug_networking;

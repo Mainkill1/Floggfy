@@ -1,5 +1,7 @@
 #include "process_startup_loader.h"
+#include "startup_ready.h"
 #include "windows_handle.h"
+#include "windows_last_error.h"
 #include <tlhelp32.h>
 #include <cstdint>
 #include <cwchar>
@@ -36,6 +38,19 @@ bool Module(DWORD pid,const std::wstring& name,bool full,uintptr_t& base,DWORD& 
     }
   }while(Module32NextW(snapshot.value,&module));
   return false;
+}
+void CloseAndClear(PROCESS_INFORMATION* process) {
+  if(!process)return;
+  if(process->hThread)CloseHandle(process->hThread);
+  if(process->hProcess)CloseHandle(process->hProcess);
+  *process={};
+}
+void StopChild(PROCESS_INFORMATION* process) {
+  if(!process||!process->hProcess)return;
+  TerminateProcess(process->hProcess,ERROR_DLL_INIT_FAILED);
+  DebugActiveProcessStop(process->dwProcessId);
+  WaitForSingleObject(process->hProcess,2000);
+  CloseAndClear(process);
 }
 } // namespace
 
@@ -116,5 +131,31 @@ bool LoadStoppedProcess(PROCESS_INFORMATION& process,const std::wstring& dll,std
     if(!Module(process.dwProcessId,dll,true,base,size)){error=L"Spotify did not load the adjacent Floggfy DLL.";return false;}
     return true;
   }catch(...){error=L"Loading Floggfy failed.";return false;}
+}
+
+BOOL CreateWithDll(CreateProcessFunction original,LPCWSTR application,LPWSTR command,
+ LPSECURITY_ATTRIBUTES process_attributes,LPSECURITY_ATTRIBUTES thread_attributes,
+ BOOL inherit,DWORD flags,LPVOID environment,LPCWSTR directory,
+ LPSTARTUPINFOW startup,LPPROCESS_INFORMATION process,const std::wstring& dll) noexcept {
+  win32::LastError error;
+  if(!original||!process){error.value=ERROR_INVALID_PARAMETER;return FALSE;}
+  if(flags&(DEBUG_PROCESS|DEBUG_ONLY_THIS_PROCESS)){error.value=ERROR_NOT_SUPPORTED;return FALSE;}
+  const bool keep_suspended=(flags&CREATE_SUSPENDED)!=0;
+  const DWORD controlled=(flags&~CREATE_SUSPENDED)|DEBUG_ONLY_THIS_PROCESS;
+  error.Restore();
+  if(!original(application,command,process_attributes,thread_attributes,inherit,controlled,
+               environment,directory,startup,process)) {
+    error.value=GetLastError();return FALSE;
+  }
+  const DWORD create_error=GetLastError();std::wstring message;
+  if(!StopAtEntry(*process)){StopChild(process);error.value=ERROR_DLL_INIT_FAILED;return FALSE;}
+  wchar_t ready_name[80]{};ReadyName(process->dwProcessId,ready_name);
+  Handle ready(CreateEventW(nullptr,TRUE,FALSE,ready_name));
+  const bool initialized=ready.value&&LoadStoppedProcess(*process,dll,message)&&
+                         WaitForSingleObject(ready.value,10000)==WAIT_OBJECT_0;
+  if(!initialized||(!keep_suspended&&ResumeThread(process->hThread)!=1)) {
+    StopChild(process);error.value=ERROR_DLL_INIT_FAILED;return FALSE;
+  }
+  error.value=create_error;return TRUE;
 }
 } // namespace startup

@@ -10,6 +10,7 @@ void QueueDiagnostic(const char*) {}
 int main() {
     using namespace history;
     assert(Settings{}.capture_speed==-1&&Settings{}.network_kill_switch==0&&!Settings{}.block_updates);
+    assert(Settings{}.hook_all_sub_processes);
     assert(Settings{}.log_level==1&&Settings{}.matcher_duration_ms==25);
     assert(Settings{}.marked_when_downloaded);
     const std::string defaults=default_ini;
@@ -21,7 +22,7 @@ int main() {
     std::wstring text=L"; preserve my comments\n[To Disk]\nCustom=keep\nWindows Playback Fallback=1\nLogLevel=2\nDebugConnect=0\nDebugNetworking=1\nDebugHookDiagnostics=1\nDumpStreams=1\nMetadataCacheReadMiB=512\nNetworkPatch=1\nCaptureSpeedLimit=0\nCaptureSpeed=4\nUpdateExistingMetadata=0\nTrackNumberInFilename=1\nConvertNumberedFilenames=0\nSaveUnmatched=1\n[Matcher]\nSaveUnmatched=0\n[Debug]\nLogLevel=4\n[Fallbacks]\nWindowsPlaybackFallback=0\n[Other]\nNetworkPatch=keep\n";
     Settings parsed;ReadRestartOptionsText(parsed,text);
     assert(parsed.debug_networking&&parsed.debug_hook_diagnostics&&parsed.dump_streams&&!parsed.debug_connect);
-    assert(parsed.network_patch&&parsed.metadata_cache_read_mib==512&&!parsed.save_unmatched);
+    assert(parsed.network_patch&&parsed.metadata_cache_read_mib==512&&!parsed.save_unmatched&&parsed.hook_all_sub_processes);
     InsertMissingRestartDefaults(text);
     assert(text.find(L"; preserve my comments")!=text.npos);
     assert(settings_file::Find(text,L"Custom").value==L"keep");
@@ -41,9 +42,18 @@ int main() {
     assert(settings_file::Find(text,L"UpdateExistingMetadata",L"[Misc]").value==L"0");
     assert(settings_file::Find(text,L"TrackNumberInFilename",L"[Misc]").value==L"1");
     assert(settings_file::Find(text,L"ConvertNumberedFilenames",L"[Misc]").value==L"0");
+    assert(settings_file::Find(text,L"HookAllSubProcesses",L"[Misc]").value==L"1");
     const auto migrated=text;InsertMissingRestartDefaults(text);assert(text==migrated);
     std::wstring duplicates=L"[To Disk]\nDebugNetworking=1\nDebugNetworking=1\n";
     InsertMissingRestartDefaults(duplicates);ReadRestartOptionsText(parsed,duplicates);assert(!parsed.debug_networking);
+    for(int mode:{0,1,2}) {
+        const std::wstring child_mode=L"[Misc]\nHookAllSubProcesses="+std::to_wstring(mode)+L"\n";
+        assert(ReadRestartOptionsText(parsed,child_mode));assert(parsed.hook_all_sub_processes==mode);
+    }
+    for(const wchar_t* value:{L"",L"-1",L"3",L"01",L"true",L"1\nHookAllSubProcesses=2"}) {
+        const std::wstring child_mode=std::wstring(L"[Misc]\nHookAllSubProcesses=")+value+L"\n";
+        assert(ReadRestartOptionsText(parsed,child_mode)&&parsed.hook_all_sub_processes==1);
+    }
 
     wchar_t executable[32768];assert(GetModuleFileNameW(nullptr,executable,32768));
     const std::wstring exe=executable,path=exe.substr(0,exe.find_last_of(L'\\'))+L"\\SpotifyHistory.ini";
@@ -99,6 +109,7 @@ int main() {
     assert(DeleteFileW(path.c_str()));assert(CreateDefaultIni(path));
     assert(GetPrivateProfileIntW(L"Misc",L"BlockUpdates",9,path.c_str())==0);
     assert(GetPrivateProfileIntW(L"Misc",L"NetworkKillSwitch",9,path.c_str())==0);
+    assert(GetPrivateProfileIntW(L"Misc",L"HookAllSubProcesses",9,path.c_str())==1);
     for(const wchar_t* key:{L"UpdateExistingMetadata",L"TrackNumberInFilename",L"ConvertNumberedFilenames"}) {
         wchar_t value[32];assert(GetPrivateProfileStringW(L"Misc",key,L"",value,32,path.c_str()));
         assert(!GetPrivateProfileStringW(L"To Disk",key,L"",value,32,path.c_str()));

@@ -38,7 +38,7 @@ struct SectionOption {
     const wchar_t* legacy_key=nullptr;
     const wchar_t* duplicate_value=L"0";
 };
-static constexpr std::array<SectionOption,13> section_options{{
+static constexpr std::array<SectionOption,14> section_options{{
     {L"MarkedWhenDownloaded",L"[Misc]"},
     {L"SaveUnmatched",L"[Matcher]"},
     {L"WindowsPlaybackFallback",L"[Fallbacks]",L"Windows Playback Fallback"},
@@ -49,6 +49,7 @@ static constexpr std::array<SectionOption,13> section_options{{
     {L"DumpStreams",L"[Debug]"},
     {L"MetadataCacheReadMiB",L"[History]",nullptr,L"256"},
     {L"NetworkPatch",L"[Misc]"},
+    {L"HookAllSubProcesses",L"[Misc]",nullptr,L"1"},
     {L"UpdateExistingMetadata",L"[Misc]"},
     {L"TrackNumberInFilename",L"[Misc]"},
     {L"ConvertNumberedFilenames",L"[Misc]"}
@@ -227,10 +228,17 @@ static bool ReadRestartOptionsText(Settings& target,std::wstring_view text) {
         target.*(flag.member)=!value.present?flag.default_value:
             !value.duplicate&&value.value==L"1";
     }
+    const auto child_hook=CategorizedValue(text,L"HookAllSubProcesses");
+    bool child_hook_pending=!child_hook.present||child_hook.duplicate;
+    target.hook_all_sub_processes=1;
+    if(child_hook.present&&!child_hook.duplicate)
+        for(int mode:{0,1,2})if(child_hook.raw_value==std::to_wstring(mode)) {
+            target.hook_all_sub_processes=mode;child_hook_pending=false;break;
+        }
     const auto budget=CategorizedValue(text,L"MetadataCacheReadMiB");
     unsigned parsed=0;
     target.metadata_cache_read_mib=ParseUnsignedSetting(budget,1,4096,parsed)?parsed:256;
-    return ReadBlockingOptionsText(target,text)||missing||!budget.present||CategoriesNeedMigration(text);
+    return ReadBlockingOptionsText(target,text)||child_hook_pending||missing||!budget.present||CategoriesNeedMigration(text);
 }
 static bool ReadRestartOptions(Settings& target,const settings_file::Snapshot& file) {
     if(!file.readable) {
@@ -270,6 +278,8 @@ static void InsertMissingRestartDefaults(std::wstring& text) {
         settings_file::Set(text,L"MarkedWhenDownloaded",L"1",L"[Misc]");
     if(!settings_file::Find(text,L"MetadataCacheReadMiB",L"[History]").present)
         settings_file::Set(text,L"MetadataCacheReadMiB",L"256",L"[History]");
+    if(!settings_file::Find(text,L"HookAllSubProcesses",L"[Misc]").present)
+        settings_file::Set(text,L"HookAllSubProcesses",L"1",L"[Misc]");
     const auto log=settings_file::Find(text,L"LogLevel",L"[Debug]");
     if(!log.present||log.duplicate||(log.raw_value!=L"0"&&log.raw_value!=L"1"&&log.raw_value!=L"2"&&log.raw_value!=L"4"))
         settings_file::Set(text,L"LogLevel",L"1",L"[Debug]");

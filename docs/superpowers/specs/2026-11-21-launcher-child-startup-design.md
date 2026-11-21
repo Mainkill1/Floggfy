@@ -6,18 +6,19 @@ Launcher mode must give every Spotify process the same Floggfy coverage as the f
 
 ## Design
 
-Floggfy will own one `CreateProcessW` detour inside each launcher-loaded Spotify process. For an approved executable in the same Spotify installation, the detour creates the child under the debugger, stops it at its entry point, loads the adjacent `Floggfy.dll` with the existing validated loader, verifies the exact module path, and then restores the caller's requested running or suspended state. The loaded child installs the same detour, so coverage follows later descendants recursively.
+Floggfy will own one `CreateProcessW` detour inside each covered process. The detour creates every child under the debugger, stops it at its entry point, loads the current Floggfy module with the existing validated loader, verifies the exact module path, and then restores the caller's requested running or suspended state. The loaded child installs the same detour, so coverage follows later descendants recursively.
 
 The detour will also retain the existing crash-report URL rewrite. Keeping both behaviors behind one hook prevents competing MinHook detours on `CreateProcessW`.
 
 ## Scope
 
-- Cover `Spotify.exe`, `crashpad_handler.exe`, `SpotifyLauncher.exe`, `spotify_cli.exe`, and `save-to-spotify.exe` only when the resolved executable is in the same directory as the loaded `Floggfy.dll`.
+- `HookAllSubProcesses=0` disables child loading, `1` enables it only for launcher-loaded `Floggfy.dll`, and `2` enables it for every load method, including `version.dll`.
+- Cover every child created through `CreateProcessW`; do not scan or attach to existing processes.
 - Preserve process attributes, thread attributes, handle inheritance, environment, working directory, startup information, command line, and caller-owned process handles.
 - Preserve an original `CREATE_SUSPENDED` request. Resume an originally running child after Floggfy initialization.
 - Reject inherited debugger flags because Floggfy cannot safely share ownership of the child's debug events.
 - Terminate a covered child and return a native creation failure when pre-entry loading or verification fails.
-- Leave automatic `version.dll` mode unchanged. Recursive child loading is enabled only when the module is named `Floggfy.dll`.
+- Leave automatic `version.dll` mode unchanged at the default mode `1`; mode `2` explicitly opts it into recursive child loading.
 - Keep other executables and unsupported process-launch APIs outside this change.
 
 ## Approaches

@@ -13,7 +13,7 @@ void FinalizeToDiskMenu(bool){}
 void StartAudioHistory(HMODULE,HMODULE){}
 extern "C" MH_STATUS WINAPI MH_ApplyQueued(){return MH_OK;}
 namespace privacy {
-bool PrepareCrash(bool,HMODULE=nullptr) noexcept {return false;}
+bool PrepareCrash(bool,HMODULE=nullptr,int=-1) noexcept {return false;}
 void FinalizeCrash(bool) noexcept {}
 CrashStatus GetCrashStatus() noexcept {return {};}
 bool Prepare(HMODULE,bool) noexcept {return false;}

@@ -16,11 +16,9 @@ runtime helper.
 - Launcher mode checks both adjacent binary headers before stopping existing
   Spotify processes and reports architecture/header-read errors. This does not
   validate every loader dependency or guarantee Spotify-version compatibility.
-- Launcher mode also loads the adjacent `Floggfy.dll` into supported Spotify
-  children from the same installation before their application entry point.
-  Each covered child applies the same process-launch and network hooks before it
-  can create descendants. Unrelated programs and other Spotify installations
-  are forwarded unchanged.
+- Launcher mode also loads the adjacent `Floggfy.dll` into every child created
+  through its covered `CreateProcessW` path before application entry. Each child
+  applies the same process-launch and network hooks before creating descendants.
 - A mismatched automatic-mode DLL cannot run its own error-reporting code.
 
 ## Settings
@@ -137,6 +135,9 @@ NetworkPatch=0
 ; Nuke all networking abilities (AKA Offline mode only with no telemetry)
 ; -1 hidden from menu, 0 disabled, 1 enabled
 NetworkKillSwitch=0
+; Load Floggfy into spawned children so Network Kill Switch covers network helpers.
+; 0 disabled, 1 launcher/Floggfy.dll only, 2 all load methods including version.dll.
+HookAllSubProcesses=1
 ; Fill missing tags, artwork and lyrics in existing recordings.
 UpdateExistingMetadata=1
 ; Adds the track number infront of songs
@@ -168,10 +169,12 @@ ConvertNumberedFilenames=0
 - **NetworkKillSwitch:** `[Misc]`, default `0` shows the control off. `-1` hides it and
   disables its hooks; `1` shows it on. Menu changes apply live. It blocks
   covered IPv4/IPv6 Winsock operations in processes loading Floggfy, including
-  functional traffic needed for login, playback and online metadata. Launcher
-  mode loads Floggfy into approved same-installation Spotify children before
-  their entry point; automatic `version.dll` mode cannot cover a helper that
-  does not load that proxy. Already queued I/O is not cancelled; uninjected
+  functional traffic needed for login, playback and online metadata.
+  `HookAllSubProcesses=1` (default) loads `Floggfy.dll` into every child spawned
+  from launcher-covered processes before its entry point. `0` disables child
+  loading. `2` applies the same behavior to every Floggfy load method, including
+  automatic `version.dll`, by loading that exact module path into children.
+  Already queued I/O is not cancelled; uninjected
   processes, external DNS services,
   provider pointers obtained before hook startup, direct native I/O and cached
   Registered I/O (RIO) paths remain outside coverage. This is not a firewall

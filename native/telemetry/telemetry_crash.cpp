@@ -57,11 +57,12 @@ BOOL WINAPI CreateCrashProcess(LPCWSTR application,LPWSTR command,
  return result;
 }
 }
-bool PrepareCrash(bool preference,HMODULE floggfy_module) noexcept {
+bool PrepareCrash(bool preference,HMODULE floggfy_module,int child_mode) noexcept {
  win32::LastError error;
  if(attempted)return false;
  attempted=true;requested.store(preference,std::memory_order_release);
- const bool load_children=spotify_child::Configure(floggfy_module);
+ const bool load_children=spotify_child::Configure(floggfy_module,
+   child_mode<0?spotify_child::ConfiguredMode(floggfy_module):child_mode);
  if(!preference&&!load_children)return false;
  try{
   wchar_t module[32768];
@@ -106,6 +107,6 @@ CrashStatus GetCrashStatus() noexcept {
  return {requested.load(std::memory_order_acquire),active.load(std::memory_order_acquire),
   sanitized.load(std::memory_order_relaxed),without_url.load(std::memory_order_relaxed),
   failures.load(std::memory_order_relaxed),unmatched.load(std::memory_order_relaxed),
-  child.requested,child.loaded,child.failed,child.unsupported_debug};
+  child.enabled,child.loaded,child.failed,child.unsupported_debug};
 }
 }
