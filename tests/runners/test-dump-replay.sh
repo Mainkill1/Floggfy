@@ -39,7 +39,7 @@ x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include -c \
 
 common=(-std=c++17 -O2 -Wall -Wextra -Werror -municode -static-libgcc -static-libstdc++)
 x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include \
-    tests/windows_playback_diagnostics_test.cpp \
+    tests/windows_playback_diagnostics_test.cpp tests/marked_catalog_stub.cpp \
     native/spac_stream.cpp native/mp3_stream.cpp native/aac_container.cpp \
     native/playback_quality_windows.cpp native/playback_quality.cpp native/media_session.cpp \
     native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp \

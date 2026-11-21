@@ -16,7 +16,7 @@ x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c native/vorbis_headers_stb.c
 x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o build/song-shortcut/ogg.o
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -Wextra -Werror -DFLOGGFY_SONG_SHORTCUT_TEST \
     -static-libgcc -static-libstdc++ -I native/vendor/libogg/include \
-    tests/windows_song_destination_test.cpp tests/windows_menu_quality_test.cpp tests/library_layout_test.cpp \
+    tests/windows_song_destination_test.cpp tests/windows_menu_quality_test.cpp tests/library_layout_test.cpp tests/marked_catalog_stub.cpp \
     native/library_layout.cpp native/existing_quality.cpp native/recording_file.cpp \
     native/aac_container.cpp native/spac_stream.cpp native/mp3_stream.cpp native/vorbis_headers.cpp \
     native/playback_quality.cpp native/flac_history_core.cpp native/compressed_buffer.cpp \

@@ -56,7 +56,7 @@ x86_64-w64-mingw32-gcc -std=c11 -O2 -c native/vendor/minimp4/minimp4.c -o "$flog
 x86_64-w64-mingw32-gcc -std=c11 -O2 -c native/vorbis_headers_stb.c -o "$floggfy_diag_build/vorbis.o"
 x86_64-w64-mingw32-gcc -std=c11 -O2 -I native/vendor/libogg/include -c native/vendor/libogg/src/framing.c -o "$floggfy_diag_build/ogg.o"
 mkdir -p "$floggfy_diag_root/playback"
-x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_playback_diagnostics_test.cpp \
+x86_64-w64-mingw32-g++ "${common[@]}" -I native/vendor/libogg/include tests/windows_playback_diagnostics_test.cpp tests/marked_catalog_stub.cpp \
     native/spac_stream.cpp native/mp3_stream.cpp native/aac_container.cpp native/playback_quality_windows.cpp native/playback_quality.cpp native/media_session.cpp \
     native/flac_history_core.cpp native/compressed_buffer.cpp native/ogg_tags.cpp native/ogg_history_core.cpp native/image_info.cpp \
     native/library_layout.cpp native/recording_file.cpp native/vorbis_headers.cpp native/existing_quality.cpp native/file_publication.cpp \

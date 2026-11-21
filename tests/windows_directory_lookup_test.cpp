@@ -454,6 +454,7 @@ void StableArtistFolder(const std::wstring& root) {
 }
 namespace history {
 std::uint64_t MetadataRevision(){return 0;}
+void RetainMetadata(Media&) {}
 bool ReadCurrentItemMedia(Media&){return false;}
 std::string ReadClientPlaybackQuality(const Media&){return {};}
 void EnrichCatalog(const Media& media,Catalog& c){
