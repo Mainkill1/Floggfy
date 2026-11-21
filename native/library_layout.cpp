@@ -1,4 +1,5 @@
 #include "library_layout.h"
+#include "fnv1a.h"
 #include <cwctype>
 #include <cstdio>
 #include <climits>
@@ -53,9 +54,10 @@ std::wstring OutputPath(const std::wstring& root,const Catalog& item,const std::
 static std::wstring MissingTrackIdSuffix(const Catalog& item) {
     const auto identity=item.artist+L'\0'+item.album+L'\0'+item.title+L'\0'+
         std::to_wstring(item.disc)+L":"+std::to_wstring(item.track)+L":"+std::to_wstring(item.duration);
-    uint64_t hash=14695981039346656037ULL;
+    uint64_t hash=kFnv1aOffset;
     auto unit=[&](uint32_t value) {
-        for(unsigned shift:{0u,8u}) {hash^=(value>>shift)&255;hash*=1099511628211ULL;}
+        hash=Fnv1aByte(hash,uint8_t(value));
+        hash=Fnv1aByte(hash,uint8_t(value>>8));
     };
     // Hash UTF-16 units identically on Windows and portable-test platforms.
     // This is a filename aid; MatchesRecording still decides identity.

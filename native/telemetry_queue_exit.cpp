@@ -1,15 +1,15 @@
 #include "telemetry_queue_exit.h"
+#include "windows_last_error.h"
 #include "telemetry_queue.h"
 #include "async_log.h"
 #include "vendor/minhook/include/MinHook.h"
-#include <shlobj.h>
+#include "windows_known_folder.h"
 #include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <memory>
 namespace privacy {
 namespace {
-struct LastError {DWORD value=GetLastError();~LastError(){SetLastError(value);}};
 struct ExitState {
     std::wstring users_root,log_path;
     unsigned log_level=0;
@@ -43,7 +43,7 @@ void WINAPI ExitWithQueueCleanup(UINT code) {
 }
 }
 bool InstallQueueExitCleanup(bool enabled,const std::wstring& users_root,const std::wstring& log_path,unsigned log_level) noexcept {
-    LastError previous;
+    win32::LastError previous;
     if(!enabled)return true;
     if(attempted)return installed;
     attempted=true;
@@ -66,12 +66,12 @@ bool InstallQueueExitCleanup(bool enabled,const std::wstring& users_root,const s
     }catch(...){return false;}
 }
 bool InstallRoamingQueueExitCleanup(bool enabled,const std::wstring& log_path,unsigned log_level) noexcept {
-    LastError previous;
+    win32::LastError previous;
     if(!enabled)return true;
-    PWSTR roaming=nullptr;
-    if(FAILED(SHGetKnownFolderPath(FOLDERID_RoamingAppData,0,nullptr,&roaming)))return false;
-    bool installed=false;
-    try {installed=InstallQueueExitCleanup(true,std::wstring(roaming)+L"\\Spotify\\Users",log_path,log_level);}catch(...){}
-    CoTaskMemFree(roaming);return installed;
+    try {
+        std::wstring roaming;
+        return SUCCEEDED(history::ReadKnownFolder(FOLDERID_RoamingAppData,roaming)) &&
+            InstallQueueExitCleanup(true,roaming+L"\\Spotify\\Users",log_path,log_level);
+    }catch(...){return false;}
 }
 }

@@ -1,6 +1,6 @@
 #include "update_blocker.h"
 #include <aclapi.h>
-#include <shlobj.h>
+#include "windows_known_folder.h"
 #include <string>
 #include <vector>
 #include <new>
@@ -245,12 +245,10 @@ bool Initialize(bool enabled) {
     Lock lock;
     try {
     initialized = false; blocked = false; available = false;
-    PWSTR local = nullptr;
-    HRESULT result = SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &local);
+    const HRESULT result = history::ReadKnownFolder(FOLDERID_LocalAppData, parent_path);
     if (FAILED(result)) return Fail(HRESULT_FACILITY(result) == FACILITY_WIN32 ? HRESULT_CODE(result) : ERROR_PATH_NOT_FOUND);
-    parent_path = std::wstring(local) + L"\\Spotify";
+    parent_path += L"\\Spotify";
     update_path = parent_path + L"\\Update";
-    CoTaskMemFree(local);
     Handle token;
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token.value)) return Fail(GetLastError());
     DWORD bytes = 0;

@@ -1,4 +1,5 @@
 #include "playback_quality.h"
+#include "fnv1a.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -200,55 +201,68 @@ PlaybackQualitySnapshot PlaybackQualityTracker::Snapshot(const std::string &clie
     Quality{Codec::Vorbis,c.ogg.rate,c.ogg.channels,0,c.ogg.bitrate});
 }
 uint64_t PlaybackIdentity(const std::string &key) {
-  if (key.empty()) return 0;
-  uint64_t hash = 14695981039346656037ULL;
-  for (unsigned char byte : key) { hash ^= byte; hash *= 1099511628211ULL; }
-  return hash;
+  return key.empty() ? 0 : Fnv1a64(key.data(), key.size());
 }
-std::array<std::wstring, 4> PlaybackQualityLabels(const PlaybackQualitySnapshot &q) {
-  std::wstring title(q.title.begin(), std::find(q.title.begin(), q.title.end(), L'\0'));
-  if (title.size() > 96) {
-    title.resize(95);
-    if (title.back() >= 0xd800 && title.back() <= 0xdbff)
-      title.pop_back();
-    title += L'\u2026';
+std::wstring MenuTitle(std::wstring_view title, wchar_t last_control) {
+  const bool truncated = title.size() > 96;
+  if (truncated) {
+    title = title.substr(0, 95);
+    if (title.back() >= 0xd800 && title.back() <= 0xdbff) title.remove_suffix(1);
   }
   std::wstring safe;
+  safe.reserve(title.size() + std::count(title.begin(), title.end(), L'&') + truncated);
   for (wchar_t c : title) {
-    if (c < L' ' || c == 127)
-      c = L' ';
+    if (c < L' ' || (c >= 0x7f && c <= last_control)) c = L' ';
     safe += c;
-    if (c == L'&')
-      safe += c;
+    if (c == L'&') safe += c;
   }
-  const wchar_t *level = L"Unavailable";
-  switch(q.level) {
-    case PlaybackLevel::Low: level=L"Low";break;
-    case PlaybackLevel::Normal: level=L"Normal";break;
-    case PlaybackLevel::High: level=L"High";break;
-    case PlaybackLevel::VeryHigh: level=L"Very high";break;
-    case PlaybackLevel::Lossless: level=L"Lossless";break;
-    case PlaybackLevel::Lossless24: level=L"Lossless (24-bit)";break;
-    case PlaybackLevel::Lossy: level=L"Lossy";break;
-    default:break;
+  if (truncated) safe += L'\u2026';
+  return safe;
+}
+std::wstring PlaybackQualityLabel(const PlaybackQualitySnapshot &q, size_t row) {
+  std::wstring label(kPlaybackLabelPrefixes.at(row));
+  switch (row) {
+    case 0: {
+      const auto end = std::find(q.title.begin(), q.title.end(), L'\0');
+      if (end != q.title.begin())
+        return label + MenuTitle({q.title.data(), size_t(end - q.title.begin())}, 0x7f);
+      break;
+    }
+    case 1:
+      switch (q.level) {
+        case PlaybackLevel::Low: return label + L"Low";
+        case PlaybackLevel::Normal: return label + L"Normal";
+        case PlaybackLevel::High: return label + L"High";
+        case PlaybackLevel::VeryHigh: return label + L"Very high";
+        case PlaybackLevel::Lossless: return label + L"Lossless";
+        case PlaybackLevel::Lossless24: return label + L"Lossless (24-bit)";
+        case PlaybackLevel::Lossy: return label + L"Lossy";
+        default: break;
+      }
+      break;
+    case 2:
+      switch (q.format) {
+        case PlaybackFormat::Flac: return label + L"FLAC";
+        case PlaybackFormat::Ogg: return label + L"Ogg";
+        case PlaybackFormat::Mp3: return label + L"MP3";
+        case PlaybackFormat::Aac: return label + L"AAC";
+        default: break;
+      }
+      break;
+    case 3:
+      if (q.format != PlaybackFormat::Unknown && q.rate) {
+        auto number = std::to_wstring(q.rate);
+        for (int p = int(number.size()) - 3; p > 0; p -= 3) number.insert(size_t(p), L",");
+        label += number + L" Hz";
+        if (q.bits) label += L" / " + std::to_wstring(q.bits) + L"-bit";
+        return label;
+      }
   }
-  std::array<std::wstring, 4> rows = {L"Song: " + (safe.empty() ? L"Unavailable" : safe),
-                                      std::wstring(L"Quality: ")+level, L"Format: Unavailable",
-                                      L"Sample rate: Unavailable"};
-  if (q.format == PlaybackFormat::Unknown) return rows;
-  switch(q.format) {
-    case PlaybackFormat::Flac:rows[2]=L"Format: FLAC";break;
-    case PlaybackFormat::Ogg:rows[2]=L"Format: Ogg";break;
-    case PlaybackFormat::Mp3:rows[2]=L"Format: MP3";break;
-    case PlaybackFormat::Aac:rows[2]=L"Format: AAC";break;
-    default:break;
-  }
-  if (q.rate) {
-    auto number = std::to_wstring(q.rate);
-    for (int p = int(number.size()) - 3; p > 0; p -= 3) number.insert(size_t(p), L",");
-    rows[3] = L"Sample rate: " + number + L" Hz";
-    if(q.bits) rows[3] += L" / " + std::to_wstring(q.bits) + L"-bit";
-  }
-  return rows;
+  return label + L"Unavailable";
+}
+std::array<std::wstring, 4> PlaybackQualityLabels(const PlaybackQualitySnapshot &live,
+                                                 const PlaybackQualitySnapshot *song) {
+  return {PlaybackQualityLabel(song ? *song : live, 0), PlaybackQualityLabel(live, 1),
+          PlaybackQualityLabel(live, 2), PlaybackQualityLabel(live, 3)};
 }
 } // namespace history

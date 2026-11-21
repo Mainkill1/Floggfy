@@ -1,10 +1,10 @@
 #include "telemetry_queue.h"
-#include <shlobj.h>
+#include "windows_last_error.h"
+#include "windows_known_folder.h"
 #include <cwchar>
 
 namespace privacy {
 namespace {
-struct LastError {DWORD value=GetLastError();~LastError(){SetLastError(value);}};
 struct Handle {
     HANDLE value=INVALID_HANDLE_VALUE;
     explicit Handle(HANDLE h):value(h){}
@@ -64,7 +64,7 @@ void RemoveQueue(const std::wstring& account,QueueCleanupResult& result) {
 }
 }
 QueueCleanupResult ClearTrackingQueues(const std::wstring& users_root,bool enabled) noexcept {
-    LastError previous;QueueCleanupResult result;
+    win32::LastError previous;QueueCleanupResult result;
     if(!enabled)return result;
     try {
         Handle directory(OpenDirectory(users_root));
@@ -86,13 +86,14 @@ QueueCleanupResult ClearTrackingQueues(const std::wstring& users_root,bool enabl
     return result;
 }
 QueueCleanupResult ClearRoamingTrackingQueues(bool enabled) noexcept {
-    LastError previous;QueueCleanupResult result;
+    win32::LastError previous;QueueCleanupResult result;
     if(!enabled)return result;
-    PWSTR roaming=nullptr;
-    const auto status=SHGetKnownFolderPath(FOLDERID_RoamingAppData,0,nullptr,&roaming);
-    if(FAILED(status)){Failed(result,HRESULT_CODE(status));return result;}
-    try {result=ClearTrackingQueues(std::wstring(roaming)+L"\\Spotify\\Users",true);}
-    catch(...){Failed(result,ERROR_NOT_ENOUGH_MEMORY);}
-    CoTaskMemFree(roaming);return result;
+    try {
+        std::wstring roaming;
+        const auto status=history::ReadKnownFolder(FOLDERID_RoamingAppData,roaming);
+        if(FAILED(status))Failed(result,HRESULT_CODE(status));
+        else result=ClearTrackingQueues(roaming+L"\\Spotify\\Users",true);
+    }catch(...){Failed(result,ERROR_NOT_ENOUGH_MEMORY);}
+    return result;
 }
 }

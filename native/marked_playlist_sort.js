@@ -156,12 +156,13 @@
                 !currentFor(active)) return;
 
             const skip = own(options, "skipTo");
+            const uid = own(skip, "uid");
+            const uri = own(skip, "uri");
             let index = 0;
-            if (skip && (own(skip, "uid") != null || own(skip, "uri") != null || own(skip, "index") != null)) {
+            if (uid != null || uri != null || own(skip, "index") != null) {
                 // A URI can occur more than once. Use the clicked occurrence and
                 // disregard its index in the old native order.
-                index = active.playItems.findIndex(item => item.uid === own(skip, "uid") &&
-                    (!own(skip, "uri") || item.uri === own(skip, "uri")));
+                index = active.playItems.findIndex(item => item.uid === uid && (!uri || item.uri === uri));
                 if (index < 0) return;
             }
             if (!active.playItems.length || !writable(context, "url") || !writable(context, "pages") ||
@@ -372,12 +373,14 @@
                 if (dateGeneration !== undefined && active.dateGeneration === dateGeneration &&
                     active.mode === mode) return true;
                 const timestamps = new Map();
+                let unchanged = active.mode === mode;
                 for (const uri of active.uris) {
                     if (!dates.has(uri)) return false;
-                    timestamps.set(uri, dates.get(uri)?.utc || "");
+                    const date = dates.get(uri)?.utc || "";
+                    timestamps.set(uri, date);
+                    if (unchanged && active.timestamps.get(uri) !== date) unchanged = false;
                 }
-                if (active.mode === mode &&
-                    [...timestamps].every(([uri, date]) => active.timestamps.get(uri) === date)) {
+                if (unchanged) {
                     active.dateGeneration = dateGeneration;
                     return true;
                 }

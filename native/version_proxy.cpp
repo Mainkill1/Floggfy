@@ -5,7 +5,7 @@
 #include <windows.h>
 #include <iphlpapi.h>
 #include <netlistmgr.h>
-#include <shlobj.h>
+#include "windows_known_folder.h"
 #include <cstdio>
 #include <cstring>
 #include "audio_history.h"
@@ -385,9 +385,8 @@ static void LogHelperNetworkFailure() noexcept {
             if(!size||size>4096)return;
             root=expanded;
         } else {
-            PWSTR music=nullptr;
-            if(FAILED(SHGetKnownFolderPath(FOLDERID_Music,0,nullptr,&music)))return;
-            root=music;CoTaskMemFree(music);root+=L"\\Spotify";
+            if(FAILED(history::ReadKnownFolder(FOLDERID_Music,root)))return;
+            root+=L"\\Spotify";
         }
         SYSTEMTIME t{};GetSystemTime(&t);char line[320];
         std::snprintf(line,sizeof(line),"%04u-%02u-%02uT%02u:%02u:%02uZ warning pid=%lu Network Kill Switch hooks unavailable in Spotify helper; coverage is partial\r\n",

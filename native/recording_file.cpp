@@ -1,4 +1,5 @@
 #include "recording_file.h"
+#include "fnv1a.h"
 #include "mp3_stream.h"
 #include "ogg_history_core.h"
 #include "image_info.h"
@@ -546,9 +547,9 @@ bool FindValidatedFlacFrame(const CompressedBuffer& bytes,const Quality& quality
 bool ReadRecordingArtwork(const std::vector<uint8_t>& bytes,RecordingArtwork& out) {
     out={};ImageInfo info;if(!ReadImageInfo(bytes,info))return false;
     out.valid=true;out.width=info.width;out.height=info.height;out.bytes=bytes.size();out.mime=info.mime;
-    out.digest={14695981039346656037ULL,0x9e3779b97f4a7c15ULL};
+    out.digest={kFnv1aOffset,0x9e3779b97f4a7c15ULL};
     for(unsigned char byte:bytes) {
-        out.digest[0]^=byte;out.digest[0]*=1099511628211ULL;
+        out.digest[0]=Fnv1aByte(out.digest[0],byte);
         out.digest[1]^=uint64_t(byte)+0x9e3779b97f4a7c15ULL+(out.digest[1]<<6)+(out.digest[1]>>2);
     }
     return true;
@@ -624,8 +625,7 @@ std::wstring RecordingSuffix(const Catalog& c) {
     std::string identity=c.spotify_uri;
     if(identity.empty()) identity=Utf8(c.artist)+'\0'+Utf8(c.album)+'\0'+Utf8(c.title)+'\0'+
         std::to_string(c.disc)+":"+std::to_string(c.track)+":"+std::to_string(c.duration);
-    uint64_t hash=14695981039346656037ULL;
-    for(unsigned char byte:identity) { hash^=byte; hash*=1099511628211ULL; }
+    const auto hash=Fnv1a64(identity.data(),identity.size());
     wchar_t suffix[32]; std::swprintf(suffix,32,L" [%016llx]",static_cast<unsigned long long>(hash));
     return suffix;
 }

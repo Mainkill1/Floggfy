@@ -3,7 +3,6 @@
 #include <cstddef>
 namespace history {
 enum class FilePublication { Saved, Upgraded, Skipped, Failed, Replan, ResourceWait };
-uint64_t RecordingHash(const void* bytes,size_t size,uint64_t hash=14695981039346656037ull);
 // A matching file can be held through commit or removed by its verified handle.
 bool VerifiedArchiveFile(const std::wstring& path,const void* bytes,size_t size,bool remove=false,void** held=nullptr);
 bool WriteArchiveFile(const std::wstring& destination,const void* bytes,size_t size);

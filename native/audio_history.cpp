@@ -22,6 +22,7 @@
 #include "library_layout.h"
 #include "existing_quality.h"
 #include "file_publication.h"
+#include "fnv1a.h"
 #include "publication_job.h"
 #include "tag_memory_plan.h"
 #include "recent_downloads.h"
@@ -2082,14 +2083,14 @@ static Publication PublishUnmatched(SaveJob& job) {
     }
     const auto extension=capture.Extension();
     const auto& bytes=capture.publication_artifact.bytes.empty()?capture.publication_source:capture.publication_artifact.bytes;
-    const auto audio_hash=std::to_string(RecordingHash(bytes.data(),bytes.size()));
+    const auto audio_hash=std::to_string(Fnv1a64(bytes.data(),bytes.size()));
     auto metadata=job.correlation;
     if(metadata.size()>=2)metadata.resize(metadata.size()-2);else metadata="{\"reason\":\"unresolved recording\"";
     metadata+=",\"job\":\""+Utf8(capture.unmatched_name)+"\",\"audio_hash\":\""+
         audio_hash+"\",\"complete\":true,\"validation\":\"valid\"}\n";
     const auto marker="{\"version\":1,\"job\":\""+Utf8(capture.unmatched_name)+"\",\"audio_bytes\":"+
         std::to_string(bytes.size())+",\"audio_hash\":\""+audio_hash+
-        "\",\"metadata_hash\":\""+std::to_string(RecordingHash(metadata.data(),metadata.size()))+"\"}\n";
+        "\",\"metadata_hash\":\""+std::to_string(Fnv1a64(metadata.data(),metadata.size()))+"\"}\n";
     auto acknowledge=[&](UnmatchedAttempt& committed) {
         committed.committed=true;bool cleaned=true;
         for(auto& old:capture.unmatched_attempts)if(&old!=&committed) {

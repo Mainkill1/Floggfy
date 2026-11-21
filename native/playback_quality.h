@@ -69,7 +69,12 @@ public:
   PlaybackQualitySnapshot Snapshot(const std::string &client_quality = {}) const;
 };
 uint64_t PlaybackIdentity(const std::string &);
-std::array<std::wstring, 4> PlaybackQualityLabels(const PlaybackQualitySnapshot &);
+inline constexpr std::array<std::wstring_view, 4> kPlaybackLabelPrefixes{
+    L"Song: ", L"Quality: ", L"Format: ", L"Sample rate: "};
+std::wstring MenuTitle(std::wstring_view title, wchar_t last_control);
+std::wstring PlaybackQualityLabel(const PlaybackQualitySnapshot &, size_t row);
+std::array<std::wstring, 4> PlaybackQualityLabels(const PlaybackQualitySnapshot &live,
+                                                 const PlaybackQualitySnapshot *song = nullptr);
 // Windows bridge: worker publishes a fixed-size snapshot; menu only reads RAM.
 void PublishPlaybackQuality(const PlaybackQualitySnapshot &);
 void PublishClientPlaybackQuality(const PlaybackQualitySnapshot &);

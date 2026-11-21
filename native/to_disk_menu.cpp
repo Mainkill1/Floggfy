@@ -161,8 +161,7 @@ static bool Main(Menu* menu) {
 }
 static void UpdateQuality(Menu* menu,const history::PlaybackQualitySnapshot* song=nullptr,const std::wstring* folder=nullptr) {
     const auto snapshot=history::ReadPlaybackQuality();
-    auto labels=history::PlaybackQualityLabels(snapshot);
-    if(song) labels[0]=history::PlaybackQualityLabels(*song)[0];
+    const auto labels=history::PlaybackQualityLabels(snapshot,song);
     const bool known_format=snapshot.format!=history::PlaybackFormat::Unknown;
     if(MenuMethods::IndexOf(menu,song_id)<0) MenuMethods::AddSeparator(menu);
     for(unsigned i=0;i<labels.size();++i) {
@@ -300,7 +299,7 @@ struct Wrapped {
     MenuOpening opening;
     bool CapableCached(Menu* menu) { return capability.Check(menu); }
     void ClearValidation() { capability.ClearValidation(); }
-    ~Wrapped() { ClearValidation(); if(original) original->base.release(&original->base); }
+    ~Wrapped() { if(original) original->base.release(&original->base); }
 };
 static Wrapped* Self(void* p) { return static_cast<Wrapped*>(p); }
 static void Add(Base* p) { Self(p)->refs.fetch_add(1,std::memory_order_relaxed); }
@@ -322,25 +321,6 @@ static void BindSong(Wrapped* wrapped) {
     opening.song_file.clear();opening.song_bound=true;
     RefreshPendingSongTarget(wrapped);
 }
-static std::wstring RecentLabel(const std::wstring& title) {
-    if(title.empty()) return L"Untitled download";
-    // Bound displayed UTF-16 before escaping CEF mnemonic markers. Match the
-    // Song row's 96-unit limit without leaving half a surrogate pair behind.
-    const bool truncated=title.size()>96;
-    std::wstring bounded=title.substr(0,truncated ? 95 : title.size());
-    if(truncated) {
-        if(bounded.back()>=0xd800 && bounded.back()<=0xdbff) bounded.pop_back();
-        bounded+=L'\u2026';
-    }
-    std::wstring label;
-    label.reserve(bounded.size()*2);
-    for(wchar_t c:bounded) {
-        if(c<L' ' || (c>=0x7f && c<=0x9f)) c=L' ';
-        label+=c;
-        if(c==L'&') label+=c;
-    }
-    return label;
-}
 static void RefreshRecent(Wrapped* wrapped,Menu* child) {
     std::vector<history::RecentDownload> next;
     if(!history::ReadRecentDownloads(next)) return; // Never block or erase a prior snapshot.
@@ -349,7 +329,7 @@ static void RefreshRecent(Wrapped* wrapped,Menu* child) {
     // snapshot keeps full titles and paths; only labels receive display hygiene.
     std::vector<std::wstring> labels;
     labels.reserve(next.size());
-    for(const auto& entry:next) labels.push_back(RecentLabel(entry.title));
+    for(const auto& entry:next) labels.push_back(entry.title.empty() ? L"Untitled download" : history::MenuTitle(entry.title,0x9f));
     auto* recent=MenuMethods::GetSubmenu(child,recent_id);
     if(!recent)return;
     MenuReference recent_reference(recent);
@@ -368,14 +348,17 @@ static void RefreshRecent(Wrapped* wrapped,Menu* child) {
 static DWORD WINAPI RevealRecentWorker(void* argument) {
     std::unique_ptr<std::wstring> path(static_cast<std::wstring*>(argument));
     const HRESULT initialized=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
-    const auto attributes=GetFileAttributesW(history::WindowsPath(*path).c_str());
+    DWORD attributes=INVALID_FILE_ATTRIBUTES;
     HRESULT result=HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
-    if(attributes!=INVALID_FILE_ATTRIBUTES && !(attributes&FILE_ATTRIBUTE_DIRECTORY)) {
-        PIDLIST_ABSOLUTE item=nullptr;
-        result=SHParseDisplayName(path->c_str(),nullptr,&item,0,nullptr);
-        if(SUCCEEDED(result)) result=SHOpenFolderAndSelectItems(item,0,nullptr,0);
-        CoTaskMemFree(item);
-    }
+    try {
+        attributes=GetFileAttributesW(history::WindowsPath(*path).c_str());
+        if(attributes!=INVALID_FILE_ATTRIBUTES && !(attributes&FILE_ATTRIBUTE_DIRECTORY)) {
+            PIDLIST_ABSOLUTE item=nullptr;
+            result=SHParseDisplayName(path->c_str(),nullptr,&item,0,nullptr);
+            if(SUCCEEDED(result)) result=SHOpenFolderAndSelectItems(item,0,nullptr,0);
+            CoTaskMemFree(item);
+        }
+    } catch(...) { result=E_OUTOFMEMORY; }
     if(FAILED(result)) MessageBoxW(nullptr,
         attributes==INVALID_FILE_ATTRIBUTES || (attributes&FILE_ATTRIBUTE_DIRECTORY) ?
         L"This download is no longer available at its saved location." :
@@ -598,18 +581,18 @@ static int Format(Delegate* self,Menu* menu,String* label) {
     // Reject ordinary labels before capability queries or model scans. Most
     // menus contain no quality rows, so this keeps their formatting cheap.
     if(set_string && label && label->str) {
-        const wchar_t* prefixes[]={L"Song: ",L"Quality: ",L"Format: ",L"Sample rate: "};
-        for(unsigned i=0;i<4;++i) {
-            const auto length=wcslen(prefixes[i]);
-            if(label->length<length || wmemcmp(label->str,prefixes[i],length)) continue;
+        for(size_t i=0;i<history::kPlaybackLabelPrefixes.size();++i) {
+            const auto prefix=history::kPlaybackLabelPrefixes[i];
+            if(label->length<prefix.size() || wmemcmp(label->str,prefix.data(),prefix.size())) continue;
             if(!Self(self)->CapableCached(menu) || MenuMethods::IndexOf(menu,song_id)<0 ||
                MenuMethods::IndexOf(menu,downloads_id)<0) break;
             try {
                 if(i==0 && !Self(self)->opening.snapshot.song_bound) BindSong(Self(self));
                 else if(i==0)RefreshPendingSongTarget(Self(self));
-                const auto rows=history::PlaybackQualityLabels(i==0 ? Self(self)->opening.snapshot.song : history::ReadPlaybackQuality());
+                const auto row=i==0 ? history::PlaybackQualityLabel(Self(self)->opening.snapshot.song,i) :
+                                      history::PlaybackQualityLabel(history::ReadPlaybackQuality(),i);
                 if(i==0) MenuMethods::SetEnabled(menu,song_id,int(!Self(self)->opening.snapshot.song_file.empty()));
-                if(set_string(rows[i].data(),rows[i].size(),label,1))changed=1;
+                if(set_string(row.data(),row.size(),label,1))changed=1;
             }catch(...) {/* Keep the original CEF label on allocation failure. */}
             break;
         }

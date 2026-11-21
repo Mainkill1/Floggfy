@@ -87,7 +87,8 @@ bool AllowedDirectory(const fs::path& name) {
     return !Equal(name.native(), L"Unmatched") && !Equal(name.native(), L"DumpStreams");
 }
 
-bool DirectoryAttributes(DWORD attributes) {
+bool IsPlainDirectory(const fs::path& path) {
+    const auto attributes = GetFileAttributesW(WindowsPath(path.native()).c_str());
     return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) &&
         !(attributes & FILE_ATTRIBUTE_REPARSE_POINT);
 }
@@ -128,9 +129,7 @@ struct Stamp {
 
 FileStatus ReadStamp(const fs::path& root, const fs::path& relative, Stamp& stamp) {
     if (relative.has_root_path() || !SupportedFile(relative)) return FileStatus::Missing;
-    if (!DirectoryAttributes(GetFileAttributesW(WindowsPath(root.native()).c_str()))) {
-        return FileStatus::Unavailable;
-    }
+    if (!IsPlainDirectory(root)) return FileStatus::Unavailable;
     fs::path path = root;
     // Check every directory, since GetFileAttributesExW follows intermediate junctions.
     for (auto item = relative.begin(); item != relative.end(); ++item) {
@@ -204,8 +203,7 @@ public:
 
     bool Open(const fs::path& root) {
         if (db_) return true;
-        const auto attributes = GetFileAttributesW(WindowsPath(root.native()).c_str());
-        if (!DirectoryAttributes(attributes)) return false;
+        if (!IsPlainDirectory(root)) return false;
         const auto path = root / L"Floggfy-marked.db";
         const auto db_attributes = GetFileAttributesW(WindowsPath(path.native()).c_str());
         if (db_attributes != INVALID_FILE_ATTRIBUTES &&
@@ -395,11 +393,11 @@ struct Scan {
         if (!directory.started) {
             directory.started = true;
             auto path = root;
-            bool available = DirectoryAttributes(GetFileAttributesW(WindowsPath(path.native()).c_str()));
+            bool available = IsPlainDirectory(path);
             for (const auto& name : directory.relative) {
                 if (!available) break;
                 path /= name;
-                available = DirectoryAttributes(GetFileAttributesW(WindowsPath(path.native()).c_str()));
+                available = IsPlainDirectory(path);
             }
             if (!available) {
                 ++stats.errors;

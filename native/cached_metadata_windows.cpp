@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <shlobj.h>
+#include "windows_known_folder.h"
 #include <windows.h>
 
 namespace history {
@@ -205,13 +205,11 @@ void EnrichStoredMetadata(RichMetadata &live) {
   // The owning metadata record controls retries; each requested lookup reads
   // current local data within its configured byte budget.
   StoredMetadataRead result;
-  PWSTR local = nullptr;
+  std::wstring local;
   try {
     result.budget_bytes = uint64_t(GetSettings().metadata_cache_read_mib) * 1024 * 1024;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &local))) {
-      const auto root = std::wstring(local) + L"\\Spotify\\Users";
-      CoTaskMemFree(local);
-      local = nullptr;
+    if (SUCCEEDED(ReadKnownFolder(FOLDERID_LocalAppData, local))) {
+      const auto root = local + L"\\Spotify\\Users";
       if (ReadStoredMetadata(root, live, &result))
         return;
     } else {
@@ -220,7 +218,6 @@ void EnrichStoredMetadata(RichMetadata &live) {
   } catch (...) {
     result.reason = "resource-failure";
   }
-  CoTaskMemFree(local);
   char line[320];
   std::snprintf(line,sizeof(line),"cached metadata uri=%.96s status=unavailable reason=%s readbytes=%llu budget=%llu",
                 live.uri.c_str(),result.reason,static_cast<unsigned long long>(result.read_bytes),

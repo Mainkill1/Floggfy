@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include "file_publication.h"
+#include "fnv1a.h"
 #include "windows_file_write.h"
 #include "history_settings.h"
 #include "metadata_update_core.h"
@@ -133,11 +134,6 @@ FilePublication PromoteReplacement(const std::wstring& path,StagingFile& staging
     } else if(moved) RenameHandle(old,path); // no replacement; preserve any raced file
     return published?FilePublication::Upgraded:FilePublication::Failed;
 }
-}
-uint64_t RecordingHash(const void* bytes,size_t size,uint64_t hash) {
-    const auto* data=static_cast<const uint8_t*>(bytes);
-    for(size_t i=0;i<size;++i){hash^=data[i];hash*=1099511628211ull;}
-    return hash;
 }
 static bool ArchiveFileMatches(HANDLE file,const void* bytes,size_t size) {
     LARGE_INTEGER actual{},zero{};
@@ -323,11 +319,11 @@ bool ReceiptSourceUnchanged(HANDLE file,const FormatUpgradeReceipt& receipt,bool
     if(!GetFileSizeEx(file,&size)||size.QuadPart<0)return false;
     if(uint64_t(size.QuadPart)!=receipt.source_bytes)return true;
     if(!SetFilePointerEx(file,zero,nullptr,FILE_BEGIN))return false;
-    uint8_t bytes[16384];uint64_t hash=14695981039346656037ull;
+    uint8_t bytes[16384];uint64_t hash=kFnv1aOffset;
     for(size_t at=0;at<receipt.source_bytes;) {
         const auto count=DWORD(std::min(sizeof(bytes),receipt.source_bytes-at));DWORD read=0;
         if(!ReadFile(file,bytes,count,&read,nullptr)||read!=count)return false;
-        hash=RecordingHash(bytes,count,hash);at+=count;
+        hash=Fnv1a64(bytes,count,hash);at+=count;
     }
     if(!SetFilePointerEx(file,zero,nullptr,FILE_BEGIN))return false;
     unchanged=hash==receipt.source_hash;return true;
@@ -441,7 +437,7 @@ FilePublication PublishFormatUpgrade(const std::wstring& source,const std::wstri
            !HigherQuality(next.quality,prior.quality))return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
         // Allocate every receipt field before committing. A post-commit failure
         // cannot erase the original destination or send this job to a new root.
-        FormatUpgradeReceipt prepared{source,destination,catalog,quality,prior.quality,FileNumber(old_info),old_info.dwVolumeSerialNumber,RecordingHash(old_bytes.data(),old_bytes.size()),old_bytes.size(),false,false,false};
+        FormatUpgradeReceipt prepared{source,destination,catalog,quality,prior.quality,FileNumber(old_info),old_info.dwVolumeSerialNumber,Fnv1a64(old_bytes.data(),old_bytes.size()),old_bytes.size(),false,false,false};
         receipt=std::move(prepared);
         RecordingMemoryPlan old_memory;
         if(RecordingReadMemoryScope::HasPermit()) {

@@ -1,6 +1,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include "song_destination.h"
+#include "fnv1a.h"
 #include "history_settings.h"
+#include "srw_guard.h"
 #include "existing_quality.h"
 #include "recording_formats.h"
 #include <windows.h>
@@ -44,10 +46,6 @@ unsigned destination_generation=0;
 ULONGLONG destination_updated=0;
 std::wstring destination_file;
 bool probing=false;
-struct DestinationExclusive {
-    DestinationExclusive(){AcquireSRWLockExclusive(&destination_lock);}
-    ~DestinationExclusive(){ReleaseSRWLockExclusive(&destination_lock);}
-};
 struct DestinationTryExclusive {
     bool locked=TryAcquireSRWLockExclusive(&destination_lock)!=0;
     ~DestinationTryExclusive(){if(locked)ReleaseSRWLockExclusive(&destination_lock);}
@@ -104,8 +102,8 @@ static std::array<const std::wstring*,16> AllDuplicateFormatPaths(const Destinat
 }
 static std::uint64_t IntentKey(std::uint64_t identity,const std::wstring& root,const Catalog& catalog,
                                bool music_folder,unsigned generation,bool track_numbers) {
-    std::uint64_t hash=14695981039346656037ULL;
-    auto number=[&](std::uint64_t value) {for(unsigned i=0;i<8;++i){hash^=uint8_t(value>>(i*8));hash*=1099511628211ULL;}};
+    std::uint64_t hash=kFnv1aOffset;
+    auto number=[&](std::uint64_t value) {for(unsigned i=0;i<8;++i)hash=Fnv1aByte(hash,uint8_t(value>>(i*8)));};
     auto wide=[&](const std::wstring& value) {number(value.size());for(wchar_t c:value)number(unsigned(c));};
     number(identity);number(generation);number(music_folder);number(track_numbers);number(unsigned(catalog.kind));wide(root);
     for(const auto* value:{&catalog.artist,&catalog.folder_artist,&catalog.legacy_artist,&catalog.album,&catalog.title,&catalog.author,&catalog.series,&catalog.book,&catalog.show})wide(*value);
@@ -263,7 +261,7 @@ static DWORD WINAPI DestinationWorker(void*) {
         for(;;) {
             std::optional<DestinationRequest> request;
             {
-                DestinationExclusive guard;
+                ExclusiveSrw guard(destination_lock);
                 if(!destination_enabled.load(std::memory_order_relaxed)) break;
                 if(refresh_pending.exchange(false,std::memory_order_acq_rel) && latest_request &&
                    latest_request->intent==intent_key.load(std::memory_order_acquire)) {
@@ -280,7 +278,7 @@ static DWORD WINAPI DestinationWorker(void*) {
             std::wstring file;
             try {file=ProbeSavedSong(*request,cache);}catch(...) {/* A failed probe disables its target. */}
             {
-                DestinationExclusive guard;
+                ExclusiveSrw guard(destination_lock);
                 probing=false;
                 if(destination_enabled.load(std::memory_order_relaxed) && latest_request &&
                    request->serial==request_serial.load(std::memory_order_acquire) &&
@@ -303,7 +301,7 @@ static BOOL CALLBACK CreateDestinationWorker(PINIT_ONCE,PVOID,PVOID*) {
 }
 void StartSongDestinationWorker(bool enabled) noexcept {
     if(enabled && !InitOnceExecuteOnce(&destination_once,CreateDestinationWorker,nullptr,nullptr)) enabled=false;
-    DestinationExclusive guard;
+    ExclusiveSrw guard(destination_lock);
     destination_enabled.store(enabled,std::memory_order_release);
     if(!enabled) {
         ++request_serial;++cache_revision;refresh_pending.store(false,std::memory_order_release);intent_key.store(0,std::memory_order_release);latest_request.reset();pending_request.reset();InvalidateResult();

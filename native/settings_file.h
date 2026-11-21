@@ -108,30 +108,31 @@ inline bool EqualKey(std::wstring_view text,const wchar_t* key) noexcept {
     const auto length=std::wcslen(key);
     return text.size()==length&&_wcsnicmp(text.data(),key,length)==0;
 }
-// Read the same section/key syntax used by Set, including empty values. Views
-// borrow text; duplicate startup opt-ins are ambiguous and must not enable hooks.
-inline IniValue Find(std::wstring_view text,const wchar_t* key,const wchar_t* section=L"[To Disk]") noexcept {
-    bool inside=false;IniValue result;
-    for(size_t position=0;position<text.size();) {
-        const auto end=text.find(L'\n',position);
-        const auto finish=end==std::wstring_view::npos?text.size():end;
-        auto physical=text.substr(position,finish-position);
+// The raw value excludes the line ending but retains whitespace for strict opt-ins.
+template<class SelectSection,class Visit>
+inline void VisitEntries(std::wstring_view text,SelectSection select,Visit visit) {
+    bool inside=false;
+    while(!text.empty()) {
+        const auto end=text.find(L'\n');
+        auto physical=text.substr(0,end);
+        text.remove_prefix(end==text.npos?text.size():end+1);
         if(!physical.empty()&&physical.back()==L'\r')physical.remove_suffix(1);
         const auto line=TrimView(physical);
         if(!line.empty()&&line.front()==L'['&&line.back()==L']') {
-            inside=EqualKey(line,section);
+            inside=select(line);
         }else if(inside&&!line.empty()&&line.front()!=L';') {
             const auto equal=physical.find(L'=');
-            if(equal!=std::wstring_view::npos&&EqualKey(TrimView(physical.substr(0,equal)),key)) {
-                if(result.present)result.duplicate=true;
-                else {
-                    result.present=true;result.raw_value=physical.substr(equal+1);
-                    result.value=TrimView(result.raw_value);
-                }
-            }
+            if(equal!=physical.npos)visit(TrimView(physical.substr(0,equal)),physical.substr(equal+1));
         }
-        position=end==std::wstring_view::npos?text.size():end+1;
     }
+}
+inline IniValue Find(std::wstring_view text,const wchar_t* key,const wchar_t* section=L"[To Disk]") noexcept {
+    IniValue result;
+    VisitEntries(text,[&](auto name){return EqualKey(name,section);},[&](auto name,auto raw) {
+        if(!EqualKey(name,key))return;
+        if(result.present)result.duplicate=true;
+        else result={true,false,TrimView(raw),raw};
+    });
     return result;
 }
 inline void Set(std::wstring& text,const wchar_t* key,const std::wstring& value,const wchar_t* section=L"[To Disk]") {

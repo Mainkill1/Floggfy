@@ -1,9 +1,11 @@
 #define WIN32_LEAN_AND_MEAN
 #include "history_settings.h"
+#include "windows_known_folder.h"
 #include <shobjidl.h>
 #include <shlobj.h>
 #include <algorithm>
 #include <array>
+#include <optional>
 #include <cstdio>
 #include <cwchar>
 #include <cstring>
@@ -172,33 +174,57 @@ static constexpr std::array<RestartFlag,11> blocking_flags{{
 static bool LegacyBlockingFlag(const RestartFlag& flag) {
     return flag.member==&Settings::block_telemetry||flag.member==&Settings::dump_telemetry;
 }
+struct BlockingOptionValue {
+    std::optional<bool> current,previous,disk;
+    bool Enabled(bool fallback) const {return current.value_or(previous.value_or(disk.value_or(fallback)));}
+};
+struct BlockingIni {
+    std::array<BlockingOptionValue,blocking_flags.size()> values{};
+    bool has_previous_section=false;
+
+    explicit BlockingIni(std::wstring_view text) {
+        using Field=std::optional<bool> BlockingOptionValue::*;
+        Field field=nullptr;
+        settings_file::VisitEntries(text,[&](auto section) {
+            if(settings_file::EqualKey(section,L"[Telemetry]"))field=&BlockingOptionValue::current;
+            else if(settings_file::EqualKey(section,L"[Blocking]")) {
+                field=&BlockingOptionValue::previous;has_previous_section=true;
+            }else if(settings_file::EqualKey(section,L"[To Disk]"))field=&BlockingOptionValue::disk;
+            else field=nullptr;
+            return field!=nullptr;
+        },[&](auto key,auto raw) {
+            for(size_t i=0;i<blocking_flags.size();++i) {
+                const auto& flag=blocking_flags[i];
+                if(field==&BlockingOptionValue::disk&&!LegacyBlockingFlag(flag))continue;
+                if(!settings_file::EqualKey(key,flag.key))continue;
+                auto& value=values[i].*field;
+                // Duplicate and malformed entries in the winning section disable the option.
+                value=!value.has_value()&&raw==L"1";
+                break;
+            }
+        });
+    }
+};
 static bool ReadBlockingOptionsText(Settings& target,std::wstring_view text) {
+    const BlockingIni ini(text);
     bool migration=false;
-    for(const auto& flag:blocking_flags) {
-        auto value=settings_file::Find(text,flag.key,L"[Telemetry]");
-        const auto previous=settings_file::Find(text,flag.key,L"[Blocking]");
-        migration=migration||!value.present||previous.present;
-        if(!value.present)value=previous;
-        if(LegacyBlockingFlag(flag)) {
-            const auto legacy=settings_file::Find(text,flag.key);
-            migration=migration||legacy.present;
-            if(!value.present)value=legacy;
-        }
-        // Missing category keys use their defaults. Explicit malformed values,
-        // including duplicates, never opt a category or the master in.
-        target.*(flag.member)=!value.present?flag.default_value:
-            !value.duplicate&&value.raw_value==L"1";
+    for(size_t i=0;i<blocking_flags.size();++i) {
+        const auto& flag=blocking_flags[i];const auto& value=ini.values[i];
+        target.*(flag.member)=value.Enabled(flag.default_value);
+        migration|=!value.current.has_value()||value.previous.has_value()||value.disk.has_value();
     }
     return migration;
 }
 static void MigrateBlockingOptions(std::wstring& text) {
-    Settings current;ReadBlockingOptionsText(current,text);
-    for(const auto& flag:blocking_flags) {
-        if(!settings_file::Find(text,flag.key,L"[Telemetry]").present)
-            settings_file::Set(text,flag.key,current.*(flag.member)?L"1":L"0",L"[Telemetry]");
-        settings_file::Erase(text,flag.key,L"[Blocking]");
-        if(LegacyBlockingFlag(flag))settings_file::Erase(text,flag.key);
+    const BlockingIni ini(text);
+    for(size_t i=0;i<blocking_flags.size();++i) {
+        const auto& flag=blocking_flags[i];const auto& value=ini.values[i];
+        if(!value.current.has_value())
+            settings_file::Set(text,flag.key,value.Enabled(flag.default_value)?L"1":L"0",L"[Telemetry]");
+        if(value.previous.has_value())settings_file::Erase(text,flag.key,L"[Blocking]");
+        if(value.disk.has_value())settings_file::Erase(text,flag.key);
     }
+    if(!ini.has_previous_section)return;
     // Remove empty legacy headers while retaining comments and unknown keys.
     for(size_t position=0;position<text.size();) {
         const auto end=text.find(L'\n',position);
@@ -314,7 +340,7 @@ static DWORD WINAPI PersistSettings(LPVOID) {
                     settings_file::Set(text,key,value?L"1":L"0",option?option->section:L"[To Disk]");
                 };
                 flag(L"Downloads",snapshot.downloads);flag(L"Ogg",snapshot.ogg);flag(L"FLAC",snapshot.flac);flag(L"AAC",snapshot.aac);flag(L"Podcasts",snapshot.podcasts);flag(L"Lyrics",snapshot.lyrics);
-                MigrateCategories(text);
+                InsertMissingRestartDefaults(text);
                 for(const auto& option:fallback_options)
                     settings_file::Set(text,option.key,snapshot.*(option.member)?L"1":L"0",L"[Fallbacks]");
                 settings_file::Set(text,L"WindowsPlaybackFallback",snapshot.windows_playback_fallback?L"1":L"0",L"[Fallbacks]");
@@ -326,7 +352,6 @@ static DWORD WINAPI PersistSettings(LPVOID) {
                 settings_file::Set(text,L"BlockUpdates",snapshot.block_updates?L"1":L"0",L"[Misc]");
                 flag(L"MarkedWhenDownloaded",snapshot.marked_when_downloaded);
                 settings_file::Erase(text,L"Log");settings_file::Erase(text,L"DebugLog");
-                InsertMissingRestartDefaults(text);
                 flag(L"TrackNumberInFilename",snapshot.track_number_in_filename);
                 flag(L"ConvertNumberedFilenames",snapshot.convert_numbered_filenames && !snapshot.track_number_in_filename);
                 settings_file::Set(text,L"Save Location",snapshot.save_location);
@@ -362,11 +387,16 @@ std::wstring WindowsPath(const std::wstring& p) {
 }
 bool EnsureDirectory(const std::wstring& path) {
     if(path.empty()) return false;
-    auto p=WindowsPath(path); DWORD a=GetFileAttributesW(p.c_str());
-    if(a!=INVALID_FILE_ATTRIBUTES) return (a&FILE_ATTRIBUTE_DIRECTORY)!=0;
-    size_t slash=path.find_last_of(L"\\/");
-    if(slash!=std::wstring::npos && slash>2 && !EnsureDirectory(path.substr(0,slash))) return false;
-    return CreateDirectoryW(p.c_str(),nullptr) || GetLastError()==ERROR_ALREADY_EXISTS;
+    const auto native_path=WindowsPath(path);
+    DWORD attributes=GetFileAttributesW(native_path.c_str());
+    if(attributes==INVALID_FILE_ATTRIBUTES) {
+        const auto slash=path.find_last_of(L"\\/");
+        if(slash!=std::wstring::npos && slash>2 && !EnsureDirectory(path.substr(0,slash))) return false;
+        if(CreateDirectoryW(native_path.c_str(),nullptr)) return true;
+        if(GetLastError()!=ERROR_ALREADY_EXISTS) return false;
+        attributes=GetFileAttributesW(native_path.c_str());
+    }
+    return attributes!=INVALID_FILE_ATTRIBUTES && (attributes&FILE_ATTRIBUTE_DIRECTORY)!=0;
 }
 void InitSettings(HMODULE proxy) {
     wchar_t path[2048]; DWORD n=GetModuleFileNameW(proxy,path,2048);
@@ -405,10 +435,7 @@ void InitSettings(HMODULE proxy) {
     settings.max_buffered_mib=std::max(8u,std::min(kMaximumBufferedMiB,GetPrivateProfileIntW(L"History",L"MaxBufferedMiB",kDefaultBufferedMiB,ini.c_str())));
     wchar_t raw[2048],expanded[4096];
     GetPrivateProfileStringW(L"To Disk",L"Save Location",L"",raw,2048,ini.c_str());
-    PWSTR music=nullptr;
-    if(SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Music,0,nullptr,&music))) {
-        music_path=music; CoTaskMemFree(music);
-    }
+    ReadKnownFolder(FOLDERID_Music,music_path);
     if(!raw[0] && !music_path.empty()) settings.root=music_path+L"\\Spotify";
     DWORD length=ExpandEnvironmentStringsW(raw,expanded,4096);
     if(raw[0] && length && length<=4096) {settings.root=expanded;settings.save_location=raw;}

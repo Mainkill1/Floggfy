@@ -1,5 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include "telemetry_filter.h"
+#include "windows_last_error.h"
 #include "telemetry_policy.h"
 #include "telemetry_decode.h"
 #include "async_log.h"
@@ -28,20 +29,31 @@ using Create=void*(*)(Request*,void*,void*);
 using GetHandler=Handler*(*)(Client*);
 using GetResource=Resource*(*)(Handler*,void*,void*,Request*,int,int,const String*,int*);
 using Before=int(*)(Resource*,void*,void*,Request*,void*);
-struct LastError {DWORD value=GetLastError();~LastError(){SetLastError(value);}void Restore()const{SetLastError(value);}};
 std::atomic<bool> enabled{false},dirty{false},fallback_seen{false};
 std::atomic<unsigned> unsupported{0},renderer{0};
 constexpr unsigned kRules=static_cast<unsigned>(Rule::Count);
 std::atomic<unsigned long long> blocked[kRules]{},renderer_blocked[kRules]{};
 std::atomic<unsigned> category_mask{(1u<<kRules)-2},renderer_capabilities{0};
+struct Category {
+ Rule rule;
+ std::wstring_view renderer_name;
+ bool history::Settings::* option;
+};
+constexpr Category categories[]={
+ {Rule::Gabo,L"event_reports",&history::Settings::block_event_reports},
+ {Rule::Logging,L"internal_logging",&history::Settings::block_internal_logging},
+ {Rule::Sentry,L"sentry",&history::Settings::block_sentry},
+ {Rule::Playback,L"playback_reports",&history::Settings::block_playback_reports},
+ {Rule::Growth,L"growth_analytics",&history::Settings::block_growth_analytics},
+ {Rule::Crash,L"crash_reports",&history::Settings::block_crash_reports},
+ {Rule::TrackError,L"track_errors",&history::Settings::block_track_errors},
+ {Rule::AITelemetry,L"ai_telemetry",&history::Settings::block_ai_telemetry},
+ {Rule::QueuedTracking,L"queued_telemetry",&history::Settings::block_queued_telemetry}
+};
 void ConfigureCategories(const history::Settings& options) noexcept {
  unsigned mask=0;
- const auto set=[&](Rule rule,bool on){if(on)mask|=1u<<static_cast<unsigned>(rule);};
- set(Rule::Gabo,options.block_event_reports);set(Rule::Logging,options.block_internal_logging);
- set(Rule::Sentry,options.block_sentry);set(Rule::Playback,options.block_playback_reports);
- set(Rule::Growth,options.block_growth_analytics);set(Rule::Crash,options.block_crash_reports);
- set(Rule::TrackError,options.block_track_errors);set(Rule::AITelemetry,options.block_ai_telemetry);
- set(Rule::QueuedTracking,options.block_queued_telemetry);
+ for(const auto& category:categories)
+  if(options.*category.option)mask|=1u<<static_cast<unsigned>(category.rule);
  category_mask.store(mask,std::memory_order_release);
 }
 bool Selected(Rule rule) noexcept {return (category_mask.load(std::memory_order_acquire)&(1u<<static_cast<unsigned>(rule)))!=0;}
@@ -391,7 +403,7 @@ template<class T> struct Owned {
  Owned(){api.base={sizeof(T),Add,Release,One,Any};}
 };
 int Cancel(Resource*,void* browser,void* frame,Request* request,void* callback) {
- LastError error;
+ win32::LastError error;
  // CEF callback refptr parameters are transferred. self remains borrowed.
  Drop(browser);Drop(frame);Drop(request);Drop(callback);
  return 0; // RV_CANCEL
@@ -403,7 +415,7 @@ Resource* Cancellation() noexcept {
  return &result->api;
 }
 int BeforeLoad(Resource* self,void* browser,void* frame,Request* request,void* callback){
- LastError error;
+ win32::LastError error;
  if(Enabled()&&self&&request&&callback&&Releasable(browser)&&Releasable(frame)&&Releasable(request)&&Releasable(callback)){
   const auto rule=RequestRule(request);
   if(rule!=Rule::Allow){Capture(request,rule,"preload");Count(rule);return Cancel(self,browser,frame,request,callback);}
@@ -412,7 +424,7 @@ int BeforeLoad(Resource* self,void* browser,void* frame,Request* request,void* c
 }
 Resource* ResourceRequest(Handler* self,void* browser,void* frame,Request* request,int navigation,int download,const String* initiator,int* disable);
 Resource* DefaultResource(Handler*,void* browser,void* frame,Request* request,int,int,const String*,int*){
- LastError error;
+ win32::LastError error;
  Resource* result=nullptr;
  if(Enabled()){
   const auto rule=RequestRule(request);
@@ -429,7 +441,7 @@ Handler* DefaultHandler() noexcept {
  return &result->api;
 }
 Resource* ResourceRequest(Handler* self,void* browser,void* frame,Request* request,int navigation,int download,const String* initiator,int* disable){
- LastError error;
+ win32::LastError error;
  if(Enabled()&&self&&browser&&frame&&request&&disable&&Releasable(browser)&&Releasable(frame)&&Releasable(request)){
   const auto rule=RequestRule(request);
   if(rule!=Rule::Allow){if(auto cancel=Cancellation()){Capture(request,rule,"resource");Count(rule);Drop(browser);Drop(frame);Drop(request);return cancel;}}
@@ -442,7 +454,7 @@ Resource* ResourceRequest(Handler* self,void* browser,void* frame,Request* reque
  return result;
 }
 Handler* RequestHandler(Client* self){
- LastError error;
+ win32::LastError error;
  error.Restore();auto result=handler_hook.Original<GetHandler>()(self);error.value=GetLastError();
  if(!Enabled()||!self)return result;
  if(!result){auto fallback=DefaultHandler();if(fallback){fallback_seen=true;dirty=true;}return fallback;}
@@ -451,7 +463,7 @@ Handler* RequestHandler(Client* self){
  return result;
 }
 void* CreateRequest(Request* request,void* client,void* context){
- LastError error;
+ win32::LastError error;
  if(Enabled()&&request&&client&&Releasable(request)&&Releasable(client)&&Releasable(context)){
   const auto rule=RequestRule(request);
   if(rule!=Rule::Allow){Capture(request,rule,"standalone");Count(rule);Drop(request);Drop(client);Drop(context);return nullptr;}
@@ -464,7 +476,7 @@ template<class F> F Export(HMODULE module,const char* name) noexcept {
 } // namespace
 bool Enabled() noexcept{return enabled.load(std::memory_order_acquire);}
 bool Prepare(HMODULE cef,bool preference) noexcept {
- LastError error;
+ win32::LastError error;
  if(preparation_attempted)return false;
  preparation_attempted=true;
  try{
@@ -489,7 +501,7 @@ bool Prepare(HMODULE cef,bool preference) noexcept {
  return true;
 }
 void Finalize(bool applied) noexcept {
- LastError error;
+ win32::LastError error;
  if(!root_prepared)return;
  root_prepared=false;
  if(applied){create_hook.active.store(true,std::memory_order_release);dirty=true;return;}
@@ -505,14 +517,14 @@ void Finalize(bool applied) noexcept {
  Unsupported();
 }
 void ObserveClient(void* client) noexcept {
- LastError error;
+ win32::LastError error;
  if(!Enabled())return;
  if(!free_string){Unsupported();return;}
  if(!Prefix(client,sizeof(Base)+18*sizeof(void*))){Unsupported();return;}
  handler_hook.Install(static_cast<Client*>(client)->methods[17],reinterpret_cast<void*>(RequestHandler));
 }
 void ObserveRenderer(std::wstring_view status) noexcept {
- LastError error;
+ win32::LastError error;
  // Only fixed producer bits cross the renderer trust boundary; never log input.
  unsigned value=0;
  if(status==L"sender=0 ubi=0 early=0")value=1;
@@ -523,7 +535,7 @@ void ObserveRenderer(std::wstring_view status) noexcept {
  if(renderer.exchange(value)!=value)dirty=true;
 }
 void ObserveRendererCapabilities(std::wstring_view status) noexcept {
- LastError error;if(!Enabled())return;
+ win32::LastError error;if(!Enabled())return;
  unsigned bits=16; // Separate seen bit: zero capabilities is a meaningful report.
  const wchar_t* names[]={L"fetch=",L" xhr=",L" beacon=",L" cosmos="};
  for(unsigned i=0;i<4;++i){
@@ -538,19 +550,12 @@ void ObserveRendererCapabilities(std::wstring_view status) noexcept {
  if(renderer_capabilities.exchange(bits)!=bits)dirty=true;
 }
 void ObserveRendererCount(std::wstring_view status) noexcept {
- LastError error;if(!Enabled())return;
- struct Category {std::wstring_view name;Rule rule;};
- constexpr Category categories[]={
-  {L"event_reports",Rule::Gabo},{L"internal_logging",Rule::Logging},{L"sentry",Rule::Sentry},
-  {L"playback_reports",Rule::Playback},{L"growth_analytics",Rule::Growth},{L"crash_reports",Rule::Crash},
-  {L"track_errors",Rule::TrackError},{L"ai_telemetry",Rule::AITelemetry},
-  {L"queued_telemetry",Rule::QueuedTracking}
- };
+ win32::LastError error;if(!Enabled())return;
  const auto separator=status.find(L'=');if(separator==status.npos)return;
  const auto name=status.substr(0,separator),amount=status.substr(separator+1);
  // Renderer sends fixed deltas; never log arbitrary console strings.
  if(amount!=L"1")return;
- for(const auto& category:categories)if(name==category.name){
+ for(const auto& category:categories)if(name==category.renderer_name){
   if(Selected(category.rule)){renderer_blocked[static_cast<unsigned>(category.rule)].fetch_add(1,std::memory_order_relaxed);dirty=true;}
   return;
  }
@@ -586,7 +591,7 @@ bool DumpWide(std::wstring_view encoded,size_t limit,std::wstring& output){
 }
 }
 void ObserveRendererDump(std::wstring_view message) noexcept {
- LastError error;if(!Enabled()||!dump.enabled||message.size()>400000)return;
+ win32::LastError error;if(!Enabled()||!dump.enabled||message.size()>400000)return;
  if(!TryAcquireSRWLockExclusive(&dump.lock)){++dump.busy_drops;++dump.revision;return;}
  struct Unlock {~Unlock(){ReleaseSRWLockExclusive(&dump.lock);}} unlock;
  if(dump.captured.load()>=32){++dump.limit_drops;++dump.revision;return;}
@@ -621,7 +626,7 @@ void ObserveRendererDump(std::wstring_view message) noexcept {
  }catch(...){++dump.allocation_drops;++dump.revision;}
 }
 void DrainStatus() noexcept {
- LastError error;
+ win32::LastError error;
  DrainDumps();
  if(!dirty.exchange(false))return;
  char line[400];

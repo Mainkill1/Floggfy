@@ -1,6 +1,27 @@
 // Runs in a dedicated test directory, never beside an installed client.
-#include "../native/history_settings.cpp"
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #include <cassert>
+#include <string>
+namespace {
+std::wstring competing_path;
+bool competing_directory = false;
+BOOL CreateDirectoryWithRacer(LPCWSTR path, LPSECURITY_ATTRIBUTES security) {
+  if (competing_path == path) {
+    competing_path.clear();
+    if (competing_directory) {
+      assert(CreateDirectoryW(path, nullptr));
+    } else {
+      HANDLE file = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+      assert(file != INVALID_HANDLE_VALUE && CloseHandle(file));
+    }
+  }
+  return CreateDirectoryW(path, security);
+}
+}
+#define CreateDirectoryW CreateDirectoryWithRacer
+#include "../native/history_settings.cpp"
+#undef CreateDirectoryW
 namespace history {
 void StartLogger() {}
 void LogEvent(LogKind,const char*,const std::string&) {}
@@ -170,6 +191,18 @@ int main(int argc,char** argv) {
   assert(s.log_level==expected_log&&history::LogLevel()==expected_log);
   assert(history::CaptureSpeed()==unsigned(std::max(1,s.capture_speed)));
   if(scenario=="new") {
+    const auto parent = std::wstring(module) + L".folders";
+    const auto leaf = parent + L"\\child";
+    competing_path = history::WindowsPath(leaf);
+    assert(!history::EnsureDirectory(leaf));
+    assert(competing_path.empty());
+    assert(!history::EnsureDirectory(leaf));
+    assert(DeleteFileW(leaf.c_str()));
+    competing_path = history::WindowsPath(leaf);
+    competing_directory = true;
+    assert(history::EnsureDirectory(leaf) && history::EnsureDirectory(leaf));
+    assert(competing_path.empty());
+    assert(RemoveDirectoryW(leaf.c_str()) && RemoveDirectoryW(parent.c_str()));
     assert(GetPrivateProfileIntW(L"To Disk",L"Downloads",9,path.c_str())==1);
     assert(GetPrivateProfileIntW(L"To Disk",L"AAC",9,path.c_str())==0);
     assert(GetPrivateProfileIntW(L"To Disk",L"Podcasts",9,path.c_str())==1);

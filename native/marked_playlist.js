@@ -104,8 +104,8 @@
         return undefined;
     }
 
-    function uriFromReact(row, gridNode, boundary) {
-        for (const host of new Set([row, gridNode])) {
+    function uriFromReact(row, gridNode, boundary, hosts) {
+        for (const host of hosts) {
             for (const key of Object.getOwnPropertyNames(host)) {
                 if (key.startsWith("__reactProps$")) {
                     const uri = uriFromProps(own(host, key));
@@ -132,7 +132,8 @@
     }
 
     function identity(row, gridNode, grid) {
-        for (const element of new Set([row, gridNode])) {
+        const hosts = row === gridNode ? [row] : [row, gridNode];
+        for (const element of hosts) {
             for (const attribute of ["data-track-uri", "data-test-uri"]) {
                 const uri = element.getAttribute(attribute);
                 if (trackUri.test(uri)) return uri;
@@ -146,7 +147,7 @@
                 if (url.origin === location.origin && match) return "spotify:track:" + match[1];
             } catch (_) {}
         }
-        return uriFromReact(row, gridNode, grid);
+        return uriFromReact(row, gridNode, grid, hosts);
     }
 
     function templateTracks(template) {
@@ -171,16 +172,16 @@
     }
 
     function layout(row, role, expectedCount) {
+        const owned = mounted.get(row);
         for (const node of [row, ...row.children]) {
             const cells = [...node.children].filter(child => child.getAttribute("role") === role &&
-                child !== mounted.get(row)?.cell);
+                child !== owned?.cell);
             if (cells.length < 3 || (expectedCount && cells.length !== expectedCount)) continue;
             const style = getComputedStyle(node);
             if (style.display !== "grid") continue;
             const template = style.getPropertyValue("--grid-template-columns").trim();
             const tracks = templateTracks(template);
             if (!/\[\s*last\s*\]/.test(template) || tracks.length !== cells.length) continue;
-            const owned = mounted.get(row);
             const extra = owned?.node === node && node.style.getPropertyValue(templateProperty) === owned.written ? 1 : 0;
             // Resolved CSSOM includes the appended track once the override is installed.
             const resolved = templateTracks(style.gridTemplateColumns).length;
@@ -350,8 +351,16 @@
         for (const grid of primary.length ? primary : grids) {
             const rows = [...grid.querySelectorAll('[role="row"]')]
                 .filter(row => row.closest('[role="grid"]') === grid);
-            const headers = rows.map(row => ({ row, layout: layout(row, "columnheader") }))
-                .filter(header => header.layout && header.layout.width <= grid.clientWidth);
+            // layout accepts cells directly under a row or under one wrapper.
+            const headerParents = new Set();
+            for (const cell of grid.querySelectorAll('[role="columnheader"]')) {
+                headerParents.add(cell.parentElement);
+                headerParents.add(cell.parentElement.parentElement);
+            }
+            const width = grid.clientWidth;
+            const headers = rows.filter(row => headerParents.has(row))
+                .map(row => ({ row, layout: layout(row, "columnheader") }))
+                .filter(header => header.layout && header.layout.width <= width);
             if (headers.length !== 1) continue;
             if (match) return null;
             match = { grid, rows, header: headers[0] };
@@ -450,10 +459,11 @@
         setColumnCount(grid, header.layout.count);
         const layouts = new Map();
         const visible = new Set();
+        const width = grid.clientWidth;
         for (const row of rows) {
             if (row === header.row) continue;
             const rowLayout = layout(row, "gridcell", header.layout.count);
-            if (!rowLayout || rowLayout.width > grid.clientWidth) continue;
+            if (!rowLayout || rowLayout.width > width) continue;
             const identityUri = identity(row, rowLayout.node, grid);
             if (identityUri) visible.add(identityUri);
             layouts.set(row, { rowLayout, identityUri });
@@ -486,7 +496,7 @@
         updateNativeSortIndicators(header.row, sorted);
         paint(header.row, header.layout, "", true, sortable, missingDates);
         for (const [row, { rowLayout, identityUri }] of layouts) {
-            paint(row, rowLayout, visible.has(identityUri) ? identityUri : "");
+            paint(row, rowLayout, identityUri);
         }
     }
 

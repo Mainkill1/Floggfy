@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include "library_layout.h"
+#include "fnv1a.h"
 namespace history {
 inline constexpr std::size_t kMatcherSnapshotBytes=16*1024;
 inline constexpr std::size_t kMatcherSessionBytes=2*1024*1024;
@@ -141,12 +142,12 @@ inline SerializedMatcherSnapshot Serialize(const MatcherSnapshot& snapshot,std::
     MatcherSnapshotEmissionState next;next.snapshot_id=snapshot.snapshot_id;
     const bool delta=emission&&emission->snapshot_id&&snapshot.terminal==MatcherReason::NotEvaluated;
     const auto add=[&](Kind kind,uint64_t id,std::string body) {
-        uint64_t signature=14695981039346656037ull;
+        uint64_t signature=kFnv1aOffset;
         // The common sequence/capture prefix is correlation, not row evidence.
         const auto at=body.find(common);
         for(std::size_t i=0;i<body.size();++i) {
             if(i==at){i+=common.size()-1;continue;}
-            signature^=static_cast<unsigned char>(body[i]);signature*=1099511628211ull;
+            signature=Fnv1aByte(signature,static_cast<unsigned char>(body[i]));
         }
         next.rows[next.count++]={kind,id,signature};
         if(delta)for(std::size_t i=0;i<emission->count;++i) {
@@ -241,11 +242,10 @@ inline SerializedMatcherSnapshot SerializeMatcherSnapshot(const MatcherSnapshot&
 }
 namespace matcher_diagnostic_detail {
 class Fingerprint {
-    uint64_t hash_=14695981039346656037ull;
+    uint64_t hash_=kFnv1aOffset;
 public:
     template<class Value> void Add(Value value) noexcept {
-        const auto* data=reinterpret_cast<const unsigned char*>(&value);
-        for(std::size_t i=0;i<sizeof(Value);++i){hash_^=data[i];hash_*=1099511628211ull;}
+        hash_=Fnv1a64(&value,sizeof(value),hash_);
     }
     template<class Value> void Add(std::optional<Value> value) noexcept {
         Add(bool(value));if(value)Add(*value);

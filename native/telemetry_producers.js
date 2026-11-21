@@ -17,7 +17,9 @@
  }
  if(own(window,'__floggfyPrivacyObserve')!==undefined)return;
  const options=typeof __floggfyPrivacyOptions==='object'?__floggfyPrivacyOptions:{};
- const enabled=category=>options.block_telemetry===true&&options['block_'+category]===true;
+ const masterEnabled=options.block_telemetry===true;
+ const enabled=category=>masterEnabled&&options['block_'+category]===true;
+ const dumpEnabled=masterEnabled&&options.dump_telemetry===true;
  const senders=new WeakMap(),ubis=new WeakMap(),timers=new WeakMap();
  let senderCount=0,senderFailed=0,ubiCount=0,ubiFailed=0,lastStatus='';
  function report(){
@@ -125,21 +127,23 @@
   if(host.endsWith('.'))host=host.slice(0,-1);
   const http=scheme==='http'||scheme==='https';
   if(http&&queuedTrackingHosts.has(host))return 'queued_telemetry';
+  if(http&&host==='crashdump.spotify.com')return 'crash_reports';
+  const regional=/^([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)-spclient\.spotify\.com$/.exec(host);
+  const spclient=http&&(host==='spclient.wg.spotify.com'||regional&&regional[1].length+8<=63);
+  const growth=http&&host==='www.spotify.com',sentry=http&&host==='o22381.ingest.sentry.io',logging=scheme==='sp'&&host==='logging';
+  if(!spclient&&!growth&&!sentry&&!logging)return;
   const segments=[],decoded=match[3].replace(/%([0-9a-f]{2})/gi,(all,hex)=>{
    const c=String.fromCharCode(parseInt(hex,16));return /[a-z0-9._~\/\\-]/i.test(c)?c:all;
   }).replace(/\\/g,'/');
   for(const segment of decoded.split('/')){if(segment==='..')segments.pop();else if(segment&&segment!=='.')segments.push(segment);}
   const path='/'+segments.join('/');
-  const regional=/^([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)-spclient\.spotify\.com$/.exec(host);
-  const spclient=http&&(host==='spclient.wg.spotify.com'||regional&&regional[1].length+8<=63);
   if(spclient&&route(path,'/gabo-receiver-service'))return 'event_reports';
   if(spclient&&(route(path,'/melody/v1/msg')||route(path,'/melody/unauth/v1/msg')))return 'playback_reports';
   if(spclient&&path==='/track-error/v1/errors')return 'track_errors';
   if(spclient&&(path==='/v1/telemetry/sandbox'||path==='/v1/telemetry/turn-termination'))return 'ai_telemetry';
-  if(http&&host==='www.spotify.com'&&route(path,'/api/growth-events'))return 'growth_analytics';
-  if(http&&host==='crashdump.spotify.com')return 'crash_reports';
-  if(scheme==='sp'&&host==='logging'&&['/v1','/v2','/v3'].some(root=>route(path,root)))return 'internal_logging';
-  if(http&&host==='o22381.ingest.sentry.io'&&route(path,'/api/114855'))return 'sentry';
+  if(growth&&route(path,'/api/growth-events'))return 'growth_analytics';
+  if(logging&&['/v1','/v2','/v3'].some(root=>route(path,root)))return 'internal_logging';
+  if(sentry&&route(path,'/api/114855'))return 'sentry';
  }
  // Use branded platform getters, never caller-controlled url/toString getters.
  const urlGetter=typeof URL==='function'?Object.getOwnPropertyDescriptor(URL.prototype,'href')?.get:undefined;
@@ -155,7 +159,7 @@
    if(urlGetter)try{return urlGetter.call(value);}catch{}
   }
  }
- const blocked=(value,request=false)=>{const category=classify(address(value,request));return category&&enabled(category)?category:undefined;};
+ const blocked=url=>{const category=classify(url);return category&&enabled(category)?category:undefined;};
  // Dumping is a separate opt-in. Only already-blocked branches call capture;
  // no allowed request body or credential header is inspected. Every record is
  // bounded before crossing the console bridge, and capture never permits send.
@@ -250,7 +254,7 @@
   state.reported=length;emitDump(state,bytes.subarray(0,result.written));
  }
  function capture(hook,url,prepare){
-  if(options.block_telemetry!==true||options.dump_telemetry!==true||dumpRecords>=32||!encoder||typeof btoa!=='function')return;
+  if(!dumpEnabled||dumpRecords>=32||!encoder||typeof btoa!=='function')return;
   dumpRecords++;
   const state={hook,url,timestamp:Date.now(),method:'',type:'',encoding:'',flags:0,reported:0,body:{present:false}};
   try{
@@ -287,19 +291,20 @@
  // The observer already runs during bounded collector discovery. Reuse it to
  // discover a late native bridge; do not install another timer or global setter.
  function installRequests(){
-  if(options.block_telemetry!==true)return;
+  if(!masterEnabled)return;
   if(!capabilities.fetch){
    const original=method(window,'fetch');
    if(original&&replace(window,'fetch',{fetch(...args){
-    const category=blocked(args[0],true);if(!category)return Reflect.apply(original,this,args);
-    count(category);capture('fetch',address(args[0],true),state=>fetchMetadata(args[0],args[1],state));return Promise.reject(new TypeError('Failed to fetch'));
+    const url=address(args[0],true),category=blocked(url);if(!category)return Reflect.apply(original,this,args);
+    count(category);capture('fetch',url,state=>fetchMetadata(args[0],args[1],state));return Promise.reject(new TypeError('Failed to fetch'));
    }}.fetch))capabilities.fetch=1;
   }
   if(!capabilities.beacon){
    const navigator=own(window,'navigator')||window.navigator,original=method(navigator,'sendBeacon');
    if(original&&replace(navigator,'sendBeacon',{sendBeacon(...args){
-    const category=this===navigator&&blocked(args[0]);if(!category)return Reflect.apply(original,this,args);
-    count(category);capture('beacon',address(args[0]),state=>{state.method='POST';state.body={present:args.length>1,value:args[1]};});return false;
+    if(this!==navigator)return Reflect.apply(original,this,args);
+    const url=address(args[0]),category=blocked(url);if(!category)return Reflect.apply(original,this,args);
+    count(category);capture('beacon',url,state=>{state.method='POST';state.body={present:args.length>1,value:args[1]};});return false;
    }}.sendBeacon))capabilities.beacon=1;
   }
   if(!capabilities.xhr){
@@ -309,10 +314,10 @@
       canReplace(prototype,'open')&&canReplace(prototype,'send')){
     const requests=new WeakMap();
     const opened=replace(prototype,'open',{open(...args){
-     const result=Reflect.apply(open,this,args);requests.set(this,{category:blocked(args[1]),url:address(args[1]),method:typeof args[0]==='string'?args[0]:'',type:'',encoding:'',flags:0,async:args[2]===undefined||Boolean(args[2])});return result;
+     const result=Reflect.apply(open,this,args),url=address(args[1]);requests.set(this,{category:blocked(url),url,method:typeof args[0]==='string'?args[0]:'',type:'',encoding:'',flags:0,async:args[2]===undefined||Boolean(args[2])});return result;
     }}.open);
     const setHeader=method(prototype,'setRequestHeader');
-    if(opened&&options.dump_telemetry===true&&setHeader)replace(prototype,'setRequestHeader',{setRequestHeader(...args){
+    if(opened&&dumpEnabled&&setHeader)replace(prototype,'setRequestHeader',{setRequestHeader(...args){
      const result=Reflect.apply(setHeader,this,args),state=requests.get(this);
      if(state&&state.category&&typeof args[0]==='string'){const key=args[0].toLowerCase();if(key==='content-type'||key==='content-encoding'){
       const name=key==='content-type'?'type':'encoding';if(typeof args[1]==='string'){const prefix=state[name]?state[name]+', ':'';state[name]=(prefix+args[1].slice(0,1024)).slice(0,1024);if(prefix.length+args[1].length>1024)state.flags|=8;}else state.flags|=8;
@@ -344,9 +349,9 @@
      const input=args[0],request=own(input,'request'),failure=own(input,'onFailure');let category,decoded;
      // Installed module 1508's verified bridge shape and failure(code,text)
      // callback. Unknown bridges, methods, requests and Hermes remain partial.
-     if(typeof request==='string'&&request.length<=1048576&&typeof failure==='function'&&
+     if(enabled('internal_logging')&&typeof request==='string'&&request.length<=1048576&&typeof failure==='function'&&
         typeof own(input,'onSuccess')==='function'&&typeof own(input,'persistent')==='boolean'){
-      try{decoded=JSON.parse(request);if(classify(decoded.uri)==='internal_logging'&&enabled('internal_logging'))category='internal_logging';}catch{}
+      try{decoded=JSON.parse(request);if(classify(decoded.uri)==='internal_logging')category='internal_logging';}catch{}
      }
      if(!category)return Reflect.apply(send,this,args);
      const token=Object.freeze({});tokens.add(token);pending.add(token);count(category);

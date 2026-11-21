@@ -1,4 +1,5 @@
 #include "telemetry_crash.h"
+#include "windows_last_error.h"
 #include "telemetry_crash_command.h"
 #include "vendor/minhook/include/MinHook.h"
 #include <windows.h>
@@ -19,7 +20,6 @@ std::atomic<std::uint64_t> sanitized{0},without_url{0},failures{0},unmatched{0};
 std::wstring expected_handler;
 void* hook_target=nullptr;
 bool attempted=false,prepared=false;
-struct LastError { DWORD value=GetLastError();~LastError(){SetLastError(value);} };
 std::wstring_view Filename(std::wstring_view path) {
  const auto slash=path.find_last_of(L"/\\");
  return slash==path.npos?path:path.substr(slash+1);
@@ -28,7 +28,7 @@ BOOL WINAPI CreateCrashProcess(LPCWSTR application,LPWSTR command,
  LPSECURITY_ATTRIBUTES process_attributes,LPSECURITY_ATTRIBUTES thread_attributes,
  BOOL inherit,DWORD flags,LPVOID environment,LPCWSTR directory,
  LPSTARTUPINFOW startup,LPPROCESS_INFORMATION process) {
- LastError error;
+ win32::LastError error;
  std::wstring replacement;
  bool changed=false,no_url=false;
  if(requested.load(std::memory_order_acquire)){
@@ -55,7 +55,7 @@ BOOL WINAPI CreateCrashProcess(LPCWSTR application,LPWSTR command,
 }
 }
 bool PrepareCrash(bool preference) noexcept {
- LastError error;
+ win32::LastError error;
  if(attempted)return false;
  attempted=true;requested.store(preference,std::memory_order_release);
  if(!preference)return false;
@@ -87,7 +87,7 @@ bool PrepareCrash(bool preference) noexcept {
  }catch(...){return false;}
 }
 void FinalizeCrash(bool applied) noexcept {
- LastError error;
+ win32::LastError error;
  if(!prepared)return;
  prepared=false;
  if(applied){active.store(true,std::memory_order_release);return;}
