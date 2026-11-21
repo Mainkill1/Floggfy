@@ -10,11 +10,6 @@
 #include <cstdio>
 #endif
 namespace history {
-bool IsAlbumArtworkUrl(const std::string& url){
-    const std::string prefix="https://i.scdn.co/image/";
-    if(url.size()!=prefix.size()+40 || url.compare(0,prefix.size(),prefix))return false;
-    return std::all_of(url.begin()+prefix.size(),url.end(),[](char c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');});
-}
 bool DownloadAlbumArtwork(const std::string& url,std::vector<uint8_t>& bytes){
     if(!IsAlbumArtworkUrl(url))return false;
 #ifdef _WIN32
@@ -57,7 +52,7 @@ bool DownloadAlbumArtwork(const std::string& url,std::vector<uint8_t>& bytes){
     if(!connection.h)return observation.Fail();
     observation.stage="open-request";
     // Keep the exact validated /image/ path; never follow a server redirect.
-    std::wstring path(url.begin()+17,url.end());
+    std::wstring path(url.begin()+kArtworkOrigin.size(),url.end());
     Handle request{WinHttpOpenRequest(connection.h,L"GET",path.c_str(),nullptr,WINHTTP_NO_REFERER,WINHTTP_DEFAULT_ACCEPT_TYPES,WINHTTP_FLAG_SECURE)};
     if(!request.h)return observation.Fail();
     observation.stage="options";

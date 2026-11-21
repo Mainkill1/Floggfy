@@ -1,3 +1,4 @@
+#include "../tooling/text_encoding.h"
 #include "connect_message.h"
 #include <limits>
 #include <utility>
@@ -20,12 +21,9 @@ class Reader {
         value=0;
         for(unsigned i=0;i<4;++i) {
             if(position==input.size())return false;
-            const auto c=input[position++];unsigned digit;
-            if(c>='0'&&c<='9')digit=unsigned(c-'0');
-            else if(c>='a'&&c<='f')digit=unsigned(c-'a'+10);
-            else if(c>='A'&&c<='F')digit=unsigned(c-'A'+10);
-            else return false;
-            value=value*16+digit;
+            const int digit=text_encoding::HexDigit(input[position++]);
+            if(digit<0)return false;
+            value=value*16+unsigned(digit);
         }
         return true;
     }

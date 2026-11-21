@@ -341,6 +341,17 @@ bool DecoderOwnershipTracker::ReconsiderAmbiguousSuccessor(
     return true;
 }
 
+void DecoderOwnershipTracker::CommitBinding(CaptureRecord& capture,PlaybackRecord& playback) noexcept {
+    capture.playback_token=playback.token;
+    capture.listen_generation=playback.listen_generation;
+    playback.bound_capture=capture.token;
+    capture.state=OwnershipState::Bound;
+    capture.reason=OwnershipReason::PlaybackStageBound;
+    current_capture_=capture.token;
+    current_playback_=latest_playback_=playback.token;
+    if(pending_capture_==capture.token)pending_capture_=0;
+}
+
 void DecoderOwnershipTracker::TryBind(CaptureRecord& capture,PlaybackRecord& playback,
                                       double observed) noexcept {
     if(capture.state!=OwnershipState::AwaitingPlaybackInstance||!capture.first_output)return;
@@ -350,12 +361,7 @@ void DecoderOwnershipTracker::TryBind(CaptureRecord& capture,PlaybackRecord& pla
     // Their timestamps are useful diagnostics, not a shared causal clock. The
     // worker's consumed Ready stage is the ordering evidence.
     if(pending_capture_==capture.token&&playback.token==current_playback_)return;
-    capture.playback_token=playback.token;capture.listen_generation=playback.listen_generation;
-    playback.bound_capture=capture.token;
-    capture.state=OwnershipState::Bound;current_capture_=capture.token;
-    capture.reason=OwnershipReason::PlaybackStageBound;
-    current_playback_=playback.token;latest_playback_=playback.token;
-    if(pending_capture_==capture.token)pending_capture_=0;
+    CommitBinding(capture,playback);
 }
 
 bool DecoderOwnershipTracker::BindCapture(std::uint64_t capture_token,
@@ -385,13 +391,7 @@ bool DecoderOwnershipTracker::BindCapture(std::uint64_t capture_token,
     if(capture->state!=OwnershipState::AwaitingPlaybackInstance||!capture->first_output||
        (playback->bound_capture&&playback->bound_capture!=capture->token))return false;
     if(pending_capture_==capture->token&&playback->token==current_playback_)return false;
-    capture->playback_token=playback->token;
-    capture->listen_generation=listen_generation;
-    playback->bound_capture=capture->token;
-    capture->state=OwnershipState::Bound;
-    capture->reason=OwnershipReason::PlaybackStageBound;
-    current_capture_=capture->token;current_playback_=playback->token;
-    if(pending_capture_==capture->token)pending_capture_=0;
+    CommitBinding(*capture,*playback);
     return true;
 }
 
@@ -468,13 +468,8 @@ bool DecoderOwnershipTracker::BindCaptureExact(std::uint64_t capture_token,
         return reject(capture->state==OwnershipState::Conflict?"ownership-conflict":"ownership-state-excluded");
     if(playback.bound_capture&&playback.bound_capture!=capture->token&&!replace_restart)
         return reject("playback-already-claimed");
-    capture->playback_token=playback.token;
-    capture->listen_generation=listen_generation;
     capture->ambiguity_group=0;
-    playback.bound_capture=capture->token;
-    capture->state=OwnershipState::Bound;
-    capture->reason=OwnershipReason::PlaybackStageBound;
-    current_capture_=capture->token;current_playback_=playback.token;
+    CommitBinding(*capture,playback);
     pending_capture_=0;
     return true;
 }

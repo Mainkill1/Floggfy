@@ -1,25 +1,22 @@
 #include "rich_metadata.h"
+#include "artwork_url.h"
+#include "../tooling/text_encoding.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <set>
 namespace history {
-bool MetadataTextValid(const std::string& s) {
- for(size_t i=0;i<s.size();) {
-  unsigned char b=s[i++]; if(b<128) {if(!b) return false; continue;}
-  unsigned n=b>=0xc2&&b<=0xdf?1:b>=0xe0&&b<=0xef?2:b>=0xf0&&b<=0xf4?3:99;
-  if(n==99 || i+n>s.size()) return false;
-  unsigned cp=b&((1u<<(6-n))-1);
-  for(unsigned j=0;j<n;j++) {unsigned char t=s[i++]; if((t&0xc0)!=0x80) return false; cp=(cp<<6)|(t&63);}
-  if((n==1&&cp<128)||(n==2&&cp<2048)||(n==3&&cp<65536)||cp>0x10ffff||(cp>=0xd800&&cp<=0xdfff)) return false;
- } return true;
+bool MetadataTextValid(std::string_view text) {
+ return text_encoding::ValidUtf8(text,text_encoding::Ascii::NoNull);
 }
-static int Hex(char c) {return c>='0'&&c<='9'?c-'0':c>='a'&&c<='f'?c-'a'+10:c>='A'&&c<='F'?c-'A'+10:-1;}
-bool DecodeMetadataText(const std::string& s,std::string& out) {
- out.clear(); for(size_t i=0;i<s.size();i++) {
-  if(s[i]=='%') {if(i+2>=s.size()||Hex(s[i+1])<0||Hex(s[i+2])<0) return false; out+=char(Hex(s[i+1])*16+Hex(s[i+2])); i+=2;}
-  else out+=s[i];
- } return MetadataTextValid(out);
+bool DecodeMetadataText(std::string_view text,std::string& out) {
+ out.clear();
+ for(size_t i=0;i<text.size();++i) {
+  char byte=text[i];
+  if(byte=='%'&&!text_encoding::ReadPercentByte(text,i,byte))return false;
+  out+=byte;
+ }
+ return MetadataTextValid(out);
 }
 bool RichMetadata::Matches(const std::string& t,const std::string& a,const std::string& al,double d) const {
  return title==t&&artist==a&&album==al&&std::fabs(duration-d)<=1.0;
@@ -27,13 +24,14 @@ bool RichMetadata::Matches(const std::string& t,const std::string& a,const std::
 bool ParseRichMetadata(const std::string& input,RichMetadata& out,std::string& error) {
  static const std::set<std::string> allowed={"v","artwork_url","artwork_urls","metadata_source","playback_quality","title","artist","album","uri","album_uri","duration","ARTIST","ALBUMARTIST","DATE","YEAR","GENRE","LYRICS","TRACKNUMBER","DISCNUMBER","DISCTOTAL","TRACKTOTAL","ISRC","LABEL","ORGANIZATION","PUBLISHER","COPYRIGHT","PHONOGRAMCOPYRIGHT","COMPOSER","REMIXER","CONDUCTOR","LANGUAGE","COMMENT","SPOTIFY_URI","SPOTIFY_ALBUM_URI"};
  auto fail=[&](const char* e){error=e; return false;};
+ const std::string_view text=input;
  if(input.size()>131072) return fail("metadata too large");
  std::map<std::string,std::string> kv;
  for(size_t p=0;p<input.size();) {
   size_t end=input.find('&',p); if(end==std::string::npos) end=input.size();
   size_t eq=input.find('=',p); if(eq==std::string::npos||eq>=end) return fail("invalid pair");
   std::string key=input.substr(p,eq-p),value;
-  if(!allowed.count(key)||kv.count(key)||!DecodeMetadataText(input.substr(eq+1,end-eq-1),value)) return fail("invalid field");
+  if(!allowed.count(key)||kv.count(key)||!DecodeMetadataText(text.substr(eq+1,end-eq-1),value)) return fail("invalid field");
   if(value.size()>(key=="LYRICS"?65536u:4096u)) return fail("field too large");
   kv.emplace(key,std::move(value)); p=end+1;
  }
@@ -54,9 +52,7 @@ bool ParseRichMetadata(const std::string& input,RichMetadata& out,std::string& e
   auto end=references.find('\n',start);if(end==std::string::npos)end=references.size();
   auto reference=references.substr(start,end-start);
   if(m.artwork_urls.size()>=8)break;
-  const std::string prefix="https://i.scdn.co/image/";
-  if(reference.size()==prefix.size()+40&&reference.compare(0,prefix.size(),prefix)==0&&
-     std::all_of(reference.begin()+prefix.size(),reference.end(),[](char c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');})&&
+  if(IsAlbumArtworkUrl(reference)&&
      std::find(m.artwork_urls.begin(),m.artwork_urls.end(),reference)==m.artwork_urls.end())m.artwork_urls.push_back(std::move(reference));
   start=end+1;
  }

@@ -1,7 +1,7 @@
+#include "../tooling/binary.h"
 #include "image_info.h"
 #include <cstring>
 namespace history {
-static uint32_t Big(const uint8_t* p){return (uint32_t(p[0])<<24)|(uint32_t(p[1])<<16)|(uint32_t(p[2])<<8)|p[3];}
 static bool Bounds(const ImageInfo& i){return i.width && i.height && i.width<=8192 && i.height<=8192 && uint64_t(i.width)*i.height<=32000000;}
 bool ReadImageInfo(const std::vector<uint8_t>& b,ImageInfo& out){
     out={};if(b.size()<8 || b.size()>4*1024*1024)return false;
@@ -9,13 +9,12 @@ bool ReadImageInfo(const std::vector<uint8_t>& b,ImageInfo& out){
     if(!std::memcmp(b.data(),"\x89PNG\r\n\x1a\n",8)){
         bool header=false,data=false,palette=false;size_t pos=8;
         while(b.size()-pos>=12){
-            uint32_t n=Big(b.data()+pos);if(n>b.size()-pos-12)return false;
+            uint32_t n=binary::ReadBig32(b.data()+pos);if(n>b.size()-pos-12)return false;
             const uint8_t* type=b.data()+pos+4;const uint8_t* p=type+4;
-            uint32_t crc=~0u;for(size_t k=pos+4;k<pos+8+n;++k){crc^=b[k];for(int bit=0;bit<8;++bit)crc=(crc>>1)^((crc&1)?0xedb88320u:0);}
-            if(~crc!=Big(p+n))return false;
+            if(binary::Crc32(type, 4 + n)!=binary::ReadBig32(p+n))return false;
             if(!header){
                 if(std::memcmp(type,"IHDR",4)||n!=13)return false;
-                i.width=Big(p);i.height=Big(p+4);unsigned depth=p[8],color=p[9],channels=0;
+                i.width=binary::ReadBig32(p);i.height=binary::ReadBig32(p+4);unsigned depth=p[8],color=p[9],channels=0;
                 if(color==0 && (depth==1||depth==2||depth==4||depth==8||depth==16))channels=1;
                 if(color==2 && (depth==8||depth==16))channels=3;
                 if(color==3 && (depth==1||depth==2||depth==4||depth==8))channels=1;

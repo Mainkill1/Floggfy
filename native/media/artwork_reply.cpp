@@ -1,41 +1,30 @@
 #include "spotify_uri.h"
 #include "artwork_reply.h"
+#include "artwork_url.h"
+#include "../tooling/base64.h"
+#include "../tooling/text_encoding.h"
 #include <algorithm>
 #include <array>
 #include <string_view>
 namespace history {
 namespace {
-int Hex(char c){return c>='0'&&c<='9'?c-'0':c>='a'&&c<='f'?c-'a'+10:c>='A'&&c<='F'?c-'A'+10:-1;}
 bool DecodeHeader(std::string_view input,size_t limit,std::string& result){
  if(input.size()>limit*3)return false;
  for(size_t i=0;i<input.size();++i){
-  unsigned char c=input[i];
-  if(c=='%'){
-   if(i+2>=input.size()||Hex(input[i+1])<0||Hex(input[i+2])<0)return false;
-   c=static_cast<unsigned char>(Hex(input[i+1])*16+Hex(input[i+2]));i+=2;
-  }
+  char byte=input[i];
+  if(byte=='%'&&!text_encoding::ReadPercentByte(input,i,byte))return false;
+  const auto c=static_cast<unsigned char>(byte);
   if(c<32||c>126||result.size()==limit)return false;
   result+=char(c);
  }
  return true;
-}
-bool ImageReference(const std::string& reference){
- constexpr std::string_view prefix="https://i.scdn.co/image/";
- return reference.size()==prefix.size()+40&&reference.compare(0,prefix.size(),prefix)==0&&
-  std::all_of(reference.begin()+prefix.size(),reference.end(),[](char c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');});
-}
-int Base64Digit(char c){
- if(c>='A'&&c<='Z')return c-'A';
- if(c>='a'&&c<='z')return c-'a'+26;
- if(c>='0'&&c<='9')return c-'0'+52;
- return c=='-'?62:c=='_'?63:-1;
 }
 bool DecodeImage(std::string_view input,std::vector<uint8_t>& bytes){
  if(input.empty()||input.size()%4==1||input.size()*3/4>kArtworkReplyMaxImageBytes)return false;
  bytes.reserve(input.size()*3/4);
  uint32_t value=0;unsigned bits=0;
  for(char c:input){
-  const int digit=Base64Digit(c);if(digit<0)return false;
+  const int digit=base64::Digit(c,base64::Alphabet::Url);if(digit<0)return false;
   value=(value<<6)|unsigned(digit);bits+=6;
   if(bits>=8){bits-=8;bytes.push_back(uint8_t(value>>bits));}
  }
@@ -68,7 +57,7 @@ bool ParseArtworkReply(const std::string& input,ArtworkReply& out,std::string& e
     !DecodeHeader(fields[2],64,next.reference)||!DecodeHeader(fields[3],1,source)||
     !DecodeHeader(fields[4],11,next.status)||!DecodeHeader(fields[5],64,next.reason))return fail("reply-field-invalid");
  if(next.id.empty()||!std::all_of(next.id.begin(),next.id.end(),[](char c){return c>='0'&&c<='9';})||!ValidSpotifyMediaUri(next.uri))return fail("reply-identity-invalid");
- if(!next.reference.empty()&&!ImageReference(next.reference))return fail("reply-reference-invalid");
+ if(!next.reference.empty()&&!IsAlbumArtworkUrl(next.reference))return fail("reply-reference-invalid");
  if(source.size()!=1||source[0]<'0'||source[0]>'3')return fail("reply-source-invalid");
  next.source=unsigned(source[0]-'0');
  if(next.reason.empty()||!std::all_of(next.reason.begin(),next.reason.end(),[](char c){return (c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='-';}))return fail("reply-reason-invalid");

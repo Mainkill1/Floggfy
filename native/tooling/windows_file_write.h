@@ -29,3 +29,10 @@ inline bool RenameWithoutReplacing(HANDLE file, const std::wstring& destination)
     return SetFileInformationByHandle(file, FileRenameInfo, info, static_cast<DWORD>(bytes)) != 0;
 }
 }
+
+namespace win32 {
+inline bool DeleteOnClose(HANDLE file) noexcept {
+    FILE_DISPOSITION_INFO disposition{TRUE};
+    return SetFileInformationByHandle(file, FileDispositionInfo, &disposition, sizeof(disposition)) != 0;
+}
+}

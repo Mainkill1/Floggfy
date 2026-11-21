@@ -1,3 +1,4 @@
+#include "../tooling/base64.h"
 #include "vorbis_comments.h"
 #include "tag_memory_plan.h"
 #include "image_info.h"
@@ -9,18 +10,6 @@
 namespace history {
 static void WriteBig32(std::vector<uint8_t>& v,uint32_t n) {
     for(int i=0;i<4;i++) v.push_back(uint8_t(n>>(8*(3-i))));
-}
-static std::string Base64(const std::vector<uint8_t>& v) {
-    const char* alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string out; out.reserve(((v.size()+2)/3)*4);
-    for(size_t i=0;i<v.size();i+=3) {
-        uint32_t n=uint32_t(v[i])<<16;
-        if(i+1<v.size()) n|=uint32_t(v[i+1])<<8;
-        if(i+2<v.size()) n|=v[i+2];
-        out+=alphabet[n>>18]; out+=alphabet[(n>>12)&63];
-        out+=i+1<v.size() ? alphabet[(n>>6)&63] : '=';
-        out+=i+2<v.size() ? alphabet[n&63] : '=';
-    } return out;
 }
 bool BuildPicture(const Tags& tags,std::vector<uint8_t>& picture) {
     picture.clear();
@@ -42,7 +31,12 @@ static bool Comments(const ogg_packet& packet,const Tags& tags,std::vector<uint8
     if(!comments.Read(packet.packet+7,size_t(packet.bytes)-8,tags,has_picture))return false;
     if(comments.vendor.empty())comments.vendor="SpotifyRepair native history";
     out.assign({'\x03','v','o','r','b','i','s'});
-    const auto extra=has_picture ? "METADATA_BLOCK_PICTURE="+Base64(picture) : std::string{};
+    std::string extra;
+    if(has_picture) {
+        extra="METADATA_BLOCK_PICTURE=";
+        extra.reserve(extra.size()+base64::EncodedSize(picture.size()));
+        base64::Append(extra,{reinterpret_cast<const char*>(picture.data()),picture.size()});
+    }
     if(!comments.Write(out,tags,16*1024*1024-1,extra))return false;
     out.push_back(1);return true;
 }

@@ -1,13 +1,11 @@
 #pragma once
+#include "../tooling/binary.h"
 #include "ogg_tags.h"
 #include <set>
 #include <string_view>
 
 namespace history {
 
-inline uint32_t ReadLittle32(const uint8_t* p) {
-    return uint32_t(p[0])|(uint32_t(p[1])<<8)|(uint32_t(p[2])<<16)|(uint32_t(p[3])<<24);
-}
 
 inline std::string CommentKey(std::string_view text) {
     std::string key(text);
@@ -22,13 +20,13 @@ bool ReadVorbisComments(const uint8_t* bytes,size_t size,std::string_view& vendo
     size_t at=0;
     auto read=[&](std::string_view& text) {
         if(size-at<4)return false;
-        const auto length=ReadLittle32(bytes+at);at+=4;
+        const auto length=binary::ReadLittle32(bytes+at);at+=4;
         if(length>size-at)return false;
         text={reinterpret_cast<const char*>(bytes+at),length};at+=length;
         return true;
     };
     if(!read(vendor) || size-at<4)return false;
-    const auto count=ReadLittle32(bytes+at);at+=4;
+    const auto count=binary::ReadLittle32(bytes+at);at+=4;
     if(count>100000 || count>(size-at)/4)return false;
     for(uint32_t i=0;i<count;++i) {
         std::string_view field;

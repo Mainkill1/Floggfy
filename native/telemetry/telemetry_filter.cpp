@@ -1,6 +1,9 @@
 #define WIN32_LEAN_AND_MEAN
 #include "../tooling/windows_handle.h"
 #include "telemetry_filter.h"
+#include "../tooling/base64.h"
+#include "../tooling/srw_guard.h"
+#include "../tooling/text_encoding.h"
 #include "../tooling/windows_last_error.h"
 #include "telemetry_options.h"
 #include "telemetry_decode.h"
@@ -169,12 +172,24 @@ void CopyBody(Request* request,DumpRecord& record){
   if(part.copied<part.reported)record.truncated=true;
  }
 }
+bool DumpSlotAvailable() noexcept {
+ if(dump.captured.load()>=32){++dump.limit_drops;++dump.revision;return false;}
+ if(dump.count==kDumpQueue){++dump.queue_drops;++dump.revision;return false;}
+ return true;
+}
+void QueueDump(std::unique_ptr<DumpRecord> record) noexcept {
+ if(record->truncated)++dump.truncated;
+ if(record->unsupported)++dump.unsupported;
+ if(record->file_elements)++dump.files;
+ if(record->excluded)++dump.excluded;
+ dump.queue[(dump.head+dump.count)%kDumpQueue]=std::move(record);
+ ++dump.count;++dump.captured;++dump.revision;
+}
 void Capture(Request* request,Rule rule,const char* hook) noexcept {
  if(!dump.enabled)return;
- if(!TryAcquireSRWLockExclusive(&dump.lock)){++dump.busy_drops;++dump.revision;return;}
- struct Unlock {~Unlock(){ReleaseSRWLockExclusive(&dump.lock);}} unlock;
- if(dump.captured.load()>=32){++dump.limit_drops;++dump.revision;return;}
- if(dump.count==kDumpQueue){++dump.queue_drops;++dump.revision;return;}
+ history::TryExclusiveSrw guard(dump.lock);
+ if(!guard){++dump.busy_drops;++dump.revision;return;}
+ if(!DumpSlotAvailable())return;
  try{
   auto record=std::make_unique<DumpRecord>();record->id=dump.captured.load()+1;record->rule=rule;record->hook=hook;GetSystemTime(&record->utc);
   record->method=DumpField(request,3,64,*record);
@@ -182,13 +197,8 @@ void Capture(Request* request,Rule rule,const char* hook) noexcept {
   record->content_type=DumpHeader(request,L"Content-Type",*record);
   record->encoding=DumpHeader(request,L"Content-Encoding",*record);
   CopyBody(request,*record);
-  if(record->truncated)++dump.truncated;
-  if(record->unsupported)++dump.unsupported;
-  if(record->file_elements)++dump.files;
-  if(record->excluded)++dump.excluded;
-  dump.queue[(dump.head+dump.count)%kDumpQueue]=std::move(record);++dump.count;++dump.captured;
- }catch(...){++dump.allocation_drops;}
- ++dump.revision;
+  QueueDump(std::move(record));
+ }catch(...){++dump.allocation_drops;++dump.revision;}
 }
 std::string DumpUtf8(std::wstring_view value){
  if(value.empty())return {};
@@ -253,14 +263,18 @@ public:
  explicit PrettyJson(std::string_view text):input(text){}
  std::string Run(){if(!Value(0))return {};Space();return position==input.size()?std::move(output):std::string{};}
 };
-std::string Base64(const unsigned char* bytes,size_t size){
- static constexpr char alphabet[]="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
- std::string output;output.reserve((size+2)/3*4+size/48);
- for(size_t i=0;i<size;i+=3){
-  const unsigned value=(unsigned(bytes[i])<<16)|(i+1<size?unsigned(bytes[i+1])<<8:0)|(i+2<size?bytes[i+2]:0);
-  output+=alphabet[(value>>18)&63];output+=alphabet[(value>>12)&63];output+=i+1<size?alphabet[(value>>6)&63]:'=';output+=i+2<size?alphabet[value&63]:'=';
-  if((i/3+1)%16==0)output+='\n';
- }return output;
+std::string WrappedBase64(std::string_view bytes){
+ std::string output;
+ output.reserve(base64::EncodedSize(bytes.size())+bytes.size()/48+1);
+ constexpr size_t line_bytes=48;
+ while(bytes.size()>=line_bytes){
+  base64::Append(output,bytes.substr(0,line_bytes));
+  output+='\n';
+  bytes.remove_prefix(line_bytes);
+ }
+ base64::Append(output,bytes);
+ if(!bytes.empty()&&base64::EncodedSize(bytes.size())==64)output+='\n';
+ return output;
 }
 std::string ByteSize(size_t value){
  auto text=std::to_string(value);
@@ -302,13 +316,12 @@ std::string FormatDump(const DumpRecord& record){
  if(!decoded.decoded&&std::string_view(decoded.detail)!="unsupported-content-format")out+="Decode unavailable: "+std::string(decoded.detail)+"; original captured bytes retained\n";
  out+='\n';
  const bool identity=decoded.decoded||record.encoding.empty()||detail::Equal(record.encoding,L"identity");
- bool text=identity&&!bytes.empty()&&MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,bytes.data(),int(bytes.size()),nullptr,0)>0;
- for(unsigned char c:bytes)if((c<32&&c!='\n'&&c!='\r'&&c!='\t')||c==127){text=false;break;}
+ const bool text=identity&&!bytes.empty()&&text_encoding::ValidUtf8(bytes,text_encoding::Ascii::Printable);
  auto pretty=text&&complete?PrettyJson(bytes).Run():std::string{};
  if(!pretty.empty())out+="Payload (JSON, formatted):\n"+pretty;
  else if(decoded.protobuf)out+="Payload (decoded protobuf JSON; compact formatting):\n"+decoded.text;
  else if(text)out+="Payload (UTF-8 text; not validated as a complete JSON value):\n"+std::string(bytes);
- else out+=std::string("Payload (base64; ")+(identity?"binary/empty":"content encoding not decoded")+"):\n"+Base64(reinterpret_cast<const unsigned char*>(bytes.data()),bytes.size());
+ else out+=std::string("Payload (base64; ")+(identity?"binary/empty":"content encoding not decoded")+"):\n"+WrappedBase64(bytes);
  return out+"\n=== End request "+std::to_string(record.id)+" ===\n";
 }
 // Open without write sharing so size checking and appending are one transaction
@@ -553,22 +566,8 @@ bool DumpNumber(std::wstring_view text,uint64_t maximum,uint64_t& value){
  for(auto c:text){if(c<L'0'||c>L'9'||value>(maximum-unsigned(c-L'0'))/10)return false;value=value*10+unsigned(c-L'0');}
  return value<=maximum;
 }
-bool DumpBase64(std::wstring_view input,size_t limit,std::string& output){
- if(input.size()%4||input.size()/4>(limit+2)/3)return false;
- const auto digit=[](wchar_t c)->int{if(c>=L'A'&&c<=L'Z')return c-L'A';if(c>=L'a'&&c<=L'z')return c-L'a'+26;if(c>=L'0'&&c<=L'9')return c-L'0'+52;return c==L'+'?62:c==L'/'?63:-1;};
- output.clear();output.reserve((std::min)(input.size()/4*3,limit));
- for(size_t i=0;i<input.size();i+=4){
-  const int a=digit(input[i]),b=digit(input[i+1]),c=input[i+2]==L'='?0:digit(input[i+2]),d=input[i+3]==L'='?0:digit(input[i+3]);
-  const bool pad2=input[i+2]==L'=',pad1=input[i+3]==L'=';
-  if(a<0||b<0||c<0||d<0||(pad2&&!pad1)||((pad1||pad2)&&i+4!=input.size())||(pad2&&(b&15))||(!pad2&&pad1&&(c&3)))return false;
-  const unsigned bits=(unsigned(a)<<18)|(unsigned(b)<<12)|(unsigned(c)<<6)|unsigned(d);
-  const size_t count=pad2?1:pad1?2:3;if(count>limit-output.size())return false;
-  output+=char(bits>>16);if(count>1)output+=char(bits>>8);if(count>2)output+=char(bits);
- }
- return true;
-}
 bool DumpWide(std::wstring_view encoded,size_t limit,std::wstring& output){
- std::string bytes;if(!DumpBase64(encoded,limit*4,bytes))return false;
+ std::string bytes;if(!base64::DecodePadded(encoded,limit*4,bytes))return false;
  if(bytes.empty()){output.clear();return true;}
  const auto size=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,bytes.data(),int(bytes.size()),nullptr,0);
  if(!size||size>int(limit))return false;
@@ -577,10 +576,9 @@ bool DumpWide(std::wstring_view encoded,size_t limit,std::wstring& output){
 }
 void ObserveRendererDump(std::wstring_view message) noexcept {
  win32::LastError error;if(!Enabled()||!dump.enabled||message.size()>400000)return;
- if(!TryAcquireSRWLockExclusive(&dump.lock)){++dump.busy_drops;++dump.revision;return;}
- struct Unlock {~Unlock(){ReleaseSRWLockExclusive(&dump.lock);}} unlock;
- if(dump.captured.load()>=32){++dump.limit_drops;++dump.revision;return;}
- if(dump.count==kDumpQueue){++dump.queue_drops;++dump.revision;return;}
+ history::TryExclusiveSrw guard(dump.lock);
+ if(!guard){++dump.busy_drops;++dump.revision;return;}
+ if(!DumpSlotAvailable())return;
  try{
   std::array<std::wstring_view,9> fields;size_t position=0;
   for(size_t i=0;i<fields.size();++i){
@@ -598,16 +596,14 @@ void ObserveRendererDump(std::wstring_view message) noexcept {
   if(!DumpWide(fields[2],64,record->method)||!DumpWide(fields[3],4096,record->url)||
      !DumpWide(fields[4],1024,record->content_type)||!DumpWide(fields[5],1024,record->encoding))return;
   record->rule=Classify(record->url);if(record->rule==Rule::Allow||!Selected(record->rule))return;
-  std::string bytes;if(!DumpBase64(fields[8],kDumpBytes,bytes)||reported<bytes.size()||(!(flags&1)&&(!bytes.empty()||reported)))return;
+  std::string bytes;if(!base64::DecodePadded(fields[8],kDumpBytes,bytes)||reported<bytes.size()||(!(flags&1)&&(!bytes.empty()||reported)))return;
   record->id=dump.captured.load()+1;record->hook=hook;record->url=SanitizedDestination(std::move(record->url));
   ULARGE_INTEGER ticks{};ticks.QuadPart=(timestamp+11644473600000ull)*10000;
   FILETIME filetime{ticks.LowPart,ticks.HighPart};if(!FileTimeToSystemTime(&filetime,&record->utc))return;
   record->has_post=flags&1;record->truncated=(flags&2)||reported>bytes.size();record->unsupported=flags&4;record->metadata_truncated=flags&8;
   record->length=bytes.size();if(!bytes.empty())std::memcpy(record->bytes.data(),bytes.data(),bytes.size());
   if(record->has_post){record->elements=record->declared_elements=1;record->parts[0]={1,size_t(reported),0,bytes.size()};}
-  if(record->truncated)++dump.truncated;
-  if(record->unsupported)++dump.unsupported;
-  dump.queue[(dump.head+dump.count)%kDumpQueue]=std::move(record);++dump.count;++dump.captured;++dump.revision;
+  QueueDump(std::move(record));
  }catch(...){++dump.allocation_drops;++dump.revision;}
 }
 void DrainStatus() noexcept {

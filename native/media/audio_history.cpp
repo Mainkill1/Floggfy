@@ -1947,8 +1947,8 @@ static void QueueFilenameCheck(const Media& media,const Settings& settings) {
         EnrichTags(media,tags);ApplyCatalogIdentity(tags,catalog);
         FilenameCheck check{std::move(catalog),std::move(tags),settings,quality,media_identity,
             media.playback_instance,last_filename_check_serial};
-        if(!TryAcquireSRWLockExclusive(&filename_check_lock))return;
-        struct Unlock {~Unlock(){ReleaseSRWLockExclusive(&filename_check_lock);}} unlock;
+        TryExclusiveSrw guard(filename_check_lock);
+        if(!guard)return;
         if(check.serial!=filename_check_serial.load(std::memory_order_acquire))return;
         pending_filename_check=std::move(check);
         queued_filename_check_serial=last_filename_check_serial;

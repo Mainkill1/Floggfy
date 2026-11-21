@@ -1,3 +1,4 @@
+#include "../tooling/binary.h"
 #include "aac_stream.h"
 #include "image_info.h"
 #include "../vendor/minimp4/minimp4.h"
@@ -83,9 +84,6 @@ AacWriteFailure PlanMux(const AacInfo& info,const std::vector<Bytes>& packets,co
                                       plan,external_retained_source_capacity))return AacWriteFailure::ResourceLimit;
     result={plan,bytes};return AacWriteFailure::None;
 }
-uint16_t U16(const uint8_t* p){return uint16_t((uint16_t(p[0])<<8)|p[1]);}
-uint32_t U32(const uint8_t* p){return (uint32_t(p[0])<<24)|(uint32_t(p[1])<<16)|(uint32_t(p[2])<<8)|p[3];}
-uint64_t U64(const uint8_t* p){return (uint64_t(U32(p))<<32)|U32(p+4);}
 void W32(Bytes& b,size_t at,uint32_t n){Need(at<=b.size()&&b.size()-at>=4);for(unsigned i=0;i<4;++i)b[at+i]=uint8_t(n>>(24-i*8));}
 void Add(Bytes& b,const uint8_t* p,size_t n){Need(b.size()<=file_limit&&n<=file_limit-b.size());if(n)b.insert(b.end(),p,p+n);}
 void Add(Bytes& b,const Bytes& more){Add(b,more.data(),more.size());}
@@ -97,8 +95,8 @@ std::vector<Box> Boxes(const uint8_t* b,size_t first,size_t end){
     std::vector<Box> result;
     while(first<end){
         Need(end-first>=8&&result.size()<65536);
-        uint64_t n=U32(b+first);const auto kind=U32(b+first+4);size_t h=8;
-        if(n==1){Need(end-first>=16);n=U64(b+first+8);h=16;}
+        uint64_t n=binary::ReadBig32(b+first);const auto kind=binary::ReadBig32(b+first+4);size_t h=8;
+        if(n==1){Need(end-first>=16);n=binary::ReadBig64(b+first+8);h=16;}
         Need(n>=h&&n<=end-first);result.push_back({first,size_t(n),h,kind});first+=size_t(n);
     }
     return result;
@@ -107,7 +105,7 @@ const Box* Optional(const std::vector<Box>& boxes,uint32_t kind){const Box* foun
 Box One(const std::vector<Box>& boxes,uint32_t kind){const auto* b=Optional(boxes,kind);Need(b);return *b;}
 std::vector<Box> Children(const uint8_t* b,const Box& box,size_t skip=0){Need(skip<=box.size-box.header);return Boxes(b,box.Body()+skip,box.End());}
 Bytes Copy(const uint8_t* b,const Box& box){return Bytes(b+box.at,b+box.End());}
-void Full(const uint8_t* b,const Box& box,size_t minimum=4){Need(box.size-box.header>=minimum&&U32(b+box.Body())==0);}
+void Full(const uint8_t* b,const Box& box,size_t minimum=4){Need(box.size-box.header>=minimum&&binary::ReadBig32(b+box.Body())==0);}
 struct Bits {
     const Bytes& b;size_t at=0;
     uint32_t Get(unsigned n){Need(n<=24&&at+n<=b.size()*8);uint32_t v=0;while(n--){v=(v<<1)|((b[at/8]>>(7-at%8))&1);++at;}return v;}
@@ -172,8 +170,8 @@ Metadata ReadTags(const uint8_t* b,const Box& movie,AacFile& file){
             file.has_artwork=true;bool any=false;
             for(const auto& data:parts){
                 if(data.kind!=Code('d','a','t','a')||data.size-data.header<8){file.artwork_edit_safe=false;continue;}
-                any=true;const auto type=U32(b+data.Body());const auto n=data.End()-data.Body()-8;
-                if(U32(b+data.Body()+4)!=0||(type!=13&&type!=14)||!n||n>4u*1024u*1024u){file.artwork_edit_safe=false;continue;}
+                any=true;const auto type=binary::ReadBig32(b+data.Body());const auto n=data.End()-data.Body()-8;
+                if(binary::ReadBig32(b+data.Body()+4)!=0||(type!=13&&type!=14)||!n||n>4u*1024u*1024u){file.artwork_edit_safe=false;continue;}
                 Bytes cover(b+data.Body()+8,b+data.End());ImageInfo image;
                 if(!ReadImageInfo(cover,image)||image.mime!=(type==13?"image/jpeg":"image/png")){file.artwork_edit_safe=false;continue;}
                 file.covers.push_back(cover);const auto area=uint64_t(image.width)*image.height;
@@ -184,7 +182,7 @@ Metadata ReadTags(const uint8_t* b,const Box& movie,AacFile& file){
             std::string key;for(const auto& mapping:mappings)if(entry.kind==mapping.kind)key=mapping.key;
             if(entry.kind==Code('-','-','-','-')){
                 const auto* mean=Optional(parts,Code('m','e','a','n'));const auto* name=Optional(parts,Code('n','a','m','e'));
-                if(mean&&name&&mean->size-mean->header>=4&&name->size-name->header>=4&&U32(b+mean->Body())==0&&U32(b+name->Body())==0&&String(b,mean->Body()+4,mean->End())=="com.apple.iTunes"){
+                if(mean&&name&&mean->size-mean->header>=4&&name->size-name->header>=4&&binary::ReadBig32(b+mean->Body())==0&&binary::ReadBig32(b+name->Body())==0&&String(b,mean->Body()+4,mean->End())=="com.apple.iTunes"){
                     key=Key(String(b,name->Body()+4,name->End()));if(key.size()>255||!Text(key))key.clear();
                 }
             }
@@ -192,11 +190,11 @@ Metadata ReadTags(const uint8_t* b,const Box& movie,AacFile& file){
             for(const auto& data:parts){
                 if(entry.kind==Code('-','-','-','-')&&(data.kind==Code('m','e','a','n')||data.kind==Code('n','a','m','e')))continue;
                 if(data.kind!=Code('d','a','t','a')||data.size-data.header<8){item.edit_safe=false;continue;}
-                const auto type=U32(b+data.Body());const auto start=data.Body()+8;const auto n=data.End()-start;
-                if(U32(b+data.Body()+4)!=0){item.edit_safe=false;continue;}
-                if((track||disc)&&type==0&&(n==6||(n==8&&U16(b+start+6)==0))&&U16(b+start)==0){
-                    item.fields.emplace_back(track?"TRACKNUMBER":"DISCNUMBER",std::to_string(U16(b+start+2)));
-                    item.fields.emplace_back(track?"TRACKTOTAL":"DISCTOTAL",std::to_string(U16(b+start+4)));
+                const auto type=binary::ReadBig32(b+data.Body());const auto start=data.Body()+8;const auto n=data.End()-start;
+                if(binary::ReadBig32(b+data.Body()+4)!=0){item.edit_safe=false;continue;}
+                if((track||disc)&&type==0&&(n==6||(n==8&&binary::ReadBig16(b+start+6)==0))&&binary::ReadBig16(b+start)==0){
+                    item.fields.emplace_back(track?"TRACKNUMBER":"DISCNUMBER",std::to_string(binary::ReadBig16(b+start+2)));
+                    item.fields.emplace_back(track?"TRACKTOTAL":"DISCTOTAL",std::to_string(binary::ReadBig16(b+start+4)));
                 }else if(!key.empty()&&type==1){
                     auto value=String(b,start,data.End());if(Text(value))item.fields.emplace_back(key,std::move(value));else item.edit_safe=false;
                 }else item.edit_safe=false;
@@ -216,10 +214,10 @@ Box TerminalMovie(const uint8_t* source,size_t size){
     Box movie;size_t at=0,count=0;
     while(at<size){
         Need(size-at>=8&&count++<65536);
-        uint64_t bytes=U32(source+at);size_t header=8;
-        if(bytes==1){Need(size-at>=16);bytes=U64(source+at+8);header=16;}
+        uint64_t bytes=binary::ReadBig32(source+at);size_t header=8;
+        if(bytes==1){Need(size-at>=16);bytes=binary::ReadBig64(source+at+8);header=16;}
         Need(bytes>=header&&bytes<=size-at);
-        if(U32(source+at+4)==moov){Need(!movie.size);movie={at,size_t(bytes),header,moov};}
+        if(binary::ReadBig32(source+at+4)==moov){Need(!movie.size);movie={at,size_t(bytes),header,moov};}
         at+=size_t(bytes);
     }
     Need(movie.size&&movie.End()==size);return movie;
@@ -237,34 +235,34 @@ uint64_t RewriteMemory(size_t source_capacity,size_t source_size,size_t movie_by
 struct Layout{Box movie,track,movie_header,track_header,media_header;Metadata metadata;uint32_t packets=0;};
 Layout Inspect(const uint8_t* b,size_t size,AacFile& file,bool require_edit=true){
     Need(b&&size>=8&&size<=file_limit);const auto top=Boxes(b,0,size);const auto ft=One(top,Code('f','t','y','p'));Need(ft.at==0&&ft.size-ft.header>=8&&(ft.size-ft.header)%4==0);
-    bool brand=false;for(size_t at=ft.Body();at<ft.End();at+=4)if(at!=ft.Body()+4){const auto value=U32(b+at);if(value==Code('i','s','o','m')||value==Code('m','p','4','2')||value==Code('M','4','A',' '))brand=true;}Need(brand);
+    bool brand=false;for(size_t at=ft.Body();at<ft.End();at+=4)if(at!=ft.Body()+4){const auto value=binary::ReadBig32(b+at);if(value==Code('i','s','o','m')||value==Code('m','p','4','2')||value==Code('M','4','A',' '))brand=true;}Need(brand);
     const auto media=One(top,Code('m','d','a','t'));const auto movie=One(top,moov);Need(movie.End()==size&&media.End()<=movie.at);
     Need(!Optional(top,Code('m','o','o','f')));
     Layout out;out.movie=movie;const auto movies=Children(b,movie);out.track=One(movies,trak);out.movie_header=One(movies,Code('m','v','h','d'));Need(!Optional(movies,Code('m','v','e','x')));
-    Full(b,out.movie_header,100);const auto movie_rate=U32(b+out.movie_header.Body()+12),movie_duration=U32(b+out.movie_header.Body()+16);
+    Full(b,out.movie_header,100);const auto movie_rate=binary::ReadBig32(b+out.movie_header.Body()+12),movie_duration=binary::ReadBig32(b+out.movie_header.Body()+16);
     const auto tracks=Children(b,out.track);out.track_header=One(tracks,Code('t','k','h','d'));Need(out.track_header.size-out.track_header.header==84&&b[out.track_header.Body()]==0);
-    const auto track_duration=U32(b+out.track_header.Body()+20);const auto mdia=One(tracks,Code('m','d','i','a'));const auto mdias=Children(b,mdia);out.media_header=One(mdias,Code('m','d','h','d'));Full(b,out.media_header,24);
-    const auto rate=U32(b+out.media_header.Body()+12),decoded=U32(b+out.media_header.Body()+16);Need(rate>=8000&&rate<=96000&&decoded);
-    const auto handler=One(mdias,Code('h','d','l','r'));Full(b,handler,24);Need(U32(b+handler.Body()+8)==Code('s','o','u','n'));
-    const auto minf=One(mdias,Code('m','i','n','f'));const auto minfs=Children(b,minf);const auto dinf=One(minfs,Code('d','i','n','f'));const auto dref=One(Children(b,dinf),Code('d','r','e','f'));Full(b,dref,8);Need(U32(b+dref.Body()+4)==1);
-    const auto url=One(Children(b,dref,8),Code('u','r','l',' '));Need(url.size-url.header==4&&U32(b+url.Body())==1);
+    const auto track_duration=binary::ReadBig32(b+out.track_header.Body()+20);const auto mdia=One(tracks,Code('m','d','i','a'));const auto mdias=Children(b,mdia);out.media_header=One(mdias,Code('m','d','h','d'));Full(b,out.media_header,24);
+    const auto rate=binary::ReadBig32(b+out.media_header.Body()+12),decoded=binary::ReadBig32(b+out.media_header.Body()+16);Need(rate>=8000&&rate<=96000&&decoded);
+    const auto handler=One(mdias,Code('h','d','l','r'));Full(b,handler,24);Need(binary::ReadBig32(b+handler.Body()+8)==Code('s','o','u','n'));
+    const auto minf=One(mdias,Code('m','i','n','f'));const auto minfs=Children(b,minf);const auto dinf=One(minfs,Code('d','i','n','f'));const auto dref=One(Children(b,dinf),Code('d','r','e','f'));Full(b,dref,8);Need(binary::ReadBig32(b+dref.Body()+4)==1);
+    const auto url=One(Children(b,dref,8),Code('u','r','l',' '));Need(url.size-url.header==4&&binary::ReadBig32(b+url.Body())==1);
     const auto stbl=One(minfs,Code('s','t','b','l'));const auto tables=Children(b,stbl);
     Need(!Optional(tables,Code('c','t','t','s'))&&!Optional(tables,Code('s','t','z','2'))&&!Optional(tables,Code('s','t','s','s')));
-    const auto stsd=One(tables,Code('s','t','s','d'));Full(b,stsd,8);Need(U32(b+stsd.Body()+4)==1);const auto entries=Children(b,stsd,8);Need(entries.size()==1&&entries[0].kind==Code('m','p','4','a'));
-    const auto sample=entries[0];Need(sample.size-sample.header>=28&&U16(b+sample.Body()+6)==1&&U16(b+sample.Body()+8)==0);
+    const auto stsd=One(tables,Code('s','t','s','d'));Full(b,stsd,8);Need(binary::ReadBig32(b+stsd.Body()+4)==1);const auto entries=Children(b,stsd,8);Need(entries.size()==1&&entries[0].kind==Code('m','p','4','a'));
+    const auto sample=entries[0];Need(sample.size-sample.header>=28&&binary::ReadBig16(b+sample.Body()+6)==1&&binary::ReadBig16(b+sample.Body()+8)==0);
     const auto sample_children=Children(b,sample,28);Need(!Optional(sample_children,Code('s','i','n','f')));
-    file.info.config=ReadConfig(b,One(sample_children,Code('e','s','d','s')));Configuration(file.info);Need(file.info.rate==rate&&U16(b+sample.Body()+16)==file.info.channels);
-    auto legacy_rate=rate;while(legacy_rate>65535)legacy_rate>>=1;Need(U32(b+sample.Body()+24)==legacy_rate<<16);
-    const auto stsz=One(tables,Code('s','t','s','z'));Full(b,stsz,12);Need(U32(b+stsz.Body()+4)==0);const auto count=U32(b+stsz.Body()+8);Need(count&&count<=packet_limit&&stsz.size-stsz.header==12+size_t(count)*4);out.packets=count;
-    const auto stsc=One(tables,Code('s','t','s','c'));Full(b,stsc,20);Need(stsc.size-stsc.header==20&&U32(b+stsc.Body()+4)==1&&U32(b+stsc.Body()+8)==1&&U32(b+stsc.Body()+12)==1&&U32(b+stsc.Body()+16)==1);
-    const auto stco=One(tables,Code('s','t','c','o'));Full(b,stco,8);Need(!Optional(tables,Code('c','o','6','4'))&&U32(b+stco.Body()+4)==count&&stco.size-stco.header==8+size_t(count)*4);
-    uint64_t at=media.Body();for(uint32_t i=0;i<count;++i){const auto offset=U32(b+stco.Body()+8+size_t(i)*4),length=U32(b+stsz.Body()+12+size_t(i)*4);Need(length&&offset==at&&length<=media.End()-at);at+=length;}Need(at==media.End());file.audio_bytes=media.size-media.header;
-    const auto stts=One(tables,Code('s','t','t','s'));Full(b,stts,16);Need(stts.size-stts.header==16&&U32(b+stts.Body()+4)==1&&U32(b+stts.Body()+8)==count&&U32(b+stts.Body()+12)==file.info.samples_per_packet);
+    file.info.config=ReadConfig(b,One(sample_children,Code('e','s','d','s')));Configuration(file.info);Need(file.info.rate==rate&&binary::ReadBig16(b+sample.Body()+16)==file.info.channels);
+    auto legacy_rate=rate;while(legacy_rate>65535)legacy_rate>>=1;Need(binary::ReadBig32(b+sample.Body()+24)==legacy_rate<<16);
+    const auto stsz=One(tables,Code('s','t','s','z'));Full(b,stsz,12);Need(binary::ReadBig32(b+stsz.Body()+4)==0);const auto count=binary::ReadBig32(b+stsz.Body()+8);Need(count&&count<=packet_limit&&stsz.size-stsz.header==12+size_t(count)*4);out.packets=count;
+    const auto stsc=One(tables,Code('s','t','s','c'));Full(b,stsc,20);Need(stsc.size-stsc.header==20&&binary::ReadBig32(b+stsc.Body()+4)==1&&binary::ReadBig32(b+stsc.Body()+8)==1&&binary::ReadBig32(b+stsc.Body()+12)==1&&binary::ReadBig32(b+stsc.Body()+16)==1);
+    const auto stco=One(tables,Code('s','t','c','o'));Full(b,stco,8);Need(!Optional(tables,Code('c','o','6','4'))&&binary::ReadBig32(b+stco.Body()+4)==count&&stco.size-stco.header==8+size_t(count)*4);
+    uint64_t at=media.Body();for(uint32_t i=0;i<count;++i){const auto offset=binary::ReadBig32(b+stco.Body()+8+size_t(i)*4),length=binary::ReadBig32(b+stsz.Body()+12+size_t(i)*4);Need(length&&offset==at&&length<=media.End()-at);at+=length;}Need(at==media.End());file.audio_bytes=media.size-media.header;
+    const auto stts=One(tables,Code('s','t','t','s'));Full(b,stts,16);Need(stts.size-stts.header==16&&binary::ReadBig32(b+stts.Body()+4)==1&&binary::ReadBig32(b+stts.Body()+8)==count&&binary::ReadBig32(b+stts.Body()+12)==file.info.samples_per_packet);
     Need(uint64_t(count)*file.info.samples_per_packet==decoded);
     if(require_edit){
         Need(movie_rate==rate);const auto edit=One(tracks,Code('e','d','t','s'));const auto edits=Children(b,edit);Need(edits.size()==1);const auto elst=One(edits,Code('e','l','s','t'));Full(b,elst,20);
-        Need(elst.size-elst.header==20&&U32(b+elst.Body()+4)==1&&U32(b+elst.Body()+16)==0x10000);
-        file.info.total_samples=U32(b+elst.Body()+8);file.info.priming=U32(b+elst.Body()+12);
+        Need(elst.size-elst.header==20&&binary::ReadBig32(b+elst.Body()+4)==1&&binary::ReadBig32(b+elst.Body()+16)==0x10000);
+        file.info.total_samples=binary::ReadBig32(b+elst.Body()+8);file.info.priming=binary::ReadBig32(b+elst.Body()+12);
         Need(file.info.total_samples&&file.info.priming<=uint32_t(INT32_MAX)&&uint64_t(file.info.total_samples)<=uint64_t(rate)*6*3600&&movie_duration==file.info.total_samples&&track_duration==movie_duration);
         const uint64_t used=uint64_t(file.info.total_samples)+file.info.priming;Need(used<=decoded&&decoded-used<file.info.samples_per_packet);
     }
@@ -368,7 +366,7 @@ void MuxResult(int status,const Sink& sink){
 }
 void ReplaceMovie(Sink& sink,const Box& old,const Bytes& replacement){
     Need(old.kind==moov&&old.End()==sink.bytes.size()&&replacement.size()>=8&&
-         U32(replacement.data())==replacement.size()&&U32(replacement.data()+4)==moov);
+         binary::ReadBig32(replacement.data())==replacement.size()&&binary::ReadBig32(replacement.data()+4)==moov);
     Resource(old.at<=sink.limit&&replacement.size()<=sink.limit-old.at,
              "AAC resource limit: terminal moov exceeds reserved output");
     const size_t end=old.at+replacement.size();

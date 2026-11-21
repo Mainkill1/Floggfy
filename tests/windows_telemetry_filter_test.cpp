@@ -106,6 +106,11 @@ extern "C" __declspec(dllexport) __attribute__((noinline)) void* cef_urlrequest_
  assert(GetLastError()==42);++fixture::forwarded;fixture::Drop(r);fixture::Drop(c);fixture::Drop(context);SetLastError(43);return reinterpret_cast<void*>(0x1234);
 }
 int main(int argc,char** argv){
+ // Padded and full 64-character log lines retain their trailing newline.
+ assert(privacy::WrappedBase64(std::string(45,'a')).size()==60);
+ assert(privacy::WrappedBase64(std::string(46,'a')).substr(61)=="Q==\n");
+ assert(privacy::WrappedBase64(std::string(48,'a')).size()==65);
+ assert(privacy::WrappedBase64(std::string(49,'a')).substr(64)=="\nYQ==");
  using namespace fixture;
  request.api.methods[1]=reinterpret_cast<void*>(GetUrl);SetupBody();
  client.api.methods[17]=reinterpret_cast<void*>(OriginalHandler);
@@ -118,7 +123,11 @@ int main(int argc,char** argv){
   std::filesystem::create_directories(folder);
   history::dump_settings.dump_telemetry=true;history::dump_settings.root=folder.wstring();
   assert(privacy::Prepare(GetModuleHandleW(nullptr),true)&&MH_ApplyQueued()==MH_OK);privacy::Finalize(true);
-  const auto b64=[](const std::string& value){auto s=privacy::Base64(reinterpret_cast<const unsigned char*>(value.data()),value.size());s.erase(std::remove(s.begin(),s.end(),'\n'),s.end());return std::wstring(s.begin(),s.end());};
+  const auto b64=[](std::string_view value){
+   std::string encoded;
+   base64::Append(encoded,value);
+   return std::wstring(encoded.begin(),encoded.end());
+  };
   const std::string payload="{\"events\":[{\"type\":\"jssdk_playback_start\"}]}";
   const auto packet=[&](const std::string& url,const std::wstring& flags=L"1",const std::wstring& body=L""){
    return L"fetch\n1794716400000\n"+b64("POST")+L"\n"+b64(url)+L"\n"+b64("application/json")+L"\n\n"+flags+L"\n"+std::to_wstring(payload.size())+L"\n"+(body.empty()?b64(payload):body);

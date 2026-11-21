@@ -52,10 +52,8 @@ public:
     StagingFile(const StagingFile&)=delete;
     StagingFile& operator=(const StagingFile&)=delete;
     ~StagingFile() {
-        if(file_.value!=INVALID_HANDLE_VALUE && !published_) {
-            FILE_DISPOSITION_INFO remove{TRUE};
-            SetFileInformationByHandle(file_.value,FileDispositionInfo,&remove,sizeof(remove));
-        }
+        if(file_.value!=INVALID_HANDLE_VALUE && !published_)
+            win32::DeleteOnClose(file_.value);
     }
     bool WriteNew(const std::wstring& path,const void* bytes,size_t size) {
         if(!bytes || !size || size>MAXDWORD)return false;
@@ -95,8 +93,7 @@ bool PrepareBackupSlot(const std::wstring& path,const Catalog& catalog) {
     const bool equal=a.codec==b.codec && a.rate==b.rate && a.channels==b.channels &&
                      a.bits==b.bits && a.bitrate==b.bitrate;
     if(current.complete && (!retained.complete || equal || HigherQuality(a,b))) {
-        FILE_DISPOSITION_INFO disposition={TRUE};
-        return SetFileInformationByHandle(backup.value,FileDispositionInfo,&disposition,sizeof(disposition))!=0;
+        return win32::DeleteOnClose(backup.value);
     }
     // Keep a better or incomparable old recording as an ordinary audio file.
     // Bounded no-overwrite renames cannot destroy an occupied recovery name.
@@ -117,8 +114,7 @@ FilePublication PromoteReplacement(const std::wstring& path,StagingFile& staging
     if(moved) TestPhase(L"reserved",path);
     bool published=moved && staging.Publish(path);
     if(published) {
-        FILE_DISPOSITION_INFO disposition={TRUE};
-        SetFileInformationByHandle(old,FileDispositionInfo,&disposition,sizeof(disposition));
+        win32::DeleteOnClose(old);
     } else if(moved) RenameWithoutReplacing(old,path); // no replacement; preserve any raced file
     return published?FilePublication::Upgraded:FilePublication::Failed;
 }
@@ -151,7 +147,7 @@ bool VerifiedArchiveFile(const std::wstring& path,const void* bytes,size_t size,
         return remove&&error==ERROR_SUCCESS;
     }
     bool valid=true;
-    if(remove){FILE_DISPOSITION_INFO disposition{TRUE};valid=SetFileInformationByHandle(file,FileDispositionInfo,&disposition,sizeof(disposition))!=0;}
+    if(remove)valid=win32::DeleteOnClose(file);
     if(valid&&held){*held=file;return true;}
     CloseHandle(file);return valid;
 }
@@ -167,7 +163,7 @@ bool WriteArchiveFile(const std::wstring& destination,const void* bytes,size_t s
             OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
         if(file.value==INVALID_HANDLE_VALUE||!ArchiveFileMatches(file.value,bytes,size))return false;
     } else if(!WriteAllBytes(file.value,bytes,size)||!FlushFileBuffers(file.value)||!ArchiveFileMatches(file.value,bytes,size)) {
-        FILE_DISPOSITION_INFO disposition{TRUE};SetFileInformationByHandle(file.value,FileDispositionInfo,&disposition,sizeof(disposition));
+        win32::DeleteOnClose(file.value);
         return false;
     }
     TestPhase(L"archive-stage-held",stage);
@@ -364,8 +360,7 @@ FilePublication CompleteFormatUpgradeHeld(FormatUpgradeReceipt& receipt,HANDLE o
     }
     if(old!=INVALID_HANDLE_VALUE) {
         TestPhase(L"format-old-delete",receipt.destination);
-        FILE_DISPOSITION_INFO disposition={TRUE};
-        if(!SetFileInformationByHandle(old,FileDispositionInfo,&disposition,sizeof(disposition)))return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
+        if(!win32::DeleteOnClose(old))return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
     }
     if(published_bytes)*published_bytes=final_bytes.size();
     return FilePublication::Upgraded;

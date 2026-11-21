@@ -1,3 +1,4 @@
+#include "../tooling/binary.h"
 #include "marked_recording.h"
 #include <algorithm>
 #include <cstring>
@@ -10,12 +11,6 @@ namespace {
 constexpr uint64_t metadata_limit=16*1024*1024;
 constexpr unsigned operation_limit=200000;
 constexpr size_t key_limit=32,value_limit=128;
-uint32_t Little(const uint8_t* p) {
-    return uint32_t(p[0])|uint32_t(p[1])<<8|uint32_t(p[2])<<16|uint32_t(p[3])<<24;
-}
-uint32_t Big(const uint8_t* p) {
-    return uint32_t(p[0])<<24|uint32_t(p[1])<<16|uint32_t(p[2])<<8|p[3];
-}
 bool Syncsafe(const uint8_t* p,uint32_t& value) {
     if((p[0]|p[1]|p[2]|p[3])&128)return false;
     value=uint32_t(p[0])<<21|uint32_t(p[1])<<14|uint32_t(p[2])<<7|p[3];
@@ -69,7 +64,7 @@ bool Comments(const MarkedReadAt& get,uint64_t size,Fields& fields,bool vorbis) 
         uint8_t bytes[4];
         if(size-at<sizeof(bytes) || !get(at,bytes,sizeof(bytes)))return false;
         at+=sizeof(bytes);
-        n=Little(bytes);
+        n=binary::ReadLittle32(bytes);
         return true;
     };
     uint32_t vendor=0,count=0;
@@ -99,7 +94,7 @@ bool Flac(Input& input,Fields& fields) {
         if(!input.Get(at,header,sizeof(header)))return false;
         const unsigned type=header[0]&127;
         last=(header[0]&128)!=0;
-        const auto bytes=Big(header)&0xffffff;
+        const auto bytes=binary::ReadBig32(header)&0xffffff;
         if(type==127 || (at==4?(type!=0 || bytes!=34):type==0))return false;
         at+=sizeof(header);
         if(bytes>input.size-at || at+bytes>metadata_limit)return false;
@@ -127,9 +122,9 @@ bool Ogg(Input& input,Fields& fields) {
     while(at<input.size && at<metadata_limit) {
         uint8_t header[27],laces[255];
         if(!input.Get(at,header,sizeof(header)) || std::memcmp(header,"OggS",4) || header[4])return false;
-        if(!sequence)serial=Little(header+14);
+        if(!sequence)serial=binary::ReadLittle32(header+14);
         const auto flags=header[5];
-        if(Little(header+14)!=serial || Little(header+18)!=sequence ||
+        if(binary::ReadLittle32(header+14)!=serial || binary::ReadLittle32(header+18)!=sequence ||
            (sequence?((flags&~5u) || bool(flags&1)!=continued):flags!=2) || !header[26])return false;
         const auto count=header[26];
         at+=sizeof(header);
@@ -183,7 +178,7 @@ bool Ogg(Input& input,Fields& fields) {
 bool Mp3Audio(Input& input,uint64_t at) {
     uint8_t header[4];
     if(!input.Get(at,header,sizeof(header)))return false;
-    const auto bits=Big(header);
+    const auto bits=binary::ReadBig32(header);
     const unsigned version=(bits>>19)&3,layer=(bits>>17)&3;
     const unsigned bitrate=(bits>>12)&15,rate=(bits>>10)&3;
     if((bits&0xffe00000u)!=0xffe00000u || version==1 || layer!=1 || !bitrate || bitrate==15 || rate==3)
@@ -240,10 +235,10 @@ bool ReadBox(Input& input,uint64_t at,uint64_t end,Box& box) {
     uint8_t header[8];
     if(end-at<sizeof(header) || !input.Get(at,header,sizeof(header)))return false;
     std::memcpy(box.kind,header+4,4);
-    uint64_t length=Big(header),head=8;
+    uint64_t length=binary::ReadBig32(header),head=8;
     if(length==1) {
         if(end-at<16 || !input.Get(at+8,header,sizeof(header)))return false;
-        length=uint64_t(Big(header))<<32|Big(header+4);
+        length=uint64_t(binary::ReadBig32(header))<<32|binary::ReadBig32(header+4);
         head=16;
     } else if(!length)length=end-at;
     if(length<head || length>end-at)return false;
@@ -264,7 +259,7 @@ bool Freeform(Input& input,const Box& entry,Fields& fields) {
             char text[4+key_limit];
             if(bytes>=4 && bytes<=sizeof(text)) {
                 if(!input.Get(box.body,text,size_t(bytes)))return false;
-                if(Big(reinterpret_cast<const uint8_t*>(text))==0) {
+                if(binary::ReadBig32(reinterpret_cast<const uint8_t*>(text))==0) {
                     std::string_view name(text+4,size_t(bytes)-4);
                     if(box.Is("mean"))itunes=name=="com.apple.iTunes";
                     else key=Upper(name);
@@ -281,7 +276,7 @@ bool Freeform(Input& input,const Box& entry,Fields& fields) {
         if(box.Is("data")) {
             uint8_t info[8];
             if(box.end-box.body<sizeof(info) || !input.Get(box.body,info,sizeof(info)) ||
-               Big(info)!=1 || Big(info+4)!=0 ||
+               binary::ReadBig32(info)!=1 || binary::ReadBig32(info+4)!=0 ||
                !fields.Set([&](uint64_t p,void* d,size_t n){return input.Get(p,d,n);},
                            box.body+8,box.end-box.body-8,key))return false;
             found=true;
@@ -305,7 +300,7 @@ bool Mp4(Input& input,uint64_t at,uint64_t end,unsigned level,Fields& fields) {
                 uint64_t child=box.body;
                 if(level==2) {
                     uint8_t version[4];
-                    if(box.end-child<sizeof(version) || !input.Get(child,version,sizeof(version)) || Big(version))return false;
+                    if(box.end-child<sizeof(version) || !input.Get(child,version,sizeof(version)) || binary::ReadBig32(version))return false;
                     child+=sizeof(version);
                 }
                 if(!Mp4(input,child,box.end,level+1,fields))return false;

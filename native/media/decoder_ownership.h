@@ -177,6 +177,7 @@ private:
     void Conflict(CaptureRecord& capture,OwnershipReason reason) noexcept;
     void ConflictSuccessors(CaptureRecord* first,CaptureRecord* second,
                             CaptureRecord* third=nullptr) noexcept;
+    void CommitBinding(CaptureRecord& capture,PlaybackRecord& playback) noexcept;
     void TryBind(CaptureRecord& capture,PlaybackRecord& playback,double observed) noexcept;
     void ObservePlaybackImpl(const std::string& playback_id,const std::string& uri,
                              std::uint64_t listen_generation,double observed,

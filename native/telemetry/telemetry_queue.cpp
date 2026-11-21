@@ -1,5 +1,5 @@
 #include "../tooling/windows_handle.h"
-#include "../tooling/windows_path.h"
+#include "../tooling/windows_file_write.h"
 #include "telemetry_queue.h"
 #include "../tooling/windows_last_error.h"
 #include "../tooling/windows_known_folder.h"
@@ -49,8 +49,7 @@ void RemoveQueue(const std::wstring& account,QueueCleanupResult& result) {
         ++result.skipped;return;
     }
     // Delete the validated handle, never reopen an unchecked pathname.
-    FILE_DISPOSITION_INFO disposition{TRUE};
-    if(!SetFileInformationByHandle(file.value,FileDispositionInfo,&disposition,sizeof(disposition))){Failed(result,GetLastError());return;}
+    if(!win32::DeleteOnClose(file.value)){Failed(result,GetLastError());return;}
     ++result.removed;result.bytes+=(std::uint64_t(info.nFileSizeHigh)<<32)|info.nFileSizeLow;
 }
 }

@@ -17,4 +17,14 @@ public:
     ExclusiveSrw(const ExclusiveSrw&)=delete;
     ExclusiveSrw& operator=(const ExclusiveSrw&)=delete;
 };
+class TryExclusiveSrw {
+    SRWLOCK* lock_;
+public:
+    explicit TryExclusiveSrw(SRWLOCK& lock) noexcept
+        : lock_(TryAcquireSRWLockExclusive(&lock) ? &lock : nullptr) {}
+    ~TryExclusiveSrw() { if(lock_)ReleaseSRWLockExclusive(lock_); }
+    explicit operator bool() const noexcept { return lock_ != nullptr; }
+    TryExclusiveSrw(const TryExclusiveSrw&) = delete;
+    TryExclusiveSrw& operator=(const TryExclusiveSrw&) = delete;
+};
 }

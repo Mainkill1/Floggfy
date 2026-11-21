@@ -1,3 +1,5 @@
+#include "../tooling/base64.h"
+#include "../tooling/binary.h"
 #include "recording_file.h"
 #include "../tooling/fnv1a.h"
 #include "mp3_stream.h"
@@ -32,22 +34,21 @@ bool UnsignedField(const Tags& tags,const char* name,uint64_t& out) {
     if(!result)return false;
     out=result;return true;
 }
-uint32_t Big(const uint8_t* bytes) {return (uint32_t(bytes[0])<<24)|(uint32_t(bytes[1])<<16)|(uint32_t(bytes[2])<<8)|bytes[3];}
 void Picture(const uint8_t* bytes,size_t size,RecordingFile& record) {
     record.has_artwork=true;
     // Only front covers are rewritten. Unknown layouts and other picture
     // types remain opaque so an album-art refresh cannot discard a booklet.
-    if(size<4 || Big(bytes)!=3){record.artwork_edit_safe=false;return;}
+    if(size<4 || binary::ReadBig32(bytes)!=3){record.artwork_edit_safe=false;return;}
     size_t at=4;
     if(size-at<4)return;
-    const auto mime_size=Big(bytes+at);at+=4;if(mime_size>size-at)return;
+    const auto mime_size=binary::ReadBig32(bytes+at);at+=4;if(mime_size>size-at)return;
     const bool png=mime_size==9 && !memcmp(bytes+at,"image/png",9);
     const bool jpeg=mime_size==10 && !memcmp(bytes+at,"image/jpeg",10);at+=mime_size;
     if(!png && !jpeg){record.artwork_edit_safe=false;return;}
     if(size-at<4)return;
-    const auto description_size=Big(bytes+at);at+=4;if(description_size>size-at)return;at+=description_size;
+    const auto description_size=binary::ReadBig32(bytes+at);at+=4;if(description_size>size-at)return;at+=description_size;
     if(size-at<20)return;
-    at+=16;const auto length=Big(bytes+at);at+=4;
+    at+=16;const auto length=binary::ReadBig32(bytes+at);at+=4;
     if(length!=size-at)return;
     if(length>4*1024*1024){record.artwork_edit_safe=false;return;}
     // A bad/missing signature is confirmed corrupt for its declared format.
@@ -66,32 +67,8 @@ void Picture(const uint8_t* bytes,size_t size,RecordingFile& record) {
     }
 }
 bool Base64Picture(const std::string& text,std::vector<uint8_t>& output) {
-    if(text.size()>metadata_limit)return false;
-    output.clear();output.reserve(text.size()/4*3);
-    int group[4]{};unsigned count=0;bool ended=false;
-    auto digit=[](unsigned char c)->int {
-        if(c>='A'&&c<='Z')return c-'A';
-        if(c>='a'&&c<='z')return c-'a'+26;
-        if(c>='0'&&c<='9')return c-'0'+52;
-        if(c=='+')return 62;
-        if(c=='/')return 63;
-        return c=='='?-2:-1;
-    };
-    for(unsigned char c:text) {
-        if(c==' ' || c=='\r' || c=='\n' || c=='\t')continue;
-        if(ended)return false;
-        const int value=digit(c);if(value==-1)return false;group[count++]=value;
-        if(count<4)continue;
-        count=0;if(group[0]<0 || group[1]<0)return false;
-        output.push_back(uint8_t((group[0]<<2)|(group[1]>>4)));
-        if(group[2]==-2){if(group[3]!=-2 || (group[1]&15))return false;ended=true;continue;}
-        if(group[2]<0)return false;
-        output.push_back(uint8_t((group[1]<<4)|(group[2]>>2)));
-        if(group[3]==-2){if(group[2]&3)return false;ended=true;continue;}
-        if(group[3]<0)return false;
-        output.push_back(uint8_t((group[2]<<6)|group[3]));
-    }
-    return count==0 && !output.empty();
+    return text.size()<=metadata_limit &&
+        base64::DecodePadded(std::string_view(text),metadata_limit,output,true) && !output.empty();
 }
 bool Comments(const uint8_t* b,size_t size,RecordingFile& record,bool vorbis) {
     if(size>metadata_limit || (vorbis && (!size || b[size-1]!=1)))return false;
@@ -282,7 +259,7 @@ bool Ogg(const uint8_t* b,size_t size,RecordingFile& out) {
         size_t header=27+b[p+26]; if(header>size-p) return false;
         size_t body=0; for(size_t i=27;i<header;i++) body+=b[p+i];
         if(header+body>size-p || stream.complete) return true;
-        if(p==0 && (b[p+5]!=2 || ReadLittle32(b+p+18)!=0 || ReadLittle32(b+p+6)!=0 || ReadLittle32(b+p+10)!=0)) return true;
+        if(p==0 && (b[p+5]!=2 || binary::ReadLittle32(b+p+18)!=0 || binary::ReadLittle32(b+p+6)!=0 || binary::ReadLittle32(b+p+10)!=0)) return true;
         auto state=stream.Push(b+p,header+body);
         if(state==Result::Invalid || state==Result::Ignore || (p!=0 && state==Result::Begin)) return true;
         out.quality={Codec::Vorbis,stream.rate,stream.channels,0,stream.bitrate};

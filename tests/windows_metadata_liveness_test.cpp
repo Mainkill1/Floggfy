@@ -37,7 +37,6 @@ void EnrichStoredMetadata(RichMetadata& metadata){
  }
  metadata.fields["COMMENT"]="slow enrichment";
 }
-bool IsAlbumArtworkUrl(const std::string& url){return fallback_test&&url.rfind("https://i.scdn.co/image/",0)==0;}
 bool DownloadAlbumArtwork(const std::string&,std::vector<uint8_t>&){
  assert(fallback_test);++network_reads;return false;
 }

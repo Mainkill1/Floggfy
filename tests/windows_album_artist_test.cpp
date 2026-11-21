@@ -7,7 +7,6 @@
 #include <cassert>
 namespace history {
 void EnrichStoredMetadata(RichMetadata&) {}
-bool IsAlbumArtworkUrl(const std::string& url){return url.rfind("https://i.scdn.co/image/",0)==0;}
 bool DownloadAlbumArtwork(const std::string&,std::vector<uint8_t>&){return false;}
 bool ReadCachedArtwork(const std::string&,std::vector<uint8_t>&,std::string&){return false;}
 }

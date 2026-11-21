@@ -70,3 +70,14 @@ The inventories above retain source coordinates from the revisions they reviewed
 The SQLite fixture counted three prepared statements for the open catalog across repeated lookups and writes. It also exercised an exclusive lock, retry, pagination and save-root changes. The offline metadata fixture checked that reading an unrelated LevelDB table or log preserves previously collected records in place.
 
 The telemetry fixture exercised 5,040 URL classifications with the same results. The Windows INI fixture retained strict duplicate handling and section precedence. Two embedded renderer bundles totaling 121,506 UTF-8 bytes round-tripped byte-for-byte through the Windows conversion. The directory race fixture covers a competing creator producing either a file or a folder. These are fixture measurements. Live playback and end-to-end UI latency were outside this pass.
+
+## Repeated operations consolidated
+
+| Repeated operation | Shared implementation |
+|---|---|
+| Reading fixed-width integers in media, artwork cache and telemetry payloads | [Binary tooling](../../native/tooling/binary.h) also shares the CRC-32 calculation used by PNG and gzip. |
+| Encoding Ogg artwork and telemetry bodies, decoding padded artwork comments and renderer dumps | [Base64 tooling](../../native/tooling/base64.h) keeps padding and trailing-bit validation in one place. Ogg comments allow whitespace. |
+| Validating UTF-8 and decoding hexadecimal escapes | [Text encoding tooling](../../native/tooling/text_encoding.h) serves metadata, artwork and telemetry with explicit text policies. |
+| Checking the Spotify CDN URL in four places | [Artwork URL validation](../../native/media/artwork_url.h) serves the metadata parser, artwork replies, disk cache and downloader. |
+| Marking a validated Windows file for deletion through its open handle | [Windows file tooling](../../native/tooling/windows_file_write.h) serves publication, recovery and queued-telemetry cleanup. |
+| Publishing captured telemetry dumps and recording a successful decoder binding | The native and renderer dump paths share queue accounting. The three decoder binding paths share the state update. |

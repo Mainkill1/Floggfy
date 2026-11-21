@@ -1,6 +1,7 @@
 #pragma once
 #include "spotify_uri.h"
 #include <string>
+#include <string_view>
 #include <cstdint>
 #include <map>
 #include <deque>
@@ -22,8 +23,8 @@ struct RichMetadata {
  bool Matches(const std::string&,const std::string&,const std::string&,double) const;
 };
 bool ParseRichMetadata(const std::string&,RichMetadata&,std::string&);
-bool DecodeMetadataText(const std::string& encoded,std::string& out);
-bool MetadataTextValid(const std::string&);
+bool DecodeMetadataText(std::string_view encoded,std::string& out);
+bool MetadataTextValid(std::string_view);
 // Record state is protected by the metadata bridge lock. Matcher/save jobs pin
 // the same record, so enrichment outlives playback changes and registry pruning.
 struct MetadataRecord {

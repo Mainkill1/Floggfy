@@ -1,3 +1,4 @@
+#include "../tooling/binary.h"
 #include "vorbis_headers.h"
 #include <ogg/ogg.h>
 #include <cstring>
@@ -66,8 +67,7 @@ VorbisHeadersResult ValidateVorbisHeaders(const std::vector<uint8_t>& identifica
         }
         const auto info=stb_vorbis_get_info(decoder);
         stb_vorbis_close(decoder);
-        const uint32_t rate=uint32_t(identification[12])|(uint32_t(identification[13])<<8)|
-            (uint32_t(identification[14])<<16)|(uint32_t(identification[15])<<24);
+        const uint32_t rate=binary::ReadLittle32(identification.data()+12);
         return error==0 && consumed==int(pages.size()) && info.channels==identification[11] && info.sample_rate==rate
             ? VorbisHeadersResult::Valid : VorbisHeadersResult::Invalid;
     }catch(...) {

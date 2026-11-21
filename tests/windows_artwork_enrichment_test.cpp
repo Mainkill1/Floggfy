@@ -19,7 +19,6 @@ void SetFixtureArtwork(history::RichMetadata& record,const std::vector<uint8_t>&
 }
 }
 namespace history {
-bool IsAlbumArtworkUrl(const std::string& url){return url.rfind("https://i.scdn.co/image/",0)==0;}
 bool DownloadAlbumArtwork(const std::string&,std::vector<uint8_t>&){return false;}
 }
 static std::string ArtworkSource(const history::Tags& tags) {

@@ -1,3 +1,4 @@
+#include "../tooling/binary.h"
 #include "artwork_image.h"
 #include "image_info.h"
 #include "../vendor/libwebp/src/webp/decode.h"
@@ -85,7 +86,7 @@ bool NormalizeArtworkImage(std::vector<uint8_t>& data,std::string& reason){
  if(data.size()<12||data.size()>limit||std::memcmp(data.data(),"RIFF",4)||std::memcmp(data.data()+8,"WEBP",4)){
   reason="cache-image-invalid";return false;
  }
- const uint32_t riff=uint32_t(data[4])|(uint32_t(data[5])<<8)|(uint32_t(data[6])<<16)|(uint32_t(data[7])<<24);
+ const uint32_t riff=binary::ReadLittle32(data.data()+4);
  WebPBitstreamFeatures features{};
  if(uint64_t(riff)+8!=data.size()||WebPGetFeatures(data.data(),data.size(),&features)!=VP8_STATUS_OK){reason="cache-image-invalid";return false;}
  if(features.has_animation){reason="cache-image-animation-unsupported";return false;}
