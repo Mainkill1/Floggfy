@@ -33,7 +33,6 @@
 static SRWLOCK hook_lock = SRWLOCK_INIT;
 static INIT_ONCE version_once = INIT_ONCE_STATIC_INIT;
 static HMODULE real_version;
-static bool spotify_main;
 static HMODULE proxy_module;
 static hooks::InitController connectivity_init;
 
@@ -403,7 +402,7 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
     wchar_t path[MAX_PATH];
     DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH);
     wchar_t* name = length && length < MAX_PATH ? wcsrchr(path, L'\\') : nullptr;
-    spotify_main = name && !_wcsicmp(name + 1, L"Spotify.exe") && !wcsstr(GetCommandLineW(), L"--type=");
+    const bool spotify_main = name && !_wcsicmp(name + 1, L"Spotify.exe") && !wcsstr(GetCommandLineW(), L"--type=");
     if (!spotify_main) {
         // CEF helpers and the crash uploader have independent Winsock state.
         // Only Spotify's own executables participate in the shared switch.

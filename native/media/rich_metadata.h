@@ -22,7 +22,7 @@ struct RichMetadata {
  std::uint64_t quality_time=0;
  bool Matches(const std::string&,const std::string&,const std::string&,double) const;
 };
-bool ParseRichMetadata(const std::string&,RichMetadata&,std::string&);
+bool ParseRichMetadata(std::string_view,RichMetadata&,std::string&);
 bool DecodeMetadataText(std::string_view encoded,std::string& out);
 bool MetadataTextValid(std::string_view);
 // Record state is protected by the metadata bridge lock. Matcher/save jobs pin

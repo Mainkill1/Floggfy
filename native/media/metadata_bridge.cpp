@@ -181,11 +181,7 @@ static void MergeAvailableFields(const RichMetadata& available,RichMetadata& liv
  if(live.title.empty())live.title=available.title;
  if(live.artist.empty())live.artist=available.artist;
  if(live.album.empty())live.album=available.album;
- CachedTrackMetadata cached;
- cached.uri=available.uri;cached.title=available.title;cached.album=available.album;
- cached.album_uri=available.album_uri;
- cached.duration=available.duration;cached.fields=available.fields;
- MergeCachedMetadata(cached,live);
+ MergeMetadataTags(available,live);
  // Optional omissions never erase an already identified cover. If Spotify
  // explicitly supplies a different reference, old bytes must not follow it.
  if(live.artwork_url.empty())live.artwork_url=available.artwork_url;
@@ -559,16 +555,16 @@ static DWORD WINAPI MetadataWorker(LPVOID) {
   try {
    const auto preferences=GetSettings();if(!preferences.metadata)continue;
    RichMetadata metadata;std::string error;
-   if(!ParseRichMetadata(std::string(message.data,message.length),metadata,error))continue;
+   if(!ParseRichMetadata({message.data,message.length},metadata,error))continue;
    if(!metadata.playback_quality.empty())metadata.quality_time=message.time;
    std::shared_ptr<MetadataRecord> owner;
    {ExclusiveSrw guard(cache_lock);
-    const auto previous=metadata.uri.empty()?cache.Find(metadata.title,metadata.artist,metadata.album,metadata.duration):cache.FindUri(metadata.uri);
-    if(previous && previous->uri==metadata.uri)MergeSnapshot(*previous,metadata);
+    const auto previous=cache.FindUri(metadata.uri);
+    if(previous)MergeSnapshot(*previous,metadata);
     if(!preferences.lyrics)metadata.fields.erase("LYRICS");
     const bool changed=!previous||!SameRecordingMetadata(*previous,metadata);
-    owner=cache.Pin(metadata);owner->value=metadata;
-    if(metadata.metadata_source!="online")observed_metadata=owner;
+    owner=cache.Pin(metadata);owner->value=std::move(metadata);
+    if(owner->value.metadata_source!="online")observed_metadata=owner;
     if(changed)metadata_revision.fetch_add(1,std::memory_order_release);}
    QueueEnrichment(owner);
   }catch(...) {QueueDiagnostic("metadata message failed; next client snapshot will retry");}
@@ -764,13 +760,6 @@ void RetainMetadata(Media& media) {
  RichMetadata basic;basic.uri=media.spotify_uri;basic.title=Utf8(media.title);basic.artist=Utf8(media.artist);basic.album=Utf8(media.album);basic.duration=media.duration;
  media.metadata=cache.Pin(basic);
 }
-static bool ReadCachedMetadata(const Media& media,RichMetadata& metadata) {
- SharedSrw guard(cache_lock);
- const auto* record=FindMediaRecord(media);
- if(!record)return false;
- metadata=*record;
- return true;
-}
 std::string ReadClientPlaybackQuality(const Media& media) {
  if(!GetSettings().metadata)return {};
  SharedSrw guard(cache_lock);
@@ -820,22 +809,29 @@ void EnrichCatalog(const Media& media,Catalog& catalog) {
 }
 void EnrichTags(const Media& media,Tags& tags) {
  const auto preferences=GetSettings();if(!preferences.metadata)return;
- RichMetadata metadata;if(!ReadCachedMetadata(media,metadata))return;
+ std::map<std::string,std::string> fields;
+ std::shared_ptr<const MetadataArtwork> artwork;
+ {SharedSrw guard(cache_lock);
+  const auto* record=FindMediaRecord(media);
+  if(!record)return;
+  fields=record->fields;
+  if(!record->uri.empty())artwork=record->artwork;
+ }
  const auto set_tag=[&](std::string key,std::string value) {
   tags.fields.erase(std::remove_if(tags.fields.begin(),tags.fields.end(),
       [&](const auto& entry){return entry.first==key;}),tags.fields.end());
   tags.fields.emplace_back(std::move(key),std::move(value));
  };
- for(const auto& field:metadata.fields) {
+ for(auto& field:fields) {
   if(field.first=="FLOGGFY_ARTWORK_SOURCE")continue;
   if(field.first=="LYRICS"&&!preferences.lyrics)continue;
-  set_tag(field.first,field.second);
+  set_tag(field.first,std::move(field.second));
  }
  if(!media.album_artist.empty())set_tag("ALBUMARTIST",Utf8(media.album_artist));
- if(!metadata.uri.empty()&&metadata.artwork) {
+ if(artwork) {
   ImageInfo original;
-  if(ReadImageInfo(metadata.artwork->bytes,original)) {
-   tags.cover=metadata.artwork->bytes;tags.mime=original.mime;
+  if(ReadImageInfo(artwork->bytes,original)) {
+   tags.cover=artwork->bytes;tags.mime=original.mime;
    // Provenance belongs to the validated client image actually selected above,
    // never to a cached text record or an unchanged embedded cover.
    set_tag("FLOGGFY_ARTWORK_SOURCE","spotify-client");

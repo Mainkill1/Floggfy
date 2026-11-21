@@ -33,6 +33,7 @@ bool DecodeCachedAlbum(const CachedRecords &, const std::string &uri,
                        std::map<std::string, std::string> &);
 void MergeCachedAlbum(const CachedRecords &, CachedTrackMetadata &);
 bool MergeCachedMetadata(const CachedTrackMetadata &, RichMetadata &);
+bool MergeMetadataTags(const RichMetadata &, RichMetadata &);
 // Windows implementation; called only from the metadata worker.
 struct StoredMetadataRead {
   std::uint64_t read_bytes = 0, budget_bytes = 0;

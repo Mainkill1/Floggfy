@@ -4,24 +4,25 @@
  if(window.__floggfyMetadata)return;
  window.__floggfyMetadata=true;
  const prefix='FLOGGFY_METADATA_V1:',seenPayload=new Map(),records=[];
- const serviceCache=new Map(),snapshots=new Map();
+ const serviceCache=new Map(),snapshots=new Map(),serviceKinds=['metadata','album','lyrics'];
+ const playableUri=/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/;
+ const albumUriPattern=/^spotify:album:[A-Za-z0-9]{22}$/;
  let builder,activeRequests=0,connectDevices;
- let player,root,queue=[],seen=new Set(),walked=0,lastPlayback='',playbackTime=-Infinity;
+ let player,root,queue=[],seen=new Set(),walked=0;
  let timelineBinding,lastReadyTimeline,episodeEndAnchor;
- let timelineSeen=false,lastTimeline='',timelineTime=-Infinity,timelineBlocked='',timelineLocal='unknown',pendingControl;
- function playback(data){
-  const payload=Object.entries(data).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&');
-  const now=performance.now();
-  if(payload.length<=4096&&(payload!==lastPlayback||now-playbackTime>=1000)){
-   console.info('FLOGGFY_PLAYBACK_V1:'+payload);lastPlayback=payload;playbackTime=now;
-  }
+ let timelineSeen=false,timelineBlocked='',timelineLocal='unknown',pendingControl;
+ function encodePayload(data){
+  return Object.entries(data).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&');
  }
- function timeline(data){
-  const payload=Object.entries(data).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&'),now=performance.now();
-  if(payload.length<=16384&&(payload!==lastTimeline||now-timelineTime>=500)){
-   console.info('FLOGGFY_TIMELINE_V1:'+payload);lastTimeline=payload;timelineTime=now;
-  }
+ function playbackEmitter(prefix,limit,interval){
+  let last='',time=-Infinity;
+  return data=>{
+   const payload=encodePayload(data),now=performance.now();
+   if(payload.length>limit||(payload===last&&!(now-time>=interval)))return;
+   console.info(prefix+payload);last=payload;time=now;
+  };
  }
+ const playback=playbackEmitter('FLOGGFY_PLAYBACK_V1:',4096,1000),timeline=playbackEmitter('FLOGGFY_TIMELINE_V1:',16384,500);
  function unsupportedPlaybackKind(item,metadata,uri){
   const type=String(own(item,'type')||own(metadata,'type')||own(metadata,'media.type')||'').toLowerCase();
   return String(uri||'').startsWith('spotify:ad:')||type==='ad'||type==='advertisement'?
@@ -60,7 +61,7 @@
   if(timelineBlocked){
    timelineSeen=true;const blocked={v:1,blocked:timelineBlocked};
    const uri=own(own(state,'item'),'uri'),stamp=own(state,'timestamp'),instance=own(state,'playbackId');
-   if(timelineBlocked==='buffering'&&/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')&&typeof stamp==='number'&&Number.isFinite(stamp)){
+   if(timelineBlocked==='buffering'&&playableUri.test(uri||'')&&typeof stamp==='number'&&Number.isFinite(stamp)){
     blocked.uri=uri;blocked.instance=typeof instance==='string'&&instance.length<=128?instance:'';
     blocked.sampled_ms=Date.now();blocked.transition_ms=stamp;
     const position=own(state,'positionAsOfTimestamp');if(typeof position==='number'&&Number.isFinite(position)&&position>=0)blocked.position_ms=position;
@@ -114,7 +115,7 @@
   lastReadyTimeline={player,sampled,stateStamp:stamp,instance,uri:data.uri,playing:!paused&&timelineLocal===1};
   episodeEndAnchor=data.uri.startsWith('spotify:episode:')&&instance&&lastReadyTimeline.playing&&
    controlBinding?.active&&controlBinding.observing&&controlBinding.player===player?lastReadyTimeline:undefined;
-  timeline({v:1,title:data.title,artist:data.artist||'',album:data.album||'',uri:data.uri,
+  timeline({...data,
    duration:duration/1000,position:seconds,sampled_ms:sampled,instance,paused:Number(paused),buffering:Number(buffering),local:timelineLocal,speed:rate,
    controlled:readyControlled?1:undefined,prior_control:readyPriorControlled?1:undefined});
  }
@@ -122,14 +123,11 @@
   timelineBlocked='';
   const item=own(state,'item'),m=own(item,'metadata')||{},uri=text(own(item,'uri'));
   if(guardTimeline(state))return;
-  if(!/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')){
+  if(!playableUri.test(uri||'')){
    unavailableTimeline('track-unavailable',state,unsupportedPlaybackKind(item,m,uri));return;
   }
-  const show=own(item,'show')||{};
-  const data={title:text(own(m,'title')||own(item,'name')),
-   artist:text(own(m,'artist_name'))||artists(own(item,'artists'))[0]||text(own(m,'show.publisher')||own(m,'show_name')||own(show,'publisher')),
-   album:text(own(m,'album_title')||own(show,'name')||own(m,'show_name')),uri};
-  if(!data.title||(uri.startsWith('spotify:track:')&&(!data.artist||!data.album))){unavailableTimeline('identity-unavailable');return;}
+  const data=playbackIdentity(item,m,uri);
+  if(!hasPlaybackIdentity(data,uri.startsWith('spotify:track:'))){unavailableTimeline('identity-unavailable');return;}
   observeTimeline(state,data);
  }
  function bindTimeline(){
@@ -322,7 +320,7 @@
  }
  function automatic(){
   const config=options(),now=performance.now();
-  for(const entry of serviceCache.values())for(const kind of ['metadata','album','lyrics']){
+  for(const entry of serviceCache.values())for(const kind of serviceKinds){
    const r=entry[kind];
    if(r.pending&&(now-r.started>=12000||!r.granted||config.metadata!==true||(kind==='lyrics'&&config.lyrics===false))){
     // Expire only the logical operation. Abort may be unsupported or ignored;
@@ -335,12 +333,12 @@
   if(config.metadata!==true||!builder)return;
   for(const [uri,entry] of serviceCache){
    const id=uri.slice(14);
-   for(const kind of ['metadata','album','lyrics']){
+   for(const kind of serviceKinds){
     const r=entry[kind];if(!r.granted)continue;
     if(kind==='lyrics'?(config.lyrics===false||config.fetchMissingLyrics===false):config.fetchMissingMetadata===false)continue;
     if(r.data||r.done||r.pending||r.attempts>=2||now<(r.retryAt||0)||activeRequests>=4)continue;
     const albumUri=own(entry.snapshot,'album_uri');
-    const albumId=text(own(own(entry.metadata.data,'album'),'gid'))||(/^spotify:album:[A-Za-z0-9]{22}$/.test(albumUri||'')?hexId(albumUri.slice(14)):undefined);if(kind==='album'&&!/^[a-f0-9]{32}$/.test(albumId||''))continue;
+    const albumId=text(own(own(entry.metadata.data,'album'),'gid'))||(albumUriPattern.test(albumUri||'')?hexId(albumUri.slice(14)):undefined);if(kind==='album'&&!/^[a-f0-9]{32}$/.test(albumId||''))continue;
     const hex=kind==='metadata'&&hexId(id);if(kind==='metadata'&&!hex)continue;
     r.pending=true;r.started=now;r.attempts++;r.generation=(r.generation||0)+1;const generation=r.generation;activeRequests++;
     const operation=networking()?(networkOperation=networkOperation%1000000+1):0,started=now;
@@ -414,6 +412,13 @@
  function entries(v,limit){const out=[];if(Array.isArray(v))for(let i=0;i<Math.min(v.length,limit);i++)out.push(own(v,String(i)));return out;}
  function list(v){return Array.isArray(v)?entries(v,32).map(x=>text(x)||text(own(x,'name'))).filter(Boolean).join('; '):text(v);}
  function artists(v){return entries(Array.isArray(v)?v:own(v,'items'),32).map(x=>text(x)||text(own(x,'name'))||text(own(own(x,'profile'),'name'))).filter(Boolean);}
+ function playbackIdentity(item,m,uri){
+  const show=own(item,'show')||{};
+  return {v:1,title:text(own(m,'title')||own(item,'name')),
+   artist:text(own(m,'artist_name'))||artists(own(item,'artists'))[0]||text(own(m,'show.publisher')||own(m,'show_name')||own(show,'publisher')),
+   album:text(own(m,'album_title')||own(show,'name')||own(m,'show_name')),uri};
+ }
+ function hasPlaybackIdentity(data,track){return data.title&&(!track||(data.artist&&data.album));}
  function indexed(m,key){const names=[];const first=text(own(m,key));if(first)names.push(first);for(let i=1;i<32;i++){const n=text(own(m,key+':'+i)||own(m,key+'_'+i));if(n&&!names.includes(n))names.push(n);}return names;}
  function putArtists(data,tag,names){if(names.length&&(!data[tag]||names.length>=data[tag].split('; ').length))data[tag]=[...new Set(names)].join('; ');}
  function releaseDate(value){
@@ -434,13 +439,19 @@
   const match=/^(?:spotify:image:|https:\/\/i\.scdn\.co\/image\/)([a-fA-F0-9]{40})$/.exec(value);
   return match?'https://i.scdn.co/image/'+match[1].toLowerCase():undefined;
  }
+ function putAlbumUri(data,uri){
+  if(typeof uri==='string'&&albumUriPattern.test(uri)){data.album_uri=uri;data.SPOTIFY_ALBUM_URI=uri;}
+ }
+ function putCovers(data,covers){
+  covers=covers.filter((cover,i,all)=>all.findIndex(x=>x.url===cover.url)===i).slice(0,8);
+  if(!covers.length)return;
+  data.artwork_url=covers[0].url;data.artwork_urls=covers.map(x=>x.url).join('\n');
+  Object.defineProperty(data,'__covers',{value:covers,writable:true,configurable:true});
+ }
  function merge(data,source,currentItem=false){
   if(!object(source))return;
   const m=own(source,'metadata')||source,album=own(source,'album')||{},show=own(source,'show')||{};
-  const albumUri=text(own(album,'uri')||own(source,'album_uri')||own(m,'album_uri'));
-  if(/^spotify:album:[A-Za-z0-9]{22}$/.test(albumUri||'')){
-   data.album_uri=albumUri;data.SPOTIFY_ALBUM_URI=albumUri;
-  }
+  putAlbumUri(data,text(own(album,'uri')||own(source,'album_uri')||own(m,'album_uri')));
   const release=[own(m,'release_date'),own(m,'releaseDate'),own(m,'album_release_date'),
    own(source,'release_date'),own(source,'releaseDate'),own(album,'releaseDate'),own(album,'date'),
    own(show,'release_date'),own(show,'releaseDate'),own(m,'year')].map(releaseDate).find(Boolean);
@@ -477,11 +488,7 @@
    const url=artworkUrl(text(image)||own(image,'url')||(file?'spotify:image:'+file:undefined));
    if(url)urls.push({url,size:Number(own(image,'width'))||0});
   }
-  const covers=urls.sort((a,b)=>b.size-a.size).filter((cover,i,all)=>all.findIndex(x=>x.url===cover.url)===i).slice(0,8);
-  if(covers.length){
-   data.artwork_url=covers[0].url;data.artwork_urls=covers.map(x=>x.url).join('\n');
-   Object.defineProperty(data,'__covers',{value:covers,writable:true,configurable:true});
-  }
+  putCovers(data,urls.sort((a,b)=>b.size-a.size));
   if(options().lyrics===false)return;
   const lyric=own(source,'lyrics')||own(m,'lyrics');
   let words=text(lyric);
@@ -516,12 +523,15 @@
   }
  }
  function emitMetadata(data){
-  const encode=()=>Object.entries(data).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&');
-  let payload=encode();if(payload.length>131072){delete data.LYRICS;payload=encode();}
+  let payload=encodePayload(data);if(payload.length>131072){delete data.LYRICS;payload=encodePayload(data);}
   const last=seenPayload.get(data.uri),now=performance.now();
   if(payload.length>131072||(last&&last.payload===payload&&now-last.time<15000))return;
   seenPayload.set(data.uri,{payload,time:now});if(seenPayload.size>64)seenPayload.delete(seenPayload.keys().next().value);
   console.info(prefix+payload);
+ }
+ function mergeFetched(data,entry,clearDisabledLyrics=false){
+  merge(data,entry.metadata.data);merge(data,entry.album.data);
+  if(options().lyrics!==false)merge(data,entry.lyrics.data);else if(clearDisabledLyrics)delete data.LYRICS;
  }
  function emitEnrichment(entry){
   if(options().metadata!==true||!entry.snapshot)return;
@@ -529,8 +539,7 @@
   const data=Object.defineProperties({},Object.getOwnPropertyDescriptors(entry.snapshot));
   delete data.playback_quality; // A delayed response cannot refresh an old playback observation.
   data.metadata_source='online';
-  merge(data,entry.metadata.data);merge(data,entry.album.data);
-  if(options().lyrics!==false)merge(data,entry.lyrics.data);else delete data.LYRICS;
+  mergeFetched(data,entry,true);
   emitMetadata(data);
  }
  function nativeSnapshot(uri,snapshot){
@@ -539,17 +548,10 @@
   if(![title,artist,album].every(value=>typeof value==='string'&&value.trim().length>0&&value.length<=4096)||
      typeof duration!=='number'||!Number.isFinite(duration)||duration<=0)return;
   const data={v:1,uri,title,artist,album,duration,SPOTIFY_URI:uri};
-  const albumUri=own(snapshot,'album_uri');
-  if(typeof albumUri==='string'&&/^spotify:album:[A-Za-z0-9]{22}$/.test(albumUri)){
-   data.album_uri=albumUri;data.SPOTIFY_ALBUM_URI=albumUri;
-  }
+  putAlbumUri(data,own(snapshot,'album_uri'));
   const references=own(snapshot,'artwork_urls');
   const covers=[own(snapshot,'artwork_url'),...(typeof references==='string'?references.split('\n').slice(0,8):[])];
-  const urls=[...new Set(covers.map(artworkUrl).filter(Boolean))].slice(0,8);
-  if(urls.length){
-   data.artwork_url=urls[0];data.artwork_urls=urls.join('\n');
-   Object.defineProperty(data,'__covers',{value:urls.map(url=>({url,size:0})),writable:true,configurable:true});
-  }
+  putCovers(data,covers.map(artworkUrl).filter(Boolean).map(url=>({url,size:0})));
   return data;
  }
  window.__floggfyEnrich=(uri,needs,fallback)=>{
@@ -564,7 +566,7 @@
    entry.snapshot=Object.defineProperties({},Object.getOwnPropertyDescriptors(entry.snapshot));
    merge(entry.snapshot,{album:{uri:entry.snapshot.album_uri||provided.album_uri},images:(provided.artwork_urls||'').split('\n')});
   }
-  for(const kind of ['metadata','album','lyrics'])if(own(needs,kind)===true)entry[kind].granted=true;
+  for(const kind of serviceKinds)if(own(needs,kind)===true)entry[kind].granted=true;
   automatic();return true;
  };
  function tick(){
@@ -575,15 +577,12 @@
    debugObservation(state,item);connectDiagnostics(state);emitTimelineState(state);
    debugTerminalState(state,item);
    resumePausedPlayback(state);
-   if(!/^spotify:(?:track|episode):[A-Za-z0-9]{22}$/.test(uri||'')){
+   if(!playableUri.test(uri||'')){
     playback({v:1});unavailableTimeline('track-unavailable',state,unsupportedPlaybackKind(item,m,uri));return;
    }
-   const track=uri.startsWith('spotify:track:'),show=own(item,'show')||{};
-   const data={v:1,title:text(own(m,'title')||own(item,'name')),
-    artist:text(own(m,'artist_name'))||artists(own(item,'artists'))[0]||text(own(m,'show.publisher')||own(m,'show_name')||own(show,'publisher')),
-    album:text(own(m,'album_title')||own(show,'name')||own(m,'show_name')),uri,
-    duration:Number(text(own(m,'duration')||own(own(item,'duration'),'milliseconds')||own(state,'duration')))/1000,SPOTIFY_URI:uri};
-   if(!data.title||(track&&(!data.artist||!data.album))||!Number.isFinite(data.duration)||data.duration<=0){playback({v:1});unavailableTimeline('identity-unavailable');return;}
+   const track=uri.startsWith('spotify:track:'),identity=playbackIdentity(item,m,uri);
+   const data={...identity,duration:Number(text(own(m,'duration')||own(own(item,'duration'),'milliseconds')||own(state,'duration')))/1000,SPOTIFY_URI:uri};
+   if(!hasPlaybackIdentity(identity,track)||!Number.isFinite(data.duration)||data.duration<=0){playback({v:1});unavailableTimeline('identity-unavailable');return;}
    // Actual current playback quality, never targetBitrateLevel (the preference).
    const quality=own(state,'playbackQuality')||own(state,'playback_quality');
    const raw=own(quality,'bitrateLevel')||own(quality,'bitrate_level');
@@ -593,11 +592,11 @@
     Number.isInteger(raw)&&raw>=1&&raw<=6?['','low','normal','high','very_high','lossless','lossless_24'][raw]:undefined;
    if(level==='hifi24')level='lossless_24';
    if(['low','normal','high','very_high','lossless','lossless_24','hifi'].includes(level))data.playback_quality=level;
-   playback({v:1,title:data.title,artist:data.artist,album:data.album,uri,duration:data.duration,playback_quality:data.playback_quality});
+   playback({...identity,duration:data.duration,playback_quality:data.playback_quality});
    if(track)dispatchAutoSkip(state,uri);
    if(options().metadata===false)return;
    const fetched=serviceCache.get(uri);
-   if(fetched){merge(data,fetched.metadata.data);merge(data,fetched.album.data);if(options().lyrics!==false)merge(data,fetched.lyrics.data);}
+   if(fetched)mergeFetched(data,fetched);
    for(const record of records)cached(data,record);
    merge(data,item,true); // Current playback snapshot wins over older cached data.
    if(options().lyrics===false)delete data.LYRICS;

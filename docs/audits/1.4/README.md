@@ -40,6 +40,10 @@ The 63 open entries include repeated destination-path searches and duplicate art
 | Artwork | Retire the artwork singleton after tracing all writers. Use the recording's pinned artwork and metadata revision. | Windows fixtures publish an actual image, deduplicate a repeat, and update embedded FLAC and Ogg covers. |
 | Staging collisions | Keep the exclusively created file handle through publication or cleanup. A failed creation previously deleted an occupied sibling by pathname. | The Windows first-save collision reproduced the deletion. Normal and metadata-only saves now preserve the existing bytes. Interruption and destination-race checks also passed. |
 | Windows diagnostics fixture | Create the two synthetic architecture images inside a fresh test-owned directory. | The previous fixture deleted adjacent sentinel files despite reporting success. Both sentinels now survive byte-for-byte. |
+| Capture cleanup | Remove the legacy listen model and unused release state. Keep the active capture lifecycle, matcher, and codec readers. | Portable codec and speed tests and 50,000 capture lifecycle fuzz cases. |
+| Metadata cleanup | Decode renderer metadata into its final fields and share tag merging between the renderer and offline cache. | A representative long-lyrics message went from 85 allocations to 43. A 20,016-input comparison preserved parsed fields and errors. Captured renderer messages compared byte-for-byte. |
+| Recovery and packaging | Retry pending INI writes after a transient failure. Build both release outputs before replacing the packaged files. | Unlocking the INI persisted the newest menu changes without another edit. A missing launcher preserved both previous outputs. |
+| Saved playback | Restore the original active playlist order when leaving Saved sort. Wait while a manually queued song is playing and retry transient update failures. | Renderer fixtures cover the native sort switch, a pending manual queue, session changes, and synchronous and asynchronous retries. |
 
 The detailed reviews below retain the original findings. The CSV dispositions record their current status.
 
@@ -85,9 +89,23 @@ The telemetry fixture exercised 5,040 URL classifications with the same results.
 
 | Repeated operation | Shared implementation |
 |---|---|
-| Reading fixed-width integers in media, artwork cache and telemetry payloads | [Binary tooling](../../native/tooling/binary.h) also shares the CRC-32 calculation used by PNG and gzip. |
-| Encoding Ogg artwork and telemetry bodies, decoding padded artwork comments and renderer dumps | [Base64 tooling](../../native/tooling/base64.h) keeps padding and trailing-bit validation in one place. Ogg comments allow whitespace. |
-| Validating UTF-8 and decoding hexadecimal escapes | [Text encoding tooling](../../native/tooling/text_encoding.h) serves metadata, artwork and telemetry with explicit text policies. |
-| Checking the Spotify CDN URL in four places | [Artwork URL validation](../../native/media/artwork_url.h) serves the metadata parser, artwork replies, disk cache and downloader. |
-| Marking a validated Windows file for deletion through its open handle | [Windows file tooling](../../native/tooling/windows_file_write.h) serves publication, recovery and queued-telemetry cleanup. |
+| Reading fixed-width integers in media, artwork cache and telemetry payloads | [Binary tooling](../../../native/tooling/binary.h) also shares the CRC-32 calculation used by PNG and gzip. |
+| Encoding Ogg artwork and telemetry bodies, decoding padded artwork comments and renderer dumps | [Base64 tooling](../../../native/tooling/base64.h) keeps padding and trailing-bit validation in one place. Ogg comments allow whitespace. |
+| Validating UTF-8 and decoding hexadecimal escapes | [Text encoding tooling](../../../native/tooling/text_encoding.h) serves metadata, artwork and telemetry with explicit text policies. |
+| Checking the Spotify CDN URL in four places | [Artwork URL validation](../../../native/media/artwork_url.h) serves the metadata parser, artwork replies, disk cache and downloader. |
+| Marking a validated Windows file for deletion through its open handle | [Windows file tooling](../../../native/tooling/windows_file_write.h) serves publication, recovery and queued-telemetry cleanup. |
 | Publishing captured telemetry dumps and recording a successful decoder binding | The native and renderer dump paths share queue accounting. The three decoder binding paths share the state update. |
+
+## Open findings from the whole-project check
+
+Reproduced in fixtures
+
+- A complete set of checksum-valid Ogg pages with an invalid Vorbis setup header can reach Unmatched with a sidecar claiming complete and valid audio. Named saves run a second recording inspection that rejects the same setup header. [Unmatched publication](../../../native/media/audio_history.cpp#L2021) · [Vorbis header inspection](../../../native/media/recording_file.cpp#L280)
+- A Vorbis stream whose first page sequence is nonzero can pass capture validation and stall named publication. The recording inspector requires zero, and the save worker retries this permanent validation failure. [Recording inspection](../../../native/media/recording_file.cpp#L264) · [Save retry](../../../native/media/audio_history.cpp#L2187)
+- Cancelling the initial Saved sort while a native sort command is in flight can leave that native column in a different sort direction. This also reproduced on v1.4. [Native sort cycle](../../../native/ui/marked_playlist_sort.js#L225)
+
+Found in source
+
+- The Ogg release audit reserves space for the flattened copy. Its Vorbis parser also allocates an 8 MiB scratch arena outside that reservation. [Release audit](../../../native/media/audio_history.cpp#L1201) · [Vorbis setup validation](../../../native/media/vorbis_headers.cpp#L45)
+- Cancelling a Saved database rebuild stops further scanning. A date backfill already in flight can still write one file. [Catalog rebuild](../../../native/ui/marked_catalog.cpp#L333)
+- Startup can accept a relative Save Location from the INI even though the documented option requires an absolute path. Invalid matcher values fall back to defaults and can trigger a redundant rewrite that preserves the invalid text. [Save Location](../../../native/tooling/history_settings.cpp#L387) · [Matcher options](../../../native/tooling/history_settings.cpp#L249)

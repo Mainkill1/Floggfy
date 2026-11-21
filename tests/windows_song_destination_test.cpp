@@ -1,7 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include "../native/tooling/bounded_queue.h"
-#include "../native/media/ogg_history_core.h"
 #include <atomic>
 static HANDLE probe_entered=nullptr,probe_release=nullptr;
 static std::atomic<bool> hold_probe{false};
@@ -163,15 +162,16 @@ int main() {
     },&submit,0,nullptr);
     assert(WaitForSingleObject(probe_entered,1000)==WAIT_OBJECT_0);
     const bool returned_without_storage=WaitForSingleObject(submit.returned,100)==WAIT_OBJECT_0;
-    Listen observed;unsigned drained=0;const auto blocked_start=GetTickCount64();
+    unsigned drained=0;const auto blocked_start=GetTickCount64();
     while(GetTickCount64()-blocked_start<3300) {
         Sample sample;
         if(samples.Pop(sample)) {
-            observed.Observe("capture",sample.index*.02,100,true,sample.index*.02);++drained;
+            assert(sample.index==drained);
+            ++drained;
         } else Sleep(1);
         PublishSongDestination(9,root,item,false,12); // Bounded latest-request replacement while storage stalls.
     }
-    assert(drained>100 && observed.eligible && WaitForSingleObject(probe_release,0)==WAIT_TIMEOUT);
+    assert(drained>100 && WaitForSingleObject(probe_release,0)==WAIT_TIMEOUT);
     {
         ExclusiveSrw guard(destination_lock);
         assert(pending_request && pending_request->identity==9 && latest_request->identity==9);

@@ -3,13 +3,9 @@
 set -euo pipefail
 cd -- "$(dirname -- "$0")/../.."
 issue=${1:?Usage: bash tests/runners/test-pr11-corrections.sh ISSUE_NUMBER}
-case "$issue" in 1|3|4|5|6) ;; *) echo 'Issue must be 1, 3, 4, 5 or 6 (issue 2 was retired)' >&2; exit 2;; esac
+case "$issue" in 1|3|5|6) ;; *) echo 'Issue must be 1, 3, 5 or 6 (issues 2 and 4 were retired)' >&2; exit 2;; esac
 mkdir -p build/pr11-corrections
 common=(-std=c++17 -O2 -Wall -Wextra -Werror)
-if [[ "$issue" == 4 ]]; then
-    g++ "${common[@]}" tests/history_core_test.cpp native/media/ogg_history_core.cpp -o build/pr11-corrections/issue4
-    exec build/pr11-corrections/issue4 --issue4
-fi
 if [[ "$issue" == 6 ]]; then
     gcc -std=c11 -O2 -Wall -Wextra -c native/vendor/minimp4/minimp4.c -o build/pr11-corrections/minimp4-native.o
     gcc -std=c11 -O2 -Wall -Wextra -c native/media/vorbis_headers_stb.c -o build/pr11-corrections/vorbis-native.o

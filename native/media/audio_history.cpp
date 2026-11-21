@@ -949,7 +949,6 @@ struct Capture {
     mutable int final_validation=-1;
     mutable const char* validation_reason="not-evaluated";
     mutable unsigned validation_runs=0;
-    bool publication_deferred=false;
     size_t publication_reserved=0;
     // This capture's share of the last capture-store accounting snapshot.
     // Transfers to a publication/audit lease remove exactly this prior charge.
@@ -1188,17 +1187,12 @@ static bool UnboundOggSequenceGap(const Capture& capture) noexcept {
     return !capture.mp3&&!capture.aac&&!capture.lossless&&
         capture.bound_identity.empty()&&capture.stream.rejection==OggRejection::Sequence;
 }
-enum class ReleaseExpectation {
-    DiscardedEvidence,
-    RequiredRecording
-};
 // Called only when ownership reconciliation has finished and this object really
 // will be released. Flatten keeps the source alive through the final whole-file
 // inspection and avoids retaining another permanent copy.
-static const char* CheckBeforeRelease(Capture& capture,const char* reason,
-                                     const ownership::DecoderOwnershipTracker* tracker=nullptr,
-                                     ReleaseExpectation expectation=ReleaseExpectation::DiscardedEvidence,
-                                     const ownership::OwnershipBinding* binding_override=nullptr) {
+static void CheckBeforeRelease(Capture& capture,const char* reason,
+                               const ownership::DecoderOwnershipTracker* tracker=nullptr,
+                               const ownership::OwnershipBinding* binding_override=nullptr) {
     const char* result="validation unavailable";
     try {
         ReleaseAuditLease lease(capture);
@@ -1224,8 +1218,8 @@ static const char* CheckBeforeRelease(Capture& capture,const char* reason,
         }
         result=complete?
             (capture.ambiguous?"complete valid audio; ownership ambiguous":!verified?
-                "complete valid audio; capture/listen verification failed":capture.publication_deferred?
-                "complete valid audio; publication deferred":"complete valid audio; no verified metadata/listen match"):
+                "complete valid audio; capture/listen verification failed":
+                "complete valid audio; no verified metadata/listen match"):
             guarded_complete?"invalid cached audio":"incomplete or invalid cached audio";
     } catch(...) { /* Release under the existing memory bound, with an honest outcome. */ }
     const auto binding=binding_override?*binding_override:tracker&&capture.capture_token?tracker->Binding(capture.capture_token):
@@ -1238,16 +1232,6 @@ static const char* CheckBeforeRelease(Capture& capture,const char* reason,
         static_cast<unsigned long long>(capture.capture_token));
     DecisionLog(line);
     TraceCaptureDisposition(capture,"released",result);
-    const char* outcome=std::strcmp(result,"incomplete or invalid cached audio")==0?"incomplete cache":
-        std::strcmp(result,"invalid cached audio")==0?"invalid cache":
-        std::strstr(result,"ownership ambiguous")?"ambiguous cache":
-        std::strstr(result,"publication deferred")?"deferred cache":
-        std::strstr(result,"no verified metadata/listen match")?"unmatched cache":
-        std::strstr(result,"verification failed")?"unverified cache":"cache validation failed";
-    if(expectation==ReleaseExpectation::RequiredRecording)
-        LogEvent(LogKind::Failure,"failed",std::string(outcome)+" | "+
-            (capture.bound_identity.empty()?"unknown track":capture.bound_identity));
-    return result;
 }
 using Heard=RecordingMetadata;
 static double DeclaredCaptureDuration(const Capture& capture) {
@@ -1832,7 +1816,6 @@ static BoundedQueue<SaveJob,2> saves;
 struct ReleaseAuditJob {
     std::unique_ptr<Capture> capture;
     const char* reason=nullptr;
-    ReleaseExpectation expectation=ReleaseExpectation::DiscardedEvidence;
     ownership::OwnershipBinding binding{};
     bool has_binding=false;
 };
@@ -1847,9 +1830,9 @@ struct DumpWorkerLifetime {
     ~DumpWorkerLifetime(){if(dump_worker_count.fetch_sub(1,std::memory_order_acq_rel)==1)stream_dump::Stop();}
 };
 static hooks::InitController audio_init;
-static bool QueueReleaseAudit(Capture& capture,const char* reason,ReleaseExpectation expectation,
+static bool QueueReleaseAudit(Capture& capture,const char* reason,
                               const ownership::DecoderOwnershipTracker* tracker=nullptr) {
-    ReleaseAuditJob job;job.reason=reason;job.expectation=expectation;
+    ReleaseAuditJob job;job.reason=reason;
     if(tracker&&capture.capture_token) {job.binding=tracker->Binding(capture.capture_token);job.has_binding=true;}
     MemoryBudgetLock guard;
     const auto retained=capture.retained_reserved,previous=capture.publication_reserved;
@@ -1879,7 +1862,7 @@ static bool DrainOneReleaseAudit() {
             job.capture.reset();publishing_reserved.fetch_sub(reserved);
         }
     } release{job};
-    CheckBeforeRelease(*job.capture,job.reason,nullptr,job.expectation,job.has_binding?&job.binding:nullptr);
+    CheckBeforeRelease(*job.capture,job.reason,nullptr,job.has_binding?&job.binding:nullptr);
     return true;
 }
 static void DrainReleaseAudits() {while(DrainOneReleaseAudit()) {}}
@@ -2342,8 +2325,7 @@ struct CaptureBuffers {
                 DecisionLog(line);
             }
         }
-        if(!defer_audit||!QueueReleaseAudit(*capture,"active capture discarded",
-            ReleaseExpectation::DiscardedEvidence,ownership_tracker))
+        if(!defer_audit||!QueueReleaseAudit(*capture,"active capture discarded",ownership_tracker))
             CheckBeforeRelease(*capture,"active capture discarded",ownership_tracker);
         if(lost_active_count==lost_active.size())
             lost_capture_start_through=std::max(lost_capture_start_through,lost_active[next_lost_active].born+20);
@@ -2952,7 +2934,7 @@ static bool RestartFlacCaptureAtSampleZero(Capture& capture,const Slot& slot,
     capture.reported_flac_source_reason=nullptr;capture.flac_input_bytes=capture.data.size();
     capture.born=slot.time;capture.finished=0;
     capture.ambiguous=false;capture.final_validation=-1;capture.validation_runs=0;
-    capture.publication_deferred=false;capture.bound_identity.clear();
+    capture.bound_identity.clear();
     capture.capture_token=0;capture.decoder_owner=0;
     BeginCaptureOwnership(capture,buffers,ownership::DecoderCodec::Flac,
                           slot.context,0,slot.time,slot.epoch,slot.sequence);
@@ -3957,7 +3939,7 @@ static DWORD WINAPI Worker(LPVOID) {
                         buffers.RecordLostActive(&c,ownership::CaptureAbortReason::SettingsChange,true);
                     });
                     for(auto& c:ready)
-                        if(!QueueReleaseAudit(*c,"capture settings changed",ReleaseExpectation::DiscardedEvidence,buffers.ownership_tracker))
+                        if(!QueueReleaseAudit(*c,"capture settings changed",buffers.ownership_tracker))
                             CheckBeforeRelease(*c,"capture settings changed",buffers.ownership_tracker);
                     ResetCaptureBuffers(buffers,&ownership_tracker,preferences.capture_epoch,now);
                     recording_generation=0;current={};quality.ClearStreams();

@@ -57,8 +57,7 @@ static std::vector<unsigned char> Bytes(const std::wstring& path) {
     assert(ReadFile(file,bytes.data(),DWORD(bytes.size()),&count,nullptr)&&count==bytes.size());CloseHandle(file);return bytes;
 }
 static LONG Progress(){return InterlockedCompareExchange(&history::persisted_generation,0,0);}
-static void Retry(unsigned generation) {
-    failure=Failure::None;throw_logging=false;SetEvent(history::settings_signal);
+static void WaitForPersistence(unsigned generation) {
     const auto deadline=GetTickCount64()+5000;
     while(static_cast<LONG>(unsigned(Progress())-generation)<0){assert(GetTickCount64()<deadline);Sleep(1);}
     assert(history::FlushSettings(5000));
@@ -87,18 +86,36 @@ int main() {
     failure=Failure::AfterRead;throw_logging=true;assert(history::SetLyrics(false));
     const auto failed=history::GetSettings().generation;
     assert(!history::FlushSettings(5000)&&Progress()==persisted&&Bytes(path)==before);
-    assert(history::persist_failed);
+    assert(history::ReachedGeneration(history::failed_generation,failed));
     const auto log_deadline=GetTickCount64()+5000;
     while(!logging_failures.load()){assert(GetTickCount64()<log_deadline);Sleep(1);}
-    Retry(failed);
+    // Observe a completed retry with the fault still active. It must not log
+    // the same failure again, even if logging itself threw on the first attempt.
+    const auto reads=read_attempts.load();
+    const auto retry_deadline=GetTickCount64()+5000;
+    while(read_attempts.load()-reads<2){assert(GetTickCount64()<retry_deadline);Sleep(1);}
+    assert(logging_failures.load()==1&&Progress()==persisted);
+    failure=Failure::None;throw_logging=false;
+    WaitForPersistence(failed);
     assert(GetPrivateProfileIntW(L"To Disk",L"Lyrics",9,path.c_str())==0);
     before=Bytes(path);const auto saved=Progress();
     HANDLE held=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr);assert(held!=INVALID_HANDLE_VALUE);
     assert(history::SetOgg(false));const auto denied=history::GetSettings().generation;
-    assert(!history::FlushSettings(5000)&&Progress()==saved&&Bytes(path)==before);CloseHandle(held);Retry(denied);
+    assert(!history::FlushSettings(5000)&&Progress()==saved&&Bytes(path)==before);
+    CloseHandle(held);
+    WaitForPersistence(denied);
+    assert(GetPrivateProfileIntW(L"To Disk",L"Ogg",9,path.c_str())==0);
     before=Bytes(path);const auto after_write=Progress();failure=Failure::Read;assert(history::SetFlac(false));
-    const auto unreadable=history::GetSettings().generation;
-    assert(!history::FlushSettings(5000)&&Progress()==after_write&&Bytes(path)==before);Retry(unreadable);
+    assert(!history::FlushSettings(5000)&&Progress()==after_write&&Bytes(path)==before);
+    assert(history::SetDownloads(true));
+    const auto latest=history::GetSettings().generation;
+    assert(!history::FlushSettings(5000)&&Progress()==after_write&&Bytes(path)==before);
+    assert(WritePrivateProfileStringW(L"Misc",L"NetworkPatch",L"1",path.c_str()));
+    failure=Failure::None;
+    WaitForPersistence(latest);
+    assert(GetPrivateProfileIntW(L"To Disk",L"Flac",9,path.c_str())==0);
+    assert(GetPrivateProfileIntW(L"To Disk",L"Downloads",9,path.c_str())==1);
+    assert(GetPrivateProfileIntW(L"Misc",L"NetworkPatch",9,path.c_str())==1);
     const auto unicode_path=directory+L"\\\u65e5\u672c\u8a9e-\U0001f3b5";
     assert(history::SetSaveLocation(unicode_path)&&history::SetLyrics(true)&&history::FlushSettings(5000));
     std::wstring text;bool unicode=false;assert(history::settings_file::Read(path,text,unicode)&&unicode);
@@ -108,5 +125,5 @@ int main() {
     CheckRedundantNotification(path);
     WIN32_FIND_DATAW data{};HANDLE stages=FindFirstFileW((path+L".settings-*").c_str(),&data);assert(stages==INVALID_HANDLE_VALUE);
     assert(DeleteFileW(path.c_str()));
-    puts("PASS: failed persistence never acknowledges unwritten generations; retries recover; Unicode/unknown settings survive; redundant notifications perform no file I/O or leave staging files");
+    puts("PASS: failed writes retry automatically, warn once, preserve external edits, coalesce changes and leave no staging files or redundant writes");
 }

@@ -1,7 +1,6 @@
 // Basic media observation boundary only: no live SMTC, artwork or disk access.
 #include "../native/media/media_session.h"
 #include "../native/media/media_timeline.h"
-#include "../native/media/ogg_history_core.h"
 #include <atomic>
 #include <cassert>
 #include <cstdio>
@@ -35,18 +34,14 @@ void TimelineContinuity() {
     assert(before.ContinuesTo(before));
     auto after=before;after.position+=second/2;after.updated+=second/2;
     assert(before.ContinuesTo(after)); // A normal refresh during the async call.
-    history::Listen listen;
     auto current=before;current.position=0;
-    assert(listen.Observe("A",0,180,true,100).empty()&&listen.eligible);
     for(unsigned i=1;i<=12;++i) {
         auto next=current;next.position+=second/2;next.updated+=second/2;
         assert(current.ContinuesTo(next));
-        assert(listen.Observe("A",double(next.position)/second,180,true,100+i*0.5).empty()&&listen.eligible);
         current=next;
     }
     // Every pair changes Position/LastUpdatedTime for six seconds; no starvation.
-    assert(listen.last_time==106&&listen.last_position==6);
-    listen.Observe("A",10,180,true,110);assert(!listen.eligible); // Real observation gaps still fail.
+    assert(current.updated==utc+6*second&&current.position==6*second);
     after=before;after.updated+=second/2;after.position+=second/2+second/5;
     assert(before.ContinuesTo(after)); // Bounded rounding jitter.
     after.position+=second;assert(!before.ContinuesTo(after)); // Forward seek.
@@ -132,8 +127,7 @@ int RunMediaSnapshotTests() {
     Wait([&]{return WaitForSingleObject(source.entered,0)==WAIT_OBJECT_0;});
     const auto blocked_calls=source.calls.load();
     const auto start=GetTickCount64();unsigned produced=0,drained=0;
-    // The media callback remains blocked for more than the listen-gap bound.
-    // Capture-style progress and RAM-only polling must continue during it.
+    // Capture-style progress and RAM-only polling continue while the media callback is blocked.
     while(GetTickCount64()-start<3100) {
         ++produced;
         assert(reader.TryRead(out,observed,sequence)==MediaRead::Pending);

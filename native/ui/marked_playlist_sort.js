@@ -126,8 +126,10 @@
             if (current && (!sameProvider(current, view) || current.source !== view.source)) return;
             if (grid?.isConnected !== false && !clearSelection(current?.list || view.list)) return false;
             if (!ownsItems(view, owned)) return;
+            const originalOrder = active.playItems && currentFor(active, current) ? original : null;
             view.source.items = original;
             redraw(view.dispatch);
+            return originalOrder;
         }
 
         function playbackItems(entries) {
@@ -188,13 +190,15 @@
         }
 
         function reset(message = "") {
+            let originalOrder;
             try {
-                if (restore(session) === false) return selectionFailed(mode);
+                originalOrder = restore(session);
+                if (originalOrder === false) return selectionFailed(mode);
             } catch {
                 message = unsupported;
             }
             const notify = mode !== "none" || loading || error !== message;
-            if (session?.playItems) updatePlayback(null);
+            if (session?.playItems) updatePlayback(originalOrder ? playbackItems(originalOrder) : null, !!originalOrder);
             session = null;
             mode = "none";
             loading = false;
@@ -327,8 +331,7 @@
             },
             cycle() {
                 if (mode === "ascending") {
-                    const original = session?.playItems && currentFor(session) ? session.original : null;
-                    if (reset() && original) updatePlayback(playbackItems(original), true);
+                    reset();
                     return;
                 }
                 if (mode === "descending") {
@@ -347,6 +350,9 @@
             refresh,
             preparePlayback,
             syncPlayback() { if (session?.playItems && session.mode === mode) updatePlayback(session.playItems); },
+            retryPlaybackRestore() {
+                window.__floggfyUpdateMarkedPlayback?.retryRestore?.(window.__floggfyMarkedCurrentPlayer?.());
+            },
             get state() { return {mode, loading, error}; },
             get uris() { return session?.uris || null; },
             apply(dates, dateGeneration) {
@@ -426,6 +432,7 @@
     let order;
     let identities;
     let lastUpdate;
+    let pendingRestore;
 
     function release() {
         order = undefined;
@@ -433,60 +440,106 @@
         lastUpdate = undefined;
     }
 
-    window.__floggfyUpdateMarkedPlayback = (player, playlistUri, orderedItems, restore = false) => {
+    function activePlaylist(player, uri) {
+        if (typeof player?.getState !== "function" || typeof player.updateContext !== "function") return;
+        const state = player.getState();
+        if (state?.context?.uri === uri && typeof state.sessionId === "string" && state.sessionId) return state;
+    }
+
+    function updateOrder(player, playlistUri, state, orderedItems, completed) {
+        const {sessionId: session, item} = state;
+        if (state.shuffle !== false || state.smartShuffle === true) {
+            // Native shuffle may replace the loaded context for this session.
+            lastUpdate = undefined;
+            return;
+        }
+        if (item?.provider !== "context") return;
+
+        if (order !== orderedItems) {
+            order = orderedItems;
+            identities = undefined;
+            lastUpdate = undefined;
+            const byUid = new Map();
+            for (const row of order) {
+                if (typeof row?.uid !== "string" || !row.uid || typeof row.uri !== "string" ||
+                    !row.uri || byUid.has(row.uid)) return;
+                byUid.set(row.uid, row.uri);
+            }
+            identities = byUid;
+        }
+        if (!identities?.has(item.uid) || identities.get(item.uid) !== item.uri) return;
+        if (lastUpdate?.player === player && lastUpdate.session === session &&
+            lastUpdate.uri === playlistUri && Date.now() < lastUpdate.retryAt) return true;
+
+        // Use the active session and let Spotify retain its manual queue and transport state.
+        const context = {uri: playlistUri, metadata: state.context.metadata, isLoading: false,
+            pages: [{tracks: order}]};
+        const attempt = {player, session, uri: playlistUri, retryAt: Infinity};
+        const failed = () => { attempt.retryAt = Date.now() + 3000; };
+        lastUpdate = attempt;
+        try {
+            const result = player.updateContext(session, context);
+            if (completed) {
+                Promise.resolve(result).then(completed, failed);
+            } else if (result && typeof result.catch === "function") {
+                result.catch(failed);
+            }
+        } catch {
+            failed();
+        }
+        return true;
+    }
+
+    function discardRestore(restore) {
+        if (!restore || pendingRestore !== restore) return;
+        pendingRestore = undefined;
+        if (order === restore.items) release();
+    }
+
+    function restoreWhenReady(player, state) {
+        if (!pendingRestore) return;
+        const restore = pendingRestore;
+        if (restore.player !== player || state?.sessionId !== restore.session ||
+            state.context?.uri !== restore.uri) {
+            discardRestore(restore);
+            return;
+        }
+        // An added song or active shuffle leaves no safe context occurrence to anchor.
+        if (state.item?.provider !== "context" || state.shuffle !== false || state.smartShuffle === true) return;
+        const completed = () => discardRestore(restore);
+        if (!updateOrder(player, restore.uri, state, restore.items, completed)) completed();
+    }
+
+    const update = (player, playlistUri, orderedItems, restore = false) => {
         if (!orderedItems) {
             release();
             return;
         }
         try {
-            if (!Array.isArray(orderedItems) || !/^spotify:playlist:[A-Za-z0-9]{22}$/.test(playlistUri) ||
-                typeof player?.getState !== "function" || typeof player.updateContext !== "function") return;
-            const state = player.getState();
-            const session = state?.sessionId;
-            const item = state?.item;
-            if (state?.context?.uri !== playlistUri || typeof session !== "string" || !session) return;
-            if (state.shuffle !== false || state.smartShuffle === true) {
-                // Native shuffle may replace the loaded context for this session.
-                lastUpdate = undefined;
-                return;
-            }
-            if (item?.provider !== "context") return;
-
-            if (order !== orderedItems) {
-                order = orderedItems;
-                identities = undefined;
-                lastUpdate = undefined;
-                const byUid = new Map();
-                for (const row of order) {
-                    if (typeof row?.uid !== "string" || !row.uid || typeof row.uri !== "string" ||
-                        !row.uri || byUid.has(row.uid)) return;
-                    byUid.set(row.uid, row.uri);
-                }
-                identities = byUid;
-            }
-            if (!identities?.has(item.uid) || identities.get(item.uid) !== item.uri) return;
-            if (lastUpdate?.player === player && lastUpdate.session === session &&
-                lastUpdate.uri === playlistUri && Date.now() < lastUpdate.retryAt) return;
-
-            // Use the existing session so a stale UI pass cannot retarget a new
-            // play session. Its manual queue and transport state belong to Spotify.
-            const context = {uri: playlistUri, metadata: state.context.metadata, isLoading: false,
-                pages: [{tracks: order}]};
-            const attempt = {player, session, uri: playlistUri, retryAt: Infinity};
-            const failed = () => { attempt.retryAt = Date.now() + 3000; };
-            lastUpdate = attempt;
-            try {
-                const result = player.updateContext(session, context);
-                if (result && typeof result.catch === "function") {
-                    result.catch(failed);
-                }
-            } catch {
-                failed();
+            if (!Array.isArray(orderedItems) || !/^spotify:playlist:[A-Za-z0-9]{22}$/.test(playlistUri)) return;
+            const state = activePlaylist(player, playlistUri);
+            if (!state) return;
+            if (restore) {
+                pendingRestore = {player, session: state.sessionId, uri: playlistUri, items: orderedItems};
+                restoreWhenReady(player, state);
+            } else {
+                if (pendingRestore?.player === player && pendingRestore.session === state.sessionId &&
+                    pendingRestore.uri === playlistUri) discardRestore(pendingRestore);
+                updateOrder(player, playlistUri, state, orderedItems);
             }
         } catch {
             // An older player may lack a readable active context.
-        } finally {
-            if (restore) release();
         }
     };
+    update.retryRestore = player => {
+        const restore = pendingRestore;
+        if (!restore) return;
+        try {
+            const state = restore.player === player ? activePlaylist(player, restore.uri) : undefined;
+            restoreWhenReady(player, state);
+        } catch {
+            discardRestore(restore);
+        }
+    };
+    window.__floggfyUpdateMarkedPlayback = update;
 })();

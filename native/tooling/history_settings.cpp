@@ -26,7 +26,7 @@ static bool IsMusic(std::wstring root) {
 static volatile LONG downloads_enabled=1,ogg_enabled=1,flac_enabled=1,aac_enabled=0,capture_epoch=0,capture_speed_value=-1,capture_acceleration_available=0,log_level_value=1,networking_enabled=0,connect_logging_enabled=0,hook_diagnostics_enabled=0;
 static HANDLE settings_signal=nullptr,persist_done=nullptr;
 // A failed attempt is observable without acknowledging bytes never committed.
-static volatile LONG persisted_generation=-1,failed_generation=-1,persist_failed=0;
+static volatile LONG persisted_generation=-1,failed_generation=-1;
 #include "../../build/default_ini.h"
 static bool CreateDefaultIni(const std::wstring& path) {
     std::wstring text;for(const char* p=default_ini;*p;++p)text+=wchar_t(*p);
@@ -288,8 +288,12 @@ static bool ReachedGeneration(volatile LONG& progress,unsigned expected) {
     return static_cast<LONG>(unsigned(InterlockedCompareExchange(&progress,0,0))-expected)>=0;
 }
 static DWORD WINAPI PersistSettings(LPVOID) {
+    constexpr DWORD retry_delay_ms=1000;
+    bool retry_pending=false;
     for(;;) {
-        WaitForSingleObject(settings_signal,INFINITE);
+        // Coalesce edits during the retry delay and take a fresh snapshot below.
+        if(retry_pending)Sleep(retry_delay_ms);
+        else WaitForSingleObject(settings_signal,INFINITE);
         unsigned generation=0;bool ok=false,snapshot_captured=false;
         try {
             const auto snapshot=GetSettings();generation=snapshot.generation;snapshot_captured=true;
@@ -326,12 +330,13 @@ static DWORD WINAPI PersistSettings(LPVOID) {
             ok=false;
             if(!snapshot_captured){SharedSrw guard(lock);generation=settings.generation;}
         }
-        // Publish status before its generation acknowledgement boundary.
-        InterlockedExchange(&persist_failed,!ok);
+        const bool report_failure=!ok&&!retry_pending;
+        retry_pending=!ok;
+        // Publish the outcome before waking waiters.
         if(ok)InterlockedExchange(&persisted_generation,LONG(generation));
         else InterlockedExchange(&failed_generation,LONG(generation));
         SetEvent(persist_done);
-        if(!ok)try{LogEvent(LogKind::Failure,"failed","settings persistence; edits remain queued for retry");}catch(...) {/* A logging allocation must not kill persistence retries. */}
+        if(report_failure)try{LogEvent(LogKind::Failure,"failed","settings persistence. Retrying pending settings changes.");}catch(...) {/* A logging allocation must not kill persistence retries. */}
     }
 }
 bool FlushSettings(unsigned timeout_ms) {
@@ -480,8 +485,7 @@ bool SetCaptureSpeed(unsigned speed) {
     return ChangeSettings([&] {
         if(settings.capture_speed!=int(speed)) {
             // Decoded-output pacing does not alter the compressed Ogg/FLAC/AAC
-            // bytes already being retained. Keep their capture lifecycle alive;
-            // Listen::Observe independently invalidates mixed-speed coverage.
+            // bytes already being retained. Keep their capture lifecycle alive.
             settings.capture_speed=int(speed);
             InterlockedExchange(&capture_speed_value,LONG(speed));
         }

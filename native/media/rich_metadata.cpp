@@ -2,9 +2,9 @@
 #include "artwork_url.h"
 #include "../tooling/text_encoding.h"
 #include <algorithm>
+#include <iterator>
 #include <cmath>
 #include <cstdlib>
-#include <set>
 namespace history {
 bool MetadataTextValid(std::string_view text) {
  return text_encoding::ValidUtf8(text,text_encoding::Ascii::NoNull);
@@ -21,46 +21,60 @@ bool DecodeMetadataText(std::string_view text,std::string& out) {
 bool RichMetadata::Matches(const std::string& t,const std::string& a,const std::string& al,double d) const {
  return title==t&&artist==a&&album==al&&std::fabs(duration-d)<=1.0;
 }
-bool ParseRichMetadata(const std::string& input,RichMetadata& out,std::string& error) {
- static const std::set<std::string> allowed={"v","artwork_url","artwork_urls","metadata_source","playback_quality","title","artist","album","uri","album_uri","duration","ARTIST","ALBUMARTIST","DATE","YEAR","GENRE","LYRICS","TRACKNUMBER","DISCNUMBER","DISCTOTAL","TRACKTOTAL","ISRC","LABEL","ORGANIZATION","PUBLISHER","COPYRIGHT","PHONOGRAMCOPYRIGHT","COMPOSER","REMIXER","CONDUCTOR","LANGUAGE","COMMENT","SPOTIFY_URI","SPOTIFY_ALBUM_URI"};
- auto fail=[&](const char* e){error=e; return false;};
- const std::string_view text=input;
- if(input.size()>131072) return fail("metadata too large");
- std::map<std::string,std::string> kv;
+bool ParseRichMetadata(std::string_view input,RichMetadata& out,std::string& error) {
+ static constexpr std::string_view keys[]={
+  "v","title","artist","album","uri","duration","album_uri","artwork_url","artwork_urls","metadata_source","playback_quality",
+  "ARTIST","ALBUMARTIST","DATE","YEAR","GENRE","LYRICS","TRACKNUMBER","DISCNUMBER","DISCTOTAL","TRACKTOTAL","ISRC",
+  "LABEL","ORGANIZATION","PUBLISHER","COPYRIGHT","PHONOGRAMCOPYRIGHT","COMPOSER","REMIXER","CONDUCTOR","LANGUAGE",
+  "COMMENT","SPOTIFY_URI","SPOTIFY_ALBUM_URI"};
+ static_assert(std::size(keys)<=64);
+ auto fail=[&](const char* e){error=e;return false;};
+ if(input.size()>131072)return fail("metadata too large");
+ RichMetadata m;
+ std::string version,duration,artwork_urls;
+ std::string* const controls[]={&version,&m.title,&m.artist,&m.album,&m.uri,&duration,&m.album_uri,
+                                &m.artwork_url,&artwork_urls,&m.metadata_source,&m.playback_quality};
+ uint64_t seen=0;
  for(size_t p=0;p<input.size();) {
-  size_t end=input.find('&',p); if(end==std::string::npos) end=input.size();
-  size_t eq=input.find('=',p); if(eq==std::string::npos||eq>=end) return fail("invalid pair");
-  std::string key=input.substr(p,eq-p),value;
-  if(!allowed.count(key)||kv.count(key)||!DecodeMetadataText(text.substr(eq+1,end-eq-1),value)) return fail("invalid field");
-  if(value.size()>(key=="LYRICS"?65536u:4096u)) return fail("field too large");
-  kv.emplace(key,std::move(value)); p=end+1;
+  auto end=input.find('&',p);if(end==input.npos)end=input.size();
+  const auto eq=input.find('=',p);if(eq>=end)return fail("invalid pair");
+  const auto key=input.substr(p,eq-p);
+  const auto field=std::find(std::begin(keys),std::end(keys),key);
+  if(field==std::end(keys))return fail("invalid field");
+  const auto slot=size_t(field-std::begin(keys));
+  const auto mask=uint64_t{1}<<slot;
+  std::string value;
+  if((seen&mask)||!DecodeMetadataText(input.substr(eq+1,end-eq-1),value))return fail("invalid field");
+  if(value.size()>(key=="LYRICS"?65536u:4096u))return fail("field too large");
+  seen|=mask;
+  if(slot<std::size(controls))*controls[slot]=std::move(value);
+  else if(!value.empty())m.fields.emplace(key,std::move(value));
+  p=end+1;
  }
- const bool episode=kv["uri"].rfind("spotify:episode:",0)==0;
- const bool track=kv["uri"].rfind("spotify:track:",0)==0;
- const bool labels=episode||(!kv["artist"].empty()&&!kv["album"].empty());
- if(kv["v"]!="1"||kv["title"].empty()||(!track&&!episode)||!labels) return fail("missing identity");
- const auto album_uri=!kv["album_uri"].empty()?kv["album_uri"]:kv["SPOTIFY_ALBUM_URI"];
- if((!album_uri.empty()&&(!track||!ValidSpotifyUri(album_uri,"spotify:album:")))||
-    (!kv["album_uri"].empty()&&!kv["SPOTIFY_ALBUM_URI"].empty()&&kv["album_uri"]!=kv["SPOTIFY_ALBUM_URI"]))
-  return fail("invalid album identity");
- char* last=nullptr; double d=strtod(kv["duration"].c_str(),&last);
- if(!last||*last||!std::isfinite(d)||d<=0||d>86400) return fail("invalid duration");
- RichMetadata m; m.title=kv["title"];m.artist=kv["artist"];m.album=kv["album"];m.uri=kv["uri"];m.album_uri=album_uri;m.duration=d;m.artwork_url=kv["artwork_url"];
- if(kv["metadata_source"]=="online")m.metadata_source="online";
- const auto references=kv["artwork_urls"];
- for(size_t start=0;start<references.size();) {
-  auto end=references.find('\n',start);if(end==std::string::npos)end=references.size();
-  auto reference=references.substr(start,end-start);
-  if(m.artwork_urls.size()>=8)break;
+ const bool episode=m.uri.rfind("spotify:episode:",0)==0,track=m.uri.rfind("spotify:track:",0)==0;
+ if(version!="1"||m.title.empty()||(!track&&!episode)||(!episode&&(m.artist.empty()||m.album.empty())))
+  return fail("missing identity");
+ const auto alternative=m.fields.find("SPOTIFY_ALBUM_URI");
+ if(alternative!=m.fields.end()) {
+  if(m.album_uri.empty())m.album_uri=alternative->second;
+  else if(m.album_uri!=alternative->second)return fail("invalid album identity");
+ }
+ if(!m.album_uri.empty()&&(!track||!ValidSpotifyUri(m.album_uri,"spotify:album:")))return fail("invalid album identity");
+ char* last=nullptr;m.duration=strtod(duration.c_str(),&last);
+ if(!last||*last||!std::isfinite(m.duration)||m.duration<=0||m.duration>86400)return fail("invalid duration");
+ if(m.metadata_source!="online")std::string().swap(m.metadata_source);
+ const std::string_view references=artwork_urls;
+ for(size_t start=0;start<references.size()&&m.artwork_urls.size()<8;) {
+  auto end=references.find('\n',start);if(end==references.npos)end=references.size();
+  const auto reference=references.substr(start,end-start);
   if(IsAlbumArtworkUrl(reference)&&
-     std::find(m.artwork_urls.begin(),m.artwork_urls.end(),reference)==m.artwork_urls.end())m.artwork_urls.push_back(std::move(reference));
+     std::find(m.artwork_urls.begin(),m.artwork_urls.end(),reference)==m.artwork_urls.end())m.artwork_urls.emplace_back(reference);
   start=end+1;
  }
- static const std::set<std::string> levels={"low","normal","high","very_high","lossless","lossless_24","hifi"};
- if(levels.count(kv["playback_quality"]))m.playback_quality=kv["playback_quality"];
- for(auto& entry:kv) if(entry.first[0]>='A'&&entry.first[0]<='Z'&&!entry.second.empty()) m.fields.insert(entry);
+ static constexpr std::string_view levels[]={"low","normal","high","very_high","lossless","lossless_24","hifi"};
+ if(std::find(std::begin(levels),std::end(levels),m.playback_quality)==std::end(levels))std::string().swap(m.playback_quality);
  if(!m.album_uri.empty())m.fields["SPOTIFY_ALBUM_URI"]=m.album_uri;
- out=std::move(m); error.clear(); return true;
+ out=std::move(m);error.clear();return true;
 }
 std::shared_ptr<MetadataRecord> MetadataCache::Pin(const RichMetadata& m) {
  for(const auto& record:records_)if(record->value.uri==m.uri)return record;

@@ -7,6 +7,7 @@ build/retry-schedule-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/matcher_diagnostics_test.cpp -o build/matcher-diagnostics-test
 build/matcher-diagnostics-test
 python3 tests/analyze_match_timings_test.py
+python3 tests/package_release_test.py
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/tag_memory_plan_test.cpp -o build/tag-memory-plan-test
 build/tag-memory-plan-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/recording_memory_test.cpp -o build/recording-memory-test
@@ -35,7 +36,7 @@ g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/decoder_ownership_test.cpp native
 build/decoder-ownership-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/history_core_test.cpp native/media/ogg_history_core.cpp -o build/history-core-test
 build/history-core-test
-g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/capture_speed_test.cpp native/media/ogg_history_core.cpp -o build/capture-speed-test
+g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/capture_speed_test.cpp -o build/capture-speed-test
 build/capture-speed-test
 g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/decoded_output_speed_test.cpp -o build/decoded-output-speed-test
 build/decoded-output-speed-test

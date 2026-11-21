@@ -19,6 +19,8 @@ CrashStatus GetCrashStatus() noexcept {return {};}
 bool Prepare(HMODULE,bool) noexcept {return false;}
 void Finalize(bool) noexcept {}
 void DrainStatus() noexcept {}
+bool InstallRoamingQueueExitCleanup(bool,const std::wstring&,unsigned) noexcept {return false;}
+QueueCleanupResult ClearRoamingTrackingQueues(bool) noexcept {return {};}
 }
 namespace history {
 void StartDecodedConnectMessages(HMODULE,bool) noexcept{}

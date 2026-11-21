@@ -558,6 +558,7 @@
     window.__floggfyMarkedPlay = data => { if (enabled) sorter?.preparePlayback?.(data); };
 
     window.__floggfyMarkedPoll = (nextEnabled, nextRevision) => {
+        sorter?.retryPlaybackRestore?.();
         if (!nextEnabled) {
             if (!enabled) {
                 if (releasePending) releasePending = sorter?.setContext(null, null) === false;

@@ -1138,11 +1138,6 @@ void CompactFailureIdentity() {
     assert(failure_events==failures&&Contains("final cache check: incomplete or invalid cached audio")&&
            "discarded unbound evidence is diagnostic, not a download failure");
 
-    auto required=CompleteFlacCapture(100,110);required->bound_identity="Required Artist - Required Title";
-    diagnostic_lines.clear();
-    CheckBeforeRelease(*required,"required recording lost",nullptr,ReleaseExpectation::RequiredRecording);
-    assert(failure_events==failures+1&&Contains("unmatched cache | Required Artist - Required Title")&&
-           "only an established publication obligation becomes a user-visible failure");
     decoded_sink_target=nullptr;
 }
 void ProductionCaptureQueueLossEpochs() {
@@ -2021,7 +2016,7 @@ void ReleaseAuditOwnership() {
         const auto retained=capture->Capacity(),bytes=capture->data.size();
         const auto background=limit-retained-bytes;
         publishing_reserved=background;diagnostic_lines.clear();
-        assert(QueueReleaseAudit(*capture,"queued boundary",ReleaseExpectation::DiscardedEvidence));
+        assert(QueueReleaseAudit(*capture,"queued boundary"));
         assert(DrainOneReleaseAudit());
         assert(Contains("complete valid audio")&&!Contains("validation unavailable")&&
             "a queued audit must count its retained bytes once and admit an exact-fit flatten");
@@ -2033,7 +2028,7 @@ void ReleaseAuditOwnership() {
         {CaptureBudgetScope budget(buffers);}
         const auto retained=capture_reserved.load(),bytes=buffers.ready.front()->data.size();
         const auto background=limit-retained-bytes;publishing_reserved=background;
-        assert(QueueReleaseAudit(*buffers.ready.front(),"active transfer",ReleaseExpectation::DiscardedEvidence));
+        assert(QueueReleaseAudit(*buffers.ready.front(),"active transfer"));
         assert(!capture_reserved.load()&&publishing_reserved.load()==background+retained);
         {CaptureBudgetScope budget(buffers);buffers.ready.clear();}
         diagnostic_lines.clear();assert(DrainOneReleaseAudit()&&Contains("complete valid audio"));
@@ -2056,12 +2051,12 @@ void ReleaseAuditOwnership() {
     }
     // Queue rejection preserves both bytes and ownership of their active charge.
     for(unsigned i=0;i<32;++i) {auto filler=CompleteOggCapture(100,101);
-        assert(QueueReleaseAudit(*filler,"filler",ReleaseExpectation::DiscardedEvidence));}
+        assert(QueueReleaseAudit(*filler,"filler"));}
     CaptureBuffers buffers;buffers.ready.push_back(CompleteOggCapture(100,101));
     {CaptureBudgetScope budget(buffers);}
     const auto before_pending=publishing_reserved.load(),before_active=capture_reserved.load();
     const auto bytes=buffers.ready.front()->data.size();
-    assert(!QueueReleaseAudit(*buffers.ready.front(),"full",ReleaseExpectation::DiscardedEvidence));
+    assert(!QueueReleaseAudit(*buffers.ready.front(),"full"));
     assert(buffers.ready.front()->data.size()==bytes&&publishing_reserved.load()==before_pending&&
         capture_reserved.load()==before_active);
     {CaptureBudgetScope budget(buffers);CheckBeforeRelease(*buffers.ready.front(),"queue-full fallback");buffers.ready.clear();}
@@ -2070,12 +2065,12 @@ void ReleaseAuditOwnership() {
     // acquires the budget lock and processes an actual capture event.
     auto capture=CompleteOggCapture(100,101);
     audit_expected_charge=capture->Capacity()+capture->data.size();audit_probe=true;audit_phase_seen=false;
-    assert(QueueReleaseAudit(*capture,"concurrent",ReleaseExpectation::DiscardedEvidence));
+    assert(QueueReleaseAudit(*capture,"concurrent"));
     assert(DrainOneReleaseAudit()&&audit_phase_seen);audit_probe=false;
     assert(!publishing_reserved.load()&&!capture_reserved.load());
     // Exceptions after reservation release the enlarged lease as well.
     capture=CompleteOggCapture(100,101);audit_throw=true;audit_phase_seen=false;diagnostic_lines.clear();
-    assert(QueueReleaseAudit(*capture,"allocation failed",ReleaseExpectation::DiscardedEvidence));
+    assert(QueueReleaseAudit(*capture,"allocation failed"));
     assert(DrainOneReleaseAudit()&&audit_phase_seen&&Contains("validation unavailable"));audit_throw=false;
     assert(!publishing_reserved.load()&&!capture_reserved.load());
     {
@@ -2137,7 +2132,7 @@ void CaptureRemovalAccounting() {
     // Queue saturation forces queue-loss handling through the synchronous
     // fallback rather than the normal transfer of a capture charge to an audit.
     for(unsigned i=0;i<32;++i) {auto filler=CompleteOggCapture(100,101);
-        assert(QueueReleaseAudit(*filler,"filler",ReleaseExpectation::DiscardedEvidence));}
+        assert(QueueReleaseAudit(*filler,"filler"));}
     buffers.active[1]=CompleteFlacCapture(100,101);
     buffers.ready.push_back(CompleteOggCapture(90,91));
     {CaptureBudgetScope budget(buffers);}

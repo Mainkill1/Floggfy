@@ -12,7 +12,7 @@ g++ -std=c++17 "${flags[@]}" -pthread -I native/vendor/libogg/include tests/capt
 env ASAN_OPTIONS=detect_leaks=1:allocator_may_return_null=1 build/capture-fuzz/fuzz "${1:-20000}" "${2:-4043931417}"
 for test in history_core capture_speed decoded_output_speed compressed_buffer compressed_buffer_allocation client_playback spotify_hook_discovery playback_identity_bridge hook_rollback hook_startup_batch bounded_queue; do
     extra=()
-    case "$test" in history_core|capture_speed) extra=(native/media/ogg_history_core.cpp);; compressed_buffer|compressed_buffer_allocation) extra=(native/media/compressed_buffer.cpp);; esac
+    case "$test" in history_core) extra=(native/media/ogg_history_core.cpp);; compressed_buffer|compressed_buffer_allocation) extra=(native/media/compressed_buffer.cpp);; esac
     case "$test" in client_playback) extra=(native/media/rich_metadata.cpp);; spotify_hook_discovery) extra=(native/tooling/spotify_hook_discovery.cpp);; playback_identity_bridge) extra=(native/media/playback_identity_bridge.cpp);; esac
     g++ -std=c++17 "${flags[@]}" -pthread "tests/${test}_test.cpp" "${extra[@]}" -o "build/capture-fuzz/$test"
     "build/capture-fuzz/$test"

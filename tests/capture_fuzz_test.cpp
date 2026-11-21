@@ -8,11 +8,9 @@
 #include "recording_fixture.h"
 #include "spac_fixture.h"
 #include <cassert>
-#include <cmath>
 #include <cstdio>
 #include <random>
 #include <thread>
-#include <limits>
 using namespace history;
 static uint64_t stateful_pages=0;
 static std::vector<std::vector<uint8_t>> OggPages(const std::vector<uint8_t>& bytes,bool repair=false) {
@@ -97,14 +95,6 @@ int main(int argc,char** argv) {
             std::vector<uint8_t> joined;for(const auto& p:repaired)joined.insert(joined.end(),p.begin(),p.end());
             if(!joined.empty())Exercise(joined,rng);
         }
-        Listen listen;double time=100;
-        for(unsigned event=0;event<32;++event) {
-            time+=double(rng()%4000)/1000;
-            const double position=(rng()%20==0)?std::numeric_limits<double>::quiet_NaN():double(rng()%11000)/100;
-            const unsigned rates[]={1,2,4,8,10,0,3,~0u};
-            listen.Observe(rng()%4?"one":"two",position,100,rng()%2,time,rates[rng()%8]);
-            assert(listen.completed_generation<=listen.generation);
-        }
     }
     decoded_output::Accelerator accelerator;std::vector<std::thread> threads;
     for(unsigned lane=0;lane<8;++lane)threads.emplace_back([&,lane]{
@@ -116,5 +106,5 @@ int main(int argc,char** argv) {
     });
     for(auto& thread:threads)thread.join();
     std::printf("Stateful Ogg page calls=%llu; valid multipage completion and repaired serial/sequence/granule rejection verified\n",(unsigned long long)stateful_pages);
-    std::printf("PASS: seed=%llu mutations=%u; all fixture truncations; fragmented SpAC equivalence; randomized listens; 800000 concurrent frame reductions\n",(unsigned long long)seed,iterations);
+    std::printf("PASS: seed=%llu mutations=%u; all fixture truncations; fragmented SpAC equivalence; 800000 concurrent frame reductions\n",(unsigned long long)seed,iterations);
 }

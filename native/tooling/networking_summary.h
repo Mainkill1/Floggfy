@@ -99,7 +99,7 @@ inline bool SummarizeClientNetworking(std::string_view text,std::string& summary
     }catch(...) {summary.clear();}
     return false;
 }
-enum class RendererDiagnosticKind {Invalid,Status,Network};
+enum class RendererDiagnosticKind {Invalid,Network};
 inline RendererDiagnosticKind SanitizeRendererDiagnostic(std::string_view text,std::string& summary) noexcept {
     summary.clear();
     const bool request=text.substr(0,19)=="FLOGGFY_NETWORK_V1:";

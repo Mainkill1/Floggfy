@@ -8,7 +8,7 @@ const sourcePath = require("node:path").join(__dirname, "../native/ui/marked_pla
 const uri = index => "spotify:track:" + String(index).padStart(22, "0");
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
-function fixture({count = 265, missingUid = false, duplicateUid = false, incomplete = false, replaceOnLoad = false, legacyCacheAll = false, delay, native = false} = {}) {
+function fixture({count = 265, missingUid = false, duplicateUid = false, incomplete = false, replaceOnLoad = false, legacyCacheAll = false, delay, native = false, now = Date.now} = {}) {
     const entries = Array.from({length: count}, (_, index) => ({
         index,
         value: {uid: String(index), uri: index === 4 ? uri(3) : uri(index)}
@@ -64,7 +64,7 @@ function fixture({count = 265, missingUid = false, duplicateUid = false, incompl
     };
     const grid = {"__reactFiber$test": {return: {memoizedProps: props, return: provider}}};
     const window = {setTimeout, clearTimeout, requestAnimationFrame: queueMicrotask};
-    vm.runInNewContext(fs.readFileSync(sourcePath, "utf8"), {window, setTimeout, clearTimeout});
+    vm.runInNewContext(fs.readFileSync(sourcePath, "utf8"), {window, setTimeout, clearTimeout, Date: {now}});
     const controller = window.__floggfyCreateMarkedSort({
         own: (object, key) => object && Object.getOwnPropertyDescriptor(object, key)?.value,
         currentFiber: fiber => fiber,
@@ -515,4 +515,127 @@ test("a Saved sort changes the active playlist context and neutral restores the 
     assert.deepEqual(updated[1].slice(0, 4), ["0", "3", "4", "7"]);
     controller.cycle();
     assert.deepEqual(updated[2], entries.map(row => row.value.uid));
+});
+
+async function sortedPlayback({now, onUpdate} = {}) {
+    const {controller, entries, dates, grid, window, source} = fixture({count: 8, now});
+    const playlist = "spotify:playlist:" + "A".repeat(22);
+    controller.setContext(grid, playlist);
+    const original = entries.map(row => row.value.uid);
+    const updated = [];
+    const item = {...entries[3].value, provider: "context"};
+    const state = {sessionId: "current", context: {uri: playlist}, shuffle: false, item};
+    window.__floggfyMarkedCurrentPlayer = () => player;
+    const player = {
+        getState: () => state,
+        updateContext(session, context) {
+            updated.push({session, order: Array.from(context.pages[0].tracks, row => row.uid)});
+            return onUpdate?.(updated.length);
+        }
+    };
+    controller.cycle();
+    await tick();
+    controller.apply(dates, 1);
+    controller.syncPlayback();
+    assert.equal(updated.length, 1);
+    assert.notDeepEqual(updated[0].order, original);
+    return {controller, entries, dates, source, state, item, original, updated, player, window};
+}
+
+test("leaving a Saved sort restores the original active context", async () => {
+    for (const reset of [controller => controller.reset(), controller => controller.setContext(null, null)]) {
+        const {controller, entries, source, original, updated} = await sortedPlayback();
+        assert.equal(reset(controller), true);
+        assert.equal(source.items, entries);
+        assert.deepEqual(updated[1], {session: "current", order: original});
+    }
+});
+
+test("a neutral cycle defers restoring the active context while a manually queued track plays", async () => {
+    const {controller, entries, dates, source, state, item, original, updated} = await sortedPlayback();
+    controller.cycle();
+    controller.apply(dates, 1);
+    controller.syncPlayback();
+    state.item = {uid: "manual", uri: uri(30), provider: "queue"};
+    controller.cycle();
+    assert.equal(source.items, entries);
+    controller.retryPlaybackRestore?.();
+    assert.equal(updated.length, 2);
+
+    state.item = item;
+    controller.retryPlaybackRestore?.();
+    assert.deepEqual(updated[2], {session: "current", order: original});
+    controller.retryPlaybackRestore?.();
+    assert.equal(updated.length, 3);
+});
+
+test("a deferred restore cannot change a new playback session", async () => {
+    for (const next of [{sessionId: "new"}, {context: {uri: "spotify:playlist:" + "B".repeat(22)}}]) {
+        const {controller, state, item, updated} = await sortedPlayback();
+        state.item = {uid: "manual", uri: uri(30), provider: "queue"};
+        assert.equal(controller.setContext(null, null), true);
+        const before = {...state, item};
+
+        Object.assign(state, next, {item});
+        controller.retryPlaybackRestore?.();
+        Object.assign(state, before);
+        controller.retryPlaybackRestore?.();
+        assert.equal(updated.length, 1);
+    }
+});
+
+test("a failed context restore retries only after the command backoff", async () => {
+    const failed = () => { throw Error("temporarily unavailable"); };
+    for (const fail of [failed, () => Promise.resolve().then(failed)]) {
+        let now = 1000;
+        const {controller, original, updated} = await sortedPlayback({
+            now: () => now,
+            onUpdate: count => { if (count === 2) return fail(); }
+        });
+        assert.equal(controller.reset(), true);
+        await tick();
+        assert.equal(updated.length, 2);
+        now += 2999;
+        controller.retryPlaybackRestore();
+        assert.equal(updated.length, 2);
+        now++;
+        controller.retryPlaybackRestore();
+        assert.deepEqual(updated[2], {session: "current", order: original});
+        await tick();
+        now += 4000;
+        controller.retryPlaybackRestore();
+        assert.equal(updated.length, 3);
+    }
+});
+
+test("a rejected restore does not retry against a replacement player", async () => {
+    let now = 1000;
+    const {controller, player, window, updated} = await sortedPlayback({
+        now: () => now,
+        onUpdate: count => { if (count === 2) return Promise.reject(Error("temporarily unavailable")); }
+    });
+    assert.equal(controller.reset(), true);
+    await tick();
+    now += 4000;
+    window.__floggfyMarkedCurrentPlayer = () => ({...player});
+    controller.retryPlaybackRestore();
+    window.__floggfyMarkedCurrentPlayer = () => player;
+    controller.retryPlaybackRestore();
+    assert.equal(updated.length, 2);
+});
+
+test("resorting the active playlist supersedes its deferred restore", async () => {
+    const {controller, dates, state, item, updated} = await sortedPlayback();
+    state.item = {uid: "manual", uri: uri(30), provider: "queue"};
+    assert.equal(controller.reset(), true);
+    controller.cycle();
+    await tick();
+    assert.equal(controller.apply(dates, 1), true);
+    controller.syncPlayback();
+
+    state.item = item;
+    controller.retryPlaybackRestore();
+    assert.equal(updated.length, 1);
+    controller.syncPlayback();
+    assert.deepEqual(updated[1], updated[0]);
 });

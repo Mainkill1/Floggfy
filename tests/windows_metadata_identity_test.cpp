@@ -193,11 +193,12 @@ int main(int argc,char** argv){
     history::Catalog identity_catalog;identity_catalog.title=authoritative.title;identity_catalog.spotify_uri=authoritative.spotify_uri;
     history::EnrichCatalog(authoritative,identity_catalog);
     assert(identity_catalog.title==L"Identity"&&identity_catalog.spotify_uri==authoritative.spotify_uri);
-    history::RichMetadata selected;assert(!history::ReadCachedMetadata(authoritative,selected));
+    history::Tags selected;history::EnrichTags(authoritative,selected);assert(selected.fields.empty());
     wrong_uri.uri=authoritative.spotify_uri;wrong_uri.fields["TITLE"]="Correct recording";history::cache.Put(wrong_uri);
     history::EnrichCatalog(authoritative,identity_catalog);
     assert(identity_catalog.title==L"Correct recording"&&identity_catalog.spotify_uri==authoritative.spotify_uri);
-    assert(history::ReadCachedMetadata(authoritative,selected)&&selected.uri==authoritative.spotify_uri);
+    history::EnrichTags(authoritative,selected);
+    assert(selected.fields.size()==1&&selected.fields.front()==std::make_pair(std::string("TITLE"),std::string("Correct recording")));
     // Current playback bypasses slow metadata enrichment and SMTC entirely.
     wchar_t current_message[]=L"FLOGGFY_PLAYBACK_V1:v=1&title=Next&artist=Artist&album=Album&uri=spotify:track:0000000000000000000001&duration=200&playback_quality=lossless";
     history::String current{current_message,wcslen(current_message),nullptr};

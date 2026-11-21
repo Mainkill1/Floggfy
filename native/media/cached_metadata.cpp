@@ -298,8 +298,8 @@ bool DecodeCachedAlbum(const CachedRecords &records, const std::string &uri,
     out = std::move(result);
   return latest.has_value();
 }
-static std::vector<std::string> ArtistNames(const std::string &text) {
-  std::vector<std::string> names;
+static std::vector<std::string_view> ArtistNames(std::string_view text) {
+  std::vector<std::string_view> names;
   for (size_t p = 0; p < text.size();) {
     size_t end = text.find(';', p);
     if (end == std::string::npos)
@@ -335,7 +335,8 @@ void MergeCachedAlbum(const CachedRecords &records, CachedTrackMetadata &track) 
   if (DecodeCachedAlbum(records, track.album_uri, fields))
     MergeCachedFields(fields, track.fields);
 }
-bool MergeCachedMetadata(const CachedTrackMetadata &cached, RichMetadata &live) {
+template<class Metadata>
+static bool MergeMatchingMetadata(const Metadata &cached, RichMetadata &live) {
   if (cached.uri != live.uri || cached.title != live.title || cached.album != live.album ||
       std::fabs(cached.duration - live.duration) > 1.0)
     return false;
@@ -347,5 +348,11 @@ bool MergeCachedMetadata(const CachedTrackMetadata &cached, RichMetadata &live) 
 
   MergeCachedFields(cached.fields, live.fields);
   return true;
+}
+bool MergeCachedMetadata(const CachedTrackMetadata &cached, RichMetadata &live) {
+  return MergeMatchingMetadata(cached, live);
+}
+bool MergeMetadataTags(const RichMetadata &available, RichMetadata &live) {
+  return MergeMatchingMetadata(available, live);
 }
 } // namespace history
