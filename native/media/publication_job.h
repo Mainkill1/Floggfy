@@ -1,7 +1,6 @@
 #pragma once
 #include "../tooling/history_settings.h"
 #include "library_layout.h"
-#include "ogg_tags.h"
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -13,19 +12,12 @@ struct PublicationPreferences {
     explicit PublicationPreferences(const Settings& settings):metadata(settings.metadata),lyrics(settings.lyrics),revision(settings.artifact_revision) {}
     bool Matches(const Settings& settings) const {return revision==settings.artifact_revision&&metadata==settings.metadata&&lyrics==settings.lyrics;}
 };
-struct ArtifactKey {
-    std::string identity;
-    bool operator==(const ArtifactKey& other) const {return identity==other.identity;}
-};
 struct PreparedArtifact {
-    ArtifactKey key;
+    std::string key;
     Catalog catalog;
-    Tags tags;
-    Quality quality;
     std::vector<uint8_t> bytes;
     size_t Capacity() const {
-        size_t size=key.identity.capacity()+bytes.capacity()+tags.cover.capacity()+tags.mime.capacity();
-        for(const auto& field:tags.fields)size+=sizeof(field)+field.first.capacity()+field.second.capacity();
+        size_t size=key.capacity()+bytes.capacity();
         for(const auto* value:{&catalog.artist,&catalog.album,&catalog.title,&catalog.author,&catalog.series,&catalog.book,
                               &catalog.show,&catalog.folder_artist,&catalog.legacy_artist})size+=value->capacity()*sizeof(wchar_t);
         return size+catalog.spotify_uri.capacity()+catalog.spotify_album_uri.capacity();
@@ -34,6 +26,5 @@ struct PreparedArtifact {
 struct UnmatchedAttempt {
     std::wstring root,base;
     uint64_t destination_revision=0;
-    bool sidecar_saved=false,audio_saved=false,committed=false;
 };
 }

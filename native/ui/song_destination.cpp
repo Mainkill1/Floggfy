@@ -15,6 +15,7 @@
 #include <array>
 namespace history {
 namespace {
+constexpr size_t kDuplicatePathsPerFormat=4;
 struct DestinationRequest {
     // identity: playback identity supplied by the observer, used to pair the
     // menu label with a saved-song result. intent: full catalog/path/settings
@@ -29,9 +30,18 @@ struct DestinationRequest {
     bool track_numbers=false,music_folder=false;
     Catalog catalog;
     std::wstring root;
-    std::wstring flac,ogg,aac,mp3;
-    std::array<std::wstring,4> duplicate_flac,duplicate_ogg,duplicate_aac,duplicate_mp3;
+    std::array<std::wstring,kRecordingFormats.size()> paths;
+    std::array<std::wstring,kRecordingFormats.size()*kDuplicatePathsPerFormat> duplicate_paths;
 };
+static void PopulateDestinationPaths(DestinationRequest& request) {
+    for(size_t i=0;i<kRecordingFormats.size();++i) {
+        const auto extension=kRecordingFormats[i].extension;
+        request.paths[i]=OutputPath(request.root,request.catalog,extension,request.music_folder,request.track_numbers);
+        auto duplicates=DuplicateLookupPaths(request.root,request.catalog,extension,request.music_folder,request.track_numbers);
+        for(size_t j=0;j<kDuplicatePathsPerFormat;++j)
+            request.duplicate_paths[i*kDuplicatePathsPerFormat+j]=j<duplicates.size()?std::move(duplicates[j]):std::wstring{};
+    }
+}
 SRWLOCK destination_lock=SRWLOCK_INIT;
 INIT_ONCE destination_once=INIT_ONCE_STATIC_INIT;
 std::atomic<bool> destination_enabled{false},refresh_pending{false};
@@ -62,43 +72,8 @@ static bool SameInputs(const DestinationRequest& request,std::uint64_t identity,
         request.music_folder==music_folder && request.root==root && SameCatalog(request.catalog,catalog);
 }
 static bool SameRequest(const DestinationRequest& a,const DestinationRequest& b) {
-    return a.identity==b.identity && a.generation==b.generation && a.track_numbers==b.track_numbers && a.flac==b.flac && a.ogg==b.ogg && a.aac==b.aac && a.mp3==b.mp3 &&
-        a.duplicate_flac==b.duplicate_flac&&a.duplicate_ogg==b.duplicate_ogg&&a.duplicate_aac==b.duplicate_aac&&a.duplicate_mp3==b.duplicate_mp3&&SameCatalog(a.catalog,b.catalog);
-}
-static std::wstring& FormatPath(DestinationRequest& request,Codec codec) {
-    if(codec==Codec::Flac)return request.flac;
-    if(codec==Codec::Vorbis)return request.ogg;
-    if(codec==Codec::Aac)return request.aac;
-    return request.mp3;
-}
-static const std::wstring& FormatPath(const DestinationRequest& request,Codec codec) {
-    if(codec==Codec::Flac)return request.flac;
-    if(codec==Codec::Vorbis)return request.ogg;
-    if(codec==Codec::Aac)return request.aac;
-    return request.mp3;
-}
-static std::array<std::wstring,4>& DuplicateFormatPaths(DestinationRequest& request,Codec codec) {
-    if(codec==Codec::Flac)return request.duplicate_flac;
-    if(codec==Codec::Vorbis)return request.duplicate_ogg;
-    if(codec==Codec::Aac)return request.duplicate_aac;
-    return request.duplicate_mp3;
-}
-static const std::array<std::wstring,4>& DuplicateFormatPaths(const DestinationRequest& request,Codec codec) {
-    if(codec==Codec::Flac)return request.duplicate_flac;
-    if(codec==Codec::Vorbis)return request.duplicate_ogg;
-    if(codec==Codec::Aac)return request.duplicate_aac;
-    return request.duplicate_mp3;
-}
-static std::array<const std::wstring*,4> FormatPaths(const DestinationRequest& request) {
-    std::array<const std::wstring*,4> paths{};size_t count=0;
-    for(const auto& format:kRecordingFormats)paths[count++]=&FormatPath(request,format.codec);
-    return paths;
-}
-static std::array<const std::wstring*,16> AllDuplicateFormatPaths(const DestinationRequest& request) {
-    std::array<const std::wstring*,16> paths{};size_t count=0;
-    for(const auto& format:kRecordingFormats)
-        for(const auto& path:DuplicateFormatPaths(request,format.codec))paths[count++]=&path;
-    return paths;
+    return a.identity==b.identity && a.generation==b.generation && a.track_numbers==b.track_numbers &&
+        a.paths==b.paths && a.duplicate_paths==b.duplicate_paths && SameCatalog(a.catalog,b.catalog);
 }
 static std::uint64_t IntentKey(std::uint64_t identity,const std::wstring& root,const Catalog& catalog,
                                bool music_folder,unsigned generation,bool track_numbers) {
@@ -153,18 +128,37 @@ static bool CurrentRequest(const DestinationRequest& request) {
     return destination_enabled.load(std::memory_order_acquire) &&
         request.serial==request_serial.load(std::memory_order_acquire);
 }
-static bool VerifySavedFile(const std::wstring& file,const DestinationRequest& request,
-                            const RecordingDirectory& directory,FileSignature& signature) {
-    FileSignature before;Quality quality;
+static bool VerifyAndCache(const std::wstring& file,const DestinationRequest& request,
+                           const RecordingDirectory& directory,VerificationCache& cache) {
+    FileSignature before,after;Quality quality;
     if(!CurrentRequest(request) || !directory.Contains(file) || !before.Read(file) || !CurrentRequest(request))return false;
     if(!ExistingRecording(file,request.catalog,quality) || !CurrentRequest(request))return false;
-    return signature.Read(file) && before==signature && CurrentRequest(request);
-}
-static void Remember(const DestinationRequest& request,const std::wstring& file,
-                     const FileSignature& signature,VerificationCache& cache) {
+    if(!after.Read(file) || !(before==after) || !CurrentRequest(request))return false;
     if(cache.entries.size()==16)cache.entries.pop_back();
-    cache.entries.insert(cache.entries.begin(),VerifiedDestination{request,file,signature});
+    cache.entries.insert(cache.entries.begin(),VerifiedDestination{request,file,after});
     cache.unavailable.reset();
+    return true;
+}
+template <size_t N>
+static std::wstring ProbeRecordingPaths(const std::array<std::wstring,N>& paths,const DestinationRequest& request,
+                                        const RecordingDirectory& directory,VerificationCache& cache) {
+    // Any verified recording gives the menu a folder to open. Try every
+    // ordinary name before expanding collision aliases.
+    for(const auto& base:paths) {
+        if(base.empty())continue;
+        if(!CurrentRequest(request))return {};
+        if(VerifyAndCache(base,request,directory,cache))return base;
+    }
+    for(const auto& base:paths) {
+        if(base.empty())continue;
+        if(!CurrentRequest(request))return {};
+        for(const auto& candidate:RecordingPathCandidates(base,request.catalog,request.track_numbers)) {
+            if(candidate.path==base)continue;
+            if(!CurrentRequest(request))return {};
+            if(VerifyAndCache(candidate.path,request,directory,cache))return candidate.path;
+        }
+    }
+    return {};
 }
 static std::wstring ProbeSavedSong(const DestinationRequest& request,VerificationCache& cache) {
     if(!CurrentRequest(request))return {};
@@ -191,69 +185,22 @@ static std::wstring ProbeSavedSong(const DestinationRequest& request,Verificatio
     // verified cache hit above needs just its live signature, never a listing.
     RecordingDirectory directory;
     if(!CurrentRequest(request))return {};
-    const auto paths=FormatPaths(request);
-    if(!paths[0]||!ListRecordingDirectory(*paths[0],directory,&request.catalog))return unavailable();
+    if(!ListRecordingDirectory(request.paths.front(),directory,&request.catalog))return unavailable();
     if(!CurrentRequest(request))return {};
-    for(const auto* base:paths) {
-        if(!base)break;
-        if(!CurrentRequest(request))return {};
-        FileSignature signature;
-        // Opening the containing folder needs any verified matching recording,
-        // not the best-quality collision candidate chosen for audio replacement.
-        // Ordinary saved files therefore take one inspection after listing.
-        if(VerifySavedFile(*base,request,directory,signature)) {
-            Remember(request,*base,signature,cache);return *base;
-        }
-    }
-    // Check all four ordinary names before any collision search. Their
-    // containing directory is identical; the menu does not choose an upgrade.
-    for(const auto* base:paths) {
-        if(!base)break;
-        if(!CurrentRequest(request))return {};
-        for(const auto& candidate:RecordingPathCandidates(*base,request.catalog,request.track_numbers)) {
-            const auto& file=candidate.path;
-            if(file==*base)continue; // Already verified above.
-            if(!CurrentRequest(request))return {};
-            FileSignature signature;
-            if(VerifySavedFile(file,request,directory,signature)) {
-                Remember(request,file,signature,cache);return file;
-            }
-        }
-    }
+    auto file=ProbeRecordingPaths(request.paths,request,directory,cache);
+    if(!file.empty())return file;
     // Preserve established duplicate homes even if the original canonical
     // conflict disappeared. Missing IDs still require an exact text match.
-    for(const auto* base:paths) {
-        if(!base)break;
+    for(const auto& base:request.paths) {
         if(!CurrentRequest(request))return {};
-        const auto resolved=ResolveRecordingDestination(*base,request.catalog,request.track_numbers,&directory);
+        const auto resolved=ResolveRecordingDestination(base,request.catalog,request.track_numbers,&directory);
         if(resolved.state==RecordingDestinationState::Blocked)return unavailable();
     }
-    const auto duplicates=AllDuplicateFormatPaths(request);
-    if(!duplicates[0]||duplicates[0]->empty())return unavailable();
     RecordingDirectory duplicate_directory;
-    if(!ListRecordingDirectory(*duplicates[0],duplicate_directory,&request.catalog))return unavailable();
-    for(const auto* base:duplicates) {
-        if(!base)break;
-        if(base->empty())continue;
-        if(!CurrentRequest(request))return {};
-        FileSignature signature;
-        if(VerifySavedFile(*base,request,duplicate_directory,signature)) {
-            Remember(request,*base,signature,cache);return *base;
-        }
-    }
-    for(const auto* base:duplicates) {
-        if(!base)break;
-        if(base->empty())continue;
-        if(!CurrentRequest(request))return {};
-        for(const auto& candidate:RecordingPathCandidates(*base,request.catalog,request.track_numbers)) {
-            const auto& file=candidate.path;
-            if(file==*base)continue;
-            FileSignature signature;
-            if(VerifySavedFile(file,request,duplicate_directory,signature)) {
-                Remember(request,file,signature,cache);return file;
-            }
-        }
-    }
+    const auto& first_duplicate=request.duplicate_paths.front();
+    if(first_duplicate.empty() || !ListRecordingDirectory(first_duplicate,duplicate_directory,&request.catalog))return unavailable();
+    file=ProbeRecordingPaths(request.duplicate_paths,request,duplicate_directory,cache);
+    if(!file.empty())return file;
     return unavailable();
 }
 static DWORD WINAPI DestinationWorker(void*) {
@@ -334,12 +281,7 @@ void PublishSongDestination(std::uint64_t identity,const std::wstring& root,
         request.identity=identity;request.generation=settings_generation;request.catalog=catalog;request.track_numbers=track_numbers;
         request.root=root;request.music_folder=music_folder;
         request.serial=serial;request.intent=intent;request.revision=cache_revision.load(std::memory_order_acquire);
-        for(const auto& format:kRecordingFormats) {
-            FormatPath(request,format.codec)=OutputPath(root,catalog,format.extension,music_folder,track_numbers);
-            const auto paths=DuplicateLookupPaths(root,catalog,format.extension,music_folder,track_numbers);
-            auto& stored=DuplicateFormatPaths(request,format.codec);
-            for(size_t i=0;i<stored.size()&&i<paths.size();++i)stored[i]=paths[i];
-        }
+        PopulateDestinationPaths(request);
         DestinationTryExclusive guard;
         if(!guard.locked || !destination_enabled.load(std::memory_order_relaxed) ||
            intent!=intent_key.load(std::memory_order_acquire) || serial!=request_serial.load(std::memory_order_acquire)) return;

@@ -34,6 +34,7 @@
 #include "recording_metadata.h"
 #include "retired_match_evidence.h"
 #include "../tooling/retry_schedule.h"
+#include "../tooling/windows_handle.h"
 #include "matcher_diagnostics.h"
 #include "image_info.h"
 #include "aac_stream.h"
@@ -1363,17 +1364,11 @@ static std::string SavedAudioDetails(const Quality& quality,size_t bytes) {
     char size[96];snprintf(size,sizeof(size),"%.2f MiB (%llu bytes)",double(bytes)/(1024*1024),static_cast<unsigned long long>(bytes));
     return text+" | "+size;
 }
-static std::string ExistingSkipReason(const std::wstring& path,const Quality& incoming,
-                                      const Catalog& catalog,const RecordingFile* inspected=nullptr) {
-    RecordingFile fresh;
-    if(!inspected) {
-        if(!ReadRecording(path,fresh))return "existing file quality could not be verified; retained";
-        inspected=&fresh;
-    }
-    if(!inspected->complete)return "existing file quality could not be verified; retained";
-    if(!MatchesRecording(*inspected,catalog))return "different recording found at destination; retained";
-    if(!inspected->owned)return "existing file is not a Floggfy recording; retained";
-    const auto& existing=inspected->quality;
+static std::string ExistingSkipReason(const RecordingFile& inspected,const Quality& incoming,const Catalog& catalog) {
+    if(!inspected.complete)return "existing file quality could not be verified; retained";
+    if(!MatchesRecording(inspected,catalog))return "different recording found at destination; retained";
+    if(!inspected.owned)return "existing file is not a Floggfy recording; retained";
+    const auto& existing=inspected.quality;
     const bool same=existing.codec==incoming.codec && existing.rate && existing.rate==incoming.rate &&
         existing.channels && existing.channels==incoming.channels &&
         (existing.codec==Codec::Flac ? existing.bits && existing.bits==incoming.bits : existing.bitrate && existing.bitrate==incoming.bitrate);
@@ -1464,10 +1459,10 @@ static bool PublicationStillCurrent(void* context) {
         latest.convert_numbered_filenames==permit.settings.convert_numbered_filenames&&
         permit.preferences.Matches(latest)&&MetadataRevision()==permit.metadata_revision;
 }
-static ArtifactKey PublicationArtifactKey(const Catalog& catalog,const Tags& tags) {
-    ArtifactKey key;
-    auto length=[&](size_t size){key.identity+=std::to_string(size);key.identity.push_back(':');};
-    auto text=[&](const std::string& value){length(value.size());key.identity+=value;};
+static std::string PublicationArtifactKey(const Catalog& catalog,const Tags& tags) {
+    std::string key;
+    auto length=[&](size_t size){key+=std::to_string(size);key.push_back(':');};
+    auto text=[&](const std::string& value){length(value.size());key+=value;};
     for(const auto* value:{&catalog.artist,&catalog.album,&catalog.title,&catalog.author,&catalog.series,&catalog.book,
                           &catalog.show,&catalog.folder_artist,&catalog.legacy_artist})text(Utf8(*value));
     text(catalog.spotify_uri);text(catalog.spotify_album_uri);
@@ -1477,19 +1472,19 @@ static ArtifactKey PublicationArtifactKey(const Catalog& catalog,const Tags& tag
     text(tags.mime);
     // Exact content identity prevents stable-URI artwork changes reusing stale bytes.
     length(tags.cover.size());
-    if(!tags.cover.empty())key.identity.append(reinterpret_cast<const char*>(tags.cover.data()),tags.cover.size());
+    if(!tags.cover.empty())key.append(reinterpret_cast<const char*>(tags.cover.data()),tags.cover.size());
     return key;
 }
 enum class DestinationFailure { None, Directory, Ogg, Preferred, Capture };
 struct PublicationDestinations {
     RecordingDestination resolved;
     RecordingDestination superseded_vorbis;
-    bool format_upgrade=false;
-    bool existing_lossless=false;
-    bool existing_vorbis=false;
+    const RecordingFormat* preferred=nullptr;
     bool explicit_uid_conflict=false;
     bool filename_conflict=false;
     bool duplicate_namespace=false;
+    bool FormatUpgrade() const {return superseded_vorbis.state==RecordingDestinationState::Existing;}
+    bool HasExisting() const {return FormatUpgrade()||resolved.state==RecordingDestinationState::Existing;}
 };
 static DestinationFailure ResolvePublicationDestinations(const Capture& capture,const Settings& settings,
     const Catalog& catalog,const Quality& quality,bool duplicates,PublicationDestinations& out) {
@@ -1526,27 +1521,23 @@ static DestinationFailure ResolvePublicationDestinations(const Capture& capture,
         out.explicit_uid_conflict=out.explicit_uid_conflict||ogg.explicit_uid_conflict;
         if(ogg.state==RecordingDestinationState::Blocked)return DestinationFailure::Ogg;
         if(ogg.state==RecordingDestinationState::Existing&&ogg.recording.complete&&ogg.recording.owned&&
-           ogg.recording.quality.codec==Codec::Vorbis&&HigherQuality(quality,ogg.recording.quality)) {
-            out.superseded_vorbis=std::move(ogg);out.format_upgrade=true;
-        }
+           ogg.recording.quality.codec==Codec::Vorbis&&HigherQuality(quality,ogg.recording.quality))
+            out.superseded_vorbis=std::move(ogg);
     }
-    for(const auto codec:{Codec::Flac,Codec::Vorbis}) {
-        if(capture.mp3)break;
-        if(capture.lossless||(codec==Codec::Vorbis&&!capture.aac))break;
-        const auto extension=codec==Codec::Flac?L".flac":L".ogg";
-        auto candidate=resolve(extension);
+    // A music recording can reuse a complete file in a preferred format.
+    for(const auto& format:kRecordingFormats) {
+        if(capture.mp3||format.codec==quality.codec)break;
+        auto candidate=resolve(format.extension);
         out.explicit_uid_conflict=out.explicit_uid_conflict||candidate.explicit_uid_conflict;
         if(candidate.state==RecordingDestinationState::Blocked)return DestinationFailure::Preferred;
         if(candidate.state==RecordingDestinationState::Existing&&candidate.recording.complete&&
-           candidate.recording.quality.codec==codec) {
-            out.existing_lossless=codec==Codec::Flac;out.existing_vorbis=codec==Codec::Vorbis;
-            out.resolved=std::move(candidate);break;
+           candidate.recording.quality.codec==format.codec) {
+            out.preferred=&format;out.resolved=std::move(candidate);
+            return DestinationFailure::None;
         }
     }
-    if(!out.existing_lossless&&!out.existing_vorbis) {
-        out.resolved=resolve(capture.Extension());
-        out.explicit_uid_conflict=out.explicit_uid_conflict||out.resolved.explicit_uid_conflict;
-    }
+    out.resolved=resolve(capture.Extension());
+    out.explicit_uid_conflict=out.explicit_uid_conflict||out.resolved.explicit_uid_conflict;
     if(out.resolved.state==RecordingDestinationState::Blocked)return DestinationFailure::Capture;
     return DestinationFailure::None;
 }
@@ -1574,11 +1565,47 @@ static bool ReserveConstruction(Capture& capture,size_t incremental_peak) {
     }
     return true;
 }
-static bool VerifiedExistingPublication(const std::wstring& path,const Catalog& catalog) {
-    const auto file=CreateFileW(WindowsPath(path).c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
-    if(file==INVALID_HANDLE_VALUE)return false;
-    RecordingFile recording;const bool valid=ReadRecording(path,recording)&&recording.complete&&MatchesRecording(recording,catalog);
-    CloseHandle(file);return valid;
+static bool FlattenPublicationSource(Capture& capture) {
+    if(!capture.publication_source.empty())return true;
+    if(!ReserveConstruction(capture,capture.data.size()))return false;
+    capture.publication_source=capture.data.Flatten();
+    return true;
+}
+enum class AacPreparation { Ready,ExtractionMemory,InvalidSource,MuxMemory,MuxFailed };
+static AacPreparation PreparePublicationAac(Capture& capture,const Tags& tags,
+                                            std::vector<uint8_t>& output,std::string& error) {
+    const auto& source=capture.publication_source;
+    AacInfo info;
+    std::vector<std::vector<uint8_t>> packets;
+    const auto extraction=source.size()+size_t(capture.SourceUnits())*(sizeof(std::vector<uint8_t>)+16);
+    if(!ReserveConstruction(capture,extraction))return AacPreparation::ExtractionMemory;
+    if(!ReadSpac(source,info,packets,error))return AacPreparation::InvalidSource;
+    AacMemoryPlan plan;
+    const auto external=source.capacity()+capture.publication_artifact.bytes.capacity();
+    if(!PlanAacM4a(info,packets,tags,plan,external)||plan.peak_bytes<external||
+       !ReserveConstruction(capture,size_t(plan.peak_bytes-external)))return AacPreparation::MuxMemory;
+    return MakeAacM4a(info,packets,tags,output,error,nullptr,external)?AacPreparation::Ready:AacPreparation::MuxFailed;
+}
+static bool VerifiedExistingPublication(const std::wstring& path,const Catalog& catalog,RecordingFile* inspected=nullptr) {
+    const win32::Handle file{CreateFileW(WindowsPath(path).c_str(),GENERIC_READ,FILE_SHARE_READ,
+        nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
+    RecordingFile recording;
+    if(file.value==INVALID_HANDLE_VALUE||!ReadRecording(path,recording)||!recording.complete||
+       !MatchesRecording(recording,catalog))return false;
+    if(inspected)*inspected=std::move(recording);
+    return true;
+}
+static FileMetadataUpdate FillExistingRecording(const RecordingDestination& destination,
+    const Tags& tags,const Catalog& catalog,const Settings& settings) {
+    const auto& file=destination.recording;
+    if(!settings.metadata||!settings.update_existing_metadata||!file.owned||!file.complete||
+       !NeedsRecordingMetadata(file,tags,settings.marked_when_downloaded))return FileMetadataUpdate::Skipped;
+    const auto result=UpdateRecordingMetadata(destination.path,tags,catalog,settings.generation);
+    if(result==FileMetadataUpdate::Updated) {
+        if(settings.marked_when_downloaded)QueueMarkedFile(settings.root,destination.path);
+        RefreshSongDestination();
+    }
+    return result;
 }
 struct PublicationMemoryBudget {
     Capture& capture;
@@ -1662,7 +1689,6 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     catalog=CatalogFor(heard.media);ApplyCatalogIdentity(tags,catalog);
     DestinationPermit permit{settings,preferences,expected_epoch,quality.codec,catalog.kind,metadata_revision,Publication::Replan};
     if(!PublicationStillCurrent(&permit))return finish(permit.rejected,"deferred","publication inputs changed; completed audio retained");
-    const auto artifact_key=PublicationArtifactKey(catalog,tags);
     PublicationDestinations destinations;
     auto failure=ResolvePublicationDestinations(c,settings,catalog,quality,false,destinations);
     if(failure==DestinationFailure::Directory)
@@ -1676,127 +1702,96 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     // Preserve established canonical/legacy homes first. Reuse an existing
     // duplicate even after its original conflict is deleted, including no-ID
     // recordings; only new collisions choose a vacant duplicate destination.
-    const bool canonical_match=destinations.format_upgrade||destinations.existing_lossless||
-        destinations.existing_vorbis||destinations.resolved.state==RecordingDestinationState::Existing;
-    if(!canonical_match) {
+    if(!destinations.HasExisting()) {
         PublicationDestinations duplicate;
         failure=ResolvePublicationDestinations(c,settings,catalog,quality,true,duplicate);
         if(failure!=DestinationFailure::None)
             return finish(Publication::RetryIO,"failed","duplicate recording destination could not be verified; publication deferred");
-        const bool duplicate_match=duplicate.format_upgrade||duplicate.existing_lossless||
-            duplicate.existing_vorbis||duplicate.resolved.state==RecordingDestinationState::Existing;
-        if(duplicate_match||destinations.explicit_uid_conflict||destinations.filename_conflict)destinations=std::move(duplicate);
+        if(duplicate.HasExisting()||destinations.explicit_uid_conflict||destinations.filename_conflict)
+            destinations=std::move(duplicate);
     }
     auto& resolved=destinations.resolved;
     auto& superseded_vorbis=destinations.superseded_vorbis;
-    const bool format_upgrade=destinations.format_upgrade;
-    const bool existing_lossless=destinations.existing_lossless;
-    const bool existing_vorbis=destinations.existing_vorbis;
-    const bool preferred=existing_lossless||existing_vorbis;
-    if(settings.convert_numbered_filenames && !settings.track_number_in_filename) {
-        const auto extension=existing_lossless?L".flac":existing_vorbis?L".ogg":c.Extension();
-        if(ConvertResolvedFilename(resolved,catalog,settings,extension,0,destinations.duplicate_namespace)==FilenameConversion::Failed)
-            return finish(Publication::RetryIO,"failed","filename conversion failed; existing file retained");
-    }
+    const bool format_upgrade=destinations.FormatUpgrade();
+    const auto* preferred=destinations.preferred;
+    const auto extension=preferred?preferred->extension:c.Extension();
+    if(ConvertResolvedFilename(resolved,catalog,settings,extension,0,destinations.duplicate_namespace)==FilenameConversion::Failed)
+        return finish(Publication::RetryIO,"failed","filename conversion failed; existing file retained");
     const auto& destination=resolved.path;
     const auto& inspected=resolved.recording;
     // These are planning decisions, not write authorization. PublishBytes
     // revalidates under its existing handle reservation before any replacement.
-    auto decision=SaveDecision::NewFile;
-    if(preferred || resolved.state==RecordingDestinationState::Existing) {
-        decision=SaveDecision::Skip;
-        if(!preferred && inspected.owned &&
-           (!inspected.complete || HigherQuality(quality,inspected.quality)))
-            decision=SaveDecision::Upgrade;
-    }
-    if(decision==SaveDecision::Skip && !format_upgrade) {
-        if(!PublicationStillCurrent(&permit))return finish(permit.rejected,"deferred","existing-recording plan changed; completed audio retained");
+    const bool keep_existing=preferred||(resolved.state==RecordingDestinationState::Existing&&
+        !CanUpgradeRecording(inspected,quality,catalog));
+    if(keep_existing&&!format_upgrade) {
+        constexpr auto plan_changed="existing-recording plan changed; completed audio retained";
+        if(!PublicationStillCurrent(&permit))return finish(permit.rejected,"deferred",plan_changed);
         // An audio duplicate may still have missing metadata. Update only a
         // verified matching recording; this never adds a Latest Downloads entry.
         const auto latest=GetSettings();
-        const auto target_codec=existing_lossless?Codec::Flac:existing_vorbis?Codec::Vorbis:quality.codec;
-        const bool target_enabled=SourceFormatEnabled(target_codec,settings);
-        if(settings.metadata && settings.update_existing_metadata && target_enabled && latest.generation==settings.generation &&
-           latest.downloads && latest.metadata && latest.update_existing_metadata) {
-            if(inspected.owned && inspected.complete && NeedsRecordingMetadata(inspected,tags,settings.marked_when_downloaded)) {
-                const auto result=UpdateRecordingMetadata(destination,tags,catalog,settings.generation);
-                if(result==FileMetadataUpdate::Updated) {
-                    if(settings.marked_when_downloaded)QueueMarkedFile(settings.root,destination);
-                    RefreshSongDestination();
-                    if(!VerifiedExistingPublication(destination,catalog))return finish(Publication::Replan,"deferred","existing recording changed before acknowledgement; source retained");
-                    return finish(Publication::AlreadyPresent,"updated","metadata and artwork updated; existing audio retained");
-                }
-                if(result==FileMetadataUpdate::Failed) {
-                    if(!VerifiedExistingPublication(destination,catalog))return finish(Publication::Replan,"deferred","existing recording unavailable after metadata update; source retained");
-                    return finish(Publication::AlreadyPresent,"skipped","metadata update failed; verified existing audio retained");
-                }
-            }
-        }
-        if(!PublicationStillCurrent(&permit))return finish(permit.rejected,"deferred","existing-recording plan changed; completed audio retained");
-        if(!VerifiedExistingPublication(destination,catalog))return finish(Publication::Replan,"deferred","existing recording changed before acknowledgement; source retained");
-        return finish(Publication::AlreadyPresent,"skipped",ExistingSkipReason(destination,quality,catalog,&inspected));
+        const auto target_codec=preferred?preferred->codec:quality.codec;
+        auto result=FileMetadataUpdate::Skipped;
+        if(SourceFormatEnabled(target_codec,settings)&&latest.generation==settings.generation&&
+           latest.downloads&&latest.metadata&&latest.update_existing_metadata)
+            result=FillExistingRecording(resolved,tags,catalog,settings);
+        if(result==FileMetadataUpdate::Skipped&&!PublicationStillCurrent(&permit))
+            return finish(permit.rejected,"deferred",plan_changed);
+        if(!VerifiedExistingPublication(destination,catalog))
+            return finish(Publication::Replan,"deferred",result==FileMetadataUpdate::Failed
+                ?"existing recording unavailable after metadata update; source retained"
+                :"existing recording changed before acknowledgement; source retained");
+        if(result==FileMetadataUpdate::Updated)
+            return finish(Publication::AlreadyPresent,"updated","metadata and artwork updated; existing audio retained");
+        if(result==FileMetadataUpdate::Failed)
+            return finish(Publication::AlreadyPresent,"skipped","metadata update failed; verified existing audio retained");
+        return finish(Publication::AlreadyPresent,"skipped",ExistingSkipReason(inspected,quality,catalog));
     }
     // Existing tags/art/lyrics are merged by PublishBytes while its exact old
     // object is locked. Do not take a separate stale preservation snapshot here.
     const bool had_artwork=inspected.has_artwork || superseded_vorbis.recording.has_artwork;
     resolved.recording={}; // No planning metadata retained across construction.
     std::vector<uint8_t> tagged; std::string error;
+    auto artifact_key=PublicationArtifactKey(catalog,tags);
     if(c.publication_artifact.bytes.empty()||!(c.publication_artifact.key==artifact_key)) {
-    if(!inspection_budget.Reset())return finish(Publication::Blocked,"deferred","publication construction memory unavailable; source retained");
-    if(c.aac&&c.publication_source.empty()) {
-        const auto& info=c.spac.info;
-        const auto count=info.samples_per_packet?
-            (uint64_t(info.total_samples)+info.priming+info.samples_per_packet-1)/info.samples_per_packet:0;
-        if(!AacExtractionFitsBudget(c.data.capacity(),c.data.size(),size_t(count)))
+        if(!inspection_budget.Reset())return finish(Publication::Blocked,"deferred","publication construction memory unavailable; source retained");
+        if(c.aac&&c.publication_source.empty()&&
+           !AacExtractionFitsBudget(c.data.capacity(),c.data.size(),size_t(c.SourceUnits())))
             return finish(Publication::RetryIO,"failed","AAC extraction memory budget exceeded; no file published");
-    }
-    // Every linked capture gets a final complete-buffer check immediately
-    // before its block storage is cleared. Ogg/AAC are rebuilt from the cached
-    // bytes; flattened FLAC/Ogg then receive the recording parser's whole-file
-    // frame/page checksum and trailing-data validation as well.
-    if(CachedFinalValidation(c)!=FinalCaptureValidation::Valid)
-        return finish(Publication::Blocked,"failed","final cached capture validation failed; no file published");
-    if(c.publication_source.empty()) {
-        if(!ReserveConstruction(c,c.data.size()))return finish(Publication::Blocked,"deferred","flatten construction memory unavailable; source retained");
-        c.publication_source=c.data.Flatten();
-    }
-    auto& source=c.publication_source;
-    if(!ValidateFlattenedCapture(c,source))
-        return finish(Publication::Blocked,"failed","flattened capture integrity validation failed; no file published");
-    bool tagged_ok=false;
-    if(c.aac) {
-        AacInfo info;std::vector<std::vector<uint8_t>> packets;
-        const auto& capture_info=c.spac.info;
-        const auto count=capture_info.samples_per_packet?
-            (uint64_t(capture_info.total_samples)+capture_info.priming+capture_info.samples_per_packet-1)/capture_info.samples_per_packet:0;
-        const auto extraction=source.size()+size_t(count)*(sizeof(std::vector<uint8_t>)+16);
-        if(!ReserveConstruction(c,extraction))return finish(Publication::Blocked,"deferred","AAC extraction memory unavailable; source retained");
-        tagged_ok=ReadSpac(source,info,packets,error);
-        if(tagged_ok) {
-            AacMemoryPlan plan;const auto external=source.capacity()+c.publication_artifact.bytes.capacity();
-            if(!PlanAacM4a(info,packets,tags,plan,external)||plan.peak_bytes<external||
-               !ReserveConstruction(c,size_t(plan.peak_bytes-external)))
+        // Every linked capture gets a final complete-buffer check immediately
+        // before its block storage is cleared. Ogg/AAC are rebuilt from the cached
+        // bytes; flattened FLAC/Ogg then receive the recording parser's whole-file
+        // frame/page checksum and trailing-data validation as well.
+        if(CachedFinalValidation(c)!=FinalCaptureValidation::Valid)
+            return finish(Publication::Blocked,"failed","final cached capture validation failed; no file published");
+        if(!FlattenPublicationSource(c))return finish(Publication::Blocked,"deferred","flatten construction memory unavailable; source retained");
+        const auto& source=c.publication_source;
+        if(!ValidateFlattenedCapture(c,source))
+            return finish(Publication::Blocked,"failed","flattened capture integrity validation failed; no file published");
+        bool tagged_ok=false;
+        if(c.aac) {
+            const auto prepared=PreparePublicationAac(c,tags,tagged,error);
+            if(prepared==AacPreparation::ExtractionMemory)
+                return finish(Publication::Blocked,"deferred","AAC extraction memory unavailable; source retained");
+            if(prepared==AacPreparation::MuxMemory)
                 return finish(Publication::Blocked,"deferred","AAC mux construction memory unavailable; source retained");
-            tagged_ok=MakeAacM4a(info,packets,tags,tagged,error,nullptr,external);
+            tagged_ok=prepared==AacPreparation::Ready;
+        } else {
+            size_t metadata_bytes=0,largest_packet=0;
+            if(c.lossless) {FlacInfo info;if(ParseFlacMetadata(source,info,metadata_bytes)!=FlacParse::Valid)return finish(Publication::Blocked,"failed","invalid source metadata; source retained");}
+            else if(!c.mp3&&!LargestOggPacket(source.data(),source.size(),largest_packet))
+                return finish(Publication::Blocked,"failed","invalid source packet boundaries; source retained");
+            TagMemoryPlan plan;
+            if(!PlanTagConstructionMemory(quality.codec,source.size(),metadata_bytes,largest_packet,tags,plan)||
+               !ReserveConstruction(c,plan.incremental_peak))
+                return finish(Publication::Blocked,"deferred","tag construction memory unavailable; source retained");
+            if(c.mp3)tagged_ok=MakeOwnedMp3(source.data(),source.size(),tags,tagged,error);
+            else tagged_ok=c.lossless ? TagFlac(source,tags,tagged,error) : TagOgg(source,tags,tagged,error);
         }
-    } else {
-        size_t metadata_bytes=0,largest_packet=0;
-        if(c.lossless) {FlacInfo info;if(ParseFlacMetadata(source,info,metadata_bytes)!=FlacParse::Valid)return finish(Publication::Blocked,"failed","invalid source metadata; source retained");}
-        else if(!c.mp3&&!LargestOggPacket(source.data(),source.size(),largest_packet))
-            return finish(Publication::Blocked,"failed","invalid source packet boundaries; source retained");
-        TagMemoryPlan plan;
-        if(!PlanTagConstructionMemory(quality.codec,source.size(),metadata_bytes,largest_packet,tags,plan)||
-           !ReserveConstruction(c,plan.incremental_peak))
-            return finish(Publication::Blocked,"deferred","tag construction memory unavailable; source retained");
-        if(c.mp3)tagged_ok=MakeOwnedMp3(source.data(),source.size(),tags,tagged,error);
-        else tagged_ok=c.lossless ? TagFlac(source,tags,tagged,error) : TagOgg(source,tags,tagged,error);
-    }
-    if(!tagged_ok)return finish(Publication::RetryIO,"failed","tagging failed: "+error);
-    RecordingFile prepared;
-    if(!InspectRecording(tagged.data(),tagged.size(),prepared)||!prepared.complete||!MatchesRecording(prepared,catalog))
-        return finish(Publication::Blocked,"failed","prepared artifact failed identity or completeness validation; source retained");
-    PreparedArtifact replacement{artifact_key,catalog,tags,quality,std::move(tagged)};
-    c.publication_artifact=std::move(replacement);
+        if(!tagged_ok)return finish(Publication::RetryIO,"failed","tagging failed: "+error);
+        RecordingFile prepared;
+        if(!InspectRecording(tagged.data(),tagged.size(),prepared)||!prepared.complete||!MatchesRecording(prepared,catalog))
+            return finish(Publication::Blocked,"failed","prepared artifact failed identity or completeness validation; source retained");
+        c.publication_artifact={std::move(artifact_key),catalog,std::move(tagged)};
     }
     const auto& bytes=c.publication_artifact.bytes;
     if(!inspection_budget.Reset())return finish(Publication::Blocked,"deferred","publication transaction memory unavailable; source retained");
@@ -1818,8 +1813,10 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     }
     if(publication==FilePublication::Replan)return finish(permit.rejected,"deferred","publication permit changed; completed audio retained");
     if(publication==FilePublication::Skipped) {
-        if(!VerifiedExistingPublication(destination,catalog))return finish(Publication::Replan,"deferred","raced destination is not a verified existing recording; source retained");
-        return finish(Publication::AlreadyPresent,"skipped",ExistingSkipReason(destination,quality,catalog));
+        RecordingFile existing;
+        if(!VerifiedExistingPublication(destination,catalog,&existing))
+            return finish(Publication::Replan,"deferred","raced destination is not a verified existing recording; source retained");
+        return finish(Publication::AlreadyPresent,"skipped",ExistingSkipReason(existing,quality,catalog));
     }
     if(publication==FilePublication::Failed)return finish(Publication::RetryIO,"failed","file publication failed; existing file retained");
     RefreshSongDestination();
@@ -1991,46 +1988,39 @@ static void ProcessFilenameCheck(const FilenameCheck& check) {
                 ?DuplicateLookupPaths(check.settings.root,check.catalog,format.extension,check.settings.music_folder,false)
                 :std::vector<std::wstring>{OutputPath(check.settings.root,check.catalog,format.extension,check.settings.music_folder,false)};
             for(const auto& base:bases) {
-             if(base.empty())continue;
-             auto resolved=ResolveRecordingDestination(base,check.catalog,false,&directory);
-             if(!current()||resolved.state==RecordingDestinationState::Blocked)return true;
-             if(resolved.state!=RecordingDestinationState::Existing||!resolved.recording.complete)continue;
-            if(check.settings.convert_numbered_filenames&&!check.settings.track_number_in_filename&&
-               ConvertResolvedFilename(resolved,check.catalog,check.settings,format.extension,check.serial,duplicates)==FilenameConversion::Failed)
-                LogEvent(LogKind::Failure,"failed","filename conversion deferred; existing recording retained | "+Utf8(check.catalog.title));
-            if(!current())return true;
-            const bool format_enabled=format.codec==Codec::Flac?check.settings.flac:
-                format.codec==Codec::Vorbis?check.settings.ogg:format.codec==Codec::Aac?check.settings.aac:
-                format.codec==Codec::Mp3?check.settings.podcasts:false;
-            bool metadata_failed=false;
-            if(format_enabled&&check.settings.metadata&&check.settings.update_existing_metadata&&
-               resolved.recording.owned&&NeedsRecordingMetadata(resolved.recording,check.tags,check.settings.marked_when_downloaded)) {
-                const auto result=UpdateRecordingMetadata(resolved.path,check.tags,check.catalog,check.settings.generation);
-                const auto identity=Utf8(check.catalog.artist)+" - "+Utf8(check.catalog.title);
-                if(result==FileMetadataUpdate::Updated) {
-                    if(check.settings.marked_when_downloaded)QueueMarkedFile(check.settings.root,resolved.path);
-                    RefreshSongDestination();
-                    LogEvent(LogKind::Activity,"updated","metadata and artwork updated; existing audio retained | "+identity);
-                } else if(result==FileMetadataUpdate::Failed) {
-                    metadata_failed=true;
-                    LogEvent(LogKind::Failure,"failed","metadata update failed; existing file retained | "+identity);
+                if(base.empty())continue;
+                auto resolved=ResolveRecordingDestination(base,check.catalog,false,&directory);
+                if(!current()||resolved.state==RecordingDestinationState::Blocked)return true;
+                if(resolved.state!=RecordingDestinationState::Existing||!resolved.recording.complete)continue;
+                if(ConvertResolvedFilename(resolved,check.catalog,check.settings,format.extension,check.serial,duplicates)==FilenameConversion::Failed)
+                    LogEvent(LogKind::Failure,"failed","filename conversion deferred; existing recording retained | "+Utf8(check.catalog.title));
+                if(!current())return true;
+                const bool format_enabled=SourceFormatEnabled(format.codec,check.settings)&&
+                    (format.codec!=Codec::Mp3||check.settings.podcasts);
+                const auto result=format_enabled?FillExistingRecording(resolved,check.tags,check.catalog,check.settings)
+                                                :FileMetadataUpdate::Skipped;
+                if(result!=FileMetadataUpdate::Skipped) {
+                    const auto identity=Utf8(check.catalog.artist)+" - "+Utf8(check.catalog.title);
+                    if(result==FileMetadataUpdate::Updated)
+                        LogEvent(LogKind::Activity,"updated","metadata and artwork updated; existing audio retained | "+identity);
+                    else
+                        LogEvent(LogKind::Failure,"failed","metadata update failed; existing file retained | "+identity);
                 }
-            }
-            if(!current())return true;
-            const auto playback_key=check.catalog.spotify_uri+"\x1f"+check.playback_instance;
-            if(!metadata_failed&&resolved.recording.owned&&check.settings.auto_skip_downloaded&&
-               check.catalog.kind!=MediaKind::Podcast&&playback_key!=last_auto_skip_playback&&
-               ShouldAutoSkipDownloaded(check.quality,check.media_identity,check.playback_instance,
-                                        resolved.recording.quality)) {
-                const auto token=QueueAutoSkipRequest(check.catalog.spotify_uri,check.playback_instance,
-                    check.settings.generation);
-                if(token) {
-                    last_auto_skip_playback=playback_key;
-                    LogEvent(LogKind::Activity,"auto-skip","requested after existing-file metadata check | "+
-                        Utf8(check.catalog.artist)+" - "+Utf8(check.catalog.title));
+                if(!current())return true;
+                const auto playback_key=check.catalog.spotify_uri+"\x1f"+check.playback_instance;
+                if(result!=FileMetadataUpdate::Failed&&resolved.recording.owned&&check.settings.auto_skip_downloaded&&
+                   check.catalog.kind!=MediaKind::Podcast&&playback_key!=last_auto_skip_playback&&
+                   ShouldAutoSkipDownloaded(check.quality,check.media_identity,check.playback_instance,
+                                            resolved.recording.quality)) {
+                    const auto token=QueueAutoSkipRequest(check.catalog.spotify_uri,check.playback_instance,
+                        check.settings.generation);
+                    if(token) {
+                        last_auto_skip_playback=playback_key;
+                        LogEvent(LogKind::Activity,"auto-skip","requested after existing-file metadata check | "+
+                            Utf8(check.catalog.artist)+" - "+Utf8(check.catalog.title));
+                    }
                 }
-            }
-            return true; // Best verified format/recording found; no new audio is created.
+                return true; // Best verified format/recording found; no new audio is created.
             }
         }
         return false;
@@ -2076,22 +2066,17 @@ static Publication PublishUnmatched(SaveJob& job) {
             time.wYear,time.wMonth,time.wDay,time.wHour,time.wMinute,time.wSecond,time.wMilliseconds);
         capture.unmatched_name=std::wstring(stamp)+guid;
     }
-    if(capture.publication_source.empty()) {
-        if(!ReserveConstruction(capture,capture.data.size()))return outcome(Publication::Blocked,"flatten-memory-unavailable");
-        capture.publication_source=capture.data.Flatten();
-    }
+    if(!FlattenPublicationSource(capture))return outcome(Publication::Blocked,"flatten-memory-unavailable");
     if(capture.aac&&capture.publication_artifact.bytes.empty()) {
-        AacInfo info;std::vector<std::vector<uint8_t>> packets;std::string error;Tags tags;
+        std::string error;
         std::vector<uint8_t> packaged;
-        const auto& capture_info=capture.spac.info;
-        const auto count=capture_info.samples_per_packet?
-            (uint64_t(capture_info.total_samples)+capture_info.priming+capture_info.samples_per_packet-1)/capture_info.samples_per_packet:0;
-        if(!ReserveConstruction(capture,capture.publication_source.size()+size_t(count)*(sizeof(std::vector<uint8_t>)+16)))return outcome(Publication::Blocked,"aac-extraction-memory-unavailable");
-        if(!ReadSpac(capture.publication_source,info,packets,error))return fail("could not extract unmatched AAC");
-        AacMemoryPlan plan;const auto external=capture.publication_source.capacity();
-        if(!PlanAacM4a(info,packets,tags,plan,external)||plan.peak_bytes<external||
-           !ReserveConstruction(capture,size_t(plan.peak_bytes-external)))return outcome(Publication::Blocked,"aac-packaging-plan-or-memory-unavailable");
-        if(!MakeAacM4a(info,packets,tags,packaged,error,nullptr,external))return fail("could not package unmatched AAC");
+        switch(PreparePublicationAac(capture,{},packaged,error)) {
+            case AacPreparation::Ready:break;
+            case AacPreparation::ExtractionMemory:return outcome(Publication::Blocked,"aac-extraction-memory-unavailable");
+            case AacPreparation::InvalidSource:return fail("could not extract unmatched AAC");
+            case AacPreparation::MuxMemory:return outcome(Publication::Blocked,"aac-packaging-plan-or-memory-unavailable");
+            case AacPreparation::MuxFailed:return fail("could not package unmatched AAC");
+        }
         capture.publication_artifact.bytes=std::move(packaged);
     }
     const auto extension=capture.Extension();
@@ -2105,7 +2090,7 @@ static Publication PublishUnmatched(SaveJob& job) {
         std::to_string(bytes.size())+",\"audio_hash\":\""+audio_hash+
         "\",\"metadata_hash\":\""+std::to_string(Fnv1a64(metadata.data(),metadata.size()))+"\"}\n";
     auto acknowledge=[&](UnmatchedAttempt& committed) {
-        committed.committed=true;bool cleaned=true;
+        bool cleaned=true;
         for(auto& old:capture.unmatched_attempts)if(&old!=&committed) {
             cleaned=VerifiedArchiveFile(old.base+L".commit",marker.data(),marker.size(),true)&&cleaned;
             cleaned=VerifiedArchiveFile(old.base+extension,bytes.data(),bytes.size(),true)&&cleaned;
@@ -2135,13 +2120,12 @@ static Publication PublishUnmatched(SaveJob& job) {
     if(found==capture.unmatched_attempts.end()) {
         // Keep destination bookkeeping bounded without discarding recoverable audio.
         if(capture.unmatched_attempts.size()>=16)return outcome(Publication::Blocked,"destination-attempt-limit");
-        capture.unmatched_attempts.push_back({settings.root,settings.root+L"\\Unmatched\\"+capture.unmatched_name+L"-"+std::to_wstring(settings.destination_revision),settings.destination_revision,false,false,false});
+        capture.unmatched_attempts.push_back({settings.root,settings.root+L"\\Unmatched\\"+capture.unmatched_name+L"-"+std::to_wstring(settings.destination_revision),settings.destination_revision});
         found=std::prev(capture.unmatched_attempts.end());
     }
     auto& attempt=*found;
     if(!EnsureDirectory(settings.root+L"\\Unmatched"))return fail("could not create Unmatched folder");
     if(!WriteArchiveFile(attempt.base+L".json",metadata.data(),metadata.size()))return fail("could not save unmatched metadata");
-    attempt.sidecar_saved=true;
 #ifdef FLOGGFY_PUBLICATION_TEST
     PublicationTestPhase(L"unmatched-json",attempt.base);
 #endif
@@ -2151,7 +2135,6 @@ static Publication PublishUnmatched(SaveJob& job) {
     if(latest.root!=settings.root||latest.destination_revision!=settings.destination_revision)
         return outcome(Publication::Replan,"destination-changed-after-sidecar");
     if(!WriteArchiveFile(attempt.base+extension,bytes.data(),bytes.size()))return fail("could not save unmatched audio");
-    attempt.audio_saved=true;
 #ifdef FLOGGFY_PUBLICATION_TEST
     PublicationTestPhase(L"unmatched-audio",attempt.base);
 #endif

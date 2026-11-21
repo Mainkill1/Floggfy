@@ -165,18 +165,9 @@ void Conversion(const std::wstring& root) {
 }
 void MenuLookup(const std::wstring& root) {
     const auto c=Song(L"Menu");DestinationRequest request;request.catalog=c;request.serial=41;request.generation=7;
-    request.flac=OutputPath(root,c,L".flac");request.ogg=OutputPath(root,c,L".ogg");
-    request.aac=OutputPath(root,c,L".m4a");request.mp3=OutputPath(root,c,L".mp3");
-    auto duplicate_paths=[&](const wchar_t* extension,auto& stored) {
-        const auto paths=DuplicateLookupPaths(root,c,extension);
-        assert(paths.size()==stored.size());
-        for(size_t i=0;i<stored.size();++i)stored[i]=paths[i];
-    };
-    duplicate_paths(L".flac",request.duplicate_flac);
-    duplicate_paths(L".ogg",request.duplicate_ogg);
-    duplicate_paths(L".m4a",request.duplicate_aac);
-    duplicate_paths(L".mp3",request.duplicate_mp3);
-    const auto slash=request.ogg.find_last_of(L'\\');const auto old=request.ogg.substr(0,slash+1)+L"03 - "+request.ogg.substr(slash+1);
+    request.root=root;PopulateDestinationPaths(request);
+    const auto ogg=OutputPath(root,c,L".ogg");
+    const auto slash=ogg.find_last_of(L'\\');const auto old=ogg.substr(0,slash+1)+L"03 - "+ogg.substr(slash+1);
     Write(old,Audio(c,16,true));destination_enabled=true;request_serial=41;
     VerificationCache cache;ResetCounts();assert(ProbeSavedSong(request,cache)==old);
     assert(listings==1&&recording_opens==1&&attribute_checks==0);
@@ -208,11 +199,11 @@ void MenuLookup(const std::wstring& root) {
     RefreshSongDestination();request.serial=request_serial.load();request.revision=cache_revision.load();
     ResetCounts();assert(ProbeSavedSong(request,cache)==old&&listings==1&&recording_opens==1);
     auto next=request;next.catalog=Song(L"New menu song");
-    next.flac=OutputPath(root,next.catalog,L".flac");next.ogg=OutputPath(root,next.catalog,L".ogg");
-    next.aac=OutputPath(root,next.catalog,L".m4a");next.mp3=OutputPath(root,next.catalog,L".mp3");
-    Write(next.flac,Audio(next.catalog));ResetCounts();
-    assert(ProbeSavedSong(next,cache)==next.flac&&listings==1&&recording_opens==1);
-    assert(DeleteFileW(WindowsPath(next.flac).c_str())&&DeleteFileW(WindowsPath(old).c_str()));
+    PopulateDestinationPaths(next);
+    const auto flac=OutputPath(root,next.catalog,L".flac");
+    Write(flac,Audio(next.catalog));ResetCounts();
+    assert(ProbeSavedSong(next,cache)==flac&&listings==1&&recording_opens==1);
+    assert(DeleteFileW(WindowsPath(flac).c_str())&&DeleteFileW(WindowsPath(old).c_str()));
     ResetCounts();assert(ProbeSavedSong(next,cache).empty()&&listings==2);
     next.generation++;ResetCounts();assert(ProbeSavedSong(next,cache).empty()&&listings==2); // New settings bypass cooldown.
     next.generation++;deny_listing=true;ResetCounts();assert(ProbeSavedSong(next,cache).empty()&&listings==1);
@@ -354,14 +345,8 @@ void UnresolvedDuplicates(const std::wstring& root) {
         assert(publish()==Publication::AlreadyPresent&&publish(24)==Publication::Saved);
         assert(ReadRecording(saved,recording)&&recording.quality.bits==24&&MatchesRecording(recording,c));
 
-        DestinationRequest request;request.catalog=c;request.serial=51;request.flac=base;
-        request.ogg=OutputPath(root,c,L".ogg");request.aac=OutputPath(root,c,L".m4a");
-        request.mp3=OutputPath(root,c,L".mp3");
-        for(const auto& format:kRecordingFormats) {
-            const auto names=DuplicateLookupPaths(root,c,format.extension);
-            auto& paths=DuplicateFormatPaths(request,format.codec);
-            for(size_t i=0;i<paths.size()&&i<names.size();++i)paths[i]=names[i];
-        }
+        DestinationRequest request;request.catalog=c;request.serial=51;request.root=root;
+        PopulateDestinationPaths(request);
         destination_enabled=true;request_serial=51;VerificationCache cache;
         assert(ProbeSavedSong(request,cache)==saved);destination_enabled=false;
         // Track-start conversion must find the same unresolved duplicate.
@@ -381,12 +366,7 @@ void UnresolvedDuplicates(const std::wstring& root) {
             assert(publish()==Publication::AlreadyPresent);
             assert(ReadRecording(saved,recording)&&recording.quality.bits==24);
             auto enriched=c;enriched.spotify_uri=media.spotify_uri;
-            request.catalog=enriched;
-            for(const auto& format:kRecordingFormats) {
-                const auto names=DuplicateLookupPaths(root,enriched,format.extension);
-                auto& paths=DuplicateFormatPaths(request,format.codec);paths={};
-                for(size_t i=0;i<paths.size()&&i<names.size();++i)paths[i]=names[i];
-            }
+            request.catalog=enriched;PopulateDestinationPaths(request);
             destination_enabled=true;cache={};assert(ProbeSavedSong(request,cache)==saved);destination_enabled=false;
             assert(MoveFileW(WindowsPath(saved).c_str(),WindowsPath(numbered).c_str()));
             {ExclusiveSrw guard(history::lock);history::settings.convert_numbered_filenames=true;}
