@@ -478,7 +478,7 @@ bool Prepare(HMODULE cef,bool preference) noexcept {
  if(preparation_attempted)return false;
  preparation_attempted=true;
  try{
-  const auto settings=history::GetSettings();ConfigureCategories(settings);
+  const auto settings=EffectiveOptions(history::GetSettings());ConfigureCategories(settings);
   if(preference&&settings.dump_telemetry&&!settings.root.empty()){dump.location=settings.root;GetSystemTime(&dump.started);dump.enabled=true;}
  }catch(...){preference=false;}
  enabled.store(preference,std::memory_order_release);dirty=true;

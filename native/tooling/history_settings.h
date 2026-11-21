@@ -31,6 +31,7 @@ struct Settings {
     bool network_patch=false; // INI-only startup opt-in; requires a full restart.
     int capture_speed=-1; // -1 hides the menu; 0 and 1 both capture at normal speed.
     int network_kill_switch=0; // -1 hides/disables; 0=off, 1=on.
+    bool network_kill_switch_telemetry_lock=true;
     int hook_all_sub_processes=1; // 0=off, 1=launcher only, 2=every load method.
     unsigned max_buffered_mib=kDefaultBufferedMiB,log_level=1,generation=0,capture_epoch=0;
     // Scoped publication revisions exclude pacing and other playback preferences.

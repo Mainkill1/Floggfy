@@ -38,7 +38,8 @@ struct SectionOption {
     const wchar_t* legacy_key=nullptr;
     const wchar_t* duplicate_value=L"0";
 };
-static constexpr std::array<SectionOption,14> section_options{{
+static constexpr std::array<SectionOption,15> section_options{{
+    {L"NetworkKillSwitchTelemetryLock",L"[Misc]",nullptr,L"1"},
     {L"MarkedWhenDownloaded",L"[Misc]"},
     {L"SaveUnmatched",L"[Matcher]"},
     {L"WindowsPlaybackFallback",L"[Fallbacks]",L"Windows Playback Fallback"},
@@ -154,7 +155,8 @@ struct RestartFlag {
     bool Settings::* member;
     bool default_value;
 };
-static constexpr std::array<RestartFlag,6> restart_flags{{
+static constexpr std::array<RestartFlag,7> restart_flags{{
+    {L"NetworkKillSwitchTelemetryLock",&Settings::network_kill_switch_telemetry_lock,true},
     {L"SaveUnmatched",&Settings::save_unmatched,true},
     {L"NetworkPatch",&Settings::network_patch,false},
     {L"DumpStreams",&Settings::dump_streams,false},

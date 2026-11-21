@@ -19,7 +19,8 @@ struct Child {
 };
 static bool Same(const wchar_t* a,const std::wstring& b){return !_wcsicmp(a,b.c_str());}
 static bool File(const std::wstring& path){auto a=GetFileAttributesW(path.c_str());return a!=INVALID_FILE_ATTRIBUTES && !(a&FILE_ATTRIBUTE_DIRECTORY);}
-static bool StopExisting(const std::wstring& exe,std::wstring& error) {
+} // namespace
+bool StopExisting(const std::wstring& exe,std::wstring& error) {
   const auto deadline=GetTickCount64()+10000;
   for(;;) {
     Handle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0));
@@ -70,7 +71,6 @@ static bool StopExisting(const std::wstring& exe,std::wstring& error) {
     // Recheck for children created while the original processes were exiting.
   }
 }
-} // namespace
 bool Launch(const std::wstring& folder,PROCESS_INFORMATION& out,std::wstring& error) {
   out={};error.clear();const auto exe=folder+L"\\Spotify.exe",dll=folder+L"\\Floggfy.dll";
   if(!File(exe) || !File(dll)){error=L"Place Floggfy.exe and Floggfy.dll beside Spotify.exe.";return false;}

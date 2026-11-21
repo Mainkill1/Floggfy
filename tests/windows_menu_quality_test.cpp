@@ -51,6 +51,7 @@ static bool network_available=true,network_enabled=false,network_change_succeeds
 static bool network_setting_succeeds=true;
 static unsigned network_set_calls=0,network_fail_on_call=0;
 namespace network {
+bool RequestReconnect(bool) noexcept {assert(false);return false;} // Live-only cases opt out below.
 bool Available() {return network_available;}
 bool Enabled() {return network_enabled;}
 bool SetEnabled(bool enabled) {
@@ -299,6 +300,7 @@ int main(int argc,char** argv) {
   const auto default_speed_child=default_speed.child->extra_children.find(speed_root_id);
   assert(default_speed_child==default_speed.child->extra_children.end());
   assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeed",L"0",ini.c_str()));
+  assert(WritePrivateProfileStringW(L"Misc",L"NetworkKillSwitchTelemetryLock",L"0",ini.c_str()));
   if(never_pause_hidden)assert(WritePrivateProfileStringW(L"Misc",L"NetworkKillSwitch",L"-1",ini.c_str()));
   assert(WritePrivateProfileStringW(L"To Disk",L"Podcasts",L"0",ini.c_str()));
   const auto test_log_root=ini.substr(0,ini.find_last_of(L'\\'))+L"\\Menu-test-logs";

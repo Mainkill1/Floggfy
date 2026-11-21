@@ -6,6 +6,7 @@
 #include "../tooling/hook_startup_minhook.h"
 #include "../tooling/history_settings.h"
 #include "../tooling/network_kill_switch.h"
+#include "../tooling/network_reconnect.h"
 #include "../tooling/update_blocker.h"
 #include "../tooling/async_log.h"
 #include "../tooling/hook_diagnostics.h"
@@ -402,6 +403,14 @@ static void RevealSavedFile(const std::wstring& path,bool song_folder) {
 }
 static bool ChangeNetworkKillSwitch(bool enabled) {
     if(!network::Available())return false;
+    if(history::GetSettings().network_kill_switch_telemetry_lock) {
+        const bool started=network::RequestReconnect(enabled);
+        if(started)history::LogEvent(history::LogKind::Activity,"network",enabled?
+            "Network Kill Switch enabling with telemetry lock; restart scheduled":
+            "Network Kill Switch reconnect scheduled; networking stays blocked until processes stop and queue cleanup finishes");
+        if(!started)history::LogEvent(history::LogKind::Failure,"failed","Network Kill Switch restart could not start; networking remains blocked");
+        return started;
+    }
     const bool previous=network::Enabled();
     if(!network::SetEnabled(enabled))return false;
     try {

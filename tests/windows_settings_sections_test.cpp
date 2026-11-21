@@ -11,6 +11,20 @@ int main() {
     using namespace history;
     assert(Settings{}.capture_speed==-1&&Settings{}.network_kill_switch==0&&!Settings{}.block_updates);
     assert(Settings{}.hook_all_sub_processes);
+    assert(Settings{}.network_kill_switch_telemetry_lock);
+    for(bool kill:{false,true})for(bool lock:{false,true}) {
+        Settings original;
+        original.network_kill_switch=kill?1:0;
+        original.network_kill_switch_telemetry_lock=lock;
+        original.block_event_reports=false;original.block_queued_telemetry=false;
+        const auto effective=privacy::EffectiveOptions(original);
+        assert(effective.block_telemetry==(kill&&lock));
+        assert(effective.block_event_reports==(kill&&lock));
+        assert(effective.block_queued_telemetry==(kill&&lock));
+        assert(!original.block_telemetry&&!original.block_event_reports&&!original.block_queued_telemetry);
+        if(kill&&lock)for(const auto& category:privacy::kTelemetryOptions)
+            if(category.IsCategory())assert(effective.*category.member);
+    }
     assert(Settings{}.log_level==1&&Settings{}.matcher_duration_ms==25);
     assert(Settings{}.marked_when_downloaded);
     const std::string defaults=default_ini;
@@ -21,6 +35,9 @@ int main() {
     }
     std::wstring text=L"; preserve my comments\n[To Disk]\nCustom=keep\nWindows Playback Fallback=1\nLogLevel=2\nDebugConnect=0\nDebugNetworking=1\nDebugHookDiagnostics=1\nDumpStreams=1\nMetadataCacheReadMiB=512\nNetworkPatch=1\nCaptureSpeedLimit=0\nCaptureSpeed=4\nUpdateExistingMetadata=0\nTrackNumberInFilename=1\nConvertNumberedFilenames=0\nSaveUnmatched=1\n[Matcher]\nSaveUnmatched=0\n[Debug]\nLogLevel=4\n[Fallbacks]\nWindowsPlaybackFallback=0\n[Other]\nNetworkPatch=keep\n";
     Settings parsed;ReadRestartOptionsText(parsed,text);
+    assert(parsed.network_kill_switch_telemetry_lock);
+    Settings unlocked;ReadRestartOptionsText(unlocked,L"[Misc]\nNetworkKillSwitchTelemetryLock=0\n");
+    assert(!unlocked.network_kill_switch_telemetry_lock);
     assert(parsed.debug_networking&&parsed.debug_hook_diagnostics&&parsed.dump_streams&&!parsed.debug_connect);
     assert(parsed.network_patch&&parsed.metadata_cache_read_mib==512&&!parsed.save_unmatched&&parsed.hook_all_sub_processes);
     InsertMissingRestartDefaults(text);

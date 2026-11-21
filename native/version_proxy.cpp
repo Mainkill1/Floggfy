@@ -19,6 +19,7 @@
 #include "tooling/hook_diagnostics.h"
 #include "media/metadata_bridge.h"
 #include "telemetry/telemetry_filter.h"
+#include "telemetry/telemetry_options.h"
 #include "telemetry/telemetry_crash.h"
 #include "telemetry/telemetry_queue.h"
 #include "telemetry/telemetry_queue_exit.h"
@@ -406,6 +407,8 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
     wchar_t path[MAX_PATH];
     DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH);
     wchar_t* name = length && length < MAX_PATH ? wcsrchr(path, L'\\') : nullptr;
+    // The exported restart worker runs outside Spotify and owns no app hooks.
+    if(name&&!_wcsicmp(name+1,L"rundll32.exe"))return 0;
     const bool spotify_main = name && !_wcsicmp(name + 1, L"Spotify.exe") && !wcsstr(GetCommandLineW(), L"--type=");
     if (!spotify_main) {
         // Every recursively loaded child has independent Winsock state.
@@ -416,7 +419,9 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
     }
 
     history::InitSettings(proxy_module);
-    const auto startup_settings=history::GetSettings();
+    const auto startup_settings=privacy::EffectiveOptions(history::GetSettings());
+    if(startup_settings.network_kill_switch_telemetry_lock&&startup_settings.network_kill_switch==1)
+        history::LogEvent(history::LogKind::Activity,"privacy-lock","Network Kill Switch forces all supported telemetry blocking for this session; saved Telemetry preferences preserved");
     if(startup_settings.block_telemetry&&startup_settings.block_queued_telemetry) {
         if(!privacy::InstallRoamingQueueExitCleanup(true,startup_settings.root+L"\\Floggfy.log",startup_settings.log_level))
             history::LogEvent(history::LogKind::Warning,"privacy-queue","Normal-exit queue cleanup hook unavailable; startup cleanup remains active.");

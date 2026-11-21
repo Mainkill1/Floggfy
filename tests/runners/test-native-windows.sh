@@ -98,6 +98,8 @@ done
 
 x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_settings_sections_test.cpp -lole32 -luuid -lshell32 -o "$floggfy_settings_test_root/windows-settings-sections-test.exe"
 "$floggfy_settings_test_root/windows-settings-sections-test.exe"
+x86_64-w64-mingw32-g++ "${common[@]}" tests/windows_network_reconnect_test.cpp -o "$floggfy_test_root/windows-network-reconnect-test.exe"
+"$floggfy_test_root/windows-network-reconnect-test.exe"
 bash tests/runners/test-update-blocker.sh
 
 bash tests/runners/test-artwork-policy.sh

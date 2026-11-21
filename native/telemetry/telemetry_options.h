@@ -28,4 +28,14 @@ inline constexpr std::array<TelemetryOption,11> kTelemetryOptions{{
     {L"BlockQueuedTelemetry", L"block_queued_telemetry", &history::Settings::block_queued_telemetry, Rule::QueuedTracking},
     {L"DumpTelemetry",        L"dump_telemetry",         &history::Settings::dump_telemetry,         Rule::Allow, false}
 }};
+
+// A session override only: callers keep the persisted Settings unchanged.
+inline history::Settings EffectiveOptions(history::Settings options) {
+    if(options.network_kill_switch_telemetry_lock&&options.network_kill_switch==1) {
+        options.block_telemetry=true;
+        for(const auto& category:kTelemetryOptions)
+            if(category.IsCategory())options.*category.member=true;
+    }
+    return options;
+}
 }

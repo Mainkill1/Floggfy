@@ -135,6 +135,9 @@ NetworkPatch=0
 ; Nuke all networking abilities (AKA Offline mode only with no telemetry)
 ; -1 hidden from menu, 0 disabled, 1 enabled
 NetworkKillSwitch=0
+; Force all supported telemetry blocking while offline; preserve Telemetry settings.
+; Menu toggles restart Spotify; reconnect clears known queues after all helpers stop.
+NetworkKillSwitchTelemetryLock=1
 ; Load Floggfy into ordinary Spotify children so Network Kill Switch covers network helpers.
 ; Caller-suspended Chromium sandbox processes are left unchanged.
 ; 0 disabled, 1 launcher/Floggfy.dll only, 2 all load methods including version.dll.
@@ -168,7 +171,13 @@ ConvertNumberedFilenames=0
   updates should resume. This targets the desktop update folder, not updates
   through other paths or accounts.
 - **NetworkKillSwitch:** `[Misc]`, default `0` shows the control off. `-1` hides it and
-  disables its hooks; `1` shows it on. Menu changes apply live. It blocks
+  disables its hooks; `1` shows it on. With `NetworkKillSwitchTelemetryLock=1`
+  (default), menu changes restart Spotify. Enabling immediately blocks networking
+  and starts a session with every supported telemetry category enabled. Disabling
+  stops Spotify and its helpers, deletes known `pending-tracking.pb` queues, and
+  restarts with the saved telemetry preferences. Cleanup failure keeps the switch
+  enabled. Telemetry INI values are never changed by this override. Set the lock
+  option to `0` for the previous live network-only toggle. It blocks
   covered IPv4/IPv6 Winsock operations in processes loading Floggfy, including
   functional traffic needed for login, playback and online metadata.
   `HookAllSubProcesses=1` (default) loads `Floggfy.dll` into ordinary

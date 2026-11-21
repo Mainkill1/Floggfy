@@ -18,3 +18,4 @@ EXPORTS
     VerQueryValueA @16
     VerQueryValueW @17
     SpotifyConnectivityFixVersion @18
+    FloggfyReconnectW @19

@@ -672,7 +672,7 @@ static void InjectPrivacy(Frame* frame) {
  const auto main=reinterpret_cast<int(*)(Frame*)>(frame->methods[15]);
  const auto execute=reinterpret_cast<void(*)(Frame*,const String*,const String*,int)>(frame->methods[14]);
  if(!main||!execute||!main(frame))return;
- const auto settings=GetSettings();
+ const auto settings=privacy::EffectiveOptions(GetSettings());
  // Pass every switch explicitly: omitted or false options never opt in. Keep
  // the constant local to each injection so repeated frame injection is valid.
  std::wstring script=L"(()=>{const __floggfyPrivacyOptions=Object.freeze({";
