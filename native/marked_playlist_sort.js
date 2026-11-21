@@ -313,18 +313,23 @@
             refresh,
             get state() { return {mode, loading, error}; },
             get uris() { return session?.uris || null; },
-            apply(dates) {
+            apply(dates, dateGeneration) {
                 refresh();
                 const active = session;
                 if (!active?.uris) return false;
 
+                if (dateGeneration !== undefined && active.dateGeneration === dateGeneration &&
+                    active.mode === mode) return true;
                 const timestamps = new Map();
                 for (const uri of active.uris) {
                     if (!dates.has(uri)) return false;
                     timestamps.set(uri, dates.get(uri)?.utc || "");
                 }
                 if (active.mode === mode &&
-                    [...timestamps].every(([uri, date]) => active.timestamps.get(uri) === date)) return true;
+                    [...timestamps].every(([uri, date]) => active.timestamps.get(uri) === date)) {
+                    active.dateGeneration = dateGeneration;
+                    return true;
+                }
 
                 const direction = mode === "ascending" ? 1 : -1;
                 const ordered = active.rows.slice().sort((first, second) => {
@@ -362,6 +367,7 @@
                     const modeChanged = active.mode !== mode;
                     active.mode = mode;
                     active.timestamps = timestamps;
+                    active.dateGeneration = dateGeneration;
                     redraw(view.dispatch);
                     if (modeChanged) view.list.scrollToIndex(0);
                     if (error) {

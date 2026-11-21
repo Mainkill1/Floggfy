@@ -2,6 +2,7 @@
 #include "../native/marked_recording.h"
 #include "../native/history_settings.h"
 #include "../native/async_log.h"
+#include "../native/vendor/sqlite/sqlite3.h"
 #include <atomic>
 #include <cassert>
 #include <filesystem>
@@ -16,7 +17,7 @@ const std::string early = "2025-01-01T10:00:01Z";
 const std::string late = "2025-02-01T10:00:01Z";
 std::atomic<bool> block_reader{false}, reader_entered{false}, fail_reader{false}, backfill{false};
 std::atomic<unsigned> starts{0}, finishes{0}, cancels{0}, read_warnings{0}, reads{0};
-std::atomic<unsigned> replies_ready{0};
+std::atomic<unsigned> replies_ready{0}, query_failures{0};
 void ReplyReady() {
     // Delivery must be signalled outside the worker lock, after publication.
     assert(history::MarkedCatalogRevision() != 0);
@@ -54,6 +55,7 @@ Settings GetSettings() {
 }
 std::wstring WindowsPath(const std::wstring& path) { return path; }
 void LogEvent(LogKind kind, const char*, const std::string& detail) {
+    if (kind == LogKind::Warning && detail == "could not read saved dates; query can be retried") ++query_failures;
     if (kind == LogKind::Activity && detail == "rebuild started") ++starts;
     if (kind == LogKind::Activity && detail == "rebuild cancelled") ++cancels;
     if (kind == LogKind::Finished && detail.find("scanned=") != std::string::npos &&
@@ -112,6 +114,19 @@ int main() {
     history::QueueMarkedFile(root.wstring(), b.wstring());
     WaitFor([&] { return Query() == late; });
     assert(fs::is_regular_file(root / L"Floggfy-marked.db"));
+
+    sqlite3* competing = nullptr;
+    assert(sqlite3_open((root / L"Floggfy-marked.db").u8string().c_str(), &competing) == SQLITE_OK);
+    assert(sqlite3_exec(competing, "BEGIN EXCLUSIVE", nullptr, nullptr, nullptr) == SQLITE_OK);
+    assert(history::QueueMarkedQuery("locked_query", {uri}));
+    history::MarkedQueryReply locked;
+    WaitFor([&] { return query_failures.load() || history::TakeMarkedReply(locked); });
+    assert(locked.request.empty());
+    assert(sqlite3_exec(competing, "ROLLBACK", nullptr, nullptr, nullptr) == SQLITE_OK);
+    assert(sqlite3_close(competing) == SQLITE_OK);
+    assert(history::QueueMarkedQuery("locked_query", {uri}));
+    WaitFor([&] { return history::TakeMarkedReply(locked); });
+    assert(locked.request == "locked_query" && locked.dates.size() == 1 && locked.dates[0].second == late);
 
     fs::remove(b);
     assert(Query() == early);

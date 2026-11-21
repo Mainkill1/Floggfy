@@ -24,6 +24,9 @@
     let observedGrid;
     let columnCount;
     let dates = new Map();
+    let dateGeneration = 0;
+    let freshScope;
+    let freshUntil = 0;
     let pending;
     let sorter;
     let releasePending = false;
@@ -249,6 +252,8 @@
         ++epoch;
         pending = undefined;
         dates = new Map();
+        ++dateGeneration;
+        freshScope = undefined;
     }
 
     function setColumnCount(grid, nativeCount) {
@@ -261,7 +266,7 @@
         columnCount = { grid, original, written };
     }
 
-    function paint(row, gridLayout, uri, header = false, sortable = true) {
+    function paint(row, gridLayout, uri, header = false, sortable = true, missingDates = false) {
         const { node, count } = gridLayout;
         let entry = mounted.get(row);
         if (entry && (entry.node !== node || entry.count !== count || entry.cell.parentElement !== node ||
@@ -304,7 +309,7 @@
             }
             const state = sorter?.state || { mode: "none", loading: false, error: "Sorting is unavailable in this layout." };
             const button = entry.cell.firstElementChild;
-            const waiting = state.loading || (sorter?.uris && [...sorter.uris].some(id => !dates.has(id)));
+            const waiting = state.loading || (sorter?.uris && missingDates);
             const label = waiting ? "Saved …" : "Saved";
             button.setAttribute("aria-busy", waiting ? "true" : "false");
             const arrow = state.mode === "descending" ? "▼" : state.mode === "ascending" ? "▲" : "";
@@ -355,6 +360,9 @@
     }
 
     function requestDates(visible) {
+        const now = performance.now();
+        if (freshScope === visible && now < freshUntil) return false;
+        freshScope = undefined;
         // Keep recent off-screen lookups for this page so resetting a sort does
         // not discard its dates. Navigation/revision changes still clear them.
         const limit = Math.max(10_000, visible.size);
@@ -362,27 +370,41 @@
             if (dates.size <= limit) break;
             if (!visible.has(uri)) dates.delete(uri);
         }
+        const missing = [];
+        const expired = [];
+        let nextExpiry = Infinity;
+        for (const uri of visible) {
+            const date = dates.get(uri);
+            if (!date) {
+                missing.push(uri);
+                if (missing.length === maxUris) break;
+            } else {
+                const expires = date.checkedAt + dateTtlMs;
+                nextExpiry = Math.min(nextExpiry, expires);
+                if (expires <= now && expired.length < maxUris) expired.push(uri);
+            }
+        }
+        const uris = missing.length ? missing : expired;
         if (document.visibilityState === "hidden") {
             pending = undefined;
-            return;
+            return missing.length > 0;
         }
-        const now = performance.now();
-        const missing = [...visible].filter(uri => !dates.has(uri));
-        const uris = (missing.length ? missing : [...visible].filter(uri => now - dates.get(uri).checkedAt >= dateTtlMs))
-            .slice(0, maxUris);
         if (!uris.length) {
             pending = undefined;
-            return;
+            freshScope = visible;
+            freshUntil = nextExpiry;
+            return false;
         }
         const key = [...uris].sort().join("|");
         if (pending?.key === key) {
-            if (now - pending.started < 3000) return;
+            if (now - pending.started < 3000) return missing.length > 0;
             pending.started = now;
         } else {
             const request = instance + "_" + epoch + "_" + (++sequence);
             pending = { request, key, uris, started: now };
         }
         console.log("FLOGGFY_MARKED_V1:" + pending.request + "|" + pending.uris.join("|"));
+        return missing.length > 0;
     }
 
     function pageIdentity(section) {
@@ -452,16 +474,18 @@
                     tooltip: date.toLocaleString(),
                     utc: timestamp
                 } : {};
+                const previous = dates.get(uri);
+                if (!previous || previous.utc !== display.utc) ++dateGeneration;
                 dates.set(uri, { ...display, checkedAt });
             }
             pending = undefined;
         }
-        updateNativeSortIndicators(header.row, sorter?.apply(dates));
-        paint(header.row, header.layout, "", true, sortable);
+        const missingDates = requestDates(lookupUris);
+        updateNativeSortIndicators(header.row, sorter?.apply(dates, dateGeneration));
+        paint(header.row, header.layout, "", true, sortable, missingDates);
         for (const [row, { rowLayout, identityUri }] of layouts) {
             paint(row, rowLayout, visible.has(identityUri) ? identityUri : "");
         }
-        requestDates(lookupUris);
     }
 
     function run(reply) {

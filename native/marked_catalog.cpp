@@ -168,8 +168,8 @@ public:
     Statement(const Statement&) = delete;
     Statement& operator=(const Statement&) = delete;
     explicit operator bool() const { return statement_ != nullptr; }
-    void Text(int index, const std::string& value) {
-        sqlite3_bind_text(statement_, index, value.c_str(), -1, SQLITE_TRANSIENT);
+    bool Text(int index, const std::string& value) {
+        return sqlite3_bind_text(statement_, index, value.c_str(), -1, SQLITE_TRANSIENT) == SQLITE_OK;
     }
     void Number(int index, std::uint64_t value) {
         sqlite3_bind_int64(statement_, index, static_cast<sqlite3_int64>(value));
@@ -226,16 +226,16 @@ public:
         return false;
     }
 
-    std::vector<Row> Rows(const std::string& uri, const std::string& after) {
+    std::optional<std::vector<Row>> Rows(const std::string& uri, const std::string& after) {
         Statement select(db_, "SELECT path,saved_utc,bytes,write_time FROM marked_files"
             " WHERE uri=? AND path>? ORDER BY path LIMIT 32");
-        if (!select) return {};
-        select.Text(1, uri);
-        select.Text(2, after);
+        if (!select || !select.Text(1, uri) || !select.Text(2, after)) return std::nullopt;
         std::vector<Row> rows;
-        while (select.Step() == SQLITE_ROW) {
+        int status;
+        while ((status = select.Step()) == SQLITE_ROW) {
             rows.push_back({select.Text(0), uri, select.Text(1), {select.Number(2), select.Number(3)}});
         }
+        if (status != SQLITE_DONE) return std::nullopt;
         return rows;
     }
 
@@ -442,27 +442,42 @@ bool QueryCurrent(std::uint64_t epoch, std::uint64_t sequence) {
     return !state.stopped && state.epoch == epoch && state.query_sequence == sequence;
 }
 
+// No successful reply exists for this token. Let the renderer retry it on its
+// existing backoff without caching absent dates or disturbing a newer request.
+void ReleaseFailedQuery(std::uint64_t epoch, std::uint64_t sequence) {
+    auto& state = Shared();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    if (state.epoch == epoch && state.query_sequence == sequence) state.query.reset();
+}
+
 void AnswerQuery(Database& db, bool available, const fs::path& root, const Query& query,
                  std::uint64_t epoch) {
+    if (!available) {
+        ReleaseFailedQuery(epoch, query.sequence);
+        return;
+    }
     MarkedQueryReply reply;
     reply.request = query.request;
     std::unordered_map<std::string, std::string> latest;
     for (const auto& uri : query.uris) latest.try_emplace(uri);
-    if (available) {
-        for (const auto& uri : query.uris) {
-            std::string after;
-            for (;;) {
+    for (const auto& uri : query.uris) {
+        std::string after;
+        for (;;) {
+            if (!QueryCurrent(epoch, query.sequence)) return;
+            const auto rows = db.Rows(uri, after);
+            if (!rows) {
+                ReleaseFailedQuery(epoch, query.sequence);
+                Warn("could not read saved dates; query can be retried");
+                return;
+            }
+            if (rows->empty()) break;
+            after = rows->back().path;
+            for (const auto& cached : *rows) {
                 if (!QueryCurrent(epoch, query.sequence)) return;
-                const auto rows = db.Rows(uri, after);
-                if (rows.empty()) break;
-                after = rows.back().path;
-                for (const auto& cached : rows) {
-                    if (!QueryCurrent(epoch, query.sequence)) return;
-                    const auto row = Refresh(db, root, fs::u8path(cached.path), epoch, 0, &cached);
-                    if (!row) continue;
-                    const auto date = latest.find(row->uri);
-                    if (date != latest.end() && date->second < row->date) date->second = row->date;
-                }
+                const auto row = Refresh(db, root, fs::u8path(cached.path), epoch, 0, &cached);
+                if (!row) continue;
+                const auto date = latest.find(row->uri);
+                if (date != latest.end() && date->second < row->date) date->second = row->date;
             }
         }
     }
@@ -546,7 +561,7 @@ DWORD WINAPI Run(void*) {
             }
         } catch (const std::exception&) {
             Warn("could not process catalog work");
-            if (query) AnswerQuery(db, false, root, *query, epoch);
+            if (query) ReleaseFailedQuery(epoch, query->sequence);
             else if (file.empty() && next_scan && FinishScan(epoch, next_scan)) {
                 ++scan.stats.errors;
                 LogEvent(LogKind::Finished, "marked-catalog", scan.stats.Summary());

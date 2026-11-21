@@ -104,6 +104,23 @@ test("sorts the complete playlist, preserves duplicate-track entries and restore
     assert.deepEqual(counts(), [3, 3, 2]);
 });
 
+test("unchanged date generation skips date lookups but still detects native replacement", async () => {
+    const {controller, dates, source} = fixture();
+    controller.cycle();
+    await tick();
+    assert.equal(controller.apply(dates, 1), true);
+    const originalGet = dates.get.bind(dates);
+    let reads = 0;
+    dates.get = key => { ++reads; return originalGet(key); };
+    assert.equal(controller.apply(dates, 1), true);
+    assert.equal(reads, 0);
+    dates.set(uri(3), {utc: "2027-01-01T00:00:00Z"});
+    assert.equal(controller.apply(dates, 2), true);
+    assert.equal(source.items[0].index, 3);
+    source.items = source.items.slice();
+    assert.equal(controller.apply(dates, 2), false);
+});
+
 test("clears a committed native sort through its existing callback", async () => {
     const {controller, props, dates} = fixture({native: true});
     controller.cycle();
