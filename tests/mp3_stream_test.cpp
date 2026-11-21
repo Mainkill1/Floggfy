@@ -1,4 +1,4 @@
-#include "../native/mp3_stream.h"
+#include "../native/media/mp3_stream.h"
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -80,7 +80,7 @@ int main() {
             tags.fields.insert(tags.fields.end(),{{"TITLE","Episode"},{"CUSTOM","one"},{"CUSTOM","TDRC two"}});
             std::vector<uint8_t> owned;std::string error;Mp3Info info;Tags inspected;
             check(MakeOwnedMp3(bytes.data(),bytes.size(),tags,owned,error)&&
-                  InspectOwnedMp3(owned.data(),owned.size(),info,inspected,error),"date fixture round trip");
+                  InspectOwnedMp3Result(owned.data(),owned.size(),info,inspected,error)==Mp3InspectionResult::Valid,"date fixture round trip");
             check(frame_count(owned,info.audio_offset,"TDRC")==1,"DATE and YEAR produce exactly one TDRC frame");
             check(field(inspected,"DATE")==((i==2||i==3)?"2024":"2024-07-23"),
                   "full DATE takes precedence regardless of order; absent or empty DATE falls back to YEAR");
@@ -95,7 +95,7 @@ int main() {
                 inspected.fields.emplace_back("YEAR","2024");
                 std::vector<uint8_t> upgraded;Tags reread;Mp3Info updated;
                 check(MakeOwnedMp3(owned.data(),owned.size(),inspected,upgraded,error)&&
-                      InspectOwnedMp3(upgraded.data(),upgraded.size(),updated,reread,error),"owned year-only MP3 date rewrite");
+                      InspectOwnedMp3Result(upgraded.data(),upgraded.size(),updated,reread,error)==Mp3InspectionResult::Valid,"owned year-only MP3 date rewrite");
                 check(frame_count(upgraded,updated.audio_offset,"TDRC")==1&&field(reread,"DATE")=="2024-07-23",
                       "rewriting an owned year-only MP3 retains one full-date frame");
                 check(reread.fields.size()==4&&reread.fields[2]==inspected.fields[2]&&reread.fields[3]==inspected.fields[3]&&
@@ -145,7 +145,7 @@ int main() {
         Tags tags;tags.fields={{"TITLE","Legacy source"}};
         std::vector<uint8_t> owned;Mp3Info saved;Tags inspected;
         check(MakeOwnedMp3(bytes.data(),bytes.size(),tags,owned,error)&&
-              InspectOwnedMp3(owned.data(),owned.size(),saved,inspected,error)&&
+              InspectOwnedMp3Result(owned.data(),owned.size(),saved,inspected,error)==Mp3InspectionResult::Valid&&
               owned[3]==4&&saved.audio_size==info.audio_size&&
               !memcmp(owned.data()+saved.audio_offset,bytes.data()+info.audio_offset,info.audio_size),
               "source tag versions normalize to owned ID3v2.4 without changing compressed audio");
@@ -174,7 +174,7 @@ int main() {
         std::vector<uint8_t> owned;std::string error;
         check(MakeOwnedMp3(bytes.data(),bytes.size(),tags,owned,error),"owned MP3 construction");
         Mp3Info info;Tags inspected;
-        check(InspectOwnedMp3(owned.data(),owned.size(),info,inspected,error),"owned MP3 inspection");
+        check(InspectOwnedMp3Result(owned.data(),owned.size(),info,inspected,error)==Mp3InspectionResult::Valid,"owned MP3 inspection");
         check(field(inspected,"TITLE")=="Episode"&&field(inspected,"ARTIST")=="Publisher"&&
               field(inspected,"ALBUM")=="Show"&&field(inspected,"SPOTIFY_URI")=="spotify:episode:0000000000000000000001"&&
               field(inspected,"HISTORY_COMPLETE_LISTEN")=="1"&&field(inspected,"HISTORY_CAPTURE")=="native compressed MP3 input",

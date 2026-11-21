@@ -1,4 +1,4 @@
-#include "../native/auto_skip.h"
+#include "../native/media/auto_skip.h"
 #include <cassert>
 #include <cstdio>
 using namespace history;

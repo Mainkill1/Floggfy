@@ -1,8 +1,9 @@
 #include "recording_fixture.h"
-#include "../native/recording_file.h"
-#include "../native/flac_history_core.h"
-#include "../native/vorbis_headers.h"
-#include "../native/mp3_stream.h"
+#include "../native/media/recording_file.h"
+#include "../native/media/recording_memory.h"
+#include "../native/media/flac_history_core.h"
+#include "../native/media/vorbis_headers.h"
+#include "../native/media/mp3_stream.h"
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -241,9 +242,58 @@ static void flac_capture_recovery() {
           "reread after prior completion remains one exact canonical recording");
     }
 }
+static void recording_inspection_budget() {
+    struct Allowance {size_t limit;};
+    const auto permit=[](void* context,size_t bytes) {
+        return bytes<=static_cast<Allowance*>(context)->limit;
+    };
+    const Tags tags{{{"COMMENT",std::string(512*1024,'a')}},{},{}};
+    std::vector<uint8_t> tagged;
+    std::string error;
+    for(bool ogg:{false,true}) {
+        check(ogg?TagOgg(recording_fixture::ogg(),tags,tagged,error):TagFlac(fixture(),tags,tagged,error),
+              "large metadata fixture tags successfully");
+        RecordingFile file;
+        Allowance low{256*1024};
+        {
+            RecordingReadMemoryScope memory(permit,&low);
+            check(!InspectRecording(tagged.data(),tagged.size(),file)&&file.inspection_resource_failure&&
+                  file.tags.fields.empty()&&memory.Denied(),"FLAC and Ogg reserve metadata before retaining it");
+        }
+        Allowance enough{32*1024*1024};
+        RecordingReadMemoryScope memory(permit,&enough);
+        check(InspectRecording(tagged.data(),tagged.size(),file)&&file.complete&&file.tags.fields==tags.fields,
+              "metadata parses after the inspection allowance recovers");
+    }
+    // FLAC padding is part of the file but takes no metadata workspace.
+    auto padded=fixture();padded[4]=0;
+    constexpr size_t padding=512*1024;
+    padded.insert(padded.begin()+42,{129,uint8_t(padding>>16),uint8_t(padding>>8),uint8_t(padding)});
+    padded.insert(padded.begin()+46,padding,0);
+    Allowance none{0};RecordingReadMemoryScope memory(permit,&none);
+    RecordingFile file;
+    check(InspectRecording(padded.data(),padded.size(),file)&&file.complete,
+          "padding does not spend an inspection workspace allowance");
+}
 static void vorbis_headers() {
     const auto id=recording_fixture::identification(),setup=recording_fixture::setup();
     check(ValidateVorbisHeaders(id,setup)==VorbisHeadersResult::Valid,"complete Vorbis I headers accepted without audio decoding");
+    struct HeaderBudget {size_t limit,peak=0;};
+    const auto permit=[](void* context,size_t bytes) {
+        auto& budget=*static_cast<HeaderBudget*>(context);
+        budget.peak=std::max(budget.peak,bytes);
+        return bytes<=budget.limit;
+    };
+    {
+        HeaderBudget budget{0};RecordingReadMemoryScope memory(permit,&budget);
+        check(ValidateVorbisHeaders(id,setup)==VorbisHeadersResult::ResourceFailure&&memory.Denied(),
+              "Vorbis validation surfaces a temporary workspace denial");
+    }
+    {
+        HeaderBudget budget{128*1024};RecordingReadMemoryScope memory(permit,&budget);
+        check(ValidateVorbisHeaders(id,setup)==VorbisHeadersResult::Valid&&budget.peak&&!memory.Denied(),
+              "a small Vorbis setup fits in a small reserved workspace");
+    }
     check(ValidateVorbisHeaders(id,recording_fixture::setup(2,1))==VorbisHeadersResult::Valid,"fully populated two-entry Huffman tree accepted");
     std::vector<uint8_t> owned_comment={3,'v','o','r','b','i','s',0,0,0,0,2,0,0,0};
     for(const std::string field:{"HISTORY_COMPLETE_LISTEN=1","HISTORY_CAPTURE=native compressed Ogg pages"}) {
@@ -255,6 +305,20 @@ static void vorbis_headers() {
     RecordingFile owned_recording;
     check(InspectRecording(owned_valid.data(),owned_valid.size(),owned_recording)&&owned_recording.owned&&owned_recording.complete,
           "supported headers preserve ownership for a complete captured recording");
+    std::vector<uint8_t> expected_tagged,tagged;std::string error;
+    check(TagOgg(owned_valid,{},expected_tagged,error),"page-zero stream tags successfully");
+    for(const unsigned first:{1u,0x7fffffffu,0xfffffffeu}) {
+        const auto shifted=recording_fixture::ogg_headers(id,setup,false,owned_comment,first);
+        check(TagOgg(shifted,{},tagged,error)&&tagged==expected_tagged,
+              "a continuous nonzero page sequence tags to the same byte-identical recording");
+        if(first==0xfffffffeu) {
+            check(!InspectRecording(shifted.data(),shifted.size(),owned_recording)||!owned_recording.complete,
+                  "a raw sequence crossing the libogg sentinel is not a verified standalone file");
+        } else {
+            check(InspectRecording(shifted.data(),shifted.size(),owned_recording)&&owned_recording.owned&&owned_recording.complete,
+                  "a continuous nonzero page sequence is also complete as an original recording");
+        }
+    }
     auto rejected=[&](const std::vector<uint8_t>& identification,const std::vector<uint8_t>& configuration,const char* label) {
         const auto stream=recording_fixture::ogg_headers(identification,configuration,false,owned_comment);RecordingFile recording;
         check(!InspectRecording(stream.data(),stream.size(),recording)&&!recording.owned&&!recording.complete,label);
@@ -290,6 +354,7 @@ int main(int argc,char** argv) {
     flac_capture_recovery();
     flac_resync_work_is_bounded();
     flac_frame_larger_than_resync_window();
+    recording_inspection_budget();
     vorbis_headers();
     RecordingFile file;
     auto ogg=recording_fixture::ogg();
@@ -342,7 +407,7 @@ int main(int argc,char** argv) {
     check(InspectRecording(tagged.data(),tagged.size(),file)&&file.complete&&file.owned&&
           file.quality.codec==Codec::Mp3&&MatchesRecording(file,episode),"owned podcast MP3 recognized");
     Mp3Info complete_info;Tags complete_tags;
-    check(InspectOwnedMp3(tagged.data(),tagged.size(),complete_info,complete_tags,error),"owned MP3 bounds available");
+    check(InspectOwnedMp3Result(tagged.data(),tagged.size(),complete_info,complete_tags,error)==Mp3InspectionResult::Valid,"owned MP3 bounds available");
     auto frame_boundary=tagged;frame_boundary.resize(complete_info.audio_offset+417);
     check(InspectRecording(frame_boundary.data(),frame_boundary.size(),file)&&!file.complete&&file.owned&&
           MatchesRecording(file,episode),"frame-aligned owned MP3 truncation remains repairable");

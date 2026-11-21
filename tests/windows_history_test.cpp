@@ -1,7 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include "../native/file_publication.h"
-#include "../native/history_settings.h"
+#include "../native/media/file_publication.h"
+#include "../native/tooling/history_settings.h"
 #include <cstdio>
 #include <cstdlib>
 #include <vector>

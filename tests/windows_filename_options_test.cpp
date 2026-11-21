@@ -1,11 +1,12 @@
 // One focused integration executable; only isolated Windows TEMP fixtures.
-#include "../native/audio_history.cpp"
-#include "../native/history_settings.cpp"
+#include "../native/media/audio_history.cpp"
+#include "../native/tooling/history_settings.cpp"
 #include "recording_fixture.h"
 #include "artwork_fixture.h"
 #include <cassert>
 
 namespace {
+unsigned tag_enrichments=0;
 struct FixtureFile {
     HANDLE handle=INVALID_HANDLE_VALUE;
     ~FixtureFile(){if(handle!=INVALID_HANDLE_VALUE)CloseHandle(handle);}
@@ -120,7 +121,9 @@ void TrackStartChecks(const std::wstring& root) {
     PublishCurrentDestination(next,GetSettings());QueueFilenameCheck(next,GetSettings()); // Same B intent retries submission.
     auto pending=TakeFilenameCheck();assert(pending);ProcessFilenameCheck(*pending);
     assert(MissingFile(next_old)&&ReadBytes(next_title)==next_bytes);
-    PublishCurrentDestination(next,GetSettings());QueueFilenameCheck(next,GetSettings());assert(!TakeFilenameCheck()); // No heartbeat disk loop.
+    const auto enrichments_before_repeat=tag_enrichments;
+    PublishCurrentDestination(next,GetSettings());QueueFilenameCheck(next,GetSettings());assert(!TakeFilenameCheck());
+    assert(tag_enrichments==enrichments_before_repeat);
     PublishCurrentDestination(media,GetSettings());QueueFilenameCheck(media,GetSettings());pending=TakeFilenameCheck();assert(pending);ProcessFilenameCheck(*pending);
     assert(MissingFile(old)&&ReadBytes(title)==bytes); // No completed listen/capture was needed.
     std::vector<RecentDownload> rows;assert(ReadRecentDownloads(rows)&&rows.size()==1&&rows[0].path==title&&rows[0].bytes==bytes.size());
@@ -220,7 +223,7 @@ bool ReadCurrentItemMedia(Media&){return false;}
 void RetainMetadata(Media&) {}
 std::string ReadClientPlaybackQuality(const Media&){return {};}
 void EnrichCatalog(const Media& media,Catalog& c){c.disc=2;c.spotify_uri=media.title==L"Raw/A"||media.title==L"Raw:A"?"":"spotify:track:"+Utf8(media.title);}
-void EnrichTags(const Media&,Tags&) {}
+void EnrichTags(const Media&,Tags&) {++tag_enrichments;}
 }
 int wmain() {
     assert(!Settings{}.track_number_in_filename&&!Settings{}.convert_numbered_filenames);

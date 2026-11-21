@@ -1,5 +1,5 @@
 #include "artwork_fixture.h"
-#include "../native/ogg_tags.h"
+#include "../native/media/ogg_tags.h"
 #include <ogg/ogg.h>
 #include <cstdio>
 #include <cstring>

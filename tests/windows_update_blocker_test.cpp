@@ -7,6 +7,12 @@
 #include <vector>
 
 static std::wstring fixture;
+static HRESULT folder_result = S_OK;
+static unsigned folder_frees = 0;
+static void WINAPI FixtureFolderFree(void* folder) {
+    if (folder) ++folder_frees;
+    CoTaskMemFree(folder);
+}
 static int fail_security_read = 0;
 static bool fail_security_write = false;
 static unsigned security_writes = 0;
@@ -28,13 +34,15 @@ static DWORD WINAPI TestSetSecurityInfo(HANDLE h, SE_OBJECT_TYPE type, SECURITY_
     *out = static_cast<PWSTR>(CoTaskMemAlloc(bytes));
     if (!*out) return E_OUTOFMEMORY;
     memcpy(*out, fixture.c_str(), bytes);
-    return S_OK;
+    return folder_result;
 }
 #define SHGetKnownFolderPath FixtureKnownFolder
+#define CoTaskMemFree FixtureFolderFree
 #define GetSecurityInfo TestGetSecurityInfo
 #define SetSecurityInfo TestSetSecurityInfo
-#include "../native/update_blocker.cpp"
+#include "../native/tooling/update_blocker.cpp"
 #undef SHGetKnownFolderPath
+#undef CoTaskMemFree
 #undef GetSecurityInfo
 #undef SetSecurityInfo
 
@@ -111,6 +119,11 @@ int main() {
     Check(GetTempFileNameW(temp, L"flu", 0, unique) != 0, "reserve unique fixture");
     Check(DeleteFileW(unique) && CreateDirectoryW(unique, nullptr), "create isolated fixture");
     fixture = unique;
+    folder_result = HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
+    Check(!updates::Initialize(false) && updates::LastError() == ERROR_ACCESS_DENIED,
+          "preserve a failed shell folder lookup");
+    Check(folder_frees == 1, "release a folder path returned with a failed lookup");
+    folder_result = S_OK;
     const std::wstring parent = fixture + L"\\Spotify", update = parent + L"\\Update";
     Check(CreateDirectoryW(parent.c_str(), nullptr), "create parent fixture");
     Check(updates::Initialize(false), "default off succeeds with no Update folder");

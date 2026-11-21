@@ -1,6 +1,6 @@
 // Synthetic import tables and an isolated temporary INI; never touches Spotify.
 #include "../native/version_proxy.cpp"
-#include "../native/history_settings.cpp"
+#include "../native/tooling/history_settings.cpp"
 #include <cassert>
 #include <vector>
 
@@ -13,12 +13,14 @@ void FinalizeToDiskMenu(bool){}
 void StartAudioHistory(HMODULE,HMODULE){}
 extern "C" MH_STATUS WINAPI MH_ApplyQueued(){return MH_OK;}
 namespace privacy {
-bool PrepareCrash(bool) noexcept {return false;}
+bool PrepareCrash(bool,HMODULE=nullptr,int=-1) noexcept {return false;}
 void FinalizeCrash(bool) noexcept {}
 CrashStatus GetCrashStatus() noexcept {return {};}
 bool Prepare(HMODULE,bool) noexcept {return false;}
 void Finalize(bool) noexcept {}
 void DrainStatus() noexcept {}
+bool InstallRoamingQueueExitCleanup(bool,const std::wstring&,unsigned) noexcept {return false;}
+QueueCleanupResult ClearRoamingTrackingQueues(bool) noexcept {return {};}
 }
 namespace history {
 void StartDecodedConnectMessages(HMODULE,bool) noexcept{}

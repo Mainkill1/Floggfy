@@ -1,5 +1,5 @@
-#include "../native/stream_dump.h"
-#include "../native/async_log.h"
+#include "../native/media/stream_dump.h"
+#include "../native/tooling/async_log.h"
 #include <filesystem>
 #include <algorithm>
 #include <fstream>

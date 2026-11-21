@@ -1,4 +1,4 @@
-#include "../native/artwork_reply.h"
+#include "../native/media/artwork_reply.h"
 #include <cassert>
 #include <iostream>
 using namespace history;

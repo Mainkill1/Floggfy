@@ -155,7 +155,7 @@ exact replay unavailable; diagnostic-only omissions do not invalidate capture
 bytes. Capture-file metadata is explicitly unresolved, never an identity claim.
 
 After Spotify closes the session, replay its buffer inputs with
-`bash test-dump-replay.sh --capture-buffer SESSION.jsonl OUTPUT_DIRECTORY`.
+`bash tests/runners/test-dump-replay.sh --capture-buffer SESSION.jsonl OUTPUT_DIRECTORY`.
 The harness runs the same `ProcessFlacCapture` and queue-loss code, without
 rechunking bytes or inventing frame callbacks. It validates and exports complete
 buffers for comparison. This replays buffer behavior, not concurrent hook timing,
@@ -164,7 +164,7 @@ refuses missing capture events, incomplete journals, or absent payload bytes.
 
 ## Tests
 
-`test-native.sh` covers portable parsers and correlation policy.
-`test-native-windows.sh` covers Windows hooks, settings, menus, filesystem races,
+`tests/runners/test-native.sh` covers portable parsers and correlation policy.
+`tests/runners/test-native-windows.sh` covers Windows hooks, settings, menus, filesystem races,
 format publication, and destination lookup on a Windows-capable local host.
 CI runs the portable suite and sanitizer fuzzing on Ubuntu.

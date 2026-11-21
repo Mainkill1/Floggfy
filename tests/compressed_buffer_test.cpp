@@ -1,4 +1,4 @@
-#include "../native/compressed_buffer.h"
+#include "../native/media/compressed_buffer.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -11,6 +11,15 @@ int main() {
     check(b.Append(bytes.data()+65530,bytes.size()-65530,2*65536) && b.capacity()==3*65536,"cross-block append allocates only new blocks");
     check(!b.Append(bytes.data(),65536,0) && b.size()==bytes.size() && b.capacity()==3*65536,"memory cap rejection preserves bytes and allocations");
     for(size_t i=0;i<bytes.size();i++) check(b[i]==bytes[i],"random-access metadata bytes");
+    const auto block=b.BlockAt(65531);
+    check(block.size==5 && std::equal(block.data,block.data+block.size,bytes.begin()+65531),"view ends at block boundary");
+    check(b.BlockAt(131072).size==bytes.size()-131072 && !b.BlockAt(bytes.size()).data,"final block exposes only initialized bytes");
+    std::vector<uint8_t> scratch;
+    check(b.ReadContiguous(65531,5,scratch)==block.data && scratch.capacity()==0,"in-block read borrows storage");
+    const auto* joined=b.ReadContiguous(65531,80000,scratch);
+    check(joined==scratch.data() &&
+          scratch==std::vector<uint8_t>(bytes.begin()+65531,bytes.begin()+145531),"unaligned read across three blocks");
+    check(!b.ReadContiguous(bytes.size()-1,2,scratch) && !b.ReadContiguous(0,0,scratch),"out-of-bounds and empty ranges");
     CompressedBuffer compact;check(compact.Append(bytes.data(),bytes.size(),3*65536),"restart fixture append");
     check(!compact.RetainPrefixAndSuffix(20,10)&&compact.size()==bytes.size(),"invalid compaction preserves bytes");
     check(compact.RetainPrefixAndSuffix(17,70000)&&compact.size()==bytes.size()-70000+17,"prefix/suffix compaction");

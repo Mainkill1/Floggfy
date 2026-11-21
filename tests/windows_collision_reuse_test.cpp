@@ -1,12 +1,11 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include "../native/file_publication.h"
-#include "../native/flac_history_core.h"
+#include "../native/media/file_publication.h"
+#include "../native/media/flac_history_core.h"
 #include "recording_fixture.h"
 #include <cassert>
 #include <cstdio>
 using namespace history;
-namespace history { std::wstring WindowsPath(const std::wstring& path) {return path;} }
 static void Write(const std::wstring& path,const std::vector<uint8_t>& bytes) {
     HANDLE file=CreateFileW(path.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,0,nullptr);assert(file!=INVALID_HANDLE_VALUE);
     DWORD written=0;assert(WriteFile(file,bytes.data(),DWORD(bytes.size()),&written,nullptr) && written==bytes.size());CloseHandle(file);

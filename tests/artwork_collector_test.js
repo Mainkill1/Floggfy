@@ -1,5 +1,5 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
-const script=fs.readFileSync('native/artwork_collector.js','utf8');
+const script=fs.readFileSync('native/media/artwork_collector.js','utf8');
 const uri='spotify:track:0000000000000000000001';
 const image='https://i.scdn.co/image/'+'a'.repeat(40),nativeImage='spotify:image:'+'a'.repeat(40);
 const varint=n=>{const out=[];do{let b=Number(n&127n);n>>=7n;out.push(b|(n?128:0));}while(n);return out;};

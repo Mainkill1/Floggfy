@@ -1,8 +1,8 @@
-#include "../native/marked_recording.h"
-#include "../native/metadata_update_core.h"
-#include "../native/aac_stream.h"
-#include "../native/flac_history_core.h"
-#include "../native/mp3_stream.h"
+#include "../native/media/marked_recording.h"
+#include "../native/media/metadata_update_core.h"
+#include "../native/media/aac_stream.h"
+#include "../native/media/flac_history_core.h"
+#include "../native/media/mp3_stream.h"
 #include "recording_fixture.h"
 #include <algorithm>
 #include <cassert>
@@ -119,8 +119,8 @@ void RejectMissingAudio(const Bytes& bytes,unsigned format) {
 }
 }
 int main() {
-    assert(ValidMarkedUri(uri) && !ValidMarkedUri("spotify:track:abc"));
-    assert(!ValidMarkedUri("spotify:episode:0123456789abcdefghijkl"));
+    assert(ValidSpotifyTrackUri(uri) && !ValidSpotifyTrackUri("spotify:track:abc"));
+    assert(!ValidSpotifyTrackUri("spotify:episode:0123456789abcdefghijkl"));
     assert(ValidMarkedDate(stamp) && !ValidMarkedDate("1900-02-29T00:00:00Z"));
     assert(!ValidMarkedDate("2024-02-29T24:00:00Z") && !ValidMarkedDate("2024-00-01T00:00:00Z"));
 

@@ -29,7 +29,7 @@ never modified.
 
 ## Single-file native tagging
 
-`native/flac_history_core.cpp` preserves STREAMINFO, source audio MD5 and compressed
+`native/media/flac_history_core.cpp` preserves STREAMINFO, source audio MD5 and compressed
 frame bytes. It replaces Vorbis comments and front-cover artwork with native
 VORBIS_COMMENT and PICTURE blocks, removes unused padding, and preserves other
 metadata blocks. Seek-table offsets remain relative to the first audio frame.

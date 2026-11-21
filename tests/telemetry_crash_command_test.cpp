@@ -1,6 +1,6 @@
 // These checks catch accidental removal of local-handler arguments, incomplete
 // duplicate removal, Windows quoting damage, and lookalike executable matching.
-#include "../native/telemetry_crash_command.h"
+#include "../native/telemetry/telemetry_crash_command.h"
 #include <cassert>
 #include <iostream>
 int main() {

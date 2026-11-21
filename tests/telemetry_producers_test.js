@@ -1,5 +1,5 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
-const path='native/telemetry_producers.js';
+const path='native/telemetry/telemetry_producers.js';
 const script=fs.existsSync(path)?fs.readFileSync(path,'utf8'):'';
 const defaults={block_telemetry:true,block_event_reports:true,block_playback_reports:true,block_growth_analytics:true,block_sentry:true,block_crash_reports:true,block_internal_logging:true,block_track_errors:true,block_ai_telemetry:true,block_queued_telemetry:true};
 function boot(options={},window={}){
@@ -198,7 +198,12 @@ async function requestGuards(){
   assert.equal((await disabled.window.fetch(url)).ok,true,category+'=0 must restore fetch');
   assert.equal(disabled.window.navigator.sendBeacon(url),true);
   const xhr=new disabled.window.XMLHttpRequest();xhr.open('POST',url);xhr.send('restored');assert.equal(current.calls.at(-1)[0],'send',category+'=0 must restore XHR');
-  if(category==='internal_logging')assert.equal(disabled.window.sendCosmosRequest(send),27,'internal logging zero restores Cosmos');
+  if(category==='internal_logging'){
+   let parses=0;
+   disabled.context.JSON={parse(text){parses++;return JSON.parse(text);}};
+   assert.equal(disabled.window.sendCosmosRequest(send),27,'internal logging zero restores Cosmos');
+   assert.equal(parses,0,'disabled internal logging forwards without parsing the request');
+  }
   const item=sender();disabled.observe(registry(item.instance));
   if(category==='event_reports'){await item.instance.send('restored');assert.equal(item.state.queue.length,1);await assert.rejects(disabled.window.fetch(routes[1][1]),error=>error.name==='TypeError');}
  }
@@ -214,6 +219,15 @@ function dumps(booted){return booted.output.filter(line=>line.startsWith('FLOGGF
  return {hook:fields[0],timestamp:Number(fields[1]),method:decode(2),url:decode(3),type:decode(4),encoding:decode(5),flags:Number(fields[6]),reported:Number(fields[7]),body:Buffer.from(fields[8],'base64')};
 });}
 async function rendererDumps(){
+ const relative=boot({dump_telemetry:true},networkWindow().window);
+ let baseReads=0;
+ Object.defineProperty(relative.window.location,'href',{get(){baseReads++;return 'https://www.spotify.com/';}});
+ const relativePath='/api/growth-events/batch';
+ await assert.rejects(relative.window.fetch(relativePath));
+ relative.window.navigator.sendBeacon(relativePath);
+ const relativeXhr=new relative.window.XMLHttpRequest();relativeXhr.open('POST',relativePath);relativeXhr.send();
+ assert.equal(baseReads,3,'resolve the relative URL once per request');
+ assert.deepEqual(dumps(relative).map(record=>record.url),Array(3).fill('https://www.spotify.com'+relativePath));
  const net=networkWindow(),b=boot({dump_telemetry:true},net.window),payload='{"event":"media_playback_event_v2","title":"音楽 🎵"}';
  const url=routes[1][1]+'?token=private#fragment';
  await assert.rejects(b.window.fetch(url,{method:'POST',body:payload,headers:{'Content-Type':'application/json','Content-Encoding':'identity',Authorization:'never record'}}));

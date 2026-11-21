@@ -1,0 +1,30 @@
+#pragma once
+#include "../tooling/history_settings.h"
+#include "library_layout.h"
+#include <cstdint>
+#include <string>
+#include <vector>
+namespace history {
+enum class Publication { Saved,AlreadyPresent,Replan,RetryIO,Blocked,Cancelled,Rejected };
+struct PublicationPreferences {
+    bool metadata=false,lyrics=false;
+    uint64_t revision=0;
+    explicit PublicationPreferences(const Settings& settings):metadata(settings.metadata),lyrics(settings.lyrics),revision(settings.artifact_revision) {}
+    bool Matches(const Settings& settings) const {return revision==settings.artifact_revision&&metadata==settings.metadata&&lyrics==settings.lyrics;}
+};
+struct PreparedArtifact {
+    std::string key;
+    Catalog catalog;
+    std::vector<uint8_t> bytes;
+    size_t Capacity() const {
+        size_t size=key.capacity()+bytes.capacity();
+        for(const auto* value:{&catalog.artist,&catalog.album,&catalog.title,&catalog.author,&catalog.series,&catalog.book,
+                              &catalog.show,&catalog.folder_artist,&catalog.legacy_artist})size+=value->capacity()*sizeof(wchar_t);
+        return size+catalog.spotify_uri.capacity()+catalog.spotify_album_uri.capacity();
+    }
+};
+struct UnmatchedAttempt {
+    std::wstring root,base;
+    uint64_t destination_revision=0;
+};
+}

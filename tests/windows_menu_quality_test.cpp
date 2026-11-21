@@ -1,8 +1,8 @@
 // Exercise the production CEF menu boundary with a model implementing the
 // required public prefix. No Spotify binaries or private media are needed.
-#include "../native/playback_quality_windows.cpp"
-#include "../native/history_settings.h"
-#include "../native/async_log.h"
+#include "../native/media/playback_quality_windows.cpp"
+#include "../native/tooling/history_settings.h"
+#include "../native/tooling/async_log.h"
 #include <windows.h>
 #include <shlobj.h>
 #include <shellapi.h>
@@ -51,6 +51,7 @@ static bool network_available=true,network_enabled=false,network_change_succeeds
 static bool network_setting_succeeds=true;
 static unsigned network_set_calls=0,network_fail_on_call=0;
 namespace network {
+bool RequestReconnect(bool) noexcept {assert(false);return false;} // Live-only cases opt out below.
 bool Available() {return network_available;}
 bool Enabled() {return network_enabled;}
 bool SetEnabled(bool enabled) {
@@ -90,7 +91,7 @@ namespace history {bool SetBlockUpdatesForMenuTest(bool);bool SetNetworkKillSwit
 #define ReadSongDestination ReadSongDestinationForMenuTest
 #define ReadRecentDownloads ReadRecentDownloadsForMenuTest
 #define VirtualQuery CountQuery
-#include "../native/to_disk_menu.cpp"
+#include "../native/ui/to_disk_menu.cpp"
 #undef LogEvent
 #undef PickSaveLocation
 #undef SetNetworkKillSwitch
@@ -299,6 +300,7 @@ int main(int argc,char** argv) {
   const auto default_speed_child=default_speed.child->extra_children.find(speed_root_id);
   assert(default_speed_child==default_speed.child->extra_children.end());
   assert(WritePrivateProfileStringW(L"To Disk",L"CaptureSpeed",L"0",ini.c_str()));
+  assert(WritePrivateProfileStringW(L"Misc",L"NetworkKillSwitchTelemetryLock",L"0",ini.c_str()));
   if(never_pause_hidden)assert(WritePrivateProfileStringW(L"Misc",L"NetworkKillSwitch",L"-1",ini.c_str()));
   assert(WritePrivateProfileStringW(L"To Disk",L"Podcasts",L"0",ini.c_str()));
   const auto test_log_root=ini.substr(0,ini.find_last_of(L'\\'))+L"\\Menu-test-logs";
@@ -338,7 +340,7 @@ int main(int argc,char** argv) {
   assert(root.child);
   auto &child = *root.child;
   assert(root.entries.back().label==L"To Disk");
-  assert(child.entries[0].id==project_id&&child.entries[0].label==L"Floggfy - v1.4");
+  assert(child.entries[0].id==project_id&&child.entries[0].label==std::wstring(L"Floggfy - ")+FLOGGFY_VERSION_W);
   assert(child.entries[0].type==1&&!child.entries[0].enabled&&!child.entries[0].checked);
   assert(child.entries[1].type==4&&child.entries[2].id==downloads_id);
   assert(Index(&child.api,recent_id)==Index(&child.api,downloads_id)+1);

@@ -1,6 +1,6 @@
 // CEF keeps wrapper identity before its public C structure. Exercise the real
 // interception code and MinHook without replacing client/handler objects.
-#include "../native/metadata_bridge.cpp"
+#include "../native/media/metadata_bridge.cpp"
 #include <cassert>
 #include <cstdio>
 
@@ -52,10 +52,27 @@ extern "C" __declspec(dllexport) int cef_version_info(int) { return 999; }
 extern "C" __declspec(dllexport) int cef_post_task(int,history::Task* task) {
     task->base.release(&task->base);return 0;
 }
+static std::vector<history::Task*> scheduled_polls;
+static int QueuePoll(int,history::Task* task) {scheduled_polls.push_back(task);return 1;}
+static void CheckPollWakeups() {
+    const auto previous=history::post_task;
+    history::post_task=QueuePoll;
+    history::SchedulePoll();
+    history::SchedulePoll(); // Dates arrived while the previous task was queued.
+    assert(scheduled_polls.size()==1);
+    auto first=scheduled_polls.front();
+    first->execute(first);first->base.release(&first->base);
+    assert(scheduled_polls.size()==2); // No wait for the 500ms metadata heartbeat.
+    auto second=scheduled_polls.back();
+    second->execute(second);second->base.release(&second->base);
+    assert(scheduled_polls.size()==2&&!history::poll_pending);
+    history::post_task=previous;
+}
 extern "C" __declspec(dllexport) __attribute__((noinline)) int cef_browser_host_create_browser(
     const void*,history::Client*,const history::String*,const void*,void*,void*) { return 17; }
 
 int main(int argc,char** argv){
+    CheckPollWakeups();
     if(argc==2&&!std::strcmp(argv[1],"--unknown-cef")) {
         assert(history::PrepareMetadataCollector(GetModuleHandleW(nullptr))&&
                "unknown CEF versions must reach export-based hook preparation");
@@ -95,6 +112,9 @@ int main(int argc,char** argv){
     assert(WaitForSingleObject(activation_worker,5000)==WAIT_OBJECT_0);CloseHandle(activation_worker);
     CloseHandle(activation_event);history::message_event=nullptr;
 
+    std::wstring script_text=L"prefix:";
+    assert(win32::AppendUtf8(script_text,u8"Saved … ▼ ▲ 🎵") && script_text==L"prefix:Saved \u2026 \u25bc \u25b2 \U0001f3b5");
+    assert(!win32::AppendUtf8(script_text,"\xf0\x80") && script_text==L"prefix:Saved \u2026 \u25bc \u25b2 \U0001f3b5");
     // Collector normalization produces this UTF-8 protocol for either raw or
     // normalized lyric lines; native enrichment preserves it without an open UI.
     history::RichMetadata lyric_record;std::string parse_error;
@@ -190,11 +210,12 @@ int main(int argc,char** argv){
     history::Catalog identity_catalog;identity_catalog.title=authoritative.title;identity_catalog.spotify_uri=authoritative.spotify_uri;
     history::EnrichCatalog(authoritative,identity_catalog);
     assert(identity_catalog.title==L"Identity"&&identity_catalog.spotify_uri==authoritative.spotify_uri);
-    history::RichMetadata selected;assert(!history::ReadCachedMetadata(authoritative,selected));
+    history::Tags selected;history::EnrichTags(authoritative,selected);assert(selected.fields.empty());
     wrong_uri.uri=authoritative.spotify_uri;wrong_uri.fields["TITLE"]="Correct recording";history::cache.Put(wrong_uri);
     history::EnrichCatalog(authoritative,identity_catalog);
     assert(identity_catalog.title==L"Correct recording"&&identity_catalog.spotify_uri==authoritative.spotify_uri);
-    assert(history::ReadCachedMetadata(authoritative,selected)&&selected.uri==authoritative.spotify_uri);
+    history::EnrichTags(authoritative,selected);
+    assert(selected.fields.size()==1&&selected.fields.front()==std::make_pair(std::string("TITLE"),std::string("Correct recording")));
     // Current playback bypasses slow metadata enrichment and SMTC entirely.
     wchar_t current_message[]=L"FLOGGFY_PLAYBACK_V1:v=1&title=Next&artist=Artist&album=Album&uri=spotify:track:0000000000000000000001&duration=200&playback_quality=lossless";
     history::String current{current_message,wcslen(current_message),nullptr};
@@ -281,10 +302,17 @@ int main(int argc,char** argv){
     auto l=reinterpret_cast<history::Load*(*)(history::Client*)>(storage.api.methods[14])(&storage.api);
     assert(d==&display.api&&l==&load.api);
     wchar_t ordinary[]=L"ordinary console message";history::String text{ordinary,wcslen(ordinary),nullptr};
-    assert(reinterpret_cast<int(*)(history::Display*,history::Browser*,int,const history::String*,const history::String*,int)>(d->methods[6])(d,&browser.api,2,&text,nullptr,17)==9);
+    const auto console=reinterpret_cast<int(*)(history::Display*,history::Browser*,int,const history::String*,const history::String*,int)>(d->methods[6]);
+    assert(console(d,&browser.api,2,&text,nullptr,17)==9);
     reinterpret_cast<void(*)(history::Load*,history::Browser*,int,int,int)>(l->methods[0])(l,&browser.api,1,0,1);
     reinterpret_cast<void(*)(history::Load*,history::Browser*,history::Frame*,int)>(l->methods[2])(l,&browser.api,nullptr,200);
     assert(console_calls==1&&loading_calls==1&&end_calls==1&&browser_releases==3);
+    for(const auto* message:{L"FLOGGFY_MARKED_V1:invalid",L"FLOGGFY_PRIVACY_V1:invalid",
+        L"FLOGGFY_PRIVACY_V2:invalid",L"FLOGGFY_PRIVACY_COUNT_V1:invalid",L"FLOGGFY_PRIVACY_DUMP_V1:invalid"}) {
+        history::String reserved{const_cast<wchar_t*>(message),wcslen(message),nullptr};
+        assert(console(d,&browser.api,2,&reserved,nullptr,17)==1);
+    }
+    assert(console_calls==1&&browser_releases==8);
     assert(memcmp(&original_client,&storage.api,sizeof(original_client))==0);
     assert(memcmp(&original_display,&display.api,sizeof(original_display))==0);
     assert(memcmp(&original_load,&load.api,sizeof(original_load))==0);

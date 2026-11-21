@@ -1,5 +1,5 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
-const script=fs.readFileSync('native/metadata_collector.js','utf8');
+const script=fs.readFileSync('native/media/metadata_collector.js','utf8');
 const track='spotify:track:0000000000000000000001',episode='spotify:episode:0000000000000000000002';
 function fixture(item,config={metadata:true,lyrics:true}){
  const output=[],pending=[],state={item};

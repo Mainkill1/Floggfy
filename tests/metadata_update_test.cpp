@@ -1,5 +1,5 @@
-#include "../native/metadata_update_core.h"
-#include "../native/flac_history_core.h"
+#include "../native/media/metadata_update_core.h"
+#include "../native/media/flac_history_core.h"
 #include "recording_fixture.h"
 #include "artwork_fixture.h"
 #include <algorithm>
@@ -217,6 +217,23 @@ void ArtworkUpgradeCase(bool flac) {
     assert(FillRecordingMetadata(booklet,text_and_art,catalog,updated,error)==MetadataUpdate::Updated);
     assert(Value(Inspect(updated).tags,"FLOGGFY_ARTWORK_SOURCE").empty());Preserved(booklet,updated,flac);
 }
+void PreserveFlacPictureBlocks() {
+    Catalog catalog;catalog.spotify_uri="spotify:track:metadata";
+    auto tags=Existing(true);Set(tags,"SPOTIFY_URI",catalog.spotify_uri);
+    const auto old=AddBlock(AddBlock(Source(tags,true),6,{0,0,0,4,1}),6,{0,0,0,5,2});
+    tags.cover=artwork_fixture::png();tags.mime="image/png";
+    std::vector<uint8_t> incoming,output;std::string error;
+    assert(TagFlac(recording_fixture::fixture(44100,24),tags,incoming,error));
+    RecordingFile old_snapshot,incoming_snapshot;
+    assert(InspectRecording(old.data(),old.size(),old_snapshot));
+    assert(InspectRecording(incoming.data(),incoming.size(),incoming_snapshot));
+    assert(PreserveUpgradeMetadata(old,old_snapshot,incoming,incoming_snapshot,catalog,output,error));
+    std::vector<std::vector<uint8_t>> pictures;
+    for(const auto& block:FlacBlocks(output))if(block.first==6)
+        pictures.emplace_back(block.second.begin()+4,block.second.end());
+    assert((pictures==std::vector<std::vector<uint8_t>>{{0,0,0,4,1},{0,0,0,5,2}}));
+    Preserved(incoming,output,true,true);
+}
 void CodecCases(bool flac) {
     Catalog catalog;catalog.title=L"Track";catalog.artist=L"Artist";catalog.album=L"Album";catalog.track=1;catalog.duration=1;catalog.spotify_uri="spotify:track:metadata";
     auto existing=Existing(flac);const auto source=Source(existing,flac);assert(!Inspect(source).has_artwork);
@@ -292,6 +309,7 @@ void CodecCases(bool flac) {
 }
 }
 int main() {
+    PreserveFlacPictureBlocks();
     CodecCases(true);CodecCases(false);ArtworkUpgradeCase(true);ArtworkUpgradeCase(false);
     std::puts("PASS: owned complete FLAC/Ogg metadata fills preserve populated/custom/technical fields and all compressed audio; missing dates, genres, URI, lyrics and artwork fill safely");
     std::puts("PASS: shared Needs planner avoids marker-only/identical/repeated writes; validated front-cover resolution and trusted provenance upgrades never downgrade or remove booklets");

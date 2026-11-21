@@ -59,14 +59,17 @@ def pack_table(blocks,repeat=False):
  if repeat:handles=handles*2
  idx=block([(internal,h) for h in handles]);ih=vi(len(buf))+vi(len(idx))
  return buf+idx+b'\0'+struct.pack('<I',masked(idx+b'\0'))+(vi(0)+vi(0)+ih).ljust(40,b'\0')+struct.pack('<Q',0xdb4775248b80fb57)
-(out/'repeated-handle.ldb').write_bytes(pack_table([block([(internal,value)])],True))
 mini=blob(1,bytes(15)+b'\x02')+blob(2,'Album')+blob(3,artist('Lead'))+blob(6,v(1,4048))
 partial_track=blob(1,bytes(15)+b'\x01')+blob(2,'Song')+blob(3,mini)+blob(4,artist('Lead'))+blob(4,artist('Guest'))+v(7,400000)
 partial_value=v(1,10)+blob(2,blob(1,'type.googleapis.com/spotify.metadata.Track')+blob(2,partial_track))
 album_uri='spotify:album:0000000000000000000002'
 album_key=b'!xmeta#cache#\x01)#$'+album_uri.encode()+b'#'
 album_value=v(1,10)+blob(2,blob(1,'type.googleapis.com/spotify.metadata.Album')+blob(2,album))
-(out/'separate-album.ldb').write_bytes(pack_table([block([(album_key+struct.pack('<Q',100<<8|1),album_value),(internal,partial_value)])]))
+paired_block=block([(album_key+struct.pack('<Q',100<<8|1),album_value),(internal,partial_value)])
+(out/'separate-album.ldb').write_bytes(pack_table([paired_block]))
+(out/'repeated-handle.ldb').write_bytes(pack_table([paired_block],True))
+paired_deletes=struct.pack('<QI',103,2)+b''.join(b'\0'+vi(len(k))+k for k in (key,album_key))
+(out/'paired.log').write_bytes(wal_record(paired_deletes,1))
 # A wrong embedded GID must not be accepted even if the cache key matches.
 wrong_track=track.replace(bytes(15)+b'\x01',bytes(15)+b'\x03',1)
 wrong_value=v(1,10)+blob(2,blob(1,'type.googleapis.com/spotify.metadata.Track')+blob(2,wrong_track))

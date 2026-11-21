@@ -1,5 +1,7 @@
 ## Floggfy 1.3: final live recording validation
 
+Current test runners live in `tests/runners/`. Commands in dated validation records use the paths from those revisions.
+
 Tested with Spotify 1.3.9.2055 on Windows x64, including repeated songs,
 rapid skips, backtracks, forward seeks, and a free account with advertisements.
 The release notes compare 1.3 with 1.2.4.
@@ -37,8 +39,8 @@ contains the same DLL, verified checksums and default configuration. PE imports
 require no external MinGW runtime DLLs, including `libwinpthread-1.dll`.
 
 The current consolidated diagnostics regression entry point is
-`bash test-diagnostics.sh [SPOTIFY_DLL]`. Earlier dated sections below preserve
-historical evidence and may name wrappers that this entry point has replaced.
+`bash tests/runners/test-diagnostics.sh [SPOTIFY_DLL]`. Earlier dated sections
+preserve historical evidence and may name wrappers this entry point has replaced.
 
 ## 2026-11-11: captured decoder-reuse replay and pause-gap validation
 

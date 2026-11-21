@@ -91,14 +91,14 @@ FLAC coverage is intentionally strict. Every capture begins with an expected sam
 of zero, and every decoded frame must start at the next expected sample. A first
 frame at sample 438,272 fails the `sample-position` guard. The active capture is
 then aborted and removed in
-[`ProcessFlacCapture`](../../native/audio_history.cpp).
+[`ProcessFlacCapture`](../../native/media/audio_history.cpp).
 
 This protects against publishing a file with a missing beginning. The existing
 sample-zero restart path handles the opposite decoder behavior: a later frame at
 sample zero can restart one capture cleanly. It does not merge two capture objects.
 
 The parser currently retains rate, channel count, bit depth, block sizes, and total
-samples in [`FlacInfo`](../../native/flac_history_core.h). It does not retain the
+samples in [`FlacInfo`](../../native/media/flac_history_core.h). It does not retain the
 STREAMINFO MD5 field. Equal format and duration are therefore not enough to prove
 that two streams contain the same audio.
 

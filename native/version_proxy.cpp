@@ -5,35 +5,35 @@
 #include <windows.h>
 #include <iphlpapi.h>
 #include <netlistmgr.h>
-#include <shlobj.h>
+#include "tooling/windows_known_folder.h"
 #include <cstdio>
 #include <cstring>
-#include "audio_history.h"
-#include "connectivity_diagnostics.h"
-#include "connect_messages_windows.h"
-#include "hook_init_state.h"
-#include "hook_startup_minhook.h"
-#include "history_settings.h"
-#include "marked_catalog.h"
-#include "async_log.h"
-#include "hook_diagnostics.h"
-#include "metadata_bridge.h"
-#include "telemetry_filter.h"
-#include "telemetry_crash.h"
-#include "telemetry_queue.h"
-#include "telemetry_queue_exit.h"
-#include "pe_imports.h"
-#include "to_disk_menu.h"
-#include "startup_ready.h"
-#include "network_kill_switch.h"
-#include "update_blocker.h"
+#include "media/audio_history.h"
+#include "tooling/connectivity_diagnostics.h"
+#include "media/connect_messages_windows.h"
+#include "tooling/hook_init_state.h"
+#include "tooling/hook_startup_minhook.h"
+#include "tooling/history_settings.h"
+#include "ui/marked_catalog.h"
+#include "tooling/async_log.h"
+#include "tooling/hook_diagnostics.h"
+#include "media/metadata_bridge.h"
+#include "telemetry/telemetry_filter.h"
+#include "telemetry/telemetry_options.h"
+#include "telemetry/telemetry_crash.h"
+#include "telemetry/telemetry_queue.h"
+#include "telemetry/telemetry_queue_exit.h"
+#include "tooling/pe_imports.h"
+#include "ui/to_disk_menu.h"
+#include "tooling/startup_ready.h"
+#include "tooling/network_kill_switch.h"
+#include "tooling/update_blocker.h"
 
 // Spotify-local proxy. All version APIs go to the original System32 DLL.
 // The connectivity repair and optional native history stay inside Spotify.
 static SRWLOCK hook_lock = SRWLOCK_INIT;
 static INIT_ONCE version_once = INIT_ONCE_STATIC_INIT;
 static HMODULE real_version;
-static bool spotify_main;
 static HMODULE proxy_module;
 static hooks::InitController connectivity_init;
 
@@ -349,18 +349,22 @@ static void StartConnectivityHook(HMODULE module,bool enabled) {
     }
 }
 
-static void DrainCrashStatus() {
+static void DrainProcessLaunchStatus() {
     const auto status=privacy::GetCrashStatus();
     static privacy::CrashStatus previous{};static bool seen=false;
     if(seen&&status.requested==previous.requested&&status.hook_active==previous.hook_active&&
        status.sanitized_launches==previous.sanitized_launches&&status.launches_without_url==previous.launches_without_url&&
-       status.rewrite_failures==previous.rewrite_failures&&status.unmatched_launches==previous.unmatched_launches)return;
+       status.rewrite_failures==previous.rewrite_failures&&status.unmatched_launches==previous.unmatched_launches&&
+       status.child_loading==previous.child_loading&&status.children_loaded==previous.children_loaded&&
+       status.child_failures==previous.child_failures&&status.unsupported_debug_launches==previous.unsupported_debug_launches)return;
     previous=status;seen=true;
-    char line[320];
-    std::snprintf(line,sizeof(line),"privacy crash requested=%u launch_hook=%u uploads_disabled=%llu already_without_url=%llu rewrite_failures=%llu unmatched_launches=%llu coverage=future-CreateProcessW-launches-only",
-      unsigned(status.requested),unsigned(status.hook_active),static_cast<unsigned long long>(status.sanitized_launches),
+    char line[480];
+    std::snprintf(line,sizeof(line),"process launch hook=%u crash_requested=%u uploads_disabled=%llu already_without_url=%llu rewrite_failures=%llu unmatched_launches=%llu child_loading=%u children_loaded=%llu child_failures=%llu unsupported_debug=%llu coverage=future-CreateProcessW-launches-only",
+      unsigned(status.hook_active),unsigned(status.requested),static_cast<unsigned long long>(status.sanitized_launches),
       static_cast<unsigned long long>(status.launches_without_url),static_cast<unsigned long long>(status.rewrite_failures),
-      static_cast<unsigned long long>(status.unmatched_launches));
+      static_cast<unsigned long long>(status.unmatched_launches),unsigned(status.child_loading),
+      static_cast<unsigned long long>(status.children_loaded),static_cast<unsigned long long>(status.child_failures),
+      static_cast<unsigned long long>(status.unsupported_debug_launches));
     Log(line);
 }
 
@@ -385,9 +389,8 @@ static void LogHelperNetworkFailure() noexcept {
             if(!size||size>4096)return;
             root=expanded;
         } else {
-            PWSTR music=nullptr;
-            if(FAILED(SHGetKnownFolderPath(FOLDERID_Music,0,nullptr,&music)))return;
-            root=music;CoTaskMemFree(music);root+=L"\\Spotify";
+            if(FAILED(history::ReadKnownFolder(FOLDERID_Music,root)))return;
+            root+=L"\\Spotify";
         }
         SYSTEMTIME t{};GetSystemTime(&t);char line[320];
         std::snprintf(line,sizeof(line),"%04u-%02u-%02uT%02u:%02u:%02uZ warning pid=%lu Network Kill Switch hooks unavailable in Spotify helper; coverage is partial\r\n",
@@ -404,19 +407,21 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
     wchar_t path[MAX_PATH];
     DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH);
     wchar_t* name = length && length < MAX_PATH ? wcsrchr(path, L'\\') : nullptr;
-    spotify_main = name && !_wcsicmp(name + 1, L"Spotify.exe") && !wcsstr(GetCommandLineW(), L"--type=");
+    // The exported restart worker runs outside Spotify and owns no app hooks.
+    if(name&&!_wcsicmp(name+1,L"rundll32.exe"))return 0;
+    const bool spotify_main = name && !_wcsicmp(name + 1, L"Spotify.exe") && !wcsstr(GetCommandLineW(), L"--type=");
     if (!spotify_main) {
-        // CEF helpers and the crash uploader have independent Winsock state.
-        // Only Spotify's own executables participate in the shared switch.
-        if(name&&(!_wcsicmp(name+1,L"Spotify.exe")||!_wcsicmp(name+1,L"crashpad_handler.exe")||
-                  !_wcsicmp(name+1,L"SpotifyLauncher.exe")||!_wcsicmp(name+1,L"spotify_cli.exe")||
-                  !_wcsicmp(name+1,L"save-to-spotify.exe")))
-            if(!network::Initialize(proxy_module,false,-1))LogHelperNetworkFailure();
+        // Every recursively loaded child has independent Winsock state.
+        if(!network::Initialize(proxy_module,false,-1))LogHelperNetworkFailure();
+        if(privacy::PrepareCrash(false,proxy_module))privacy::FinalizeCrash(MH_ApplyQueued()==MH_OK);
+        startup::SignalReady();
         return 0;
     }
 
     history::InitSettings(proxy_module);
-    const auto startup_settings=history::GetSettings();
+    const auto startup_settings=privacy::EffectiveOptions(history::GetSettings());
+    if(startup_settings.network_kill_switch_telemetry_lock&&startup_settings.network_kill_switch==1)
+        history::LogEvent(history::LogKind::Activity,"privacy-lock","Network Kill Switch forces all supported telemetry blocking for this session; saved Telemetry preferences preserved");
     if(startup_settings.block_telemetry&&startup_settings.block_queued_telemetry) {
         if(!privacy::InstallRoamingQueueExitCleanup(true,startup_settings.root+L"\\Floggfy.log",startup_settings.log_level))
             history::LogEvent(history::LogKind::Warning,"privacy-queue","Normal-exit queue cleanup hook unavailable; startup cleanup remains active.");
@@ -444,7 +449,8 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
                                  "NetworkKillSwitch=0; Winsock hooks ready, networking allowed");
     // Attach this independent launch guard as early as the settings allow.
     // Do not wait for CEF: it cannot cover the separate crash reporter process.
-    if(privacy::PrepareCrash(startup_settings.block_telemetry&&startup_settings.block_crash_reports))
+    if(privacy::PrepareCrash(startup_settings.block_telemetry&&startup_settings.block_crash_reports,
+                             proxy_module,startup_settings.hook_all_sub_processes))
         privacy::FinalizeCrash(MH_ApplyQueued()==MH_OK);
     const bool network_patch_enabled=startup_settings.network_patch;
     const bool decoded_messages_enabled=startup_settings.debug_networking;
@@ -484,7 +490,7 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
         }
         history::DrainDecodedConnectMessages();
         privacy::DrainStatus();
-        DrainCrashStatus();
+        DrainProcessLaunchStatus();
         if(i==0)startup::SignalReady();
         Sleep(i < 600 ? 25 : 1000);
     }

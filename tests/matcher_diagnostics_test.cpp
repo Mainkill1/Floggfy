@@ -1,4 +1,4 @@
-#include "../native/matcher_diagnostics.h"
+#include "../native/media/matcher_diagnostics.h"
 #include <cassert>
 #include <cstdio>
 #include <string>

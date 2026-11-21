@@ -1,4 +1,4 @@
-#include "../native/telemetry_queue_exit.h"
+#include "../native/telemetry/telemetry_queue_exit.h"
 #include <windows.h>
 #include <cassert>
 #include <cstdio>

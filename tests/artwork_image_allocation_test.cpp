@@ -1,6 +1,6 @@
 // Exercise every PNG-writer allocation failure through the real converter.
 #define FLOGGFY_ARTWORK_ALLOC_TEST
-#include "../native/artwork_image.cpp"
+#include "../native/media/artwork_image.cpp"
 #include "artwork_webp_fixture.h"
 #include <cassert>
 #include <iostream>

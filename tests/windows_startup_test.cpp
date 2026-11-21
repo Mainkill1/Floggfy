@@ -4,7 +4,8 @@
 #include <string>
 #include <cstdio>
 #include <tlhelp32.h>
-#include "../native/startup_launcher.h"
+#include "../native/tooling/startup_launcher.h"
+#include "../native/tooling/process_startup_loader.h"
 static bool AnyRunning(const std::wstring& exe) {
   HANDLE snapshot=CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0);
   assert(snapshot!=INVALID_HANDLE_VALUE);
@@ -20,7 +21,7 @@ static bool AnyRunning(const std::wstring& exe) {
   CloseHandle(snapshot);return found;
 }
 int wmain(int argc,wchar_t** argv) {
-  assert(argc==2);std::wstring folder=argv[1],exe=folder+L"\\Spotify.exe",dll=folder+L"\\Floggfy.dll";
+  assert(argc==2);std::wstring folder=argv[1],exe=folder+L"\\Spotify.exe",dll=folder+L"\\Floggfy.dll",ini=folder+L"\\SpotifyHistory.ini";
   PROCESS_INFORMATION process{};std::wstring error;
   auto command=L"\""+exe+L"\"";STARTUPINFOW info{};info.cb=sizeof(info);
   // The issue's normal startup skips the adjacent DLL.
@@ -28,23 +29,64 @@ int wmain(int argc,wchar_t** argv) {
   assert(WaitForSingleObject(process.hProcess,10000)==WAIT_OBJECT_0);
   DWORD code=0;assert(GetExitCodeProcess(process.hProcess,&code) && code==11);
   CloseHandle(process.hThread);CloseHandle(process.hProcess);
+  // Debug events carry handles separate from PROCESS_INFORMATION. Repeated
+  // pre-entry loading must not retain two debugger-owned handles per child.
+  DWORD handles_before=0,handles_after=0;assert(GetProcessHandleCount(GetCurrentProcess(),&handles_before));
+  for(unsigned attempt=0;attempt<8;++attempt) {
+    command=L"\""+exe+L"\"";
+    PROCESS_INFORMATION probe{};
+    assert(CreateProcessW(exe.c_str(),command.data(),nullptr,nullptr,FALSE,DEBUG_ONLY_THIS_PROCESS,nullptr,folder.c_str(),&info,&probe));
+    assert(startup::StopAtEntry(probe));
+    assert(TerminateProcess(probe.hProcess,0));assert(WaitForSingleObject(probe.hProcess,3000)==WAIT_OBJECT_0);
+    CloseHandle(probe.hThread);CloseHandle(probe.hProcess);
+  }
+  assert(GetProcessHandleCount(GetCurrentProcess(),&handles_after));
+  if(handles_after>handles_before+2)std::fprintf(stderr,"startup handle leak before=%lu after=%lu\n",handles_before,handles_after);
+  assert(handles_after<=handles_before+2);
   // The proxy must bootstrap without any of its version exports being called,
   // even when the System32 DLL was loaded first and remains the bare-name result.
   const auto second_proxy=folder+L"\\version.dll";
+  assert(WritePrivateProfileStringW(L"Misc",L"NetworkKillSwitch",L"1",ini.c_str()));
+  assert(SetEnvironmentVariableW(L"FLOGGFY_STARTUP_NETWORK_TEST",L"1"));
+  assert(WritePrivateProfileStringW(L"Misc",L"HookAllSubProcesses",L"2",ini.c_str()));
   assert(CopyFileW(dll.c_str(),second_proxy.c_str(),TRUE));
+  assert(SetEnvironmentVariableW(L"FLOGGFY_STARTUP_VERSION_CHILD_TEST",L"1"));
   command=L"\""+exe+L"\" --load-local-version";
   assert(CreateProcessW(exe.c_str(),command.data(),nullptr,nullptr,FALSE,0,nullptr,folder.c_str(),&info,&process));
   assert(WaitForSingleObject(process.hProcess,15000)==WAIT_OBJECT_0);
   assert(GetExitCodeProcess(process.hProcess,&code) && code==0);
   CloseHandle(process.hThread);CloseHandle(process.hProcess);
+  assert(SetEnvironmentVariableW(L"FLOGGFY_STARTUP_VERSION_CHILD_TEST",nullptr));
+  assert(WritePrivateProfileStringW(L"Misc",L"HookAllSubProcesses",L"1",ini.c_str()));
+  assert(SetEnvironmentVariableW(L"FLOGGFY_STARTUP_VERSION_CHILD_DISABLED_TEST",L"1"));
+  command=L"\""+exe+L"\" --load-local-version";
+  assert(CreateProcessW(exe.c_str(),command.data(),nullptr,nullptr,FALSE,0,nullptr,folder.c_str(),&info,&process));
+  assert(WaitForSingleObject(process.hProcess,15000)==WAIT_OBJECT_0);
+  assert(GetExitCodeProcess(process.hProcess,&code)&&code==0);
+  CloseHandle(process.hThread);CloseHandle(process.hProcess);
+  assert(SetEnvironmentVariableW(L"FLOGGFY_STARTUP_VERSION_CHILD_DISABLED_TEST",nullptr));
   assert(DeleteFileW(second_proxy.c_str()));
   // The fallback loads it before the host entry point and detaches its debugger.
+  assert(SetEnvironmentVariableW(L"FLOGGFY_STARTUP_CHILD_TEST",L"1"));
   if(!startup::Launch(folder,process,error))std::fwprintf(stderr,L"%ls\n",error.c_str());
   assert(process.hProcess);
   assert(WaitForSingleObject(process.hProcess,10000)==WAIT_OBJECT_0);
-  assert(GetExitCodeProcess(process.hProcess,&code) && code==0);
+  assert(GetExitCodeProcess(process.hProcess,&code));
+  if(code)std::fprintf(stderr,"launcher child coverage exit=%lu\n",code);
+  assert(code==0);
   CloseHandle(process.hThread);CloseHandle(process.hProcess);
+  assert(SetEnvironmentVariableW(L"FLOGGFY_STARTUP_CHILD_TEST",nullptr));
+  assert(SetEnvironmentVariableW(L"FLOGGFY_STARTUP_NETWORK_TEST",nullptr));
   assert(!AnyRunning(exe));
+  // Mode 0 keeps launcher-loaded Floggfy in the parent without touching children.
+  assert(WritePrivateProfileStringW(L"Misc",L"HookAllSubProcesses",L"0",ini.c_str()));
+  assert(SetEnvironmentVariableW(L"FLOGGFY_STARTUP_CHILD_DISABLED_TEST",L"1"));
+  if(!startup::Launch(folder,process,error))std::fwprintf(stderr,L"%ls\n",error.c_str());
+  assert(process.hProcess&&WaitForSingleObject(process.hProcess,10000)==WAIT_OBJECT_0);
+  assert(GetExitCodeProcess(process.hProcess,&code)&&code==0);
+  CloseHandle(process.hThread);CloseHandle(process.hProcess);
+  assert(SetEnvironmentVariableW(L"FLOGGFY_STARTUP_CHILD_DISABLED_TEST",nullptr));
+  assert(WritePrivateProfileStringW(L"Misc",L"HookAllSubProcesses",L"1",ini.c_str()));
   // Missing and invalid DLLs must fail without leaving a child behind.
   assert(MoveFileW(dll.c_str(),(dll+L".saved").c_str()));
   assert(!startup::Launch(folder,process,error) && !process.hProcess && !error.empty());

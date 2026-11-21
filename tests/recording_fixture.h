@@ -65,16 +65,17 @@ static std::vector<uint8_t> setup(unsigned entries=1,unsigned codeword_length=1)
     return packet;
 }
 static std::vector<uint8_t> ogg_headers(const std::vector<uint8_t>& id,const std::vector<uint8_t>& configuration,
-                                        bool repeated_bos=false,const std::vector<uint8_t>& supplied_comment={}) {
+                                        bool repeated_bos=false,const std::vector<uint8_t>& supplied_comment={},
+                                        unsigned first_sequence=0) {
     std::vector<uint8_t> comment={3,'v','o','r','b','i','s'};comment.resize(15);comment.push_back(1);
     if(!supplied_comment.empty())comment=supplied_comment;
-    auto out=page(id,0,2);
-    for(auto part:{page(comment,1,0),page(configuration,2,0)}) out.insert(out.end(),part.begin(),part.end());
-    if(repeated_bos) { auto restart=page(id,0,2);out.insert(out.end(),restart.begin(),restart.end()); }
+    auto out=page(id,first_sequence,2);
+    for(auto part:{page(comment,first_sequence+1,0),page(configuration,first_sequence+2,0)}) out.insert(out.end(),part.begin(),part.end());
+    if(repeated_bos) { auto restart=page(id,first_sequence,2);out.insert(out.end(),restart.begin(),restart.end()); }
     // Each zero packet selects the short mode and absent floors (silence).
     // The first packet primes the overlap. 1,379 subsequent packets cover
     // 44,128 samples, with EOS trimming the final block to one 44,100-Hz second.
-    unsigned sequence=repeated_bos?1:3,packets=0;
+    unsigned sequence=first_sequence+(repeated_bos?1:3),packets=0;
     while(packets<1380) {
         const auto count=1380-packets>255?255:1380-packets;packets+=count;
         auto audio=page_parts(std::vector<uint8_t>(count,0),std::vector<uint8_t>(count,1),sequence++,
@@ -83,7 +84,7 @@ static std::vector<uint8_t> ogg_headers(const std::vector<uint8_t>& id,const std
     }
     return out;
 }
-[[maybe_unused]] static std::vector<uint8_t> ogg(bool repeated_bos=false) {
-    return ogg_headers(identification(),setup(),repeated_bos);
+[[maybe_unused]] static std::vector<uint8_t> ogg(bool repeated_bos=false,unsigned first_sequence=0) {
+    return ogg_headers(identification(),setup(),repeated_bos,{},first_sequence);
 }
 }

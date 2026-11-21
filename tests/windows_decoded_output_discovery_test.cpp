@@ -1,6 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include "../native/spotify_hook_discovery.h"
+#include "../native/tooling/spotify_hook_discovery.h"
 #include <cassert>
 #include <cstdio>
 #include <cwchar>

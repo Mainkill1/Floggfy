@@ -1,4 +1,4 @@
-#include "../native/playback_quality.h"
+#include "../native/ui/playback_labels.h"
 #include <algorithm>
 #include <cassert>
 #include <cmath>

@@ -1,7 +1,7 @@
 // Uses real CreateProcessW and MinHook, but only starts copies of this fixture.
 // A lost argument, disabled local handler, missed URL, or changed native error
 // contract makes the child or parent fail; no Spotify crash is triggered.
-#include "../native/telemetry_crash.cpp"
+#include "../native/telemetry/telemetry_crash.cpp"
 #include <cassert>
 #include <cstdio>
 #include <cwchar>

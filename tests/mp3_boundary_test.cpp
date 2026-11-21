@@ -1,5 +1,5 @@
-#include "../native/mp3_stream.h"
-#include "../native/compressed_buffer.h"
+#include "../native/media/mp3_stream.h"
+#include "../native/media/compressed_buffer.h"
 #include <cassert>
 #include <algorithm>
 #include <cstdio>

@@ -1,6 +1,27 @@
 // Runs in a dedicated test directory, never beside an installed client.
-#include "../native/history_settings.cpp"
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #include <cassert>
+#include <string>
+namespace {
+std::wstring competing_path;
+bool competing_directory = false;
+BOOL CreateDirectoryWithRacer(LPCWSTR path, LPSECURITY_ATTRIBUTES security) {
+  if (competing_path == path) {
+    competing_path.clear();
+    if (competing_directory) {
+      assert(CreateDirectoryW(path, nullptr));
+    } else {
+      HANDLE file = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+      assert(file != INVALID_HANDLE_VALUE && CloseHandle(file));
+    }
+  }
+  return CreateDirectoryW(path, security);
+}
+}
+#define CreateDirectoryW CreateDirectoryWithRacer
+#include "../native/tooling/history_settings.cpp"
+#undef CreateDirectoryW
 namespace history {
 void StartLogger() {}
 void LogEvent(LogKind,const char*,const std::string&) {}
@@ -87,7 +108,7 @@ int main(int argc,char** argv) {
       if(scenario=="blocking-precedence")assert(WritePrivateProfileStringW(L"Telemetry",L"BlockTelemetry",L"0",path.c_str()));
     }
     if(scenario=="blocking-category-zero") {
-      for(const auto& flag:history::blocking_flags)
+      for(const auto& flag:privacy::kTelemetryOptions)
         assert(WritePrivateProfileStringW(L"Telemetry",flag.key,flag.member==&history::Settings::block_telemetry?L"1":L"0",path.c_str()));
     }
     if(scenario=="aac-one") assert(WritePrivateProfileStringW(L"To Disk",L"AAC",L"1",path.c_str()));
@@ -150,7 +171,7 @@ int main(int argc,char** argv) {
   assert(s.metadata_cache_read_mib==(scenario=="metadata-cache-custom"?512u:256u));
   assert(s.block_telemetry==(scenario=="blocking-legacy-one"||scenario=="blocking-category-zero"));
   assert(s.dump_telemetry==(scenario=="blocking-legacy-one"));
-  for(const auto& flag:history::blocking_flags)
+  for(const auto& flag:privacy::kTelemetryOptions)
     if(flag.default_value)assert((s.*(flag.member))==(scenario!="blocking-category-zero"));
   assert(s.downloads==(scenario!="zero" && scenario!="legacy-zero"));
   assert(s.max_buffered_mib==(scenario=="buffer-1024"||scenario=="buffer-over"?1024u:scenario=="buffer-under"?8u:512u));
@@ -170,6 +191,18 @@ int main(int argc,char** argv) {
   assert(s.log_level==expected_log&&history::LogLevel()==expected_log);
   assert(history::CaptureSpeed()==unsigned(std::max(1,s.capture_speed)));
   if(scenario=="new") {
+    const auto parent = std::wstring(module) + L".folders";
+    const auto leaf = parent + L"\\child";
+    competing_path = history::WindowsPath(leaf);
+    assert(!history::EnsureDirectory(leaf));
+    assert(competing_path.empty());
+    assert(!history::EnsureDirectory(leaf));
+    assert(DeleteFileW(leaf.c_str()));
+    competing_path = history::WindowsPath(leaf);
+    competing_directory = true;
+    assert(history::EnsureDirectory(leaf) && history::EnsureDirectory(leaf));
+    assert(competing_path.empty());
+    assert(RemoveDirectoryW(leaf.c_str()) && RemoveDirectoryW(parent.c_str()));
     assert(GetPrivateProfileIntW(L"To Disk",L"Downloads",9,path.c_str())==1);
     assert(GetPrivateProfileIntW(L"To Disk",L"AAC",9,path.c_str())==0);
     assert(GetPrivateProfileIntW(L"To Disk",L"Podcasts",9,path.c_str())==1);
@@ -250,7 +283,7 @@ int main(int argc,char** argv) {
   std::wstring persisted;bool unicode=false;assert(history::settings_file::Read(path,persisted,unicode));
   assert(!history::settings_file::Find(persisted,L"BlockTelemetry").present);
   assert(!history::settings_file::Find(persisted,L"DumpTelemetry").present);
-  for(const auto& flag:history::blocking_flags) {
+  for(const auto& flag:privacy::kTelemetryOptions) {
     const auto value=history::settings_file::Find(persisted,flag.key,L"[Telemetry]");
     assert(value.present&&!value.duplicate&&value.value==(s.*(flag.member)?L"1":L"0"));
   }

@@ -1,0 +1,45 @@
+#pragma once
+#include "rich_metadata.h"
+#include <cstdint>
+#include <functional>
+#include <map>
+#include <string>
+#include <string_view>
+#include <vector>
+namespace history {
+struct CachedRecord {
+  std::uint64_t sequence = 0;
+  bool deleted = false;
+  std::string value;
+};
+using CachedRecords = std::map<std::string, CachedRecord, std::less<>>;
+struct CachedTrackMetadata {
+  std::string uri, title, album, album_uri;
+  double duration = 0;
+  std::map<std::string, std::string> fields;
+};
+struct CachedMetadataUris {
+  std::string_view track, album;
+};
+struct CachedMetadataRecords {
+  CachedRecords tracks, albums;
+};
+bool CollectMetadataTable(const std::vector<std::uint8_t> &, CachedMetadataUris,
+                          CachedMetadataRecords &);
+bool CollectMetadataLog(const std::vector<std::uint8_t> &, CachedMetadataUris,
+                        CachedMetadataRecords &);
+bool DecodeCachedTrack(const CachedRecords &, const std::string &uri, CachedTrackMetadata &);
+bool DecodeCachedAlbum(const CachedRecords &, const std::string &uri,
+                       std::map<std::string, std::string> &);
+void MergeCachedAlbum(const CachedRecords &, CachedTrackMetadata &);
+bool MergeCachedMetadata(const CachedTrackMetadata &, RichMetadata &);
+bool MergeMetadataTags(const RichMetadata &, RichMetadata &);
+// Windows implementation; called only from the metadata worker.
+struct StoredMetadataRead {
+  std::uint64_t read_bytes = 0, budget_bytes = 0;
+  const char* reason = "missing-record";
+};
+bool ReadStoredMetadata(const std::wstring &users_root, RichMetadata &,
+                        StoredMetadataRead* result = nullptr);
+void EnrichStoredMetadata(RichMetadata &);
+} // namespace history
