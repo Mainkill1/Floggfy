@@ -85,9 +85,7 @@ bool PrepareBackupSlot(const std::wstring& path,const Catalog& catalog) {
     memory.SetRetainedBytes(RecordingMetadataMemoryUsage(current));
     if(!ReadRecording(previous,retained) || !retained.owned || !MatchesRecording(retained,catalog))return false;
     const auto& a=current.quality;const auto& b=retained.quality;
-    const bool equal=a.codec==b.codec && a.rate==b.rate && a.channels==b.channels &&
-                     a.bits==b.bits && a.bitrate==b.bitrate;
-    if(current.complete && (!retained.complete || equal || HigherQuality(a,b))) {
+    if(current.complete && (!retained.complete || SameQuality(a,b) || HigherQuality(a,b))) {
         return win32::DeleteOnClose(backup.value);
     }
     // Keep a better or incomparable old recording as an ordinary audio file.
@@ -229,8 +227,7 @@ FilePublication PublishBytes(const std::wstring& path,const Quality& quality,con
     RecordingFile incoming;
     if(path.empty() || !InspectRecording(static_cast<const uint8_t*>(bytes),size,incoming) ||
        !incoming.complete || !MatchesRecording(incoming,catalog)) return FilePublication::Failed;
-    if(incoming.quality.codec!=quality.codec || incoming.quality.rate!=quality.rate ||
-       incoming.quality.channels!=quality.channels || incoming.quality.bits!=quality.bits || incoming.quality.bitrate!=quality.bitrate) return FilePublication::Failed;
+    if(!SameQuality(incoming.quality,quality))return FilePublication::Failed;
     memory.SetRetainedBytes(RecordingMetadataMemoryUsage(incoming));
     RecoverRecording(path,catalog);
     if(memory.Denied())return FilePublication::ResourceWait;
@@ -244,24 +241,25 @@ FilePublication PublishBytes(const std::wstring& path,const Quality& quality,con
         // The same handle protects this snapshot through reservation/promotion.
         old.value=CreateFileW(WindowsPath(path).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,
             nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+        std::vector<uint8_t> existing;
         RecordingFile current;
         if(old.value==INVALID_HANDLE_VALUE || !SameFile(old.value,path) ||
-           DecideSave(path,quality,catalog,&current)!=SaveDecision::Upgrade)
+           !ReadLockedRecording(old.value,existing) ||
+           !InspectRecording(existing.data(),existing.size(),current) ||
+           !CanUpgradeRecording(current,quality,catalog))
             return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
         if(current.complete) {
             if(RecordingReadMemoryScope::HasPermit()) {
                 RecordingMemoryPlan old_memory;size_t peak=0;
-                if(!PlanLockedRecordingMemory(old.value,old_memory)||
+                if(!ProbeRecordingMemory(existing.data(),existing.size(),old_memory)||
                    !EstimatePublicationUpgradeMemory(quality.codec,old_memory.file_bytes,size,
                        old_memory.metadata_bytes,incoming_memory.metadata_bytes,peak))return FilePublication::ResourceWait;
                 if(!memory.Request(peak))return FilePublication::ResourceWait;
             }
-            std::vector<uint8_t> existing;
-            if(!ReadLockedRecording(old.value,existing))return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
             const auto first=static_cast<const uint8_t*>(bytes);
             const std::vector<uint8_t> replacement(first,first+size);
             std::string error;
-            if(!PreserveUpgradeMetadata(existing,replacement,catalog,preserved,error))return FilePublication::Failed;
+            if(!PreserveUpgradeMetadata(existing,current,replacement,incoming,catalog,preserved,error))return FilePublication::Failed;
             bytes=preserved.data();size=preserved.size();
         }
         // Proven incomplete owned files are repaired from the new complete
@@ -309,9 +307,8 @@ bool ReceiptSourceUnchanged(HANDLE file,const FormatUpgradeReceipt& receipt,bool
 }
 bool ReceiptQuality(const RecordingFile& recording,const FormatUpgradeReceipt& receipt) {
     const auto& a=recording.quality;const auto& b=receipt.quality;
-    const bool equal=a.codec==b.codec&&a.rate==b.rate&&a.channels==b.channels&&a.bits==b.bits&&a.bitrate==b.bitrate;
     return recording.complete&&recording.owned&&MatchesRecording(recording,receipt.catalog)&&
-        HigherQuality(a,receipt.source_quality)&&(equal||HigherQuality(a,b));
+        HigherQuality(a,receipt.source_quality)&&(SameQuality(a,b)||HigherQuality(a,b));
 }
 FilePublication CompleteFormatUpgradeHeld(FormatUpgradeReceipt& receipt,HANDLE old,size_t* published_bytes) {
     RecordingReadMemoryScope memory;
@@ -338,7 +335,12 @@ FilePublication CompleteFormatUpgradeHeld(FormatUpgradeReceipt& receipt,HANDLE o
         }
 
         std::vector<uint8_t> old_bytes,merged;std::string error;
-        if(!ReadLockedRecording(old,old_bytes)||!PreserveUpgradeMetadata(old_bytes,final_bytes,receipt.catalog,merged,error))return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
+        {
+            RecordingFile prior;
+            if(!ReadLockedRecording(old,old_bytes)||!InspectRecording(old_bytes.data(),old_bytes.size(),prior)||
+               !PreserveUpgradeMetadata(old_bytes,prior,final_bytes,recording,receipt.catalog,merged,error))
+                return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
+        }
         if(RecordingReadMemoryScope::HasPermit())
             memory.SetRetainedBytes(final_bytes.capacity()+old_bytes.capacity()+merged.capacity()+
                 RecordingMetadataMemoryUsage(recording));
@@ -403,8 +405,7 @@ FilePublication PublishFormatUpgrade(const std::wstring& source,const std::wstri
         }
         const auto first=static_cast<const uint8_t*>(bytes);std::vector<uint8_t> incoming(first,first+size);RecordingFile next;
         if(!InspectRecording(incoming.data(),incoming.size(),next)||!next.complete||!next.owned||
-           !MatchesRecording(next,catalog)||next.quality.codec!=quality.codec||next.quality.rate!=quality.rate||
-           next.quality.channels!=quality.channels||next.quality.bits!=quality.bits||next.quality.bitrate!=quality.bitrate)return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
+           !MatchesRecording(next,catalog)||!SameQuality(next.quality,quality))return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
         memory.SetRetainedBytes(incoming.capacity()+RecordingMetadataMemoryUsage(next));
         Handle old{CreateFileW(WindowsPath(source).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,
             nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
@@ -426,7 +427,7 @@ FilePublication PublishFormatUpgrade(const std::wstring& source,const std::wstri
             memory.SetRetainedBytes(0);if(!memory.Request(peak))return FilePublication::ResourceWait;
         }
         std::vector<uint8_t> preserved;std::string error;
-        if(!PreserveUpgradeMetadata(old_bytes,incoming,catalog,preserved,error))return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
+        if(!PreserveUpgradeMetadata(old_bytes,prior,incoming,next,catalog,preserved,error))return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
         const auto parsed_memory=RecordingMetadataMemoryUsage(next)+RecordingMetadataMemoryUsage(prior);
         memory.SetRetainedBytes(incoming.capacity()+old_bytes.capacity()+preserved.capacity()+parsed_memory);
         size_t saved=0;const auto result=PublishBytes(destination,quality,preserved.data(),preserved.size(),catalog,&saved,permit,context);
@@ -465,9 +466,7 @@ FilePublication PublishMetadataBytes(const std::wstring& path,const void* bytes,
     }
     if(!InspectRecording(static_cast<const uint8_t*>(bytes),size,incoming) || !incoming.complete || !incoming.owned ||
        !MatchesRecording(incoming,catalog)) return FilePublication::Failed;
-    const auto& a=current.quality;const auto& b=incoming.quality;
-    if(a.codec!=b.codec || a.rate!=b.rate || a.channels!=b.channels || a.bits!=b.bits || a.bitrate!=b.bitrate)
-        return FilePublication::Failed;
+    if(!SameQuality(current.quality,incoming.quality))return FilePublication::Failed;
     memory.SetRetainedBytes(RecordingMetadataMemoryUsage(current)+RecordingMetadataMemoryUsage(incoming));
     StagingFile staging;
     if(!staging.WriteNew(UniqueSibling(path,L".complete-lyrics-"),bytes,size))return FilePublication::Failed;

@@ -98,6 +98,9 @@ RecordingDestination ResolveRecordingDestination(const std::wstring& base,const 
 // can stop at its first complete matching file; replacement must examine all.
 std::vector<std::wstring> RecordingPathCandidates(const std::wstring& base,const Catalog& catalog,bool legacy_names=true,bool track_numbers=false);
 enum class SaveDecision { NewFile, Upgrade, Skip };
-// Optional inspection lets callers plan metadata changes without rereading the file.
-SaveDecision DecideSave(const std::wstring& path,const Quality& incoming,const Catalog& catalog,RecordingFile* inspected=nullptr);
+inline bool CanUpgradeRecording(const RecordingFile& existing,const Quality& incoming,const Catalog& catalog) {
+    return existing.owned && (!existing.complete || HigherQuality(incoming,existing.quality)) &&
+        MatchesRecording(existing,catalog);
+}
+SaveDecision DecideSave(const std::wstring& path,const Quality& incoming,const Catalog& catalog);
 }

@@ -346,14 +346,10 @@ RecordingDestination ResolveRecordingDestination(const std::wstring& base,const 
     if(vacant.empty()) return {};
     return {RecordingDestinationState::Vacant,std::move(vacant),{},explicit_uid_conflict};
 }
-SaveDecision DecideSave(const std::wstring& path,const Quality& incoming,const Catalog& catalog,RecordingFile* inspected) {
-    if(inspected)*inspected={};
+SaveDecision DecideSave(const std::wstring& path,const Quality& incoming,const Catalog& catalog) {
     if(Missing(path)) return SaveDecision::NewFile;
     RecordingFile existing;
-    if(!ReadRecording(path,existing) || !MatchesRecording(existing,catalog)) return SaveDecision::Skip;
-    const auto decision=existing.owned && (!existing.complete || HigherQuality(incoming,existing.quality))
+    return ReadRecording(path,existing) && CanUpgradeRecording(existing,incoming,catalog)
         ? SaveDecision::Upgrade : SaveDecision::Skip;
-    if(inspected)*inspected=std::move(existing);
-    return decision;
 }
 }

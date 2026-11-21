@@ -13,6 +13,8 @@ MetadataUpdate FillRecordingMetadata(const std::vector<uint8_t>& source,const Ta
 // Audio replacement policy: old populated/custom fields and artwork survive;
 // missing fields/lyrics/better covers use the same plan as metadata-only fills.
 // HISTORY_* describes the incoming audio. Caller locks the old file throughout.
-bool PreserveUpgradeMetadata(const std::vector<uint8_t>& existing,const std::vector<uint8_t>& incoming,
+// Use inspections of the exact, unchanged buffers supplied for the merge.
+bool PreserveUpgradeMetadata(const std::vector<uint8_t>& existing,const RecordingFile& old,
+    const std::vector<uint8_t>& incoming,const RecordingFile& next,
     const Catalog& catalog,std::vector<uint8_t>& output,std::string& error);
 }

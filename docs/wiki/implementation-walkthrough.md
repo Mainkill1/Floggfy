@@ -82,8 +82,9 @@ and duplicate paths. It can skip an existing complete match, update missing
 metadata, or upgrade an owned file when quality and format rules allow. It writes
 and flushes a staging file before claiming the destination. If the destination
 is locked or changes, the worker can retry or replan without losing the completed
-capture. Memory accounting includes the retained source and scratch allocations
-for validation, tagging, and publication. [file_publication.cpp](../../native/media/file_publication.cpp),
+capture. A same-format upgrade validates one locked snapshot and uses it for the
+metadata merge. Memory accounting includes the retained source and scratch
+allocations for validation, tagging, and publication. [file_publication.cpp](../../native/media/file_publication.cpp),
 [library_layout.cpp](../../native/media/library_layout.cpp).
 
 ## To Disk and Saved
@@ -135,7 +136,7 @@ Fixtures, fault injection, fuzzers, and replay runners live under `tests/`.
 | Area | Evidence to collect and work to remove |
 |---|---|
 | Capture and matcher | Count full passes over retained captures and candidate comparisons during skips and a large episode. Check whether playback or capture changes can trigger re-evaluation in place of some repeated passes. Late metadata and final decoder output must still trigger work. |
-| Save worker | Count reads and peak scratch memory during a quality upgrade. Reuse bytes already read from the same held file when that snapshot meets the next step's validation requirements. |
+| Save worker | Measure peak scratch memory during a large quality upgrade. The locked snapshot now serves both validation and the metadata merge. The merge still copies the incoming bytes through the codec tagging interface. |
 | Saved column | Separate SQL time, file checks, and DOM updates on a large playlist. The catalog already reuses prepared statements. The measurements can establish whether batching more SQL or reducing UI work will help. |
 | Enrichment | Log the path from live metadata to disk cache to network fill for missing artwork and lyrics. Compare work per recording and follow the cache read budget when checking any reduction. |
 | Startup and telemetry | Measure startup duration and opt-in dump decode time independently of audio recording. Profile only paths exercised by enabled features. |

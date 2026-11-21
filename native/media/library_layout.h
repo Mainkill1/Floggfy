@@ -31,5 +31,8 @@ std::vector<std::wstring> DuplicateLookupPaths(const std::wstring& root,const Ca
 std::wstring DuplicateOutputPath(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder=false,bool track_numbers=false);
 enum class Codec { Vorbis, Flac, Aac, Mp3 };
 struct Quality { Codec codec=Codec::Vorbis; unsigned rate=0,channels=0,bits=0,bitrate=0; };
+inline bool SameQuality(const Quality& a,const Quality& b) {
+    return a.codec==b.codec && a.rate==b.rate && a.channels==b.channels && a.bits==b.bits && a.bitrate==b.bitrate;
+}
 bool HigherQuality(const Quality& incoming,const Quality& existing);
 }

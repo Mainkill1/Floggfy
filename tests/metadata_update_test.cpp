@@ -224,7 +224,10 @@ void PreserveFlacPictureBlocks() {
     tags.cover=artwork_fixture::png();tags.mime="image/png";
     std::vector<uint8_t> incoming,output;std::string error;
     assert(TagFlac(recording_fixture::fixture(44100,24),tags,incoming,error));
-    assert(PreserveUpgradeMetadata(old,incoming,catalog,output,error));
+    RecordingFile old_snapshot,incoming_snapshot;
+    assert(InspectRecording(old.data(),old.size(),old_snapshot));
+    assert(InspectRecording(incoming.data(),incoming.size(),incoming_snapshot));
+    assert(PreserveUpgradeMetadata(old,old_snapshot,incoming,incoming_snapshot,catalog,output,error));
     std::vector<std::vector<uint8_t>> pictures;
     for(const auto& block:FlacBlocks(output))if(block.first==6)
         pictures.emplace_back(block.second.begin()+4,block.second.end());

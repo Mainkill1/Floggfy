@@ -138,9 +138,6 @@ bool FillFlac(const std::vector<uint8_t>& source,const Tags& delta,const std::ve
     if(!found){error="owned recording has no comments";return false;}
     output.insert(output.end(),source.begin()+audio,source.end());return true;
 }
-bool SameQuality(const Quality& a,const Quality& b) {
-    return a.codec==b.codec && a.rate==b.rate && a.channels==b.channels && a.bits==b.bits && a.bitrate==b.bitrate;
-}
 // Copy opaque FLAC PICTURE payloads, including booklets or images beyond our
 // inspection budget. Failure to assess an old image never authorizes its loss.
 bool FlacPictures(const std::vector<uint8_t>& source,std::vector<std::vector<uint8_t>>& pictures) {
@@ -187,17 +184,14 @@ MetadataUpdate FillRecordingMetadata(const std::vector<uint8_t>& source,const Ta
     }
     return MetadataUpdate::Updated;
 }
-bool PreserveUpgradeMetadata(const std::vector<uint8_t>& source,const std::vector<uint8_t>& incoming,
+bool PreserveUpgradeMetadata(const std::vector<uint8_t>& source,const RecordingFile& old,
+    const std::vector<uint8_t>& incoming,const RecordingFile& next,
     const Catalog& catalog,std::vector<uint8_t>& output,std::string& error) {
     output.clear();error.clear();
-    RecordingFile old,next;
-    const auto representable=[&] {
-        return old.quality.codec==next.quality.codec ||
-            (old.quality.codec==Codec::Vorbis && next.quality.codec==Codec::Flac);
-    };
-    if(!InspectRecording(source.data(),source.size(),old) || !old.complete || !old.owned ||
-       !MatchesRecording(old,catalog) || !InspectRecording(incoming.data(),incoming.size(),next) ||
-       !next.complete || !next.owned || !MatchesRecording(next,catalog) || !representable()) {
+    const bool representable=old.quality.codec==next.quality.codec ||
+        (old.quality.codec==Codec::Vorbis && next.quality.codec==Codec::Flac);
+    if(!old.complete || !old.owned || !MatchesRecording(old,catalog) ||
+       !next.complete || !next.owned || !MatchesRecording(next,catalog) || !representable) {
         error="upgrade metadata requires complete owned matching recordings";
         return false;
     }

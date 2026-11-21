@@ -2,54 +2,73 @@
 import argparse
 import hashlib
 import json
-import os
 from pathlib import Path
 import struct
 import subprocess
 
 
+def metadata_blocks(source, digest):
+    while True:
+        header = source.read(4)
+        assert len(header) == 4, 'Truncated metadata header'
+        length = int.from_bytes(header[1:], 'big')
+        payload = source.read(length)
+        assert len(payload) == length, 'Truncated metadata payload'
+        digest.update(header)
+        digest.update(payload)
+        yield header[0] & 127, payload
+        if header[0] & 128:
+            return
+
+
 def validate(path, executable, raw=False, require_artwork=False):
-    data=path.read_bytes()
-    assert data[:4]==b'fLaC', 'Missing native FLAC signature'
-    cursor=4; blocks=[]; last=False
-    while not last:
-        assert cursor+4<=len(data), 'Truncated metadata header'
-        kind=data[cursor]&127; last=bool(data[cursor]&128)
-        length=int.from_bytes(data[cursor+1:cursor+4], 'big'); cursor+=4
-        assert cursor+length<=len(data), 'Truncated metadata payload'
-        blocks.append((kind,data[cursor:cursor+length])); cursor+=length
-    assert blocks[0][0]==0 and len(blocks[0][1])==34, 'Missing STREAMINFO'
-    assert sum(kind==0 for kind,_ in blocks)==1, 'Duplicate STREAMINFO'
-    stream=blocks[0][1]; packed=int.from_bytes(stream[10:18],'big')
-    rate=packed>>44; channels=((packed>>41)&7)+1; bits=((packed>>36)&31)+1; samples=packed&0xfffffffff
-    assert rate and samples, 'Unknown sample count'
-    tags={}; pictures=[]
-    for kind, payload in blocks:
-        if kind==4:
-            n=int.from_bytes(payload[:4],'little'); p=4+n
-            assert p+4<=len(payload), 'Truncated vendor'
-            count=int.from_bytes(payload[p:p+4],'little'); p+=4
-            for _ in range(count):
-                assert p+4<=len(payload), 'Truncated comment length'
-                n=int.from_bytes(payload[p:p+4],'little');p+=4
-                assert p+n<=len(payload), 'Truncated comment'
-                field=payload[p:p+n].decode('utf-8');p+=n
-                if '=' in field:
-                    key,value=field.split('=',1);tags[key.upper()]=value
-            assert p==len(payload), 'Trailing comment bytes'
-        elif kind==6:
-            p=0
-            def number():
-                nonlocal p
-                value=struct.unpack_from('>I',payload,p)[0]; p+=4;return value
-            picture_type=number();n=number();mime=payload[p:p+n].decode('ascii');p+=n
-            n=number();p+=n
-            dimensions=[number() for _ in range(4)]
-            n=number();image=payload[p:p+n];p+=n
-            assert p==len(payload) and n>0, 'Truncated picture'
-            assert mime in ['image/png','image/jpeg'], 'Unsupported picture MIME'
-            assert (mime=='image/png' and image.startswith(b'\x89PNG\r\n\x1a\n')) or (mime=='image/jpeg' and image.startswith(b'\xff\xd8\xff')), 'Picture signature mismatch'
-            pictures.append({'type':picture_type,'bytes':len(image),'mime':mime,'sha256':hashlib.sha256(image).hexdigest()})
+    tags = {}
+    pictures = []
+    with path.open('rb') as source:
+        signature = source.read(4)
+        assert signature == b'fLaC', 'Missing native FLAC signature'
+        encoded_digest = hashlib.sha256(signature)
+        blocks = metadata_blocks(source, encoded_digest)
+        kind, stream = next(blocks)
+        assert kind == 0 and len(stream) == 34, 'Missing STREAMINFO'
+        packed = int.from_bytes(stream[10:18], 'big')
+        rate = packed >> 44
+        channels = ((packed >> 41) & 7) + 1
+        bits = ((packed >> 36) & 31) + 1
+        samples = packed & 0xfffffffff
+        assert rate and samples, 'Unknown sample count'
+        for kind, payload in blocks:
+            assert kind != 0, 'Duplicate STREAMINFO'
+            if kind==4:
+                n=int.from_bytes(payload[:4],'little'); p=4+n
+                assert p+4<=len(payload), 'Truncated vendor'
+                count=int.from_bytes(payload[p:p+4],'little'); p+=4
+                for _ in range(count):
+                    assert p+4<=len(payload), 'Truncated comment length'
+                    n=int.from_bytes(payload[p:p+4],'little');p+=4
+                    assert p+n<=len(payload), 'Truncated comment'
+                    field=payload[p:p+n].decode('utf-8');p+=n
+                    if '=' in field:
+                        key,value=field.split('=',1);tags[key.upper()]=value
+                assert p==len(payload), 'Trailing comment bytes'
+            elif kind==6:
+                p=0
+                def number():
+                    nonlocal p
+                    value=struct.unpack_from('>I',payload,p)[0]; p+=4;return value
+                picture_type=number();n=number();mime=payload[p:p+n].decode('ascii');p+=n
+                n=number();p+=n
+                dimensions=[number() for _ in range(4)]
+                n=number();image=payload[p:p+n];p+=n
+                assert p==len(payload) and n>0, 'Truncated picture'
+                assert mime in ['image/png','image/jpeg'], 'Unsupported picture MIME'
+                assert (mime=='image/png' and image.startswith(b'\x89PNG\r\n\x1a\n')) or (mime=='image/jpeg' and image.startswith(b'\xff\xd8\xff')), 'Picture signature mismatch'
+                pictures.append({'type':picture_type,'bytes':len(image),'mime':mime,'sha256':hashlib.sha256(image).hexdigest()})
+
+        for block in iter(lambda: source.read(65536), b''):
+            encoded_digest.update(block)
+        encoded_size = source.tell()
+
     checked=subprocess.run([executable,'--silent','--test',str(path)],capture_output=True)
     assert checked.returncode==0, f'FLAC decoder validation failed: {checked.stderr.decode()}'
     process=subprocess.Popen([executable,'--silent','--decode','--stdout','--force-raw-format','--endian=little','--sign=signed',str(path)],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
@@ -71,7 +90,7 @@ def validate(path, executable, raw=False, require_artwork=False):
         assert abs(float(tags['HISTORY_MEDIA_DURATION'])-samples/rate)<=1
     if require_artwork:
         assert any(p['type']==3 for p in pictures), 'Missing embedded front cover'
-    return {'path':str(path),'title':tags.get('TITLE'),'artist':tags.get('ARTIST'),'album':tags.get('ALBUM'),'album_artist':tags.get('ALBUMARTIST'),'track_number':int(tags.get('TRACKNUMBER','0')),'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest(),'duration_seconds':samples/rate,'sample_rate':rate,'channels':channels,'bits_per_sample':bits,'decoded_samples':samples,'decode_errors':0,'decoded_pcm_sha256':sha.hexdigest(),'streaminfo_md5_supplied':supplied_md5,'streaminfo_md5_verified':supplied_md5,'pictures':pictures,'embedded_tags':sorted(tags),'complete_listen':tags.get('HISTORY_COMPLETE_LISTEN')=='1'}
+    return {'path':str(path),'title':tags.get('TITLE'),'artist':tags.get('ARTIST'),'album':tags.get('ALBUM'),'album_artist':tags.get('ALBUMARTIST'),'track_number':int(tags.get('TRACKNUMBER','0')),'bytes':encoded_size,'sha256':encoded_digest.hexdigest(),'duration_seconds':samples/rate,'sample_rate':rate,'channels':channels,'bits_per_sample':bits,'decoded_samples':samples,'decode_errors':0,'decoded_pcm_sha256':sha.hexdigest(),'streaminfo_md5_supplied':supplied_md5,'streaminfo_md5_verified':supplied_md5,'pictures':pictures,'embedded_tags':sorted(tags),'complete_listen':tags.get('HISTORY_COMPLETE_LISTEN')=='1'}
 
 
 if __name__=='__main__':
