@@ -85,6 +85,23 @@ int wmain(int argc,wchar_t** argv) {
       TerminateProcess(debugged.hProcess,0);CloseHandle(debugged.hThread);CloseHandle(debugged.hProcess);return 150;
     }
     if(GetLastError()!=ERROR_NOT_SUPPORTED||debugged.hProcess||debugged.hThread)return 151;
+    const std::wstring lookalike=folder+L"\\Spotify.exe.evil.exe";
+    if(!CopyFileW(exe.c_str(),lookalike.c_str(),FALSE))return 152;
+    line=L"\""+lookalike+L"\" --expect-unloaded";
+    code=RunChild(lookalike,line,0,local,false);DeleteFileW(lookalike.c_str());
+    if(code)return 152+code;
+    const std::wstring hidden=local+L".child-load-test";
+    DeleteFileW(hidden.c_str());
+    if(!MoveFileW(local.c_str(),hidden.c_str()))return 180;
+    PROCESS_INFORMATION failed{};line=L"\""+exe+L"\" --type=network-service --loaded-check";
+    SetLastError(ERROR_SUCCESS);
+    const bool unexpectedly_created=CreateProcessW(exe.c_str(),line.data(),nullptr,nullptr,FALSE,0,nullptr,nullptr,&startup,&failed)!=FALSE;
+    const DWORD failure_error=GetLastError();
+    if(unexpectedly_created) {
+      TerminateProcess(failed.hProcess,0);CloseHandle(failed.hThread);CloseHandle(failed.hProcess);
+    }
+    if(!MoveFileW(hidden.c_str(),local.c_str()))return 181;
+    if(unexpectedly_created||failure_error!=ERROR_DLL_INIT_FAILED||failed.hProcess||failed.hThread)return 182;
     CreateDirectoryW(other.c_str(),nullptr);
     const std::wstring other_exe=other+L"\\Spotify.exe",other_dll=other+L"\\Floggfy.dll";
     if(!CopyFileW(exe.c_str(),other_exe.c_str(),FALSE))return 160;
