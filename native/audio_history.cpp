@@ -51,6 +51,7 @@
 #include <map>
 #include <limits>
 #include <memory>
+#include <type_traits>
 #include <vector>
 
 namespace {
@@ -110,6 +111,8 @@ struct Slot { uintptr_t context; unsigned length; double time; AudioEventKind ki
     uint32_t format; bool capture;
     FlacErrorSource error_source;
     uint64_t requested,returned; unsigned char bytes[65307]; };
+static_assert(std::is_standard_layout<Slot>::value&&std::is_trivially_copyable<Slot>::value,
+              "capture queue copies the event header and occupied payload bytes");
 constexpr size_t max_decoded_callback_bytes=1024*1024;
 constexpr size_t max_decoded_callback_floats=1024*1024;
 // A 10x decoder can deliver more than 128 maximum-sized compressed callbacks
@@ -445,9 +448,6 @@ static void DrainTiming(double now,double& deadline) {
     if(!HookDiagnosticsEnabled()||now<deadline)return;
     LogTiming();deadline=now+10;
 }
-static bool Directories(const std::wstring& path) {
-    return EnsureDirectory(path);
-}
 static spotify::DiscoveryResult DiscoverTargets(HMODULE module,spotify::HookTargets& targets) {
     auto* base=reinterpret_cast<unsigned char*>(module);
     auto* dos=reinterpret_cast<IMAGE_DOS_HEADER*>(base);
@@ -504,7 +504,11 @@ static bool Pop(Slot& s) {
     {
         QueueGuard guard(false);
         ready=count!=0;
-        if(ready) { s=queue[head]; head=(head+1)%capacity; --count; }
+        if(ready) {
+            const auto& queued=queue[head];
+            std::memcpy(&s,&queued,offsetof(Slot,bytes)+queued.length);
+            head=(head+1)%capacity; --count;
+        }
     }
     return ready;
 }
@@ -947,6 +951,9 @@ struct Capture {
     mutable unsigned validation_runs=0;
     bool publication_deferred=false;
     size_t publication_reserved=0;
+    // This capture's share of the last capture-store accounting snapshot.
+    // Transfers to a publication/audit lease remove exactly this prior charge.
+    size_t retained_reserved=0;
     SpacStream spac;
     Mp3Info mp3_info,mp3_scan;
     uint64_t mp3_pending_generation=0;
@@ -1146,6 +1153,27 @@ struct MemoryBudgetLock {
     ~MemoryBudgetLock(){if(--memory_budget_depth==0)ReleaseSRWLockExclusive(&memory_budget_lock);}
 };
 static bool ReserveConstruction(Capture&,size_t incremental_peak);
+struct ReleaseAuditLease {
+    Capture& capture;
+    size_t retained=0;
+    bool temporary=false;
+    explicit ReleaseAuditLease(Capture& value):capture(value) {
+        MemoryBudgetLock guard;
+        if(capture.publication_reserved)return; // The queued job already owns its lease.
+        temporary=true;retained=capture.retained_reserved;
+        capture_reserved.fetch_sub(retained);capture.retained_reserved=0;
+        capture.publication_reserved=capture.Capacity();
+        publishing_reserved.fetch_add(capture.publication_reserved);
+    }
+    ~ReleaseAuditLease() {
+        if(!temporary)return;
+        MemoryBudgetLock guard;
+        publishing_reserved.fetch_sub(capture.publication_reserved);capture.publication_reserved=0;
+        // The caller still owns the capture until it erases it or refreshes its
+        // store snapshot. Restore that charge even when validation throws.
+        capture.retained_reserved=retained;capture_reserved.fetch_add(retained);
+    }
+};
 static void EmitMatcherSnapshot(Capture&,MatcherReason) noexcept;
 static void TraceCaptureDisposition(const Capture&,const char*,const char*) noexcept;
 static bool UnboundOggSequenceGap(const Capture& capture) noexcept {
@@ -1165,13 +1193,18 @@ static const char* CheckBeforeRelease(Capture& capture,const char* reason,
                                      const ownership::OwnershipBinding* binding_override=nullptr) {
     const char* result="validation unavailable";
     try {
-        MemoryBudgetLock budget;
+        ReleaseAuditLease lease(capture);
+        // Charge the copy before validating, but let ingestion acquire the
+        // budget lock while this independent worker copies/parses the source.
+        if(!ReserveConstruction(capture,capture.data.size()))throw std::bad_alloc();
+#ifdef FLOGGFY_RELEASE_AUDIT_TEST
+        ReleaseAuditTestPhase();
+#endif
         const bool guarded_complete=capture.mp3?capture.mp3_info.frames!=0:capture.lossless?capture.flac_source.complete:
             capture.aac?capture.spac.Complete():capture.stream.complete;
         const bool verified=guarded_complete&&CachedFinalValidation(capture)==FinalCaptureValidation::Valid;
         // Inspect the bytes independently: a failed decoder/coverage flag does
         // not establish that the complete compressed source was lost.
-        if(!ReserveConstruction(capture,capture.data.size()))throw std::bad_alloc();
         auto source=capture.data.Flatten();bool complete=false;
         if(capture.aac) {
             SpacStream rebuilt;rebuilt.Push(source.data(),source.size());complete=rebuilt.Complete();
@@ -1753,7 +1786,7 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
     const auto& bytes=c.publication_artifact.bytes;
     if(!inspection_budget.Reset())return finish(Publication::Blocked,"deferred","publication transaction memory unavailable; source retained");
     if(!PublicationStillCurrent(&permit))return finish(permit.rejected,"deferred","publication plan changed; completed audio retained");
-    if(!Directories(destination.substr(0,destination.find_last_of(L'\\')))) return finish(Publication::RetryIO,"failed","could not create save directory");
+    if(!EnsureDirectory(destination.substr(0,destination.find_last_of(L'\\')))) return finish(Publication::RetryIO,"failed","could not create save directory");
     // Only complete tagged audio reaches the bounded save worker's staged,
     // flushed publication protocol. Recording identity authorizes replacement.
     c.committed_destination=destination;c.committed_quality=quality;
@@ -1794,7 +1827,6 @@ struct ReleaseAuditJob {
     ReleaseExpectation expectation=ReleaseExpectation::DiscardedEvidence;
     ownership::OwnershipBinding binding{};
     bool has_binding=false;
-    size_t reserved=0;
 };
 static BoundedQueue<ReleaseAuditJob,32> release_audits;
 static HANDLE save_event=nullptr;
@@ -1809,14 +1841,24 @@ struct DumpWorkerLifetime {
 static hooks::InitController audio_init;
 static bool QueueReleaseAudit(Capture& capture,const char* reason,ReleaseExpectation expectation,
                               const ownership::DecoderOwnershipTracker* tracker=nullptr) {
-    ReleaseAuditJob job;job.reserved=capture.Capacity();job.reason=reason;job.expectation=expectation;
+    ReleaseAuditJob job;job.reason=reason;job.expectation=expectation;
     if(tracker&&capture.capture_token) {job.binding=tracker->Binding(capture.capture_token);job.has_binding=true;}
+    MemoryBudgetLock guard;
+    const auto retained=capture.retained_reserved,previous=capture.publication_reserved;
+    const auto reserved=capture.Capacity();
     try {job.capture=std::make_unique<Capture>(std::move(capture));}
     catch(...) {return false;}
-    publishing_reserved.fetch_add(job.reserved);
+    capture.retained_reserved=capture.publication_reserved=0;
+    job.capture->retained_reserved=0;job.capture->publication_reserved=reserved;
+    capture_reserved.fetch_sub(retained);
+    if(reserved>=previous)publishing_reserved.fetch_add(reserved-previous);
+    else publishing_reserved.fetch_sub(previous-reserved);
     if(!release_audits.Push(std::move(job))) {
-        publishing_reserved.fetch_sub(job.reserved);
+        if(reserved>=previous)publishing_reserved.fetch_sub(reserved-previous);
+        else publishing_reserved.fetch_add(previous-reserved);
         capture=std::move(*job.capture);
+        capture.retained_reserved=retained;capture.publication_reserved=previous;
+        capture_reserved.fetch_add(retained);
         return false;
     }
     if(save_event)SetEvent(save_event);
@@ -1824,8 +1866,15 @@ static bool QueueReleaseAudit(Capture& capture,const char* reason,ReleaseExpecta
 }
 static bool DrainOneReleaseAudit() {
     ReleaseAuditJob job;if(!release_audits.Pop(job))return false;
+    struct Release {
+        ReleaseAuditJob& job;
+        ~Release() {
+            const auto reserved=job.capture->publication_reserved;
+            job.capture.reset();publishing_reserved.fetch_sub(reserved);
+        }
+    } release{job};
     CheckBeforeRelease(*job.capture,job.reason,nullptr,job.expectation,job.has_binding?&job.binding:nullptr);
-    job.capture.reset();publishing_reserved.fetch_sub(job.reserved);return true;
+    return true;
 }
 static void DrainReleaseAudits() {while(DrainOneReleaseAudit()) {}}
 // Existing-file checks share the publication worker, but never consume an audio
@@ -2077,7 +2126,7 @@ static Publication PublishUnmatched(SaveJob& job) {
         found=std::prev(capture.unmatched_attempts.end());
     }
     auto& attempt=*found;
-    if(!Directories(settings.root+L"\\Unmatched"))return fail("could not create Unmatched folder");
+    if(!EnsureDirectory(settings.root+L"\\Unmatched"))return fail("could not create Unmatched folder");
     if(!WriteArchiveFile(attempt.base+L".json",metadata.data(),metadata.size()))return fail("could not save unmatched metadata");
     attempt.sidecar_saved=true;
 #ifdef FLOGGFY_PUBLICATION_TEST
@@ -2304,19 +2353,24 @@ struct CaptureBuffers {
 };
 static bool CompleteMp3Capture(std::map<uintptr_t,std::unique_ptr<Capture>>::iterator,
                                CaptureBuffers&,double,bool release_probe=true);
+static void RefreshCaptureBudget(CaptureBuffers& buffers) {
+    MemoryBudgetLock lock;
+    size_t used=0;
+    const auto account=[&](Capture& capture) {
+        capture.retained_reserved=capture.Capacity();used+=capture.retained_reserved;
+    };
+    for(const auto& item:buffers.active)account(*item.second);
+    for(const auto& item:buffers.ogg_active)account(*item.second);
+    for(const auto& item:buffers.ready)account(*item);
+    capture_reserved.store(used);
+}
 // Serializes construction reservations with capture-worker allocations. The
 // hook callbacks only queue data and never acquire this worker-only lock.
 struct CaptureBudgetScope {
     MemoryBudgetLock lock;
     CaptureBuffers& buffers;
     explicit CaptureBudgetScope(CaptureBuffers& value):buffers(value){}
-    ~CaptureBudgetScope() {
-        size_t used=0;
-        for(const auto& item:buffers.active)used+=item.second->Capacity();
-        for(const auto& item:buffers.ogg_active)used+=item.second->Capacity();
-        for(const auto& item:buffers.ready)used+=item->Capacity();
-        capture_reserved.store(used);
-    }
+    ~CaptureBudgetScope() {RefreshCaptureBudget(buffers);}
 };
 static void TraceCaptureDiscard(const Capture& capture,double now) {
     if(capture.lossless)stream_dump::CaptureEvent(capture.capture_context,capture.capture_epoch,0,
@@ -2324,8 +2378,39 @@ static void TraceCaptureDiscard(const Capture& capture,double now) {
 }
 static void ResetCaptureBuffers(CaptureBuffers& buffers,ownership::DecoderOwnershipTracker* tracker,
                                 unsigned epoch,double now) {
+    CaptureBudgetScope budget(buffers);
     stream_dump::CaptureEvent(0,epoch,0,"capture_reset",nullptr,0,now);
     buffers={};buffers.ownership_tracker=tracker;
+}
+static void PruneExcessCaptures(CaptureBuffers& buffers,double now) {
+    if(buffers.active.size()<=32&&buffers.ogg_active.size()<=32)return;
+    // Capacity pressure is explicit resource evidence; elapsed time alone is
+    // not a reason to declare otherwise valid audio unrelated or invalid.
+    while(buffers.active.size()>32) {
+        auto oldest=std::min_element(buffers.active.begin(),buffers.active.end(),[](const auto& left,const auto& right) {
+            return left.second->born<right.second->born;
+        });
+        TraceCaptureDiscard(*oldest->second,now);
+        buffers.RecordLostActive(oldest->second.get(),ownership::CaptureAbortReason::MemoryLimit);
+        buffers.active.erase(oldest);
+    }
+    while(buffers.ogg_active.size()>32) {
+        auto oldest=std::min_element(buffers.ogg_active.begin(),buffers.ogg_active.end(),
+            [](const auto& left,const auto& right) {return left.second->born<right.second->born;});
+        buffers.RecordLostActive(oldest->second.get(),ownership::CaptureAbortReason::MemoryLimit);
+        buffers.ogg_active.erase(oldest);
+    }
+    RefreshCaptureBudget(buffers);
+}
+static void ReleaseCaptureBuffers(CaptureBuffers& buffers) {
+    for(auto& capture:buffers.active)
+        buffers.RecordLostActive(capture.second.get(),ownership::CaptureAbortReason::Shutdown);
+    for(auto& capture:buffers.ogg_active)
+        buffers.RecordLostActive(capture.second.get(),ownership::CaptureAbortReason::Shutdown);
+    for(auto& capture:buffers.ready)
+        CheckBeforeRelease(*capture,"worker shutdown",buffers.ownership_tracker);
+    buffers.active.clear();buffers.ogg_active.clear();buffers.ready.clear();
+    RefreshCaptureBudget(buffers);
 }
 static bool ApplyCaptureQueueLosses(CaptureBuffers& buffers,const CaptureQueueLossBatch& loss,double now) {
     if(!loss.global&&!loss.count)return false;
@@ -2347,6 +2432,7 @@ static bool ApplyCaptureQueueLosses(CaptureBuffers& buffers,const CaptureQueueLo
         if(buffers.ownership_tracker)
             buffers.ownership_tracker->ObservationLost(ownership::ObservationLoss::CaptureQueue,now);
         ResetMp3Probes();
+        RefreshCaptureBudget(buffers);
         return true;
     }
     unsigned affected=0;
@@ -2396,6 +2482,7 @@ static bool ApplyCaptureQueueLosses(CaptureBuffers& buffers,const CaptureQueueLo
     char message[160];snprintf(message,sizeof(message),
         "capture queue loss isolated contexts=%u active_captures=%u loss_reports=%llu; unrelated captures retained",
         loss.count,affected,static_cast<unsigned long long>(loss.reports));Log(affected?LogKind::Warning:LogKind::Diagnostic,message);
+    RefreshCaptureBudget(buffers);
     return false;
 }
 static bool SpotifyCurrentItemChanged(const Media& previous,const Media& next) {
@@ -3835,7 +3922,7 @@ static DWORD WINAPI Worker(LPVOID) {
     DumpWorkerLifetime dump_lifetime;
     ownership::DecoderOwnershipTracker ownership_tracker;
     CaptureBuffers buffers;buffers.ownership_tracker=&ownership_tracker;
-    auto& active=buffers.active;auto& ready=buffers.ready;
+    auto& ready=buffers.ready;
     uint64_t recording_generation=0; PlaybackSnapshotReader reader; Media current; PlaybackQualityTracker quality; std::string client_quality;
     uint64_t media_sequence=0;
     PlaybackDiagnostics diagnostics;
@@ -4024,23 +4111,7 @@ static DWORD WINAPI Worker(LPVOID) {
             // Apply that generation before considering any publication.
             if(GetSettings().generation!=generation) continue;
             ScheduleStreamPublications(buffers,epoch,now);
-            // Bound unresolved codec lifecycles by count, not age. Capacity
-            // pressure is explicit resource evidence; elapsed time is not a
-            // reason to declare otherwise valid audio unrelated or invalid.
-            while(active.size()>32) {
-                auto oldest=std::min_element(active.begin(),active.end(),[](const auto& left,const auto& right) {
-                    return left.second->born<right.second->born;
-                });
-                TraceCaptureDiscard(*oldest->second,now);
-                buffers.RecordLostActive(oldest->second.get(),ownership::CaptureAbortReason::MemoryLimit);
-                active.erase(oldest);
-            }
-            while(buffers.ogg_active.size()>32) {
-                auto oldest=std::min_element(buffers.ogg_active.begin(),buffers.ogg_active.end(),
-                    [](const auto& left,const auto& right) {return left.second->born<right.second->born;});
-                buffers.RecordLostActive(oldest->second.get(),ownership::CaptureAbortReason::MemoryLimit);
-                buffers.ogg_active.erase(oldest);
-            }
+            PruneExcessCaptures(buffers,now);
             // Consume current matcher/retirement evidence before exposing details.
             const auto quality_snapshot=quality.Snapshot(client_quality);
             PublishPlaybackQuality(media_unavailable?quality_snapshot:
@@ -4048,12 +4119,7 @@ static DWORD WINAPI Worker(LPVOID) {
             WaitForSingleObject(event,50);
         }
     } catch(...) { Log(LogKind::Failure,"history worker stopped after an exception; playback remains with original parser"); }
-    for(auto& capture:buffers.active)
-        buffers.RecordLostActive(capture.second.get(),ownership::CaptureAbortReason::Shutdown);
-    for(auto& capture:buffers.ogg_active)
-        buffers.RecordLostActive(capture.second.get(),ownership::CaptureAbortReason::Shutdown);
-    for(auto& capture:buffers.ready)
-        CheckBeforeRelease(*capture,"worker shutdown",buffers.ownership_tracker);
+    ReleaseCaptureBuffers(buffers);
     capture_progress_ms.store(0,std::memory_order_release);
     CancelFilenameChecks();
     reader.Stop(); // Nonblocking even if Windows is still servicing a COM call.

@@ -20,6 +20,8 @@ public:
 };
 }
 namespace history {void CaptureLogEvent(LogKind,const char*,const std::string&);}
+void ReleaseAuditTestPhase();
+#define FLOGGFY_RELEASE_AUDIT_TEST
 #define LogEvent CaptureLogEvent
 #define RetrySchedule FaultableRetrySchedule
 #include "../native/audio_history.cpp"
@@ -2001,6 +2003,151 @@ void ReleaseAuditHonorsBudget() {
         "an optional deep release audit must not allocate a whole-source copy over budget");
     publishing_reserved.store(prior_pending);capture_reserved.store(prior_active);history::settings=prior;
 }
+bool audit_probe=false,audit_throw=false,audit_phase_seen=false;
+size_t audit_expected_charge=0;
+void ReleaseAuditOwnership() {
+    const auto prior=history::settings;
+    const auto prior_pending=publishing_reserved.load(),prior_active=capture_reserved.load();
+    history::settings.max_buffered_mib=8;publishing_reserved=0;capture_reserved=0;
+    const size_t limit=8u*1024*1024;
+    for(unsigned codec=0;codec<3;++codec) {
+        auto capture=codec==0?CompleteOggCapture(100,101):codec==1?
+            CompleteFlacCapture(100,101):CompleteAacCapture(100,101);
+        const auto retained=capture->Capacity(),bytes=capture->data.size();
+        const auto background=limit-retained-bytes;
+        publishing_reserved=background;diagnostic_lines.clear();
+        assert(QueueReleaseAudit(*capture,"queued boundary",ReleaseExpectation::DiscardedEvidence));
+        assert(DrainOneReleaseAudit());
+        assert(Contains("complete valid audio")&&!Contains("validation unavailable")&&
+            "a queued audit must count its retained bytes once and admit an exact-fit flatten");
+        assert(publishing_reserved.load()==background&&"release the resized construction lease");
+        publishing_reserved=0;
+    }
+    {
+        CaptureBuffers buffers;buffers.ready.push_back(CompleteOggCapture(100,101));
+        {CaptureBudgetScope budget(buffers);}
+        const auto retained=capture_reserved.load(),bytes=buffers.ready.front()->data.size();
+        const auto background=limit-retained-bytes;publishing_reserved=background;
+        assert(QueueReleaseAudit(*buffers.ready.front(),"active transfer",ReleaseExpectation::DiscardedEvidence));
+        assert(!capture_reserved.load()&&publishing_reserved.load()==background+retained);
+        {CaptureBudgetScope budget(buffers);buffers.ready.clear();}
+        diagnostic_lines.clear();assert(DrainOneReleaseAudit()&&Contains("complete valid audio"));
+        assert(publishing_reserved.load()==background&&!capture_reserved.load());publishing_reserved=0;
+    }
+    // The same recording can be audited directly while still charged to the
+    // capture store, including queue-full fallback inside a capture scope.
+    for(bool inside_scope:{false,true}) {
+        CaptureBuffers buffers;buffers.ready.push_back(CompleteOggCapture(100,101));
+        {CaptureBudgetScope budget(buffers);}
+        auto& capture=*buffers.ready.front();const auto retained=capture_reserved.load();
+        const auto background=limit-retained-capture.data.size();publishing_reserved=background;
+        diagnostic_lines.clear();
+        if(inside_scope) {CaptureBudgetScope budget(buffers);CheckBeforeRelease(capture,"sync boundary");}
+        else CheckBeforeRelease(capture,"sync boundary");
+        assert(Contains("complete valid audio")&&!Contains("validation unavailable"));
+        assert(publishing_reserved.load()==background);
+        {CaptureBudgetScope budget(buffers);buffers.ready.clear();}
+        assert(!capture_reserved.load());publishing_reserved=0;
+    }
+    // Queue rejection preserves both bytes and ownership of their active charge.
+    for(unsigned i=0;i<32;++i) {auto filler=CompleteOggCapture(100,101);
+        assert(QueueReleaseAudit(*filler,"filler",ReleaseExpectation::DiscardedEvidence));}
+    CaptureBuffers buffers;buffers.ready.push_back(CompleteOggCapture(100,101));
+    {CaptureBudgetScope budget(buffers);}
+    const auto before_pending=publishing_reserved.load(),before_active=capture_reserved.load();
+    const auto bytes=buffers.ready.front()->data.size();
+    assert(!QueueReleaseAudit(*buffers.ready.front(),"full",ReleaseExpectation::DiscardedEvidence));
+    assert(buffers.ready.front()->data.size()==bytes&&publishing_reserved.load()==before_pending&&
+        capture_reserved.load()==before_active);
+    {CaptureBudgetScope budget(buffers);CheckBeforeRelease(*buffers.ready.front(),"queue-full fallback");buffers.ready.clear();}
+    DrainReleaseAudits();assert(!publishing_reserved.load()&&!capture_reserved.load());
+    // The audit's construction charge remains visible while another worker
+    // acquires the budget lock and processes an actual capture event.
+    auto capture=CompleteOggCapture(100,101);
+    audit_expected_charge=capture->Capacity()+capture->data.size();audit_probe=true;audit_phase_seen=false;
+    assert(QueueReleaseAudit(*capture,"concurrent",ReleaseExpectation::DiscardedEvidence));
+    assert(DrainOneReleaseAudit()&&audit_phase_seen);audit_probe=false;
+    assert(!publishing_reserved.load()&&!capture_reserved.load());
+    // Exceptions after reservation release the enlarged lease as well.
+    capture=CompleteOggCapture(100,101);audit_throw=true;audit_phase_seen=false;diagnostic_lines.clear();
+    assert(QueueReleaseAudit(*capture,"allocation failed",ReleaseExpectation::DiscardedEvidence));
+    assert(DrainOneReleaseAudit()&&audit_phase_seen&&Contains("validation unavailable"));audit_throw=false;
+    assert(!publishing_reserved.load()&&!capture_reserved.load());
+    {
+        CaptureBuffers active;active.ready.push_back(CompleteOggCapture(100,101));
+        {CaptureBudgetScope budget(active);}
+        const auto retained=capture_reserved.load(),bytes=active.ready.front()->data.size();
+        audit_throw=true;CheckBeforeRelease(*active.ready.front(),"sync allocation failed");audit_throw=false;
+        assert(!publishing_reserved.load()&&capture_reserved.load()==retained&&active.ready.front()->data.size()==bytes);
+        {CaptureBudgetScope budget(active);active.ready.clear();}
+    }
+    publishing_reserved=prior_pending;capture_reserved=prior_active;history::settings=prior;
+}
+void CapturePopCopiesOccupiedBytes() {
+    const auto saved_queue=queue;const auto saved_head=head,saved_tail=tail,saved_count=count;
+    auto slots=std::make_unique<Slot[]>(capacity);queue=slots.get();head=tail=count=0;
+    for(const unsigned length:{65307u,32u,0u,42u,1u,65307u}) {
+        head=tail=capacity-1; // Reuse the same slot and cross the ring boundary.
+        auto& input=queue[tail];std::memset(&input,0xa5,sizeof(input));
+        input.context=0x1234;input.length=length;input.time=123.5;input.kind=AudioEventKind::FlacBytes;
+        input.epoch=17;input.input_length=65432;input.sequence=71;input.mp3_generation=9;
+        input.format=3;input.capture=true;input.error_source=FlacErrorSource::ReadCallback;
+        input.requested=70000;input.returned=length;
+        for(unsigned i=0;i<length;++i)input.bytes[i]=uint8_t(i);
+        Slot output;std::memset(&output,0x5a,sizeof(output));
+        tail=(tail+1)%capacity;++count;
+        assert(Pop(output));
+        assert(head==0&&tail==0&&!count);
+        assert(!std::memcmp(&output,&input,offsetof(Slot,bytes)+length));
+        for(size_t i=length;i<sizeof(output.bytes);++i)
+            assert(output.bytes[i]==0x5a&&"dequeue must not copy the unused payload tail");
+        assert(!Pop(output));
+    }
+    queue=saved_queue;head=saved_head;tail=saved_tail;count=saved_count;
+}
+void CaptureRemovalAccounting() {
+    const auto prior=history::settings;
+    const auto prior_pending=publishing_reserved.load(),prior_active=capture_reserved.load();
+    history::settings.max_buffered_mib=8;capture_reserved=0;
+    constexpr size_t background=1234;publishing_reserved=background;
+    CaptureBuffers buffers;
+    for(unsigned i=0;i<33;++i) {
+        buffers.active[i+1]=CompleteFlacCapture(100+i,101+i);
+        buffers.ogg_active[{i+1,i}]=CompleteOggCapture(100+i,101+i);
+    }
+    buffers.ready.push_back(CompleteAacCapture(90,91));
+    {CaptureBudgetScope budget(buffers);}
+    const auto before=capture_reserved.load();PruneExcessCaptures(buffers,200);
+    size_t remaining=buffers.ready.front()->Capacity();
+    for(const auto& item:buffers.active)remaining+=item.second->Capacity();
+    for(const auto& item:buffers.ogg_active)remaining+=item.second->Capacity();
+    assert(buffers.active.size()==32&&buffers.ogg_active.size()==32&&!buffers.active.count(1)&&
+        !buffers.ogg_active.count({1,0}));
+    assert(remaining<before&&capture_reserved.load()==remaining&&publishing_reserved.load()==background&&
+        "pressure removal must retire the restored audit charge before the next event");
+    ReleaseCaptureBuffers(buffers);
+    assert(buffers.active.empty()&&buffers.ogg_active.empty()&&buffers.ready.empty()&&
+        !capture_reserved.load()&&publishing_reserved.load()==background&&
+        "shutdown must publish an empty capture snapshot after final audits");
+    // Queue saturation forces queue-loss handling through the synchronous
+    // fallback rather than the normal transfer of a capture charge to an audit.
+    for(unsigned i=0;i<32;++i) {auto filler=CompleteOggCapture(100,101);
+        assert(QueueReleaseAudit(*filler,"filler",ReleaseExpectation::DiscardedEvidence));}
+    buffers.active[1]=CompleteFlacCapture(100,101);
+    buffers.ready.push_back(CompleteOggCapture(90,91));
+    {CaptureBudgetScope budget(buffers);}
+    CaptureQueueLossBatch loss{};loss.global=true;
+    assert(ApplyCaptureQueueLosses(buffers,loss,200));
+    assert(buffers.active.empty()&&buffers.ready.size()==1&&
+        capture_reserved.load()==buffers.ready.front()->Capacity()&&
+        "queue-loss fallback must reconcile both removed and retained captures");
+    const auto queued=publishing_reserved.load();audit_throw=true;
+    ReleaseCaptureBuffers(buffers);audit_throw=false;
+    assert(!capture_reserved.load()&&publishing_reserved.load()==queued&&
+        "shutdown after audit failure must preserve queued publication leases only");
+    DrainReleaseAudits();assert(publishing_reserved.load()==background);
+    publishing_reserved=prior_pending;capture_reserved=prior_active;history::settings=prior;
+}
 void Mp3BoundaryDoesNotProveCompleteness() {
     CaptureBuffers buffers;auto capture=std::make_unique<Capture>();
     const auto prefix=PodcastFrames(383);capture->mp3=true;capture->born=100;capture->last_input=110;
@@ -2046,6 +2193,24 @@ void PublicationLogging() {
     assert(PublicationLogKind(Publication::RetryIO,false)==LogKind::Failure);
 }
 }
+void ReleaseAuditTestPhase() {
+    if(!audit_probe&&!audit_throw)return;
+    audit_phase_seen=true;
+    if(audit_throw)throw std::bad_alloc();
+    assert(publishing_reserved.load()==audit_expected_charge);
+    const auto worker=CreateThread(nullptr,0,[](LPVOID)->DWORD {
+        assert(TryAcquireSRWLockExclusive(&memory_budget_lock)&&
+            "release auditing must not retain the budget lock during validation");
+        ReleaseSRWLockExclusive(&memory_budget_lock);
+        CaptureBuffers buffers;PlaybackQualityTracker quality;Slot slot{};
+        slot.kind=AudioEventKind::FlacBegin;slot.context=0x9876;slot.capture=true;slot.epoch=7;
+        ProcessCaptureEvent(slot,buffers,quality,false,true,7);
+        assert(buffers.active.size()==1&&publishing_reserved.load()==audit_expected_charge);
+        {CaptureBudgetScope budget(buffers);buffers.active.clear();}
+        return 0;
+    },nullptr,0,nullptr);
+    assert(worker&&WaitForSingleObject(worker,5000)==WAIT_OBJECT_0);CloseHandle(worker);
+}
 namespace history {
 std::uint64_t MetadataRevision(){return 0;}
 void CaptureLogEvent(LogKind kind,const char*,const std::string& message){
@@ -2073,6 +2238,9 @@ int wmain(int argc,wchar_t** argv) {
     if(argc==2&&!wcscmp(argv[1],L"--review-matcher-inventory")){MatcherCandidateInventory();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--review-late-duration")){LateDurationContradictionStaysRejected();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--review-audit-budget")){ReleaseAuditHonorsBudget();return 0;}
+    if(argc==2&&!wcscmp(argv[1],L"--review-audit-ownership")){ReleaseAuditOwnership();return 0;}
+    if(argc==2&&!wcscmp(argv[1],L"--review-capture-pop")){CapturePopCopiesOccupiedBytes();return 0;}
+    if(argc==2&&!wcscmp(argv[1],L"--review-capture-removal")){CaptureRemovalAccounting();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--review-retry-allocation")){UnmatchedArchiveRetry(true);return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--review-mp3-prefix")){Mp3BoundaryDoesNotProveCompleteness();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--review-save-progress")){IndependentSaveProgress();return 0;}
@@ -2096,6 +2264,7 @@ int wmain(int argc,wchar_t** argv) {
     assert(argc==1);
     FlacInputCompletesWithoutDecodedCallbacks();FlacRepeatedInputCompletesWithoutDecodedCallbacks();CompletedSourceQueueLossCannotRelabel();NativeIdentityUsesRecordingLifetime();CalibratedPlaybackBoundarySurvivesIdentityLock();CompletedRecordingFallsBackWithoutNativeIdentity();PrefetchCannotSupplyCurrentIdentity();MatcherToleranceAndLogs();RetirementCannotManufactureMatch();RetiredMetadataCannotManufactureMatch();MatcherCandidateInventory();LateDurationContradictionStaysRejected();ReleaseAuditHonorsBudget();
     CaptureJournalRoundTrip();RestartedFlacKeepsMetadataClaim();Mp3BoundaryDoesNotProveCompleteness();IndependentSaveProgress();
+    ReleaseAuditOwnership();CapturePopCopiesOccupiedBytes();CaptureRemovalAccounting();
     RecordingQueueCounters();StreamOwnedCompletion();UnmatchedRetention();UnmatchedWriterRejectsPartial();UnmatchedArchiveRetry();UnmatchedArchiveRetry(true);
     Connectivity();PodcastCatalog();PublicationLogging();ReadyUpgradesPreboundPlaybackGeneration();
     FinalCaptureRevalidation();CompactFailureIdentity();ProductionCaptureQueueLossEpochs();
