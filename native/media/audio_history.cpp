@@ -955,6 +955,7 @@ struct Capture {
     SpacStream spac;
     Mp3Info mp3_info,mp3_scan;
     uint64_t mp3_pending_generation=0;
+    size_t mp3_end_checked_bytes=0;
     size_t mp3_marker=std::numeric_limits<size_t>::max(),mp3_cut=std::numeric_limits<size_t>::max();
     bool mp3_source_staged=false,mp3_prior_uncertain=false;double mp3_bound_duration=0;
     FlacInfo flac;
@@ -2725,7 +2726,7 @@ static void RememberBoundCaptureIdentity(CaptureBuffers& buffers,const Media& me
                capture.association->media.artist!=media.artist||capture.association->media.title!=media.title)
                 capture.bound_identity=Utf8(media.artist)+" - "+Utf8(media.title);
             if(capture.mp3&&capture.mp3_bound_duration!=media.duration) {
-                capture.mp3_bound_duration=media.duration;capture.final_validation=-1;
+                capture.mp3_bound_duration=media.duration;capture.final_validation=-1;capture.mp3_end_checked_bytes=0;
             }
             if(const auto* record=buffers.history.Find(generation)) {
                 capture.association=record->metadata;
@@ -3216,6 +3217,7 @@ static bool CompleteMp3Capture(std::map<uintptr_t,std::unique_ptr<Capture>>::ite
     if(capture.mp3_pending_generation&&capture.mp3_pending_generation!=capture.mp3_generation)return false;
     Mp3Info info;std::string error;
     if(!InspectMp3Source(capture.data,info,error))return false;
+    capture.final_validation=-1;
     capture.mp3_info=info;capture.mp3_source_closed=true;capture.finished=capture.last_input?capture.last_input:time;
     if(capture.finished<=capture.born)capture.finished=time;
     CompleteCaptureOwnership(capture,buffers,capture.finished);
@@ -3794,10 +3796,40 @@ static bool QueueRecording(std::unique_ptr<Capture>& capture,unsigned epoch,bool
     if(history)history->ReturnPending(metadata_generation,std::move(job.metadata_counter));
     return false;
 }
+// Some MP3 decoders never report EOF or get reused. A different, proven
+// playback can corroborate their end, but only after frame and length checks.
+static void CompleteSupersededMp3Captures(CaptureBuffers& buffers,double now) {
+    const auto* current=buffers.history.Current();
+    if(!current||!current->started||!current->bound_playback)return;
+    for(auto item=buffers.active.begin();item!=buffers.active.end();) {
+        auto found=item++;auto& capture=*found->second;
+        if(!capture.mp3||!capture.exact_identity||!capture.association||capture.ambiguous||
+           capture.mp3_source_staged||capture.mp3_pending_generation||capture.mp3_prior_uncertain||
+           capture.association->generation==current->metadata.generation||capture.mp3_bound_duration<=0||
+           capture.mp3_end_checked_bytes==capture.data.size())continue;
+        capture.mp3_end_checked_bytes=capture.data.size();
+        Mp3Info info;std::string error;
+        const bool valid=InspectMp3Source(capture.data,info,error);
+        // Same allowance as final MP3 validation, including encoder padding.
+        const bool complete=valid&&std::fabs(info.Duration()-capture.mp3_bound_duration)<=.25;
+        if(DebugLoggingEnabled()||stream_dump::Enabled()) {
+            char line[420];snprintf(line,sizeof(line),
+                "mp3_end capture=%llu metadata=%llu successor=%llu bytes=%zu decision=%s source_duration_ms=%.3f expected_duration_ms=%.3f reader_reason=%s",
+                static_cast<unsigned long long>(capture.capture_token),
+                static_cast<unsigned long long>(capture.association->generation),
+                static_cast<unsigned long long>(current->metadata.generation),capture.data.size(),
+                complete?"complete-after-playback-successor":"retained",info.Duration()*1000,
+                capture.mp3_bound_duration*1000,valid?(complete?"frames-and-duration-verified":"duration-mismatch"):error.c_str());
+            DecisionLog(line);
+        }
+        if(complete)CompleteMp3Capture(found,buffers,now);
+    }
+}
 static void ScheduleStreamPublications(CaptureBuffers& buffers,unsigned epoch,double now) {
     CaptureBudgetScope budget(buffers);
     const auto preferences=GetSettings();
     AssociateRetainedRecordings(buffers,preferences);
+    CompleteSupersededMp3Captures(buffers,now);
     const auto starts=buffers.history.Starts();
     const auto max_queue=preferences.matcher_max_queue;
     const auto expired=[&](uint64_t start) {return starts>=start&&starts-start>=max_queue;};

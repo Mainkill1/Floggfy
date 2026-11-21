@@ -2165,6 +2165,60 @@ void CaptureRemovalAccounting() {
     DrainReleaseAudits();assert(publishing_reserved.load()==background);
     publishing_reserved=prior_pending;capture_reserved=prior_active;history::settings=prior;
 }
+// Replay separate decoder contexts through the real byte reader and publication
+// scheduler. These MP3s have no Xing/VBRI length or decoder-reuse boundary.
+void Mp3SeparateDecoderCompletion() {
+    const auto prior=history::settings;
+    history::settings.downloads=history::settings.podcasts=true;
+    history::settings.capture_epoch=0;
+    for(unsigned scenario=0;scenario<8;++scenario) {
+        CaptureBuffers buffers;Media current;diagnostic_lines.clear();
+        const auto bytes=PodcastFrames(383);const double duration=383.*1152/44100;
+        const auto feed=[&](uintptr_t context,const std::vector<uint8_t>& source,double time) {
+            Slot slot{};slot.context=context;slot.time=time;slot.kind=AudioEventKind::Mp3Begin;
+            ProcessMp3Capture(slot,buffers);
+            for(size_t at=0;at<source.size();) {
+                slot.kind=AudioEventKind::Mp3Bytes;slot.time+=.01;
+                slot.length=unsigned(std::min<size_t>(16384,source.size()-at));
+                std::memcpy(slot.bytes,source.data()+at,slot.length);ProcessMp3Capture(slot,buffers);at+=slot.length;
+            }
+        };
+        auto source=bytes;
+        if(scenario==2||scenario==7)source.pop_back(); // Partial last frame.
+        if(scenario==3)source[10+417*10]=0; // Corrupt interior frame.
+        feed(0x8000,source,100);
+        const auto generation=ObserveRecordingMetadata(RecordingMedia("podcast-first",scenario==1?100:duration),buffers,current,100.1);
+        auto& old=*buffers.active.at(0x8000);
+        old.association=buffers.history.Find(generation)->metadata;
+        old.exact_identity=scenario!=4;old.mp3_bound_duration=old.association->media.duration;
+        buffers.history.MarkAssigned(generation,old.Encoding(),1);
+        // A long pause does not itself finish the source.
+        ScheduleStreamPublications(buffers,0,1000);SaveJob job;assert(!saves.Pop(job));
+        feed(0x9000,PodcastFrames(4),1001); // Prefetch alone is not playback.
+        ScheduleStreamPublications(buffers,0,1001);assert(!saves.Pop(job));
+        const auto next=ObserveRecordingMetadata(RecordingMedia("podcast-next",20),buffers,current,1002);
+        auto& successor=*buffers.active.at(0x9000);
+        successor.association=buffers.history.Find(next)->metadata;successor.exact_identity=true;
+        if(scenario!=5)buffers.history.MarkAssigned(next,successor.Encoding(),2);
+        if(scenario==6)old.mp3_pending_generation=99; // Same-source cut still unresolved.
+        ScheduleStreamPublications(buffers,0,1002);
+        bool saved=saves.Pop(job);
+        if(scenario==7) {
+            assert(!saved); // A late final byte must retry the retained source.
+            Slot tail{};tail.context=0x8000;tail.time=1003;tail.kind=AudioEventKind::Mp3Bytes;
+            tail.length=1;tail.bytes[0]=bytes.back();ProcessMp3Capture(tail,buffers);
+            ScheduleStreamPublications(buffers,0,1003);saved=saves.Pop(job);
+        }
+        assert(saved==(scenario==0||scenario==7)&&"complete MP3 must close when another proven decoder takes over; partial or uncertain sources must stay buffered");
+        if(saved) {
+            assert(job.capture->association->generation==generation&&job.capture->data.size()==bytes.size());
+            assert(ValidateFinalCapture(*job.capture)==FinalCaptureValidation::Valid);
+            const auto reserved=job.reserved;job.capture.reset();publishing_reserved.fetch_sub(reserved);
+        }
+    }
+    history::settings=prior;
+    std::puts("PASS: MP3 separate decoder completion, pauses, prefetch, partial/corrupt input and uncertain identity");
+}
 void Mp3BoundaryDoesNotProveCompleteness() {
     CaptureBuffers buffers;auto capture=std::make_unique<Capture>();
     const auto prefix=PodcastFrames(383);capture->mp3=true;capture->born=100;capture->last_input=110;
@@ -2259,6 +2313,7 @@ int wmain(int argc,wchar_t** argv) {
     if(argc==2&&!wcscmp(argv[1],L"--review-capture-pop")){CapturePopCopiesOccupiedBytes();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--review-capture-removal")){CaptureRemovalAccounting();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--review-retry-allocation")){UnmatchedArchiveRetry(true);return 0;}
+    if(argc==2&&!wcscmp(argv[1],L"--mp3-separate-decoder")){Mp3SeparateDecoderCompletion();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--review-mp3-prefix")){Mp3BoundaryDoesNotProveCompleteness();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--review-save-progress")){IndependentSaveProgress();return 0;}
     if(argc==2&&!wcscmp(argv[1],L"--review-native-identity")){NativeIdentityUsesRecordingLifetime();return 0;}
@@ -2280,7 +2335,7 @@ int wmain(int argc,wchar_t** argv) {
         !wcscmp(argv[1],L"--podcast-end"))) {StreamOwnedCompletion();UnmatchedRetention();return 0;}
     assert(argc==1);
     FlacInputCompletesWithoutDecodedCallbacks();FlacRepeatedInputCompletesWithoutDecodedCallbacks();CompletedSourceQueueLossCannotRelabel();NativeIdentityUsesRecordingLifetime();CalibratedPlaybackBoundarySurvivesIdentityLock();CompletedRecordingFallsBackWithoutNativeIdentity();PrefetchCannotSupplyCurrentIdentity();MatcherToleranceAndLogs();RetirementCannotManufactureMatch();RetiredMetadataCannotManufactureMatch();MatcherCandidateInventory();LateDurationContradictionStaysRejected();ReleaseAuditHonorsBudget();
-    CaptureJournalRoundTrip();RestartedFlacKeepsMetadataClaim();Mp3BoundaryDoesNotProveCompleteness();IndependentSaveProgress();
+    CaptureJournalRoundTrip();RestartedFlacKeepsMetadataClaim();Mp3SeparateDecoderCompletion();Mp3BoundaryDoesNotProveCompleteness();IndependentSaveProgress();
     ReleaseAuditOwnership();CapturePopCopiesOccupiedBytes();CaptureRemovalAccounting();
     RecordingQueueCounters();StreamOwnedCompletion();UnmatchedRetention();UnmatchedWriterRejectsPartial();UnmatchedArchiveRetry();UnmatchedArchiveRetry(true);
     Connectivity();PodcastCatalog();PublicationLogging();ReadyUpgradesPreboundPlaybackGeneration();
