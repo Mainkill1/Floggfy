@@ -1433,7 +1433,7 @@ void StreamOwnedCompletion() {
 }
 void UnmatchedRetention() {
     const auto prior=history::settings;
-    for(const unsigned max_queue:{3u,5u})for(const bool archive:{false,true})for(unsigned state=0;state<5;++state) {
+    for(const unsigned max_queue:{3u,5u})for(const bool archive:{false,true})for(unsigned state=0;state<7;++state) {
         history::settings.save_unmatched=archive;
         history::settings.matcher_max_queue=max_queue;
         CaptureBuffers buffers;Media current;
@@ -1452,8 +1452,8 @@ void UnmatchedRetention() {
             auto bytes=recording_fixture::ogg();bytes.back()^=1;capture->data={};
             assert(capture->data.Append(bytes.data(),bytes.size(),1024*1024));
         }
-        if(state==1)buffers.active[0x5500]=std::move(capture);
-        else if(state==2)buffers.ogg_active[{0x5500,42}]=std::move(capture);
+        if(state==1||state==5)buffers.active[0x5500]=std::move(capture);
+        else if(state==2||state==6)buffers.ogg_active[{0x5500,42}]=std::move(capture);
         else buffers.ready.push_back(std::move(capture));
         for(unsigned poll=0;poll<20;++poll) {
             first.playing=false;ObserveRecordingMetadata(first,buffers,current,200+poll*100);
@@ -1469,7 +1469,7 @@ void UnmatchedRetention() {
             if(song<max_queue)assert(!saves.Pop(job)&&buffers.ready.size()+buffers.active.size()+buffers.ogg_active.size()==1);
         }
         assert(buffers.ready.empty()&&buffers.active.empty()&&buffers.ogg_active.empty());
-        const bool should_save=archive&&state==0;
+        const bool should_save=archive&&(state==0||state>=5);
         assert(saves.Pop(job)==should_save&&"only complete validated unmatched recordings may reach the save worker");
         if(should_save) {
             assert(job.unmatched&&job.correlation.find("\"retired_at_start\":"+std::to_string(max_queue+1))!=std::string::npos);

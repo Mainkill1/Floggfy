@@ -45,7 +45,9 @@ is unavailable, it checks compatible timing and duration and requires a unique
 candidate. It retains completed recordings long enough for delayed playback
 evidence to arrive. A complete recording that ages out after the configured
 number of media starts can be saved under `Unmatched`. An incomplete stream
-fails that archive gate. [client_playback.h](../../native/media/client_playback.h),
+fails that archive gate. The active and completed capture lists use the same
+archive decision. Active entries also release decoder-specific state when they
+retire. [client_playback.h](../../native/media/client_playback.h),
 [decoder_ownership.cpp](../../native/media/decoder_ownership.cpp),
 [capture invariants](../capture-invariants.md).
 
@@ -96,7 +98,9 @@ file evidence and reads recording tags when the on-disk stamp has changed. The
 renderer caches returned dates, displays them on mounted rows, and uses the full
 playlist order when playing from a Saved sort. **Marked DB Rebuild** scans the
 library and can backfill missing save dates from file creation time when the
-metadata settings allow it. [to_disk_menu.cpp](../../native/ui/to_disk_menu.cpp),
+metadata settings allow it. The release builds SQLite for size and leaves out
+JSON functions and shared-cache mode. The app's schema uses ordinary indexed
+tables and one worker-owned connection. [to_disk_menu.cpp](../../native/ui/to_disk_menu.cpp),
 [marked_catalog.cpp](../../native/ui/marked_catalog.cpp),
 [marked_playlist_sort.js](../../native/ui/marked_playlist_sort.js).
 

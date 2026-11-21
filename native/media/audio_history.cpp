@@ -1024,6 +1024,11 @@ struct Capture {
         if(aac)return spac.Duration();
         return lossless&&flac.rate?double(flac_source.frames?flac_source.samples:coverage.samples)/flac.rate:stream.Duration();
     }
+    bool CompleteCoverage() const {
+        if(mp3)return mp3_info.DeclaredComplete()||(mp3_source_closed&&mp3_info.complete);
+        if(aac)return spac.Complete();
+        return lossless?flac_source.complete:stream.complete;
+    }
     Quality Encoding() const {
         if(mp3) {
             const auto& info=mp3_info.rate?mp3_info:mp3_scan;
@@ -2615,6 +2620,7 @@ static uint64_t BindDirectReadyCapture(
     if(!buffers.ownership_tracker||!generation||media.playback_instance.empty())return 0;
     if(media.spotify_uri.rfind("spotify:episode:",0)!=0&&
        media.spotify_uri.rfind("spotify:track:",0)!=0)return 0;
+    if(!match_count&&!DebugLoggingEnabled()&&!stream_dump::Enabled())return 0;
     const auto expected_playback=buffers.ownership_tracker->PlaybackToken(media.playback_instance);
     Capture* candidate=nullptr;bool multiple=false;
     const auto inspect=[&](Capture& capture) {
@@ -2656,12 +2662,8 @@ static uint64_t BindDirectReadyCapture(
             // Same-ID restarts can bind once their full codec coverage and
             // duration corroborate the metadata; a genuinely changed ID need
             // not wait for stream completion.
-            const bool complete=capture.mp3?(capture.mp3_info.DeclaredComplete()||
-                (capture.mp3_source_closed&&capture.mp3_info.complete)):
-                capture.aac?capture.spac.Complete():capture.lossless?
-                capture.flac_source.complete:capture.stream.complete;
+            if(!capture.CompleteCoverage()){report("inherited-id-awaiting-complete-coverage");return;}
             const auto duration=DeclaredCaptureDuration(capture);
-            if(!complete){report("inherited-id-awaiting-complete-coverage");return;}
             if(duration<=0){report("inherited-id-duration-unknown");return;}
             if(std::fabs(duration-media.duration)>GetSettings().matcher_duration_ms/1000.0+1e-6)
                 {report("inherited-id-duration-mismatch");return;}
@@ -3467,9 +3469,8 @@ static void ReportMatcher(Capture& capture,const RecordingMetadata& metadata,
     DecisionLog(line);
     } catch(...) { /* Debug logging cannot change capture or matching ownership. */ }
 }
-static void AssociateRetainedRecordings(CaptureBuffers& buffers) {
+static void AssociateRetainedRecordings(CaptureBuffers& buffers,const Settings& preferences=GetSettings()) {
     buffers.live_quality_generation=0;buffers.live_quality={};
-    const auto preferences=GetSettings();
     const auto each=[&](const auto& inspect) {
         for(auto& item:buffers.active)inspect(*item.second);
         for(auto& item:buffers.ogg_active)inspect(*item.second);
@@ -3682,11 +3683,7 @@ static void AssociateRetainedRecordings(CaptureBuffers& buffers) {
             }
             // Incomplete competitors participated above: excluding them before
             // counting would manufacture uniqueness for a prefetched recording.
-            const bool complete=candidate->finished>0&&(candidate->lossless?candidate->flac_source.complete:
-                candidate->aac?candidate->spac.Complete():candidate->mp3?
-                (candidate->mp3_info.DeclaredComplete()||(candidate->mp3_source_closed&&candidate->mp3_info.complete)):
-                candidate->stream.complete);
-            if(!complete) {
+            if(!(candidate->finished>0&&candidate->CompleteCoverage())) {
                 RecordMatcherDecision(*candidate,record.metadata,MatcherReason::WaitingNativeIdentity,true,true);
                 ReportMatcher(*candidate,record.metadata,1024,"waiting-complete-source");continue;
             }
@@ -3825,11 +3822,30 @@ static bool QueueRecording(std::unique_ptr<Capture>& capture,unsigned epoch,bool
 }
 static void ScheduleStreamPublications(CaptureBuffers& buffers,unsigned epoch,double now) {
     CaptureBudgetScope budget(buffers);
-    AssociateRetainedRecordings(buffers);
+    const auto preferences=GetSettings();
+    AssociateRetainedRecordings(buffers,preferences);
     const auto starts=buffers.history.Starts();
-    const auto max_queue=GetSettings().matcher_max_queue;
-    const auto expired=[&](const Capture& capture) {
-        return starts>=capture.retention_start&&starts-capture.retention_start>=max_queue;
+    const auto max_queue=preferences.matcher_max_queue;
+    const auto expired=[&](uint64_t start) {return starts>=start&&starts-start>=max_queue;};
+    const auto retire_capture=[&](std::unique_ptr<Capture>& item,bool active) {
+        auto& capture=*item;
+        const RetiredMatchEvidence::Entry retired{capture.capture_token,capture.born,DeclaredCaptureDuration(capture)};
+        if(active&&capture.mp3)
+            ReleaseMp3Probe(capture.capture_context,capture.capture_epoch,capture.mp3_generation);
+        if(!preferences.save_unmatched||CachedFinalValidation(capture)!=FinalCaptureValidation::Valid) {
+            EmitMatcherSnapshot(capture,preferences.save_unmatched?MatcherReason::RetiredInvalid:MatcherReason::SaveUnmatchedDisabled);
+            TraceCaptureDisposition(capture,"released",preferences.save_unmatched?
+                "retention-expired-validation-rejected":"save-unmatched-disabled");
+            if(active)TraceCaptureDiscard(capture,now);
+        } else {
+            const auto context=capture.capture_context;
+            const auto capture_epoch=capture.capture_epoch;
+            const bool discard_flac=active&&capture.lossless;
+            if(!QueueRecording(item,epoch,true,UnmatchedCorrelation(capture,buffers),&buffers.history))return false;
+            if(discard_flac)stream_dump::CaptureEvent(context,capture_epoch,0,"capture_discard",nullptr,0,now);
+        }
+        buffers.retired_evidence.RememberCapture(retired);
+        return true;
     };
     // A completed bound stream can publish during playback. Prefetch, a pause,
     // and an unrelated active stream cannot veto its exact native identity.
@@ -3837,7 +3853,7 @@ static void ScheduleStreamPublications(CaptureBuffers& buffers,unsigned epoch,do
         auto& capture=**item;
         if(capture.association&&!capture.exact_identity&&
            std::fabs(capture.Duration()-capture.association->media.duration)>
-               GetSettings().matcher_duration_ms/1000.0+1e-6) {
+               preferences.matcher_duration_ms/1000.0+1e-6) {
             capture.fallback_ambiguous=true;
             capture.retention_reason="weak association contradicted by completed source duration";
             for(size_t i=0;i<capture.matcher_snapshot.metadata_count;++i)
@@ -3851,42 +3867,21 @@ static void ScheduleStreamPublications(CaptureBuffers& buffers,unsigned epoch,do
            !capture.ambiguous&&(!capture.fallback_ambiguous||capture.exact_identity)&&
            CachedFinalValidation(capture)==FinalCaptureValidation::Valid) {
             if(QueueRecording(*item,epoch,false,{},&buffers.history)){item=buffers.ready.erase(item);continue;}
-        } else if(expired(capture)) {
-            const RetiredMatchEvidence::Entry retired{capture.capture_token,capture.born,DeclaredCaptureDuration(capture)};
-            if(!GetSettings().save_unmatched||CachedFinalValidation(capture)!=FinalCaptureValidation::Valid)
-                {EmitMatcherSnapshot(capture,!GetSettings().save_unmatched?MatcherReason::SaveUnmatchedDisabled:MatcherReason::RetiredInvalid);
-                 TraceCaptureDisposition(capture,"released",!GetSettings().save_unmatched?"save-unmatched-disabled":"retention-expired-validation-rejected");
-                 buffers.retired_evidence.RememberCapture(retired);item=buffers.ready.erase(item);continue;}
-            if(QueueRecording(*item,epoch,true,UnmatchedCorrelation(capture,buffers),&buffers.history)) {
-                buffers.retired_evidence.RememberCapture(retired);
-                item=buffers.ready.erase(item);continue;
-            }
+        } else if(expired(capture.retention_start)&&retire_capture(*item,false)) {
+            item=buffers.ready.erase(item);continue;
         }
         ++item;
     }
     const auto retire=[&](auto& active) {
         for(auto item=active.begin();item!=active.end();) {
-            auto& capture=*item->second;
-            if(!expired(capture)){++item;continue;}
-            if(capture.mp3)ReleaseMp3Probe(capture.capture_context,capture.capture_epoch,capture.mp3_generation);
-            const RetiredMatchEvidence::Entry retired{capture.capture_token,capture.born,DeclaredCaptureDuration(capture)};
-            if(!GetSettings().save_unmatched||CachedFinalValidation(capture)!=FinalCaptureValidation::Valid)
-                {EmitMatcherSnapshot(capture,!GetSettings().save_unmatched?MatcherReason::SaveUnmatchedDisabled:MatcherReason::RetiredInvalid);
-                 TraceCaptureDisposition(capture,"released",!GetSettings().save_unmatched?"save-unmatched-disabled":"retention-expired-validation-rejected");
-                 TraceCaptureDiscard(capture,now);
-                 buffers.retired_evidence.RememberCapture(retired);item=active.erase(item);continue;}
-            const auto discard_context=capture.capture_context;const auto discard_epoch=capture.capture_epoch;
-            const bool discard_flac=capture.lossless;
-            if(QueueRecording(item->second,epoch,true,UnmatchedCorrelation(capture,buffers),&buffers.history)) {
-                if(discard_flac)stream_dump::CaptureEvent(discard_context,discard_epoch,0,"capture_discard",nullptr,0,now);
-                buffers.retired_evidence.RememberCapture(retired);item=active.erase(item);
-            }
+            if(expired(item->second->retention_start)&&retire_capture(item->second,true))
+                item=active.erase(item);
             else ++item;
         }
     };
     retire(buffers.active);retire(buffers.ogg_active);
     for(const auto& record:buffers.history.Records())
-        if(starts>=record.start_number&&starts-record.start_number>=max_queue) {
+        if(expired(record.start_number)) {
             if(DebugLoggingEnabled()||stream_dump::Enabled()) {
                 char line[240];snprintf(line,sizeof(line),
                     "metadata_disposition metadata=%llu event=pruned reason=retention-expired assigned=%d subsequent_starts=%llu threshold=%u",
@@ -3900,7 +3895,6 @@ static void ScheduleStreamPublications(CaptureBuffers& buffers,unsigned epoch,do
     buffers.history.Prune(max_queue);
     for(auto item=buffers.bound_encodings.begin();item!=buffers.bound_encodings.end();)
         if(!buffers.history.Find(item->first))item=buffers.bound_encodings.erase(item);else ++item;
-    (void)now;
 }
 struct MediaWarningState {double since=-1;bool reported=false;};
 static void ReportMediaUnavailable(const CaptureBuffers& buffers,bool unavailable,

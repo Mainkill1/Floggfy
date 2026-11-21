@@ -6,7 +6,9 @@ bash build-artwork-codecs.sh x86_64-w64-mingw32-gcc ar build/artwork-codecs-rele
 # Only release objects disable vendor assertions and SQLite test controls.
 x86_64-w64-mingw32-gcc -std=c11 -O2 -DNDEBUG -Wall -Wextra -c native/vendor/minimp4/minimp4.c -o build/minimp4.o
 python3 tools/embed_assets.py
-x86_64-w64-mingw32-gcc -std=c11 -O2 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DQS=0 -DSQLITE_UNTESTABLE -c native/vendor/sqlite/sqlite3.c -o build/sqlite3.o
+# The Saved catalog uses ordinary indexed tables and a single connection.
+x86_64-w64-mingw32-gcc -std=c11 -Os -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DQS=0 \
+    -DSQLITE_UNTESTABLE -DSQLITE_OMIT_JSON -DSQLITE_OMIT_SHARED_CACHE -c native/vendor/sqlite/sqlite3.c -o build/sqlite3.o
 for source in buffer hook trampoline hde/hde64; do
     x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -c \
         "native/vendor/minhook/src/$source.c" -o "build/minhook-${source//\//-}.o"
