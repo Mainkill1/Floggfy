@@ -1185,8 +1185,7 @@ void ContextSpecificCaptureQueueLoss() {
     for(unsigned i=0;i<4;++i) {
         auto capture=std::make_unique<Capture>();capture->born=110+i;capture->capture_context=0x20+i;
         auto* raw=capture.get();buffers.active[0x20+i]=std::move(capture);
-        buffers.RecordLostActive(raw,ownership::CaptureAbortReason::SettingsChange,
-            ReleaseExpectation::DiscardedEvidence,true);
+        buffers.RecordLostActive(raw,ownership::CaptureAbortReason::SettingsChange,true);
         buffers.active.erase(0x20+i);
     }
     assert(!Contains("final cache check")&&"capture drain must not run whole-buffer release audits");

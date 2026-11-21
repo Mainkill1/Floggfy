@@ -52,6 +52,11 @@ page when it crosses a block boundary and needs contiguous storage. FLAC tracks
 frames and their sample ranges, while MP3 can use a declared frame count when
 present.
 
+The readers share slot insertion, memory admission, and the transfer from active
+buffers to the ready queue. Each codec still decides when it has enough evidence
+to make that transfer. A failed stream can retain its unresolved bytes or be
+discarded with its ownership evidence and audit intact.
+
 A pause can leave a stream open. A seek, a buffer loss, or a fresh decoder
 lifetime changes the evidence the worker has to validate. Those events cannot
 substitute for validation of a complete stream. [Capture and correlation](capture-and-correlation.md),

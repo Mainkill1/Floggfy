@@ -251,12 +251,20 @@ static void ResetCaptureQueueLosses() noexcept {
 static unsigned SlotsFor(size_t bytes) noexcept {
     return bytes?1+unsigned((bytes-1)/sizeof(Slot::bytes)):0;
 }
-static void PushMp3SlotLocked(uintptr_t context,AudioEventKind kind,const unsigned char* bytes,
-                              size_t length,double time,unsigned epoch,uint64_t generation) noexcept {
-    auto& slot=queue[tail];slot.context=context;slot.kind=kind;slot.length=unsigned(length);
-    slot.time=time;slot.epoch=epoch;slot.capture=true;slot.sequence=++producer_sequence;slot.mp3_generation=generation;slot.format=0;
-    if(length)memcpy(slot.bytes,bytes,length);
+// Caller holds the queue lock and has reserved space for the entire event.
+static Slot& PushCaptureSlotLocked(uintptr_t context,AudioEventKind kind,unsigned length,
+                                   double time,unsigned epoch,bool capture=true) noexcept {
+    auto& slot=queue[tail];slot.context=context;slot.kind=kind;slot.length=length;
+    slot.time=time;slot.epoch=epoch;slot.capture=capture;slot.sequence=++producer_sequence;
     tail=(tail+1)%capacity;++count;
+    return slot;
+}
+static Slot& PushMp3SlotLocked(uintptr_t context,AudioEventKind kind,const unsigned char* bytes,
+                               size_t length,double time,unsigned epoch,uint64_t generation) noexcept {
+    auto& slot=PushCaptureSlotLocked(context,kind,unsigned(length),time,epoch);
+    slot.mp3_generation=generation;slot.format=0;
+    if(length)memcpy(slot.bytes,bytes,length);
+    return slot;
 }
 static void PushMp3BytesLocked(uintptr_t context,const unsigned char* bytes,size_t length,
                                double time,unsigned epoch,uint64_t generation) noexcept {
@@ -301,9 +309,8 @@ static void QueueMp3Playback(uintptr_t context,unsigned epoch,
     if(!probe->identity_known){
         probe->playback_id=instance;probe->identity_known=true;
         if(probe->state==Mp3ProbeState::Capturing&&count<capacity) {
-            PushMp3SlotLocked(context,AudioEventKind::Mp3Boundary,nullptr,0,time,epoch,probe->generation);
-            queue[(tail+capacity-1)%capacity].format=2;
-            queue[(tail+capacity-1)%capacity].input_length=probe->generation;
+            auto& boundary=PushMp3SlotLocked(context,AudioEventKind::Mp3Boundary,nullptr,0,time,epoch,probe->generation);
+            boundary.format=2;boundary.input_length=probe->generation;
             if(event)SetEvent(event);
         }
         return;
@@ -315,9 +322,8 @@ static void QueueMp3Playback(uintptr_t context,unsigned epoch,
     probe->generation=++mp3_probe_generation;probe->length=0;
     probe->playback_id=instance;if(probe->state!=Mp3ProbeState::Capturing)probe->state=Mp3ProbeState::Probing;
     if(count==capacity){RecordCaptureQueueLossLocked(context,epoch,prior_generation);probe->state=Mp3ProbeState::Rejected;return;}
-    PushMp3SlotLocked(context,AudioEventKind::Mp3Boundary,nullptr,0,time,epoch,probe->generation);
-    queue[(tail+capacity-1)%capacity].format=probe->prior_inflight?1:0;
-    queue[(tail+capacity-1)%capacity].input_length=prior_generation;
+    auto& boundary=PushMp3SlotLocked(context,AudioEventKind::Mp3Boundary,nullptr,0,time,epoch,probe->generation);
+    boundary.format=probe->prior_inflight?1:0;boundary.input_length=prior_generation;
     if(event)SetEvent(event);
 }
 static void QueueMp3Encoded(uintptr_t context,const unsigned char* bytes,size_t length,
@@ -344,8 +350,8 @@ static void QueueMp3Encoded(uintptr_t context,const unsigned char* bytes,size_t 
     const auto needed=1+SlotsFor(probe->length)+SlotsFor(remaining);
     if(needed>capacity-count){RecordCaptureQueueLossLocked(context,epoch,probe->generation);probe->state=Mp3ProbeState::Rejected;return;}
     probe->state=Mp3ProbeState::Capturing;
-    PushMp3SlotLocked(context,AudioEventKind::Mp3Begin,nullptr,0,time,epoch,probe->generation);
-    queue[(tail+capacity-1)%capacity].format=probe->prior_inflight?1:0;
+    auto& begin=PushMp3SlotLocked(context,AudioEventKind::Mp3Begin,nullptr,0,time,epoch,probe->generation);
+    begin.format=probe->prior_inflight?1:0;
     PushMp3BytesLocked(context,probe->bytes,probe->length,time,epoch,probe->generation);
     if(remaining)PushMp3BytesLocked(context,bytes+copied,remaining,time,epoch,probe->generation);
     if(event)SetEvent(event);
@@ -490,12 +496,10 @@ static int32_t Hook(void* sync,OggPage* page) {
         QueueGuard guard;
         if(count==capacity) RecordCaptureQueueLossLocked(reinterpret_cast<uintptr_t>(sync),epoch);
         else {
-            Slot& s=queue[tail]; s.context=reinterpret_cast<uintptr_t>(sync);
-            s.length=unsigned(result); s.time=Now(); s.kind=AudioEventKind::OggPage; s.epoch=epoch; s.capture=capture;
-            s.sequence=++producer_sequence;
+            auto& s=PushCaptureSlotLocked(reinterpret_cast<uintptr_t>(sync),AudioEventKind::OggPage,
+                                          unsigned(result),Now(),epoch,capture);
             std::memcpy(s.bytes,page->header,page->header_length);
             if(page->body_length) std::memcpy(s.bytes+page->header_length,page->body,page->body_length);
-            tail=(tail+1)%capacity; ++count;
         }
     }
     SetEvent(event); return result;
@@ -523,14 +527,11 @@ static void FlacEvent(void* context,AudioEventKind kind,const void* bytes=nullpt
         do {
             unsigned amount=unsigned(std::min(n,size_t(65307)));
             if(count==capacity) { RecordCaptureQueueLossLocked(reinterpret_cast<uintptr_t>(context),epoch); break; }
-            Slot& s=queue[tail]; s.context=reinterpret_cast<uintptr_t>(context); s.kind=kind;
-            s.capture=capture; s.input_length=amount;
-            s.length=(!capture && kind==AudioEventKind::FlacBytes) ? std::min(amount,42u) : amount;
-            s.time=Now(); s.format=status; s.epoch=epoch;
-            s.sequence=++producer_sequence;
+            const auto length=!capture&&kind==AudioEventKind::FlacBytes?std::min(amount,42u):amount;
+            auto& s=PushCaptureSlotLocked(reinterpret_cast<uintptr_t>(context),kind,length,Now(),epoch,capture);
+            s.input_length=amount;s.format=status;
             s.error_source=source;s.requested=requested;s.returned=returned;
-            if(s.length) memcpy(s.bytes,bytes,s.length);
-            tail=(tail+1)%capacity; ++count;
+            if(length)memcpy(s.bytes,bytes,length);
             n-=amount;
             if(n) bytes=static_cast<const unsigned char*>(bytes)+amount;
         } while(n);
@@ -910,11 +911,9 @@ static void QueueAac(void* context,AudioEventKind kind,const unsigned char* byte
         QueueGuard guard;
         if(count==capacity)RecordCaptureQueueLossLocked(reinterpret_cast<uintptr_t>(context),epoch);
         else {
-            auto& s=queue[tail];s.context=reinterpret_cast<uintptr_t>(context);s.kind=kind;
-            s.capture=true;s.epoch=epoch;s.time=time;s.length=unsigned(size);s.format=status;
-            s.sequence=++producer_sequence;
+            auto& s=PushCaptureSlotLocked(reinterpret_cast<uintptr_t>(context),kind,unsigned(size),time,epoch);
+            s.format=status;
             if(size)memcpy(s.bytes,bytes,size);
-            tail=(tail+1)%capacity;++count;
         }
     }
     SetEvent(event);
@@ -2285,23 +2284,44 @@ struct CaptureBuffers {
     std::map<OggKey,std::unique_ptr<Capture>> ogg_active;
     std::vector<std::unique_ptr<Capture>> ready;
     template<class Visitor>
-    void ForEachCapture(const Visitor& visit) const {
+    void ForEachActiveCapture(const Visitor& visit) const {
         for(const auto& item:active)visit(*item.second);
         for(const auto& item:ogg_active)visit(*item.second);
+    }
+    template<class Visitor>
+    void ForEachCapture(const Visitor& visit) const {
+        ForEachActiveCapture(visit);
         for(const auto& item:ready)visit(*item);
     }
-    void RetainUnresolved(std::unique_ptr<Capture>& capture,double time,const char* reason,
-                          bool release_probe=true) {
-        if(!capture->exact_identity)retired_evidence.RememberCapture(
-            {capture->capture_token,capture->born,DeclaredCaptureDuration(*capture)});
-        capture->ambiguous=true;capture->finished=time;capture->retention_reason=reason;
-        capture->stream.active=false;
-        TraceCaptureDisposition(*capture,"retained-unresolved",reason);
-        if(capture->mp3&&release_probe)
-            ReleaseMp3Probe(capture->capture_context,capture->capture_epoch,capture->mp3_generation);
-        if(ownership_tracker&&capture->capture_token)
-            ownership_tracker->AbortCapture(capture->capture_token,ownership::CaptureAbortReason::InvalidData);
-        ready.push_back(std::move(capture));
+    size_t AvailableBytes() const {
+        size_t used=publishing_reserved.load();
+        ForEachCapture([&](const Capture& item){used+=item.Capacity();});
+        return used<memory_limit?memory_limit-used:0;
+    }
+    bool Append(Capture& capture,const Slot& slot) const {
+        if(!capture.data.Append(slot.bytes,slot.length,AvailableBytes()))return false;
+        capture.bytes+=slot.length;
+        return true;
+    }
+    template<class Streams>
+    auto MoveToReady(Streams& streams,typename Streams::iterator item) {
+        ready.push_back(std::move(item->second));
+        return streams.erase(item);
+    }
+    template<class Streams>
+    auto RetainUnresolved(Streams& streams,typename Streams::iterator item,double time,
+                          const char* reason,bool release_probe=true) {
+        auto& capture=*item->second;
+        if(!capture.exact_identity)retired_evidence.RememberCapture(
+            {capture.capture_token,capture.born,DeclaredCaptureDuration(capture)});
+        capture.ambiguous=true;capture.finished=time;capture.retention_reason=reason;
+        capture.stream.active=false;
+        TraceCaptureDisposition(capture,"retained-unresolved",reason);
+        if(capture.mp3&&release_probe)
+            ReleaseMp3Probe(capture.capture_context,capture.capture_epoch,capture.mp3_generation);
+        if(ownership_tracker&&capture.capture_token)
+            ownership_tracker->AbortCapture(capture.capture_token,ownership::CaptureAbortReason::InvalidData);
+        return MoveToReady(streams,item);
     }
     // Lightweight evidence boundaries survive removal of unmatched bytes/records.
     double lost_capture_start_through=-std::numeric_limits<double>::infinity();
@@ -2310,8 +2330,7 @@ struct CaptureBuffers {
     unsigned lost_active_count=0,next_lost_active=0;
     void RecordLostActive(Capture* capture,
                           ownership::CaptureAbortReason reason=ownership::CaptureAbortReason::InvalidData,
-                          ReleaseExpectation expectation=ReleaseExpectation::DiscardedEvidence,
-                          bool defer_audit=false,bool release_probe=true) {
+                          bool defer_audit=false) {
         if(!capture)return;
         live_quality_generation=0;live_quality={};
         const char* cause=reason==ownership::CaptureAbortReason::DecoderError?"decoder-error":
@@ -2328,7 +2347,7 @@ struct CaptureBuffers {
         if(!capture->exact_identity)retired_evidence.RememberCapture({capture->capture_token,born,duration});
         const auto lost_generation=capture->mp3&&ownership_tracker&&capture->capture_token?
             ownership_tracker->Binding(capture->capture_token).listen_generation:0;
-        if(capture->mp3&&release_probe)ReleaseMp3Probe(capture->capture_context,capture->capture_epoch,capture->mp3_generation);
+        if(capture->mp3)ReleaseMp3Probe(capture->capture_context,capture->capture_epoch,capture->mp3_generation);
         if(ownership_tracker&&capture->capture_token) {
             ownership_tracker->AbortCapture(capture->capture_token,reason);
             if(DebugLoggingEnabled()||stream_dump::Enabled()) {
@@ -2341,13 +2360,21 @@ struct CaptureBuffers {
                 DecisionLog(line);
             }
         }
-        if(!defer_audit||!QueueReleaseAudit(*capture,"active capture discarded",expectation,ownership_tracker))
-            CheckBeforeRelease(*capture,"active capture discarded",ownership_tracker,expectation);
+        if(!defer_audit||!QueueReleaseAudit(*capture,"active capture discarded",
+            ReleaseExpectation::DiscardedEvidence,ownership_tracker))
+            CheckBeforeRelease(*capture,"active capture discarded",ownership_tracker);
         if(lost_active_count==lost_active.size())
             lost_capture_start_through=std::max(lost_capture_start_through,lost_active[next_lost_active].born+20);
         else ++lost_active_count;
         lost_active[next_lost_active]={born,duration,lost_generation};
         next_lost_active=(next_lost_active+1)%lost_active.size();
+    }
+    template<class Streams>
+    auto DiscardActive(Streams& streams,typename Streams::iterator item,
+                       ownership::CaptureAbortReason reason=ownership::CaptureAbortReason::InvalidData,
+                       bool defer_audit=false) {
+        RecordLostActive(item->second.get(),reason,defer_audit);
+        return streams.erase(item);
     }
     bool LostActiveMatches(const Heard& heard) const {
         if(heard.start<=lost_capture_start_through)return true;
@@ -2393,27 +2420,21 @@ static void PruneExcessCaptures(CaptureBuffers& buffers,double now) {
     if(buffers.active.size()<=32&&buffers.ogg_active.size()<=32)return;
     // Capacity pressure is explicit resource evidence; elapsed time alone is
     // not a reason to declare otherwise valid audio unrelated or invalid.
-    while(buffers.active.size()>32) {
-        auto oldest=std::min_element(buffers.active.begin(),buffers.active.end(),[](const auto& left,const auto& right) {
-            return left.second->born<right.second->born;
-        });
-        TraceCaptureDiscard(*oldest->second,now);
-        buffers.RecordLostActive(oldest->second.get(),ownership::CaptureAbortReason::MemoryLimit);
-        buffers.active.erase(oldest);
-    }
-    while(buffers.ogg_active.size()>32) {
-        auto oldest=std::min_element(buffers.ogg_active.begin(),buffers.ogg_active.end(),
-            [](const auto& left,const auto& right) {return left.second->born<right.second->born;});
-        buffers.RecordLostActive(oldest->second.get(),ownership::CaptureAbortReason::MemoryLimit);
-        buffers.ogg_active.erase(oldest);
-    }
+    const auto prune=[&](auto& streams) {
+        while(streams.size()>32) {
+            const auto oldest=std::min_element(streams.begin(),streams.end(),
+                [](const auto& left,const auto& right){return left.second->born<right.second->born;});
+            TraceCaptureDiscard(*oldest->second,now);
+            buffers.DiscardActive(streams,oldest,ownership::CaptureAbortReason::MemoryLimit);
+        }
+    };
+    prune(buffers.active);prune(buffers.ogg_active);
     RefreshCaptureBudget(buffers);
 }
 static void ReleaseCaptureBuffers(CaptureBuffers& buffers) {
-    for(auto& capture:buffers.active)
-        buffers.RecordLostActive(capture.second.get(),ownership::CaptureAbortReason::Shutdown);
-    for(auto& capture:buffers.ogg_active)
-        buffers.RecordLostActive(capture.second.get(),ownership::CaptureAbortReason::Shutdown);
+    buffers.ForEachActiveCapture([&](Capture& capture) {
+        buffers.RecordLostActive(&capture,ownership::CaptureAbortReason::Shutdown);
+    });
     for(auto& capture:buffers.ready)
         CheckBeforeRelease(*capture,"worker shutdown",buffers.ownership_tracker);
     buffers.active.clear();buffers.ogg_active.clear();buffers.ready.clear();
@@ -2424,13 +2445,9 @@ static bool ApplyCaptureQueueLosses(CaptureBuffers& buffers,const CaptureQueueLo
     if(loss.global)stream_dump::CaptureEvent(0,0,0,"queue_loss_global",nullptr,0,now);
     else for(unsigned i=0;i<loss.count;++i)
         stream_dump::CaptureEvent(loss.entries[i].context,loss.entries[i].epoch,0,"queue_loss",nullptr,0,now);
-    auto retire=[&](Capture* capture) {
-        buffers.RecordLostActive(capture,ownership::CaptureAbortReason::QueueLoss,
-            ReleaseExpectation::DiscardedEvidence,true);
-    };
+    constexpr auto reason=ownership::CaptureAbortReason::QueueLoss;
     if(loss.global) {
-        for(auto& capture:buffers.active)retire(capture.second.get());
-        for(auto& capture:buffers.ogg_active)retire(capture.second.get());
+        buffers.ForEachActiveCapture([&](Capture& capture){buffers.RecordLostActive(&capture,reason,true);});
         buffers.active.clear();buffers.ogg_active.clear();
         for(auto& capture:buffers.ready)if(!capture->exact_identity) {
             capture->ambiguous=true;capture->retention_reason="global capture queue loss";
@@ -2461,17 +2478,17 @@ static bool ApplyCaptureQueueLosses(CaptureBuffers& buffers,const CaptureQueueLo
             }
             if(!preserved) {
                 active=buffers.active.find(missing.context);
-                if(active!=buffers.active.end()) {retire(active->second.get());buffers.active.erase(active);}
+                if(active!=buffers.active.end())buffers.DiscardActive(buffers.active,active,reason,true);
             }
             ++affected;continue;
         }
         if(active!=buffers.active.end()&&active->second->capture_epoch==missing.epoch&&
            (!missing.mp3_generation||(active->second->mp3&&active->second->mp3_generation==missing.mp3_generation))) {
-            retire(active->second.get());buffers.active.erase(active);++affected;
+            buffers.DiscardActive(buffers.active,active,reason,true);++affected;
         }
         for(auto stream=buffers.ogg_active.begin();stream!=buffers.ogg_active.end();) {
             if(!missing.mp3_generation&&stream->first.context==missing.context&&stream->second->capture_epoch==missing.epoch) {
-                retire(stream->second.get());stream=buffers.ogg_active.erase(stream);++affected;
+                stream=buffers.DiscardActive(buffers.ogg_active,stream,reason,true);++affected;
             } else ++stream;
         }
         for(auto& ready:buffers.ready)
@@ -2482,7 +2499,7 @@ static bool ApplyCaptureQueueLosses(CaptureBuffers& buffers,const CaptureQueueLo
                 if(ready->exact_identity)continue;
                 ready->ambiguous=true;ready->retention_reason="capture queue loss may hide a decoder reuse boundary";
                 if(buffers.ownership_tracker&&ready->capture_token)
-                    buffers.ownership_tracker->AbortCapture(ready->capture_token,ownership::CaptureAbortReason::QueueLoss);
+                    buffers.ownership_tracker->AbortCapture(ready->capture_token,reason);
                 TraceCaptureDisposition(*ready,"retained-unresolved","capture-queue-loss");
             }
     }
@@ -2981,10 +2998,7 @@ static void TraceFlacSource(Capture& capture,bool terminal=false) {
     DecisionLog(line);
 }
 static void ScanFlacCapture(Capture& capture,CaptureBuffers& buffers) {
-    size_t used=publishing_reserved.load();
-    buffers.ForEachCapture([&](const Capture& item){used+=item.Capacity();});
-    capture.flac_source.Scan(capture.data,capture.flac,capture.flac_audio_offset,
-                            used<memory_limit?memory_limit-used:0);
+    capture.flac_source.Scan(capture.data,capture.flac,capture.flac_audio_offset,buffers.AvailableBytes());
     capture.bytes=capture.data.size();
     if(capture.flac_source.complete&&
        (capture.flac_source.duplicate_frames||capture.flac_source.interrupted_bytes)) {
@@ -3006,13 +3020,15 @@ static void ProcessFlacCapture(const Slot& s,CaptureBuffers& buffers) {
         if(name)stream_dump::CaptureEvent(s.context,s.epoch,s.sequence,name,s.bytes,s.length,s.time,
             s.format,unsigned(s.error_source),s.requested,s.returned,s.input_length);
     }
-    auto& active=buffers.active;auto& ready=buffers.ready;
-    auto found=active.find(s.context);
+    auto& active=buffers.active;
+    const auto found=active.find(s.context);
     if(s.kind==AudioEventKind::FlacError && (found==active.end()||!found->second->lossless))
         LogCaptureContext(s,nullptr,ErrorOrigin(s.error_source));
     if(s.kind==AudioEventKind::FlacBegin) {
-        if(found!=active.end())buffers.RecordLostActive(found->second.get(),ownership::CaptureAbortReason::Reinitialized);
-        if(found!=active.end())LogCaptureContext(s,found->second.get(),"context-reinitialized");
+        if(found!=active.end()) {
+            buffers.RecordLostActive(found->second.get(),ownership::CaptureAbortReason::Reinitialized);
+            LogCaptureContext(s,found->second.get(),"context-reinitialized");
+        }
         auto c=std::make_unique<Capture>(); c->lossless=true; c->born=s.time;
         BeginCaptureOwnership(*c,buffers,ownership::DecoderCodec::Flac,s.context,0,s.time,s.epoch,s.sequence);
         active[s.context]=std::move(c);return;
@@ -3021,25 +3037,25 @@ static void ProcessFlacCapture(const Slot& s,CaptureBuffers& buffers) {
     Capture& c=*found->second;
     if(s.kind==AudioEventKind::FlacError) {
         LogCaptureContext(s,&c,ErrorOrigin(s.error_source));
-        buffers.RecordLostActive(found->second.get(),ownership::CaptureAbortReason::DecoderError);active.erase(found); Log(LogKind::Failure,"FLAC decoder error; stream discarded"); return;
+        buffers.DiscardActive(active,found,ownership::CaptureAbortReason::DecoderError);
+        Log(LogKind::Failure,"FLAC decoder error; stream discarded");return;
     }
     if(s.kind==AudioEventKind::FlacBytes) {
-        size_t reserved=publishing_reserved.load(); for(const auto& item:active) reserved+=item.second->Capacity();
-        for(const auto& item:buffers.ogg_active) reserved+=item.second->Capacity();
-        for(const auto& item:ready) reserved+=item->Capacity();
-        size_t available=reserved<memory_limit ? memory_limit-reserved : 0;
-        if(!c.data.Append(s.bytes,s.length,available)) { buffers.RecordLostActive(found->second.get(),ownership::CaptureAbortReason::MemoryLimit);active.erase(found); Log(LogKind::Failure,"FLAC capture memory limit; stream discarded"); return; }
-        c.bytes+=s.length;c.flac_input_bytes+=s.length;
+        if(!buffers.Append(c,s)) {
+            buffers.DiscardActive(active,found,ownership::CaptureAbortReason::MemoryLimit);
+            Log(LogKind::Failure,"FLAC capture memory limit; stream discarded");return;
+        }
+        c.flac_input_bytes+=s.length;
         if(!c.metadata) {
             size_t audio=0; auto parsed=ParseFlacMetadata(c.data,c.flac,audio);
-            if(parsed==FlacParse::Invalid) { buffers.RecordLostActive(found->second.get());active.erase(found); Log(LogKind::Failure,"FLAC metadata invalid; stream discarded"); return; }
-            if(parsed==FlacParse::Valid) {
-                c.metadata=true;c.flac_audio_offset=audio; char line[180]; snprintf(line,sizeof(line),"FLAC STREAMINFO rate=%u channels=%u bits=%u total=%llu metadata_bytes=%zu",c.flac.rate,c.flac.channels,c.flac.bits,static_cast<unsigned long long>(c.flac.total_samples),audio); Log(LogKind::Diagnostic,line);
+            if(parsed==FlacParse::Invalid) {
+                buffers.DiscardActive(active,found);
+                Log(LogKind::Failure,"FLAC metadata invalid; stream discarded");return;
             }
+            if(parsed!=FlacParse::Valid)return;
+            c.metadata=true;c.flac_audio_offset=audio; char line[180]; snprintf(line,sizeof(line),"FLAC STREAMINFO rate=%u channels=%u bits=%u total=%llu metadata_bytes=%zu",c.flac.rate,c.flac.channels,c.flac.bits,static_cast<unsigned long long>(c.flac.total_samples),audio); Log(LogKind::Diagnostic,line);
         }
-        if(!c.metadata)return;
         ScanFlacCapture(c,buffers);
-        if(!c.flac_source.complete)return;
     } else if(s.kind==AudioEventKind::FlacFrame) {
         uint32_t frame[6]; uint64_t number; memcpy(frame,s.bytes,24); memcpy(&number,s.bytes+24,8);
         if(frame[5]==0) number=uint32_t(number);
@@ -3066,15 +3082,13 @@ static void ProcessFlacCapture(const Slot& s,CaptureBuffers& buffers) {
             // They describe playback, not completeness of the compressed source.
             TraceCaptureDisposition(c,"retained","decoded-coverage-disagrees-with-source");
         }
-        if(!c.flac_source.complete)return;
-    } else if(s.kind==AudioEventKind::FlacEnd) {
-        if(!c.flac_source.complete) {
+    } else if(s.kind!=AudioEventKind::FlacEnd)return;
+    if(!c.flac_source.complete) {
+        if(s.kind==AudioEventKind::FlacEnd) {
             TraceFlacSource(c,true);
             LogCaptureContext(s,&c,"end-before-compressed-coverage");
-            buffers.RetainUnresolved(found->second,s.time,"FLAC end before complete compressed coverage");
-            active.erase(found);return;
+            buffers.RetainUnresolved(active,found,s.time,"FLAC end before complete compressed coverage");
         }
-    } else {
         return;
     }
     c.finished=s.time;
@@ -3083,7 +3097,7 @@ static void ProcessFlacCapture(const Slot& s,CaptureBuffers& buffers) {
         static_cast<unsigned long long>(c.capture_token),static_cast<unsigned long long>(c.flac_source.frames),
         static_cast<unsigned long long>(c.flac_source.samples),static_cast<unsigned long long>(c.bytes),c.Duration(),
         static_cast<unsigned long long>(c.coverage.samples));DecisionLog(line);
-    ready.push_back(std::move(found->second)); active.erase(found); return;
+    buffers.MoveToReady(active,found);
 }
 static void LogOggRejection(const Slot& slot,const Capture* capture,const Stream* previous,
                             const Page* page,OggRejection reason) {
@@ -3101,16 +3115,13 @@ static void LogOggRejection(const Slot& slot,const Capture* capture,const Stream
 static void ProcessOggCapture(const Slot& s,CaptureBuffers& buffers) {
     auto& active=buffers.ogg_active;auto& ready=buffers.ready;
     Page page; if(!ParsePage(s.bytes,s.length,page)) {
-        uint32_t serial=0,sequence=0;bool isolated=false;
+        uint32_t serial=0,sequence=0;
         if(ParsePageIdentity(s.bytes,s.length,serial,sequence)) {
-            const CaptureBuffers::OggKey key{s.context,serial};auto damaged=active.find(key);
-            if(damaged==active.end())isolated=true; // Invalid page for an inactive serial cannot poison peers.
-            else {
-                buffers.RetainUnresolved(damaged->second,s.time,"invalid Ogg page CRC or header");active.erase(damaged);isolated=true;
-            }
-        }
-        if(!isolated)for(auto it=active.begin();it!=active.end();) {
-            if(it->first.context==s.context){buffers.RetainUnresolved(it->second,s.time,"unclassified invalid Ogg page");it=active.erase(it);}else ++it;
+            const auto damaged=active.find({s.context,serial});
+            if(damaged!=active.end())buffers.RetainUnresolved(active,damaged,s.time,"invalid Ogg page CRC or header");
+        } else for(auto it=active.begin();it!=active.end();) {
+            if(it->first.context==s.context)it=buffers.RetainUnresolved(active,it,s.time,"unclassified invalid Ogg page");
+            else ++it;
         }
         LogOggRejection(s,nullptr,nullptr,nullptr,OggRejection::InvalidPage);
         Log(LogKind::Failure,"invalid Ogg page rejected"); return;
@@ -3127,7 +3138,7 @@ static void ProcessOggCapture(const Slot& s,CaptureBuffers& buffers) {
             // Close the decoder generation, retaining its logical stream so
             // uniquely sequenced late pages can still finish the old recording.
             CompleteCaptureOwnership(*previous->second,buffers,s.time,s.sequence);
-            ready.push_back(std::move(previous->second));active.erase(previous);
+            buffers.MoveToReady(active,previous);
         }
         auto c=std::make_unique<Capture>(); c->born=s.time;
         BeginCaptureOwnership(*c,buffers,ownership::DecoderCodec::Ogg,s.context,page.serial,s.time,s.epoch,s.sequence);
@@ -3161,39 +3172,33 @@ static void ProcessOggCapture(const Slot& s,CaptureBuffers& buffers) {
         const bool identified=!c.bound_identity.empty();
         char message[180];snprintf(message,sizeof(message),"Ogg stream incomplete: %s; bytes retained for unmatched handling",OggRejectionName(c.stream.rejection));
         if(retained) {c.ambiguous=true;c.stream.active=false;c.finished=s.time;}
-        else {buffers.RetainUnresolved(found->second,s.time,"Ogg page sequence or integrity failure");active.erase(found);}
+        else buffers.RetainUnresolved(active,found,s.time,"Ogg page sequence or integrity failure");
         if(midstream)LogEvent(LogKind::Activity,"ignored",
             "unidentified mid-stream Ogg audio (capture began after the stream start)");
         else if(!identified)Log(LogKind::Failure,message);
         return;
     }
-    size_t reserved=publishing_reserved.load();
-    for(const auto& item:buffers.active) reserved+=item.second->Capacity();
-    for(const auto& item:active)reserved+=item.second->Capacity();
-    for(const auto& item:ready) reserved+=item->Capacity();
-    size_t available=reserved<memory_limit ? memory_limit-reserved : 0;
-    if(!c.data.Append(s.bytes,s.length,available)) {
+    if(!buffers.Append(c,s)) {
         if(retained) {
             c.ambiguous=true;c.stream.active=false;c.finished=s.time;
             c.retention_reason="RAM limit prevented appending a late Ogg tail";
             Log(LogKind::Warning,"Ogg late tail exceeded RAM limit; existing bytes retained");return;
         }
-        buffers.RecordLostActive(found->second.get());active.erase(found);
+        buffers.DiscardActive(active,found);
         Log(LogKind::Failure,"capture memory limit reached; track discarded without scratch files"); return;
     }
-    c.bytes+=s.length;
     c.final_validation=-1;
     if(result==Result::Complete) {
         c.finished=s.time;
         CompleteCaptureOwnership(c,buffers,s.time,s.sequence);
         char line[200]; snprintf(line,sizeof(line),"EOS pages=%u bytes=%llu duration=%.6f capture_seconds=%.3f",
           c.stream.pages,static_cast<unsigned long long>(c.bytes),c.stream.Duration(),c.finished-c.born); Log(LogKind::Diagnostic,line);
-        if(!retained){ready.push_back(std::move(found->second));active.erase(found);}
+        if(!retained)buffers.MoveToReady(active,found);
     }
 }
 static void ProcessAacCapture(const Slot& s,CaptureBuffers& buffers) {
-    auto& active=buffers.active;auto& ready=buffers.ready;
-    auto found=active.find(s.context);
+    auto& active=buffers.active;
+    const auto found=active.find(s.context);
     if(s.kind==AudioEventKind::AacBegin) {
         if(found==active.end()&&active.size()>=16){Log(LogKind::Failure,"AAC decoder limit reached; stream ignored");return;}
         auto capture=std::make_unique<Capture>();capture->aac=true;capture->born=s.time;
@@ -3203,39 +3208,29 @@ static void ProcessAacCapture(const Slot& s,CaptureBuffers& buffers) {
     }
     if(found==active.end()||!found->second->aac)return;
     if(s.kind==AudioEventKind::AacDestroy||s.kind==AudioEventKind::AacError) {
-        buffers.RecordLostActive(found->second.get(),s.kind==AudioEventKind::AacError?
-            ownership::CaptureAbortReason::DecoderError:ownership::CaptureAbortReason::InvalidData);active.erase(found);
+        buffers.DiscardActive(active,found,s.kind==AudioEventKind::AacError?
+            ownership::CaptureAbortReason::DecoderError:ownership::CaptureAbortReason::InvalidData);
         if(s.kind==AudioEventKind::AacError)Log(LogKind::Failure,"AAC decoder input rejected; stream discarded");
         return;
     }
     auto& c=*found->second;
-    auto reserved=[&] {
-        size_t total=publishing_reserved.load();
-        for(const auto& entry:active)total+=entry.second->Capacity();
-        for(const auto& entry:buffers.ogg_active)total+=entry.second->Capacity();
-        for(const auto& entry:ready)total+=entry->Capacity();
-        return total;
-    };
-    const auto used=reserved();
-    if(!c.spac.MemoryUsage()&&(used>=memory_limit||memory_limit-used<65536+64)) {
-        buffers.RecordLostActive(found->second.get());active.erase(found);Log(LogKind::Failure,"AAC capture memory limit; stream discarded");return;
+    if(!c.spac.MemoryUsage()&&buffers.AvailableBytes()<65536+64) {
+        buffers.DiscardActive(active,found);Log(LogKind::Failure,"AAC capture memory limit; stream discarded");return;
     }
     const auto result=c.spac.Push(s.bytes,s.length);
     if(result==AacParse::Invalid||result==AacParse::Unsupported) {
-        buffers.RecordLostActive(found->second.get());active.erase(found);Log(LogKind::Failure,result==AacParse::Unsupported?
+        buffers.DiscardActive(active,found);Log(LogKind::Failure,result==AacParse::Unsupported?
             "unsupported SpAC AAC configuration; stream discarded":"AAC page checksum or frame gap; stream discarded");return;
     }
-    const auto allocated=reserved();
-    if(!c.data.Append(s.bytes,s.length,allocated<memory_limit?memory_limit-allocated:0)) {
-        buffers.RecordLostActive(found->second.get());active.erase(found);Log(LogKind::Failure,"AAC capture memory limit; stream discarded");return;
+    if(!buffers.Append(c,s)) {
+        buffers.DiscardActive(active,found);Log(LogKind::Failure,"AAC capture memory limit; stream discarded");return;
     }
-    c.bytes+=s.length;
     if(result==AacParse::Complete) {
         c.finished=s.time;
         CompleteCaptureOwnership(c,buffers,s.time,s.sequence);
         char line[180];snprintf(line,sizeof(line),"AAC COMPLETE source_bytes=%llu rate=%u channels=%u samples=%u priming=%u duration=%.6f",
             static_cast<unsigned long long>(c.bytes),c.spac.info.rate,c.spac.info.channels,c.spac.info.total_samples,c.spac.info.priming,c.Duration());Log(LogKind::Diagnostic,line);
-        ready.push_back(std::move(found->second));active.erase(found);
+        buffers.MoveToReady(active,found);
     }
 }
 static bool CompleteMp3Capture(std::map<uintptr_t,std::unique_ptr<Capture>>::iterator found,
@@ -3248,7 +3243,7 @@ static bool CompleteMp3Capture(std::map<uintptr_t,std::unique_ptr<Capture>>::ite
     if(capture.finished<=capture.born)capture.finished=time;
     CompleteCaptureOwnership(capture,buffers,capture.finished);
     if(release_probe)ReleaseMp3Probe(found->first,capture.capture_epoch,capture.mp3_generation);
-    buffers.ready.push_back(std::move(found->second));active.erase(found);return true;
+    buffers.MoveToReady(active,found);return true;
 }
 static void ReconcileMp3Bytes(uintptr_t context,CaptureBuffers& buffers,double time,uint64_t sequence) {
     auto found=buffers.active.find(context);if(found==buffers.active.end()||!found->second->mp3)return;
@@ -3269,9 +3264,7 @@ static void ReconcileMp3Bytes(uintptr_t context,CaptureBuffers& buffers,double t
     }
     if(cut==std::numeric_limits<size_t>::max())return;
     Mp3Info next_info;if(!InspectMp3Prefix(old.data,cut,next_info))return;
-    size_t reserved=publishing_reserved.load();
-    buffers.ForEachCapture([&](const Capture& item){reserved+=item.Capacity();});
-    const auto available=reserved<memory_limit?memory_limit-reserved:0;
+    const auto available=buffers.AvailableBytes();
     auto next=std::make_unique<Capture>();next->mp3=true;next->born=time;next->last_input=time;
     next->capture_context=context;next->capture_epoch=old.capture_epoch;
     next->mp3_generation=old.mp3_pending_generation?old.mp3_pending_generation:old.mp3_generation;
@@ -3281,8 +3274,7 @@ static void ReconcileMp3Bytes(uintptr_t context,CaptureBuffers& buffers,double t
     const auto epoch=old.capture_epoch;const auto next_generation=next->mp3_generation;
     if(old.mp3_prior_uncertain||!CompleteMp3Capture(found,buffers,time,false)) {
         // Old lifecycle cleanup must never reset the continuing producer.
-        buffers.RetainUnresolved(found->second,time,"MP3 source boundary before complete coverage",false);
-        buffers.active.erase(found);
+        buffers.RetainUnresolved(buffers.active,found,time,"MP3 source boundary before complete coverage",false);
     }
     BeginCaptureOwnership(*next,buffers,ownership::DecoderCodec::Mp3,context,0,time,epoch,sequence);
     buffers.active[context]=std::move(next);
@@ -3316,10 +3308,9 @@ static void ProcessMp3Capture(const Slot& s,CaptureBuffers& buffers) {
         auto capture=std::make_unique<Capture>();capture->mp3=true;capture->born=s.time;
         capture->capture_epoch=s.epoch;capture->capture_context=s.context;capture->mp3_generation=s.mp3_generation;
         if(found!=active.end()) {
-            if(found->second->mp3&&found->second->capture_epoch==s.epoch&&
-               found->second->mp3_generation<s.mp3_generation&&!s.format&&CompleteMp3Capture(found,buffers,s.time)) {
-                found=active.end();
-            } else {buffers.RetainUnresolved(found->second,s.time,"MP3 source replaced before complete coverage");active.erase(found);}
+            const bool completed=found->second->mp3&&found->second->capture_epoch==s.epoch&&
+                found->second->mp3_generation<s.mp3_generation&&!s.format&&CompleteMp3Capture(found,buffers,s.time);
+            if(!completed)buffers.RetainUnresolved(active,found,s.time,"MP3 source replaced before complete coverage");
         }
         BeginCaptureOwnership(*capture,buffers,ownership::DecoderCodec::Mp3,s.context,0,s.time,s.epoch,s.sequence);
         active[s.context]=std::move(capture);return;
@@ -3327,16 +3318,11 @@ static void ProcessMp3Capture(const Slot& s,CaptureBuffers& buffers) {
     if(found==active.end()||!found->second->mp3)return;
     if(s.kind!=AudioEventKind::Mp3Bytes||found->second->capture_epoch!=s.epoch||
        (found->second->mp3_generation!=s.mp3_generation&&found->second->mp3_pending_generation!=s.mp3_generation))return;
-    size_t reserved=publishing_reserved.load();
-    for(const auto& entry:active)reserved+=entry.second->Capacity();
-    for(const auto& entry:buffers.ogg_active)reserved+=entry.second->Capacity();
-    for(const auto& entry:buffers.ready)reserved+=entry->Capacity();
-    const auto available=reserved<memory_limit?memory_limit-reserved:0;
-    if(!found->second->data.Append(s.bytes,s.length,available)) {
-        buffers.RecordLostActive(found->second.get(),ownership::CaptureAbortReason::MemoryLimit);
-        active.erase(found);Log(LogKind::Failure,"MP3 capture memory limit; stream discarded");return;
+    if(!buffers.Append(*found->second,s)) {
+        buffers.DiscardActive(active,found,ownership::CaptureAbortReason::MemoryLimit);
+        Log(LogKind::Failure,"MP3 capture memory limit; stream discarded");return;
     }
-    found->second->bytes+=s.length;found->second->last_input=s.time;
+    found->second->last_input=s.time;
     ReconcileMp3Bytes(s.context,buffers,s.time,s.sequence);
     found=active.find(s.context);
     if(found!=active.end()&&found->second->mp3&&found->second->mp3_scan.DeclaredComplete())
@@ -3967,10 +3953,9 @@ static DWORD WINAPI Worker(LPVOID) {
                 output=preferences.root; memory_limit=size_t(preferences.max_buffered_mib)*1024*1024;
                 const bool capture=preferences.downloads;
                 if(capture!=enabled || initial || preferences.capture_epoch!=epoch) {
-                    for(auto& c:buffers.active)buffers.RecordLostActive(c.second.get(),ownership::CaptureAbortReason::SettingsChange,
-                        ReleaseExpectation::DiscardedEvidence,true);
-                    for(auto& c:buffers.ogg_active)buffers.RecordLostActive(c.second.get(),ownership::CaptureAbortReason::SettingsChange,
-                        ReleaseExpectation::DiscardedEvidence,true);
+                    buffers.ForEachActiveCapture([&](Capture& c) {
+                        buffers.RecordLostActive(&c,ownership::CaptureAbortReason::SettingsChange,true);
+                    });
                     for(auto& c:ready)
                         if(!QueueReleaseAudit(*c,"capture settings changed",ReleaseExpectation::DiscardedEvidence,buffers.ownership_tracker))
                             CheckBeforeRelease(*c,"capture settings changed",buffers.ownership_tracker);
