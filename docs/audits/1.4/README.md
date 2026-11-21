@@ -1,15 +1,17 @@
 # Floggfy 1.4 function review
 
-Start with the capture queue, the release-audit memory reservation, and the Saved catalog's handling of read errors. Each has a concrete failure mode or repeatable cost. Splitting files is a separate maintenance task. In particular, `audio_history.cpp` is 4,357 lines, but its largest individual function spans 302. Moving code into more files on its own will not shorten a lock hold or fix a false “unsaved” result.
+The inventory below is a snapshot of the v1.4 release. The cleanup on PR #34 addresses the following findings.
 
-| Order | Change | Evidence and acceptance check |
+| Area | Change | Verification |
 |---|---|---|
-| 1 | Make capture release auditing charge its reservation once and shorten the shared budget lock. | `CheckBeforeRelease` holds the lock during flattening and codec validation while the capture worker needs it for incoming events. Replay a large capture near the memory limit concurrently with new input. Check peak bytes, recovery after rejection, worker wait and dropped events. |
-| 2 | Copy only the used payload in `audio_history.cpp::Pop` and the stream-dump writer. | The capture slot has a 65,307-byte array and the dump record has a 65,536-byte array. Each is copied in full under its queue lock, even for small control events. Compare mixed small/full events, preserve event order and ensure the consumer owns the bytes before the slot is reused. |
-| 3 | Return an explicit failure from Saved catalog reads. | `Database::Rows` treats a prepare/read error as an empty or partial result. `AnswerQuery` can publish a missing date. Inject a read failure after one row and verify the previously known date survives until a successful retry. |
-| 4 | Skip full-list date work after a Saved sort settles. | `apply` and `requestDates` repeatedly traverse playlist-sized collections. In the existing 2,651-entry case, count visits and allocations on idle polls, then change one date and confirm sort order and blanks update. |
-| 5 | Check for unchanged work before building tags or paths. | `QueueFilenameCheck` prepares metadata before its duplicate-key check. `PublishSongDestination` can construct 20 paths per unchanged observation. Exercise repeated playback notifications and a real save-folder change. |
-| 6 | Retire wrappers with only test callers. | `InspectOwnedMp3` wraps the richer inspection result. Update tests to assert the actual result. `WriteRecord` forwards one element to `WriteBatch`; call the latter from the tests. Check production and conditional Windows callers before deleting either declaration. |
+| Capture memory | Transfer the retained buffer’s charge to the release audit and release its final reservation. The background worker reserves space before it copies and validates the audio. | Exact-fit codec fixtures, full audit queue, allocation failure, and capture ingestion during a paused background audit. |
+| Capture and dump queues | Copy the event header and its occupied bytes while holding the queue lock. | Mixed control, small, and full payloads, slot reuse, and stream dump replay fixtures. |
+| Saved column | Retry failed SQLite reads. Reuse the date sort until its inputs change and request missing or expired dates in batches of up to 256. | Locked SQLite database, unchanged playlists, date changes, expiry, and pagination. |
+| Metadata and paths | Skip tag and artwork preparation for an already queued filename check. Reuse destination paths when their inputs match. Compare cache keys in place. | 1,000 unchanged destination submissions build no paths. For 10,000 rejected metadata keys, heap allocations fell from 20,000 to zero. |
+| Publication | Move unmatched file staging and verification into the file publication module. Hash the unmatched audio once per attempt and append artwork directly to the existing publication key. | Windows publication fixtures, including occupied paths, retries, and metadata changes during a save. |
+| Logging and wrappers | Skip telemetry decoding when the dump file is full, trim the activity log in place, and retire three wrappers used only in tests. | Log cap and deletion recovery, log rotation, and direct batch and MP3 inspection tests. |
+
+The detailed reviews retain the original findings and proposed follow-ups. The queue fixtures check accounting, content, and progress. They do not measure end-to-end latency in a Spotify session.
 
 ## Source and scope
 
