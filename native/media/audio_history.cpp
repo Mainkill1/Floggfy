@@ -15,6 +15,7 @@
 #include "../tooling/hook_diagnostics.h"
 #include <array>
 #include "../tooling/bounded_queue.h"
+#include "../tooling/binary.h"
 #include "../tooling/srw_guard.h"
 #include "../tooling/connectivity_diagnostics.h"
 #include <optional>
@@ -38,6 +39,7 @@
 #include "matcher_diagnostics.h"
 #include "image_info.h"
 #include "aac_stream.h"
+#include "mp3_header.h"
 #include "mp3_stream.h"
 #include "../tooling/spotify_hook_discovery.h"
 #include "decoded_output_speed.h"
@@ -275,12 +277,6 @@ static void PushMp3BytesLocked(uintptr_t context,const unsigned char* bytes,size
         bytes+=amount;length-=amount;
     }
 }
-static bool Mp3Header(const unsigned char* bytes) noexcept {
-    if(bytes[0]!=0xff||(bytes[1]&0xe0)!=0xe0)return false;
-    const unsigned version=(bytes[1]>>3)&3,layer=(bytes[1]>>1)&3;
-    const unsigned bitrate=(bytes[2]>>4)&15,rate=(bytes[2]>>2)&3;
-    return version!=1&&layer==1&&bitrate&&bitrate!=15&&rate!=3;
-}
 static Mp3ProbeSlot* Mp3Probe(uintptr_t context,unsigned epoch) noexcept {
     for(auto& probe:mp3_probes)if(probe.context==context&&probe.epoch==epoch)return &probe;
     for(auto& probe:mp3_probes)if(probe.state==Mp3ProbeState::Empty) {
@@ -342,7 +338,7 @@ static void QueueMp3Encoded(uintptr_t context,const unsigned char* bytes,size_t 
     const auto copied=std::min(length,sizeof(probe->bytes)-probe->length);
     memcpy(probe->bytes+probe->length,bytes,copied);probe->length+=unsigned(copied);
     const bool id3=probe->length>=3&&!memcmp(probe->bytes,"ID3",3);
-    const bool mp3=probe->length>=4&&Mp3Header(probe->bytes);
+    const bool mp3=probe->length>=4&&!Mp3FrameHeader{binary::ReadBig32(probe->bytes)}.Error();
     if(!id3&&!mp3) {
         if(probe->length>=4)probe->state=Mp3ProbeState::Rejected;
         return;

@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string_view>
 
 namespace history {
 namespace {
@@ -87,12 +88,12 @@ struct ScanStats {
     }
 };
 
-bool Equal(const std::wstring& lhs, const std::wstring& rhs) {
-    return CompareStringOrdinal(lhs.c_str(), -1, rhs.c_str(), -1, TRUE) == CSTR_EQUAL;
+bool Equal(const wchar_t* lhs, const wchar_t* rhs) {
+    return CompareStringOrdinal(lhs, -1, rhs, -1, TRUE) == CSTR_EQUAL;
 }
 
 bool AllowedDirectory(const fs::path& name) {
-    return !Equal(name.native(), L"Unmatched") && !Equal(name.native(), L"DumpStreams");
+    return !Equal(name.c_str(), L"Unmatched") && !Equal(name.c_str(), L"DumpStreams");
 }
 
 bool IsPlainDirectory(const std::wstring& native_path) {
@@ -102,9 +103,9 @@ bool IsPlainDirectory(const std::wstring& native_path) {
 }
 
 bool SupportedFile(const fs::path& path) {
-    const auto extension = path.extension().native();
+    const auto extension = path.extension();
     return std::any_of(kRecordingFormats.begin(), kRecordingFormats.end(),
-        [&](const RecordingFormat& format) { return Equal(extension, format.extension); });
+        [&](const RecordingFormat& format) { return Equal(extension.c_str(), format.extension); });
 }
 
 fs::path Normalize(const std::wstring& path) {
@@ -118,7 +119,7 @@ fs::path Normalize(const std::wstring& path) {
 fs::path RelativeTo(const fs::path& root, const fs::path& file) {
     auto part = file.begin();
     for (const auto& directory : root) {
-        if (part == file.end() || !Equal(directory.native(), part->native())) return {};
+        if (part == file.end() || !Equal(directory.c_str(), part->c_str())) return {};
         ++part;
     }
     fs::path relative;
@@ -135,37 +136,52 @@ struct Stamp {
     }
 };
 
-FileStatus ReadStamp(const fs::path& root, const fs::path& relative, Stamp& stamp) {
-    if (relative.has_root_path() || !SupportedFile(relative)) return FileStatus::Missing;
-    auto path = WindowsPath(root.native());
-    if (!IsPlainDirectory(path)) return FileStatus::Unavailable;
-    path.reserve(path.size() + 1 + relative.native().size());
-    // Check every directory, since GetFileAttributesExW follows intermediate junctions.
-    for (auto item = relative.begin(); item != relative.end(); ++item) {
-        const auto& part = item->native();
-        if (part.empty() || part == L"." || part == L".." ||
-            part.find(L':') != std::wstring::npos ||
-            part.find(L'\0') != std::wstring::npos) return FileStatus::Missing;
-        if (path.back() != L'\\' && path.back() != L'/') path += L'\\';
-        path += part;
-        const bool file = std::next(item) == relative.end();
-        if (!file && !AllowedDirectory(*item)) return FileStatus::Missing;
+class CatalogPath {
+    std::wstring path_;
+    std::size_t root_size_ = 0;
+
+    void Append(std::wstring_view part) {
+        if (path_.back() != L'\\' && path_.back() != L'/') path_ += L'\\';
+        path_ += part;
+    }
+public:
+    void Reset(const std::wstring& root) {
+        path_ = WindowsPath(root);
+        root_size_ = path_.size();
+    }
+    const std::wstring& Native() const { return path_; }
+    const wchar_t* FindPattern() {
+        Append(L"*");
+        return path_.c_str();
+    }
+
+    FileStatus Check(const fs::path& relative, Stamp* stamp = nullptr) {
+        if (relative.has_root_path() || (stamp && !SupportedFile(relative))) return FileStatus::Missing;
+        path_.resize(root_size_);
+        if (!IsPlainDirectory(path_)) return FileStatus::Unavailable;
+        path_.reserve(root_size_ + 1 + relative.native().size());
+        // Check every directory, since GetFileAttributesExW follows intermediate junctions.
         WIN32_FILE_ATTRIBUTE_DATA data{};
-        if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) {
-            const auto error = GetLastError();
-            return win32::PathMissing(error)
-                ? FileStatus::Missing : FileStatus::Unavailable;
+        for (auto item = relative.begin(); item != relative.end(); ++item) {
+            const auto& part = item->native();
+            const bool file = stamp && std::next(item) == relative.end();
+            if (part.empty() || part == L"." || part == L".." ||
+                part.find(L':') != std::wstring::npos || part.find(L'\0') != std::wstring::npos ||
+                (!file && !AllowedDirectory(*item))) return FileStatus::Missing;
+            Append(part);
+            if (!GetFileAttributesExW(path_.c_str(), GetFileExInfoStandard, &data))
+                return win32::PathMissing(GetLastError()) ? FileStatus::Missing : FileStatus::Unavailable;
+            if ((data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
+                file == bool(data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) return FileStatus::Missing;
         }
-        if (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) return FileStatus::Missing;
-        if (file == bool(data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) return FileStatus::Missing;
-        if (file) {
-            stamp.bytes = (std::uint64_t{data.nFileSizeHigh} << 32) | data.nFileSizeLow;
-            stamp.written = (std::uint64_t{data.ftLastWriteTime.dwHighDateTime} << 32) |
+        if (stamp) {
+            stamp->bytes = (std::uint64_t{data.nFileSizeHigh} << 32) | data.nFileSizeLow;
+            stamp->written = (std::uint64_t{data.ftLastWriteTime.dwHighDateTime} << 32) |
                 data.ftLastWriteTime.dwLowDateTime;
         }
+        return FileStatus::Available;
     }
-    return FileStatus::Available;
-}
+};
 
 struct Row {
     std::string path, uri, date;
@@ -281,13 +297,13 @@ void Changed(std::uint64_t epoch, Mutation result) {
     if (state.epoch == epoch) ++state.revision;
 }
 
-std::optional<Row> Refresh(Database& db, const fs::path& root, const fs::path& relative,
+std::optional<Row> Refresh(Database& db, CatalogPath& path, const fs::path& relative,
                            std::uint64_t epoch, std::uint64_t scan, Row* cached = nullptr,
                            ScanStats* stats = nullptr) {
     if (!Current(epoch, scan)) return {};
     if (stats) ++stats->scanned;
     Stamp stamp;
-    const auto status = ReadStamp(root, relative, stamp);
+    const auto status = path.Check(relative, &stamp);
     if (cached && status == FileStatus::Available && stamp == cached->stamp && ValidMarkedDate(cached->date))
         return std::move(*cached);
 
@@ -307,10 +323,9 @@ std::optional<Row> Refresh(Database& db, const fs::path& root, const fs::path& r
     }
     if (status != FileStatus::Available) return {};
 
-    const auto path = (root / relative).native();
     MarkedRecording record;
     std::string error;
-    if (!ReadMarkedRecording(path, record, error)) {
+    if (!ReadMarkedRecording(path.Native(), record, error)) {
         if (stats) ++stats->errors;
         WarnFile("could not read recording metadata", key, error);
         return {};
@@ -320,10 +335,10 @@ std::optional<Row> Refresh(Database& db, const fs::path& root, const fs::path& r
         const auto settings = GetSettings();
         if (settings.downloads && settings.metadata && settings.update_existing_metadata) {
             if (!Current(epoch, scan)) return {};
-            const bool backfilled = BackfillMarkedDate(path, settings.generation);
+            const bool backfilled = BackfillMarkedDate(path.Native(), settings.generation);
             if (!Current(epoch, scan)) return {};
-            if (!backfilled || ReadStamp(root, relative, stamp) != FileStatus::Available ||
-                !ReadMarkedRecording(path, record, error)) {
+            if (!backfilled || path.Check(relative, &stamp) != FileStatus::Available ||
+                !ReadMarkedRecording(path.Native(), record, error)) {
                 if (stats) ++stats->errors;
                 WarnFile("could not backfill recording date", key, error);
                 return {};
@@ -334,7 +349,7 @@ std::optional<Row> Refresh(Database& db, const fs::path& root, const fs::path& r
     }
     Stamp after;
     if (!Current(epoch, scan)) return {};
-    if (ReadStamp(root, relative, after) != FileStatus::Available || !(stamp == after)) {
+    if (path.Check(relative, &after) != FileStatus::Available || !(stamp == after)) {
         if (stats) ++stats->errors;
         WarnFile("recording changed during catalog read", key);
         return {};
@@ -354,7 +369,6 @@ struct Scan {
     struct Directory {
         fs::path relative;
         win32::FindHandle search;
-        bool started = false;
         explicit Directory(fs::path path) : relative(std::move(path)) {}
     };
     std::deque<Directory> directories;
@@ -366,28 +380,19 @@ struct Scan {
         stats = {};
         if (scan) directories.emplace_back(fs::path{});
     }
-    bool Step(Database& db, const fs::path& root, std::uint64_t epoch) {
+    bool Step(Database& db, CatalogPath& path, std::uint64_t epoch) {
         if (directories.empty()) return false;
         auto& directory = directories.back();
         WIN32_FIND_DATAW entry{};
         bool found;
-        if (!directory.started) {
-            directory.started = true;
-            auto path = root;
-            bool available = IsPlainDirectory(WindowsPath(path.native()));
-            for (const auto& name : directory.relative) {
-                if (!available) break;
-                path /= name;
-                available = IsPlainDirectory(WindowsPath(path.native()));
-            }
-            if (!available) {
+        if (directory.search.value == INVALID_HANDLE_VALUE) {
+            if (path.Check(directory.relative) != FileStatus::Available) {
                 ++stats.errors;
                 WarnFile("could not access recording directory", directory.relative.u8string());
                 directories.pop_back();
                 return true;
             }
-            const auto pattern = (path / L"*").native();
-            directory.search.value = FindFirstFileW(WindowsPath(pattern).c_str(), &entry);
+            directory.search.value = FindFirstFileW(path.FindPattern(), &entry);
             found = directory.search.value != INVALID_HANDLE_VALUE;
         } else {
             found = FindNextFileW(directory.search.value, &entry) != FALSE;
@@ -409,7 +414,7 @@ struct Scan {
         if (entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
             if (AllowedDirectory(name)) directories.emplace_back(relative);
         } else if (SupportedFile(relative)) {
-            Refresh(db, root, relative, epoch, sequence, nullptr, &stats);
+            Refresh(db, path, relative, epoch, sequence, nullptr, &stats);
         }
         return true;
     }
@@ -429,7 +434,7 @@ void ReleaseFailedQuery(std::uint64_t epoch, std::uint64_t sequence) {
     if (state.epoch == epoch && state.query_sequence == sequence) state.query.reset();
 }
 
-void AnswerQuery(Database& db, bool available, const fs::path& root, const Query& query,
+void AnswerQuery(Database& db, bool available, CatalogPath& path, const Query& query,
                  std::uint64_t epoch) {
     if (!available) {
         ReleaseFailedQuery(epoch, query.sequence);
@@ -455,8 +460,7 @@ void AnswerQuery(Database& db, bool available, const fs::path& root, const Query
         }
         for (auto& cached : rows) {
             if (!QueryCurrent(epoch, query.sequence)) return;
-            const auto path = fs::u8path(cached.path);
-            auto row = Refresh(db, root, path, epoch, 0, &cached);
+            auto row = Refresh(db, path, fs::u8path(cached.path), epoch, 0, &cached);
             if (!row) continue;
             const auto slot = static_cast<std::size_t>(
                 std::find(query.uris.begin(), query.uris.end(), row->uri) - query.uris.begin());
@@ -492,6 +496,7 @@ DWORD WINAPI Run(void*) {
     auto& state = Shared();
     std::uint64_t epoch = 0;
     fs::path root;
+    CatalogPath path;
     Database db;
     Scan scan;
     bool open_warning = false;
@@ -523,7 +528,9 @@ DWORD WINAPI Run(void*) {
                 scan.Reset(0);
                 epoch = next_epoch;
                 root.clear();
-                root = Normalize(next_root);
+                auto normalized = Normalize(next_root);
+                path.Reset(normalized.native());
+                root = std::move(normalized);
                 open_warning = false;
             }
             if (scan.sequence != next_scan) scan.Reset(next_scan);
@@ -532,11 +539,11 @@ DWORD WINAPI Run(void*) {
             if (!available && !open_warning) Warn("could not open the save root database");
             open_warning = !available;
             if (query) {
-                AnswerQuery(db, available, root, *query, epoch);
+                AnswerQuery(db, available, path, *query, epoch);
             } else if (!file.empty()) {
                 const auto relative = RelativeTo(root, Normalize(file));
-                if (available && !relative.empty()) Refresh(db, root, relative, epoch, 0);
-            } else if (!available || !scan.Step(db, root, epoch)) {
+                if (available && !relative.empty()) Refresh(db, path, relative, epoch, 0);
+            } else if (!available || !scan.Step(db, path, epoch)) {
                 if (!available) ++scan.stats.errors;
                 FinishScan(epoch, next_scan, scan.stats);
             }

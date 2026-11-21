@@ -1,10 +1,12 @@
 #include "../tooling/binary.h"
 #include "marked_recording.h"
+#include "mp3_header.h"
 #include "recording_formats.h"
 #include "vorbis_comments.h"
 #include <algorithm>
+#include <array>
 #include <cstring>
-#include <map>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -13,12 +15,6 @@ namespace {
 constexpr uint64_t metadata_limit=16*1024*1024;
 constexpr unsigned operation_limit=200000;
 constexpr size_t key_limit=32,value_limit=128;
-bool Syncsafe(const uint8_t* p,uint32_t& value) {
-    if((p[0]|p[1]|p[2]|p[3])&128)return false;
-    value=uint32_t(p[0])<<21|uint32_t(p[1])<<14|uint32_t(p[2])<<7|p[3];
-    return true;
-}
-
 struct Input {
     uint64_t size;
     const MarkedReadAt& read;
@@ -31,23 +27,29 @@ struct Input {
         return !length || read(at,dest,length);
     }
 };
-bool Relevant(const std::string& key) {
-    return key=="SPOTIFY_URI" || key=="HISTORY_SAVED_UTC" || key=="HISTORY_CAPTURE" ||
-           key=="HISTORY_COMPLETE_STREAM" || key=="HISTORY_COMPLETE_LISTEN";
+enum Field { Uri,SavedUtc,CaptureSource,CompleteStream,CompleteListen,Unknown };
+Field FindField(std::string_view key) {
+    constexpr std::array<std::string_view,Unknown> names{
+        "SPOTIFY_URI","HISTORY_SAVED_UTC","HISTORY_CAPTURE","HISTORY_COMPLETE_STREAM","HISTORY_COMPLETE_LISTEN"};
+    const auto upper_equal=[](char ch,char upper) {
+        return (ch>='a'&&ch<='z'?ch-'a'+'A':ch)==upper;
+    };
+    const auto match=std::find_if(names.begin(),names.end(),[&](std::string_view name) {
+        return std::equal(key.begin(),key.end(),name.begin(),name.end(),upper_equal);
+    });
+    return Field(match-names.begin());
 }
 struct Fields {
-    std::map<std::string,std::string> values;
-    bool Set(const MarkedReadAt& get,uint64_t at,uint64_t bytes,const std::string& key) {
-        if(!Relevant(key))return true;
+    std::array<std::optional<std::string>,Unknown> values;
+    bool Set(const MarkedReadAt& get,uint64_t at,uint64_t bytes,Field key) {
+        if(key==Unknown)return true;
         if(bytes>value_limit)return false;
         std::string value(size_t(bytes),'\0');
         if(bytes && !get(at,value.data(),value.size()))return false;
-        const auto [existing,inserted]=values.try_emplace(key,std::move(value));
-        return inserted || existing->second==value;
-    }
-    std::string Value(const char* key) const {
-        const auto i=values.find(key);
-        return i==values.end()?std::string{}:i->second;
+        auto& existing=values[key];
+        if(existing)return *existing==value;
+        existing=std::move(value);
+        return true;
     }
 };
 // Read lengths and key prefixes of variable-size fields, skipping the rest of
@@ -61,7 +63,7 @@ bool Comments(const MarkedReadAt& get,uint64_t size,Fields& fields,bool vorbis) 
         if(probe && !get(at,prefix,probe))return false;
         const auto split=std::string_view(prefix,probe).find('=');
         return split==std::string_view::npos ||
-               fields.Set(get,at+split+1,bytes-split-1,CommentKey({prefix,split}));
+               fields.Set(get,at+split+1,bytes-split-1,FindField({prefix,split}));
     },vorbis);
 }
 
@@ -157,28 +159,19 @@ bool Ogg(Input& input,Fields& fields) {
 bool Mp3Audio(Input& input,uint64_t at) {
     uint8_t header[4];
     if(!input.Get(at,header,sizeof(header)))return false;
-    const auto bits=binary::ReadBig32(header);
-    const unsigned version=(bits>>19)&3,layer=(bits>>17)&3;
-    const unsigned bitrate=(bits>>12)&15,rate=(bits>>10)&3;
-    if((bits&0xffe00000u)!=0xffe00000u || version==1 || layer!=1 || !bitrate || bitrate==15 || rate==3)
-        return false;
-    constexpr unsigned rates[]={44100,48000,32000};
-    constexpr unsigned mpeg1[]={0,32,40,48,56,64,80,96,112,128,160,192,224,256,320};
-    constexpr unsigned mpeg2[]={0,8,16,24,32,40,48,56,64,80,96,112,128,144,160};
-    const auto frequency=rates[rate]/(version==3?1:version==2?2:4);
-    const auto bytes=(version==3?144000*mpeg1[bitrate]:72000*mpeg2[bitrate])/frequency+((bits>>9)&1);
-    return bytes<=input.size-at;
+    const Mp3FrameHeader frame{binary::ReadBig32(header)};
+    return !frame.Error() && frame.FrameBytes()<=input.size-at;
 }
 bool Mp3(Input& input,Fields& fields) {
     uint8_t header[10];
-    uint32_t bytes=0;
+    size_t bytes=0;
     if(!input.Get(0,header,sizeof(header)) || header[3]!=4 || header[4] || header[5] ||
-       !Syncsafe(header+6,bytes) || bytes>metadata_limit || bytes>=input.size-sizeof(header))return false;
+       !ReadId3Syncsafe(header+6,bytes) || bytes>metadata_limit || bytes>=input.size-sizeof(header))return false;
     const uint64_t end=sizeof(header)+bytes;
     if(!Mp3Audio(input,end))return false;
     for(uint64_t at=sizeof(header);at<end;) {
         uint8_t frame[10];
-        uint32_t length=0;
+        size_t length=0;
         if(end-at<sizeof(frame) || !input.Get(at,frame,sizeof(frame)))return false;
         if(!frame[0]) {
             uint8_t padding[1024];
@@ -190,7 +183,7 @@ bool Mp3(Input& input,Fields& fields) {
             break;
         }
         at+=sizeof(frame);
-        if(!Syncsafe(frame+4,length) || length>end-at)return false;
+        if(!ReadId3Syncsafe(frame+4,length) || length>end-at)return false;
         if(!std::memcmp(frame,"TXXX",4)) {
             char prefix[key_limit+1];
             const auto probe=std::min<size_t>(length,sizeof(prefix));
@@ -198,7 +191,7 @@ bool Mp3(Input& input,Fields& fields) {
             const auto split=std::string_view(prefix+1,probe-1).find('\0');
             if(split!=std::string_view::npos &&
                !fields.Set([&](uint64_t p,void* d,size_t n){return input.Get(p,d,n);},
-                           at+split+2,length-split-2,CommentKey({prefix+1,split})))return false;
+                           at+split+2,length-split-2,FindField({prefix+1,split})))return false;
         }
         at+=length;
     }
@@ -225,7 +218,7 @@ bool ReadBox(Input& input,uint64_t at,uint64_t end,Box& box) {
     return true;
 }
 bool Freeform(Input& input,const Box& entry,Fields& fields) {
-    std::string key;
+    Field key=Unknown;
     bool itunes=false,seen_mean=false,seen_name=false;
     for(uint64_t at=entry.body;at<entry.end;) {
         Box box;
@@ -241,13 +234,13 @@ bool Freeform(Input& input,const Box& entry,Fields& fields) {
                 if(binary::ReadBig32(reinterpret_cast<const uint8_t*>(text))==0) {
                     std::string_view name(text+4,size_t(bytes)-4);
                     if(box.Is("mean"))itunes=name=="com.apple.iTunes";
-                    else key=CommentKey(name);
+                    else key=FindField(name);
                 }
             }
         }
         at=box.end;
     }
-    if(!itunes || !Relevant(key))return true;
+    if(!itunes || key==Unknown)return true;
     bool found=false;
     for(uint64_t at=entry.body;at<entry.end;) {
         Box box;
@@ -317,16 +310,17 @@ bool ReadMarkedRecording(uint64_t bytes,const MarkedReadAt& read,MarkedRecording
         error="unsupported or invalid recording metadata";
         return false;
     }
-    auto saved=fields.Value("HISTORY_SAVED_UTC");
-    if(fields.values.count("HISTORY_SAVED_UTC") && !ValidMarkedDate(saved)) {
+    const auto& saved=fields.values[SavedUtc];
+    if(saved && !ValidMarkedDate(*saved)) {
         error="invalid HISTORY_SAVED_UTC";
         return false;
     }
-    auto uri=fields.Value("SPOTIFY_URI");
+    auto uri=std::move(fields.values[Uri]).value_or(std::string{});
     if(!ValidSpotifyTrackUri(uri))uri.clear();
-    const bool complete=fields.Value("HISTORY_COMPLETE_STREAM")=="1" || fields.Value("HISTORY_COMPLETE_LISTEN")=="1";
-    const bool owned=complete && MatchesRecordingCapture(codec,fields.Value("HISTORY_CAPTURE"));
-    out={std::move(uri),std::move(saved),bytes,0,complete,owned};
+    const bool complete=fields.values[CompleteStream]=="1" || fields.values[CompleteListen]=="1";
+    const auto& source=fields.values[CaptureSource];
+    const bool owned=complete && source && MatchesRecordingCapture(codec,*source);
+    out={std::move(uri),std::move(fields.values[SavedUtc]).value_or(std::string{}),bytes,0,complete,owned};
     return true;
 }
 }

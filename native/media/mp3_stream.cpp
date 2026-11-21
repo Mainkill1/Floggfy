@@ -1,4 +1,5 @@
 #include "mp3_stream.h"
+#include "mp3_header.h"
 #include "compressed_buffer.h"
 #include "recording_limits.h"
 #include <algorithm>
@@ -11,11 +12,6 @@ constexpr std::size_t kFileLimit=kMaximumRecordingBytes,kTagLimit=16u*1024u*1024
 // At most 41 2/3 frames/second across the supported MPEG versions and rates.
 constexpr unsigned kFrameLimit=86400u*48000u/1152u;
 bool Fail(std::string& error,const char* text) {error=text;return false;}
-bool Syncsafe(const std::uint8_t* bytes,std::size_t& value) noexcept {
-    if((bytes[0]|bytes[1]|bytes[2]|bytes[3])&0x80)return false;
-    value=(std::size_t(bytes[0])<<21)|(std::size_t(bytes[1])<<14)|
-          (std::size_t(bytes[2])<<7)|bytes[3];return true;
-}
 void Syncsafe(std::vector<std::uint8_t>& out,std::size_t value) {
     out.push_back(std::uint8_t(value>>21)&0x7f);out.push_back(std::uint8_t(value>>14)&0x7f);
     out.push_back(std::uint8_t(value>>7)&0x7f);out.push_back(std::uint8_t(value)&0x7f);
@@ -43,7 +39,7 @@ bool Id3Range(const Bytes& bytes,std::size_t& begin,std::size_t& end,
     const std::uint8_t allowed=version==2?0xc0:version==3?0xe0:0xf0;
     if(bytes[5]&~allowed)return Fail(error,"invalid ID3 flags");
     std::uint8_t encoded[4]{bytes[6],bytes[7],bytes[8],bytes[9]};
-    std::size_t payload=0;if(!Syncsafe(encoded,payload))return Fail(error,"invalid ID3 size");
+    std::size_t payload=0;if(!ReadId3Syncsafe(encoded,payload))return Fail(error,"invalid ID3 size");
     if(payload>kTagLimit)return Fail(error,"ID3 tag exceeds limit");
     const std::size_t footer=version==4&&(bytes[5]&0x10)?10:0;
     if(payload>size-10||footer>size-10-payload)return Fail(error,"truncated ID3 tag");
@@ -125,22 +121,11 @@ Mp3Scan ScanMp3(const Bytes& bytes,Mp3Info& out,std::string& error,bool accept_t
             return source_boundary(at);
         }
         if(end-at<4)return truncated("truncated MP3 frame header");
-        const std::uint32_t h=(std::uint32_t(bytes[at])<<24)|(std::uint32_t(bytes[at+1])<<16)|
-                              (std::uint32_t(bytes[at+2])<<8)|bytes[at+3];
-        if((h&0xffe00000u)!=0xffe00000u){Fail(error,"invalid MP3 frame sync");return Mp3Scan::Invalid;}
-        const unsigned version=(h>>19)&3,layer=(h>>17)&3,bitrate_index=(h>>12)&15,rate_index=(h>>10)&3;
-        if(version==1){Fail(error,"reserved MPEG version");return Mp3Scan::Invalid;}
-        if(layer!=1){Fail(error,"unsupported MPEG layer");return Mp3Scan::Invalid;}
-        if(!bitrate_index||bitrate_index==15){Fail(error,"unsupported MP3 bitrate");return Mp3Scan::Invalid;}
-        if(rate_index==3){Fail(error,"reserved MP3 sample rate");return Mp3Scan::Invalid;}
-        static constexpr unsigned rates[3]={44100,48000,32000};
-        static constexpr unsigned mpeg1[16]={0,32,40,48,56,64,80,96,112,128,160,192,224,256,320,0};
-        static constexpr unsigned mpeg2[16]={0,8,16,24,32,40,48,56,64,80,96,112,128,144,160,0};
-        unsigned rate=rates[rate_index];if(version==2)rate/=2;else if(version==0)rate/=4;
-        const unsigned bitrate=(version==3?mpeg1:mpeg2)[bitrate_index];
-        const unsigned channels=((h>>6)&3)==3?1:2;
-        const std::uint64_t scale=version==3?144000u:72000u;
-        const std::uint64_t frame_size=scale*bitrate/rate+((h>>9)&1);
+        const Mp3FrameHeader header{(std::uint32_t(bytes[at])<<24)|(std::uint32_t(bytes[at+1])<<16)|
+                                    (std::uint32_t(bytes[at+2])<<8)|bytes[at+3]};
+        if(const auto* reason=header.Error()){Fail(error,reason);return Mp3Scan::Invalid;}
+        const auto version=header.Version(),rate=header.Rate(),channels=header.Channels();
+        const auto frame_size=header.FrameBytes();
         if(frame_size<4){Fail(error,"invalid MP3 frame size");return Mp3Scan::Invalid;}
         if(frame_size>end-at)return truncated("truncated MP3 frame");
         if(!frames) {
@@ -277,7 +262,7 @@ bool AddMp3TextFrame(const std::vector<std::uint8_t>& source,const std::string& 
                      std::vector<std::uint8_t>& output) {
     size_t tag_size=0;
     if(source.size()<10 || source.size()>kFileLimit || std::memcmp(source.data(),"ID3\x04\x00\x00",6) ||
-       !Syncsafe(source.data()+6,tag_size) || tag_size>source.size()-10)return false;
+       !ReadId3Syncsafe(source.data()+6,tag_size) || tag_size>source.size()-10)return false;
     std::vector<std::uint8_t> frame;
     TextFrame(frame,key,value);
     if(frame.size()>kTagLimit || tag_size>kTagLimit-frame.size() || frame.size()>kFileLimit-source.size())return false;
@@ -308,7 +293,7 @@ Mp3InspectionResult InspectOwnedMp3Result(const std::uint8_t* bytes,std::size_t 
             }
             for(unsigned i=0;i<4;++i)if(!((bytes[at+i]>='A'&&bytes[at+i]<='Z')||(bytes[at+i]>='0'&&bytes[at+i]<='9')))
                 return Fail(error,"invalid ID3 frame name");
-            std::size_t length=0;if(!Syncsafe(bytes+at+4,length)||length>payload_end-at-10)
+            std::size_t length=0;if(!ReadId3Syncsafe(bytes+at+4,length)||length>payload_end-at-10)
                 return Fail(error,"invalid ID3 frame size");
             const char* id=reinterpret_cast<const char*>(bytes+at);const auto* data=bytes+at+10;
             if(const auto* name=FieldForFrame(id)) {
