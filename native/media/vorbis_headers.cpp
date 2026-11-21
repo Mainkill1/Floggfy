@@ -1,4 +1,5 @@
 #include "../tooling/binary.h"
+#include "recording_memory.h"
 #include "vorbis_headers.h"
 #include <ogg/ogg.h>
 #include <cstring>
@@ -9,7 +10,7 @@
 
 namespace history {
 namespace {
-constexpr size_t setup_limit=1024*1024,arena_bytes=8*1024*1024;
+constexpr size_t setup_limit=1024*1024,initial_arena=64*1024;
 struct StreamState {
     ogg_stream_state value{};
     bool initialized=false;
@@ -50,26 +51,31 @@ VorbisHeadersResult ValidateVorbisHeaders(const std::vector<uint8_t>& identifica
        std::memcmp(setup.data()+1,"vorbis",6))return VorbisHeadersResult::Invalid;
     if(identification[11]>8)return VorbisHeadersResult::Unsupported;
     try {
+        // Allow for libogg's packet storage and growth of the repaged headers.
+        if(!RecordingReadMemoryScope::AdmitCurrent(setup.size()*8+64*1024))return VorbisHeadersResult::ResourceFailure;
         std::vector<uint8_t> pages;
         if(!HeaderPages(identification,setup,pages))return VorbisHeadersResult::ResourceFailure;
-        // uint64_t supplies the eight-byte alignment required by the arena.
-        std::vector<uint64_t> arena(arena_bytes/sizeof(uint64_t));
-        stb_vorbis_alloc allocation{reinterpret_cast<char*>(arena.data()),int(arena_bytes)};
-        int consumed=0,error=0;
         // Upstream initializes a shared CRC table during header opening.
-        // Only storage workers enter here; no capture/CEF callback waits on it.
         static std::mutex parser_lock;
-        std::lock_guard<std::mutex> guard(parser_lock);
-        auto* decoder=stb_vorbis_open_pushdata(pages.data(),int(pages.size()),&consumed,&error,&allocation);
-        if(!decoder) {
-            return error==VORBIS_outofmem || error==VORBIS_feature_not_supported || error==VORBIS_too_many_channels
-                ? VorbisHeadersResult::Unsupported : VorbisHeadersResult::Invalid;
+        for(size_t bytes=initial_arena;bytes<=kVorbisArenaLimit;bytes*=2) {
+            if(!RecordingReadMemoryScope::AdmitCurrent(pages.capacity()+bytes))return VorbisHeadersResult::ResourceFailure;
+            std::vector<uint64_t> arena(bytes/sizeof(uint64_t));
+            stb_vorbis_alloc allocation{reinterpret_cast<char*>(arena.data()),int(bytes)};
+            int consumed=0,error=0;
+            std::lock_guard<std::mutex> guard(parser_lock);
+            auto* decoder=stb_vorbis_open_pushdata(pages.data(),int(pages.size()),&consumed,&error,&allocation);
+            if(!decoder) {
+                if(error==VORBIS_outofmem)continue;
+                return error==VORBIS_feature_not_supported || error==VORBIS_too_many_channels
+                    ? VorbisHeadersResult::Unsupported : VorbisHeadersResult::Invalid;
+            }
+            const auto info=stb_vorbis_get_info(decoder);
+            stb_vorbis_close(decoder);
+            return error==0 && consumed==int(pages.size()) && info.channels==identification[11] &&
+                info.sample_rate==binary::ReadLittle32(identification.data()+12)
+                ? VorbisHeadersResult::Valid : VorbisHeadersResult::Invalid;
         }
-        const auto info=stb_vorbis_get_info(decoder);
-        stb_vorbis_close(decoder);
-        const uint32_t rate=binary::ReadLittle32(identification.data()+12);
-        return error==0 && consumed==int(pages.size()) && info.channels==identification[11] && info.sample_rate==rate
-            ? VorbisHeadersResult::Valid : VorbisHeadersResult::Invalid;
+        return VorbisHeadersResult::Unsupported;
     }catch(...) {
         return VorbisHeadersResult::ResourceFailure;
     }

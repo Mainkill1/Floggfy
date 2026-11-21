@@ -1,5 +1,6 @@
 #include "recording_fixture.h"
 #include "../native/media/recording_file.h"
+#include "../native/media/recording_memory.h"
 #include "../native/media/flac_history_core.h"
 #include "../native/media/vorbis_headers.h"
 #include "../native/media/mp3_stream.h"
@@ -244,6 +245,22 @@ static void flac_capture_recovery() {
 static void vorbis_headers() {
     const auto id=recording_fixture::identification(),setup=recording_fixture::setup();
     check(ValidateVorbisHeaders(id,setup)==VorbisHeadersResult::Valid,"complete Vorbis I headers accepted without audio decoding");
+    struct HeaderBudget {size_t limit,peak=0;};
+    const auto permit=[](void* context,size_t bytes) {
+        auto& budget=*static_cast<HeaderBudget*>(context);
+        budget.peak=std::max(budget.peak,bytes);
+        return bytes<=budget.limit;
+    };
+    {
+        HeaderBudget budget{0};RecordingReadMemoryScope memory(permit,&budget);
+        check(ValidateVorbisHeaders(id,setup)==VorbisHeadersResult::ResourceFailure&&memory.Denied(),
+              "Vorbis validation surfaces a temporary workspace denial");
+    }
+    {
+        HeaderBudget budget{128*1024};RecordingReadMemoryScope memory(permit,&budget);
+        check(ValidateVorbisHeaders(id,setup)==VorbisHeadersResult::Valid&&budget.peak&&!memory.Denied(),
+              "a small Vorbis setup fits in a small reserved workspace");
+    }
     check(ValidateVorbisHeaders(id,recording_fixture::setup(2,1))==VorbisHeadersResult::Valid,"fully populated two-entry Huffman tree accepted");
     std::vector<uint8_t> owned_comment={3,'v','o','r','b','i','s',0,0,0,0,2,0,0,0};
     for(const std::string field:{"HISTORY_COMPLETE_LISTEN=1","HISTORY_CAPTURE=native compressed Ogg pages"}) {

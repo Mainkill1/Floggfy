@@ -6,7 +6,9 @@
 #define UpdateRecordingMetadata CountedMetadataUpdate
 #define PublishBytes ControlledPublishBytes
 #define TagFlac ControlledTagFlac
+#define InspectRecording ControlledInspectRecording
 #include "../native/media/audio_history.cpp"
+#undef InspectRecording
 #undef UpdateRecordingMetadata
 #undef PublishBytes
 #undef TagFlac
@@ -18,6 +20,7 @@ static unsigned metadata_update_calls=0;
 static bool fail_publication_once=false;
 static bool race_unknown_once=false;
 static bool fail_tag_once=false;
+static bool fail_source_inspection=false;
 static bool change_benign_setting_during_enrich=false;
 static std::string extra_lyrics;
 static unsigned extra_disc=0;
@@ -37,6 +40,14 @@ static bool advance_revision_during_enrich=false;
 static bool force_metadata_failure=false;
 static std::uint64_t enrichment_revision=1;
 namespace history {
+bool InspectRecording(const uint8_t*,size_t,RecordingFile&);
+bool ControlledInspectRecording(const uint8_t* bytes,size_t size,RecordingFile& out) {
+ if(std::exchange(fail_source_inspection,false)) {
+  out.inspection_resource_failure=true;
+  return false;
+ }
+ return InspectRecording(bytes,size,out);
+}
 void PublicationTestPhase(const wchar_t* phase,const std::wstring& path) {
  if(attack_archive_stage&&std::wstring(phase)==L"archive-stage-held"&&path.find(L".commit.partial")!=std::wstring::npos) {
   attack_archive_stage=false;HANDLE raced=CreateFileW(path.c_str(),GENERIC_WRITE,FILE_SHARE_READ,nullptr,CREATE_ALWAYS,0,nullptr);
@@ -636,6 +647,11 @@ static void TestUnmatchedRootRecovery() {
   const auto root=std::wstring(temp)+L"Floggfy-unmatched-replan-"+std::to_wstring(GetCurrentProcessId())+phase;
   assert(SetSaveLocation(root+L"-old")&&SetDownloads(true));
   SaveJob job;job.capture=RecoveryCapture();job.epoch=CaptureEpoch();job.unmatched=true;job.correlation="{\"reason\":\"fixture\"}\n";
+  if(!wcscmp(phase,L"unmatched-json")) {
+   fail_source_inspection=true;
+   assert(PublishUnmatched(job)==Publication::Blocked&&!fail_source_inspection);
+   assert(job.capture->unmatched_attempts.empty());
+  }
   const bool return_root=std::wstring(phase)==L"unmatched-json-return";
   unmatched_change_root=root+L"-new";unmatched_change_phase=return_root?L"unmatched-json":phase;
   const bool after_commit=std::wstring(phase)==L"unmatched-committed";

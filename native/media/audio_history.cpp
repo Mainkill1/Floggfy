@@ -948,7 +948,6 @@ struct Capture {
     bool lossless=false,metadata=false,aac=false,mp3=false,ambiguous=false;
     mutable int final_validation=-1;
     mutable const char* validation_reason="not-evaluated";
-    mutable unsigned validation_runs=0;
     size_t publication_reserved=0;
     // This capture's share of the last capture-store accounting snapshot.
     // Transfers to a publication/audit lease remove exactly this prior charge.
@@ -990,7 +989,7 @@ struct Capture {
     std::wstring committed_destination;
     Quality committed_quality;
     size_t committed_bytes=0;
-    bool publication_committed=false,publication_acknowledged=false;
+    bool publication_committed=false,publication_acknowledged=false,publication_source_validated=false;
     std::wstring unmatched_name;
     std::vector<UnmatchedAttempt> unmatched_attempts;
     std::string publication_error;
@@ -1083,16 +1082,22 @@ static FinalCaptureValidation ValidateOggCapture(const Capture& capture) {
        rebuilt.samples!=capture.stream.samples)return ValidationResult(capture,FinalCaptureValidation::Invalid,"ogg-reader-reparse-disagreement");
     return ValidationResult(capture,FinalCaptureValidation::Valid,"ogg-complete");
 }
-static FinalCaptureValidation ValidateAacCapture(const Capture& capture) {
-    SpacStream rebuilt;size_t at=0;
-    while(at<capture.data.size()) {
-        const auto block=capture.data.BlockAt(at);
-        const auto result=rebuilt.Push(block.data,block.size);
-        if(result==AacParse::Invalid||result==AacParse::Unsupported)return ValidationResult(capture,FinalCaptureValidation::Invalid,
-            result==AacParse::Invalid?"aac-packet-invalid":"aac-configuration-unsupported");
+static AacParse ScanAacBlocks(const CompressedBuffer& data,SpacStream& stream) {
+    auto result=AacParse::NeedMore;
+    for(size_t at=0;at<data.size();) {
+        const auto block=data.BlockAt(at);
+        result=stream.Push(block.data,block.size);
+        if(result==AacParse::Invalid||result==AacParse::Unsupported)break;
         at+=block.size;
     }
-    if(!rebuilt.Complete())return ValidationResult(capture,FinalCaptureValidation::Incomplete,"aac-incomplete-coverage");
+    return result;
+}
+static FinalCaptureValidation ValidateAacCapture(const Capture& capture) {
+    SpacStream rebuilt;
+    const auto result=ScanAacBlocks(capture.data,rebuilt);
+    if(result==AacParse::Invalid||result==AacParse::Unsupported)return ValidationResult(capture,FinalCaptureValidation::Invalid,
+        result==AacParse::Invalid?"aac-packet-invalid":"aac-configuration-unsupported");
+    if(result!=AacParse::Complete)return ValidationResult(capture,FinalCaptureValidation::Incomplete,"aac-incomplete-coverage");
     const auto& expected=capture.spac.info;const auto& actual=rebuilt.info;
     if(!capture.spac.Complete()||actual.rate!=expected.rate||actual.channels!=expected.channels||
        actual.samples_per_packet!=expected.samples_per_packet||actual.priming!=expected.priming||
@@ -1132,10 +1137,8 @@ static FinalCaptureValidation ValidateFinalCapture(const Capture& capture) {
     return ValidateOggCapture(capture);
 }
 static FinalCaptureValidation CachedFinalValidation(const Capture& capture) {
-    if(capture.final_validation<0) {
-        ++capture.validation_runs;
+    if(capture.final_validation<0)
         capture.final_validation=int(ValidateFinalCapture(capture));
-    }
     return FinalCaptureValidation(capture.final_validation);
 }
 static std::atomic<size_t> publishing_reserved{0},capture_reserved{0};
@@ -1150,6 +1153,14 @@ struct MemoryBudgetLock {
     ~MemoryBudgetLock(){if(--memory_budget_depth==0)ReleaseSRWLockExclusive(&memory_budget_lock);}
 };
 static bool ReserveConstruction(Capture&,size_t incremental_peak);
+static bool InspectCaptureRecording(Capture& capture,const std::vector<uint8_t>& source,RecordingFile& recording,
+                                    size_t external_copy=0) {
+    RecordingReadMemoryScope memory([](void* context,size_t bytes) {
+        return ReserveConstruction(*static_cast<Capture*>(context),bytes);
+    },&capture);
+    memory.SetRetainedBytes(external_copy);
+    return InspectRecording(source.data(),source.size(),recording);
+}
 struct ReleaseAuditLease {
     Capture& capture;
     size_t retained=0;
@@ -1177,34 +1188,33 @@ static bool UnboundOggSequenceGap(const Capture& capture) noexcept {
     return !capture.mp3&&!capture.aac&&!capture.lossless&&
         capture.bound_identity.empty()&&capture.stream.rejection==OggRejection::Sequence;
 }
-// Called only when ownership reconciliation has finished and this object really
-// will be released. Flatten keeps the source alive through the final whole-file
-// inspection and avoids retaining another permanent copy.
+// Called after ownership reconciliation, just before releasing cached audio.
 static void CheckBeforeRelease(Capture& capture,const char* reason,
                                const ownership::DecoderOwnershipTracker* tracker=nullptr,
                                const ownership::OwnershipBinding* binding_override=nullptr) {
     const char* result="validation unavailable";
     try {
         ReleaseAuditLease lease(capture);
-        // Charge the copy before validating, but let ingestion acquire the
-        // budget lock while this independent worker copies/parses the source.
-        if(!ReserveConstruction(capture,capture.data.size()))throw std::bad_alloc();
+        // SpAC needs room for pending page growth and a temporary setup packet.
+        const auto workspace=capture.mp3?0:capture.aac?256u*1024:capture.data.size();
+        if(!ReserveConstruction(capture,workspace))throw std::bad_alloc();
 #ifdef FLOGGFY_RELEASE_AUDIT_TEST
         ReleaseAuditTestPhase();
 #endif
-        const bool guarded_complete=capture.mp3?capture.mp3_info.frames!=0:capture.lossless?capture.flac_source.complete:
-            capture.aac?capture.spac.Complete():capture.stream.complete;
+        const bool guarded_complete=capture.mp3?capture.mp3_info.frames!=0:capture.CompleteCoverage();
         const bool verified=guarded_complete&&CachedFinalValidation(capture)==FinalCaptureValidation::Valid;
         // Inspect the bytes independently: a failed decoder/coverage flag does
         // not establish that the complete compressed source was lost.
-        auto source=capture.data.Flatten();bool complete=false;
+        bool complete=false;
         if(capture.aac) {
-            SpacStream rebuilt;rebuilt.Push(source.data(),source.size());complete=rebuilt.Complete();
+            SpacStream rebuilt;complete=verified||ScanAacBlocks(capture.data,rebuilt)==AacParse::Complete;
         }else if(capture.mp3) {
-            Mp3Info info;std::string error;complete=InspectMp3Source(source.data(),source.size(),info,error);
+            Mp3Info info;std::string error;complete=verified||InspectMp3Source(capture.data,info,error);
         }else {
+            const auto source=capture.data.Flatten();
             RecordingFile recording;
-            complete=InspectRecording(source.data(),source.size(),recording)&&recording.complete;
+            complete=InspectCaptureRecording(capture,source,recording,source.capacity())&&recording.complete;
+            if(recording.inspection_resource_failure)throw std::bad_alloc();
         }
         result=complete?
             (capture.ambiguous?"complete valid audio; ownership ambiguous":!verified?
@@ -1537,16 +1547,19 @@ static bool ReserveConstruction(Capture& capture,size_t incremental_peak) {
 }
 struct PublicationSourceError {Publication status;const char* detail;};
 static std::optional<PublicationSourceError> PreparePublicationSource(Capture& capture) {
-    if(!capture.publication_source.empty())return {};
-    if(CachedFinalValidation(capture)!=FinalCaptureValidation::Valid)
-        return PublicationSourceError{Publication::Rejected,"final cached capture validation failed; no file published"};
-    if(!ReserveConstruction(capture,capture.data.size()))
-        return PublicationSourceError{Publication::Blocked,"flatten construction memory unavailable; source retained"};
-    auto source=capture.data.Flatten();
+    if(capture.publication_source_validated)return {};
+    auto& source=capture.publication_source;
+    if(source.empty()) {
+        if(CachedFinalValidation(capture)!=FinalCaptureValidation::Valid)
+            return PublicationSourceError{Publication::Rejected,"final cached capture validation failed; no file published"};
+        if(!ReserveConstruction(capture,capture.data.size()))
+            return PublicationSourceError{Publication::Blocked,"flatten construction memory unavailable; source retained"};
+        source=capture.data.Flatten();
+    }
     if(!capture.aac&&!capture.mp3) {
         RecordingFile recording;
         const auto expected=capture.Encoding();
-        if(!InspectRecording(source.data(),source.size(),recording)||!recording.complete||
+        if(!InspectCaptureRecording(capture,source,recording)||!recording.complete||
            recording.quality.codec!=expected.codec||recording.quality.rate!=expected.rate||
            recording.quality.channels!=expected.channels||recording.quality.bits!=expected.bits) {
             if(recording.inspection_resource_failure)
@@ -1554,7 +1567,7 @@ static std::optional<PublicationSourceError> PreparePublicationSource(Capture& c
             return PublicationSourceError{Publication::Rejected,"flattened capture integrity validation failed; no file published"};
         }
     }
-    capture.publication_source=std::move(source);
+    capture.publication_source_validated=true;
     return {};
 }
 enum class AacPreparation { Ready,ExtractionMemory,InvalidSource,MuxMemory,MuxFailed };
@@ -2930,7 +2943,7 @@ static bool RestartFlacCaptureAtSampleZero(Capture& capture,const Slot& slot,
     capture.coverage={};capture.flac_source={};capture.reported_flac_coverage_reason=nullptr;
     capture.reported_flac_source_reason=nullptr;capture.flac_input_bytes=capture.data.size();
     capture.born=slot.time;capture.finished=0;
-    capture.ambiguous=false;capture.final_validation=-1;capture.validation_runs=0;
+    capture.ambiguous=false;capture.final_validation=-1;
     capture.bound_identity.clear();
     capture.capture_token=0;capture.decoder_owner=0;
     BeginCaptureOwnership(capture,buffers,ownership::DecoderCodec::Flac,

@@ -6,10 +6,42 @@
 #include <cstring>
 #include <limits>
 namespace history {
+using RecordingMemoryPermit=bool(*)(void*,size_t incremental_peak);
+// Nested scopes include the buffers retained by each enclosing operation.
+// Denial remains visible through all enclosing scopes.
+class RecordingReadMemoryScope {
+    inline static thread_local RecordingReadMemoryScope* current_=nullptr;
+    RecordingReadMemoryScope* previous_=nullptr;
+    RecordingMemoryPermit permit_=nullptr;void* context_=nullptr;
+    size_t retained_=0;bool denied_=false;
+    void Deny() noexcept {for(auto* scope=this;scope;scope=scope->previous_)scope->denied_=true;}
+public:
+    explicit RecordingReadMemoryScope(RecordingMemoryPermit permit=nullptr,void* context=nullptr) noexcept
+        :previous_(current_),permit_(permit),context_(context){current_=this;}
+    ~RecordingReadMemoryScope(){current_=previous_;}
+    RecordingReadMemoryScope(const RecordingReadMemoryScope&)=delete;
+    RecordingReadMemoryScope& operator=(const RecordingReadMemoryScope&)=delete;
+    bool Request(size_t peak) noexcept {
+        if(peak>std::numeric_limits<size_t>::max()-retained_){Deny();return false;}
+        const auto total=retained_+peak;bool allowed=false;
+        try {allowed=permit_?permit_(context_,total):!previous_||previous_->Request(total);}
+        catch(...) {allowed=false;}
+        if(!allowed)Deny();
+        return allowed;
+    }
+    void SetRetainedBytes(size_t bytes) noexcept {retained_=bytes;}
+    bool Denied() const noexcept {return denied_;}
+    static bool AdmitCurrent(size_t bytes) noexcept {return !current_||current_->Request(bytes);}
+    static bool HasPermit() noexcept {
+        for(auto* scope=current_;scope;scope=scope->previous_)if(scope->permit_)return true;
+        return false;
+    }
+};
+inline constexpr size_t kVorbisArenaLimit=8*1024*1024;
 struct RecordingMemoryPlan {size_t file_bytes=0,metadata_bytes=0,inspection_peak=0;};
 inline bool EstimateRecordingReadMemory(size_t bytes,size_t metadata,size_t& peak,bool copy_payload=false) noexcept {
     peak=0;const auto maximum=std::numeric_limits<size_t>::max();
-    constexpr size_t arena=8*1024*1024;
+    constexpr size_t arena=kVorbisArenaLimit;
     if(metadata>bytes||bytes>maximum-arena||metadata>(maximum-bytes-arena)/32)return false;
     size_t total=bytes+arena+metadata*32;
     if(copy_payload){if(bytes>maximum-total)return false;total+=bytes;}

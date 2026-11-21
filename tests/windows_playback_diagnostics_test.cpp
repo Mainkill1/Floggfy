@@ -1039,7 +1039,7 @@ std::unique_ptr<Capture> CompleteOggCapture(double born,double finished,unsigned
     assert(capture->stream.complete&&capture->data.Append(bytes.data(),bytes.size(),bytes.size()+65536));
     capture->bytes=bytes.size();return capture;
 }
-std::unique_ptr<Capture> CompleteAacCapture(double born,double finished) {
+std::unique_ptr<Capture> CompleteAacCapture(double born,double finished,size_t packet_size=2) {
     auto capture=std::make_unique<Capture>();capture->aac=true;capture->born=born;capture->finished=finished;
     constexpr uint32_t samples=441000,priming=100;
     auto bytes=spac_fixture::page(true,0,{spac_fixture::config(2,samples,priming)});
@@ -1047,7 +1047,7 @@ std::unique_ptr<Capture> CompleteAacCapture(double born,double finished) {
     for(uint32_t base=0;base<frames;) {
         const uint32_t count=std::min<uint32_t>(frames-base,50);
         spac_fixture::append(bytes,spac_fixture::page(false,base,
-            std::vector<std::vector<uint8_t>>(count,{0x21,0x10})));
+            std::vector<std::vector<uint8_t>>(count,std::vector<uint8_t>(packet_size,0x21))));
         base+=count;
     }
     assert(capture->spac.Push(bytes.data(),bytes.size())==AacParse::Complete);
@@ -2006,6 +2006,17 @@ void ReleaseAuditHonorsBudget() {
     CheckBeforeRelease(*capture,"construction budget denied");
     assert(capture->data.size()==bytes&&Contains("validation unavailable")&&
         "an optional deep release audit must not allocate a whole-source copy over budget");
+    const auto background=8u*1024*1024-capture->Capacity()-bytes;
+    publishing_reserved=background;diagnostic_lines.clear();
+    CheckBeforeRelease(*capture,"Vorbis workspace denied");
+    assert(Contains("validation unavailable")&&publishing_reserved.load()==background&&
+        "space for a source copy alone may not cover Vorbis parser workspace");
+    auto aac=CompleteAacCapture(100,101,1024);
+    const auto workspace=256u*1024;
+    assert(aac->data.size()>workspace);
+    publishing_reserved=8u*1024*1024-aac->Capacity()-workspace;diagnostic_lines.clear();
+    CheckBeforeRelease(*aac,"AAC without copy");
+    assert(Contains("complete valid audio")&&"AAC final audit must fit without a whole-source copy");
     publishing_reserved.store(prior_pending);capture_reserved.store(prior_active);history::settings=prior;
 }
 bool audit_probe=false,audit_throw=false,audit_phase_seen=false;
@@ -2015,16 +2026,17 @@ void ReleaseAuditOwnership() {
     const auto prior_pending=publishing_reserved.load(),prior_active=capture_reserved.load();
     history::settings.max_buffered_mib=8;publishing_reserved=0;capture_reserved=0;
     const size_t limit=8u*1024*1024;
+    const size_t workspace=256u*1024;
     for(unsigned codec=0;codec<3;++codec) {
         auto capture=codec==0?CompleteOggCapture(100,101):codec==1?
             CompleteFlacCapture(100,101):CompleteAacCapture(100,101);
         const auto retained=capture->Capacity(),bytes=capture->data.size();
-        const auto background=limit-retained-bytes;
+        const auto background=limit-retained-bytes-workspace;
         publishing_reserved=background;diagnostic_lines.clear();
         assert(QueueReleaseAudit(*capture,"queued boundary"));
         assert(DrainOneReleaseAudit());
         assert(Contains("complete valid audio")&&!Contains("validation unavailable")&&
-            "a queued audit must count its retained bytes once and admit an exact-fit flatten");
+            "a queued audit must count its retained bytes once and admit bounded inspection");
         assert(publishing_reserved.load()==background&&"release the resized construction lease");
         publishing_reserved=0;
     }
@@ -2032,7 +2044,7 @@ void ReleaseAuditOwnership() {
         CaptureBuffers buffers;buffers.ready.push_back(CompleteOggCapture(100,101));
         {CaptureBudgetScope budget(buffers);}
         const auto retained=capture_reserved.load(),bytes=buffers.ready.front()->data.size();
-        const auto background=limit-retained-bytes;publishing_reserved=background;
+        const auto background=limit-retained-bytes-workspace;publishing_reserved=background;
         assert(QueueReleaseAudit(*buffers.ready.front(),"active transfer"));
         assert(!capture_reserved.load()&&publishing_reserved.load()==background+retained);
         {CaptureBudgetScope budget(buffers);buffers.ready.clear();}
@@ -2045,7 +2057,7 @@ void ReleaseAuditOwnership() {
         CaptureBuffers buffers;buffers.ready.push_back(CompleteOggCapture(100,101));
         {CaptureBudgetScope budget(buffers);}
         auto& capture=*buffers.ready.front();const auto retained=capture_reserved.load();
-        const auto background=limit-retained-capture.data.size();publishing_reserved=background;
+        const auto background=limit-retained-capture.data.size()-workspace;publishing_reserved=background;
         diagnostic_lines.clear();
         if(inside_scope) {CaptureBudgetScope budget(buffers);CheckBeforeRelease(capture,"sync boundary");}
         else CheckBeforeRelease(capture,"sync boundary");

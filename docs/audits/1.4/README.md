@@ -45,6 +45,7 @@ The 63 open entries include repeated destination-path searches and duplicate art
 | Recovery and packaging | Retry pending INI writes after a transient failure. Build both release outputs before replacing the packaged files. | Unlocking the INI persisted the newest menu changes without another edit. A missing launcher preserved both previous outputs. |
 | Saved playback | Restore the original active playlist order when leaving Saved sort. Wait while a manually queued song is playing and retry transient update failures. | Renderer fixtures cover the native sort switch, a pending manual queue, session changes, and synchronous and asynchronous retries. |
 | Ogg publication | Share source preparation across named and Unmatched saves. Reuse the validated source on retries and release rejected recordings from the queue. Rebase page numbers during tagging. | A checksum-valid stream with malformed Vorbis setup no longer creates an Unmatched archive. Page-one input tags identically to page-zero input and its original Unmatched bytes decode to identical PCM. |
+| Release audits and inspection retries | Inspect MP3 and AAC from their existing blocks. Reserve Vorbis repaging and decoder workspace before allocating it. Retain the save job's source across a temporary inspection failure. | Windows fixtures covered workspace denial, AAC inspection with less headroom than the source size, and publication after an inspection retry. The largest Vorbis allocation fell from 8 MiB to 64 KiB for a small fixture and 256 KiB for the tagged and large Ogg fixtures. The old and new parsers agreed on 4,000 mutated headers. |
 
 The detailed reviews below retain the original findings. The CSV dispositions record their current status.
 
@@ -105,6 +106,5 @@ Reproduced in fixtures
 
 Found in source
 
-- The Ogg release audit and source preparation reserve space for the flattened copy. The Vorbis parser also allocates an 8 MiB scratch arena outside that reservation. [Release audit](../../../native/media/audio_history.cpp#L1183) · [Vorbis setup validation](../../../native/media/vorbis_headers.cpp#L45)
 - Cancelling a Saved database rebuild stops further scanning. A date backfill already in flight can still write one file. [Catalog rebuild](../../../native/ui/marked_catalog.cpp#L333)
 - Startup can accept a relative Save Location from the INI even though the documented option requires an absolute path. Invalid matcher values fall back to defaults and can trigger a redundant rewrite that preserves the invalid text. [Save Location](../../../native/tooling/history_settings.cpp#L387) · [Matcher options](../../../native/tooling/history_settings.cpp#L249)
