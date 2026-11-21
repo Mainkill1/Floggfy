@@ -13,16 +13,11 @@
 #include <new>
 namespace history {
 #ifdef FLOGGFY_PUBLICATION_TEST
-void PublicationTestPhase(const wchar_t* phase,const std::wstring& path);
+#define PUBLICATION_CHECKPOINT(phase, path) PublicationTestPhase(phase, path)
+#else
+#define PUBLICATION_CHECKPOINT(phase, path) ((void)0)
 #endif
 namespace {
-void TestPhase(const wchar_t* phase,const std::wstring& path) {
-#ifdef FLOGGFY_PUBLICATION_TEST
-    PublicationTestPhase(phase,path);
-#else
-    (void)phase; (void)path;
-#endif
-}
 using win32::Handle;
 bool ReadLockedRecording(HANDLE file,std::vector<uint8_t>& bytes) {
     LARGE_INTEGER size{};
@@ -111,7 +106,7 @@ bool PrepareBackupSlot(const std::wstring& path,const Catalog& catalog) {
 FilePublication PromoteReplacement(const std::wstring& path,StagingFile& staging,const Catalog& catalog,HANDLE old) {
     auto backup=path+L".previous";
     bool moved=PrepareBackupSlot(path,catalog) && RenameWithoutReplacing(old,backup);
-    if(moved) TestPhase(L"reserved",path);
+    if(moved) PUBLICATION_CHECKPOINT(L"reserved",path);
     bool published=moved && staging.Publish(path);
     if(published) {
         win32::DeleteOnClose(old);
@@ -166,7 +161,7 @@ bool WriteArchiveFile(const std::wstring& destination,const void* bytes,size_t s
         win32::DeleteOnClose(file.value);
         return false;
     }
-    TestPhase(L"archive-stage-held",stage);
+    PUBLICATION_CHECKPOINT(L"archive-stage-held",stage);
     // Both fresh and recovered stages remain held from verification through the
     // no-overwrite rename. A raced pathname never selects a different object.
     return RenameWithoutReplacing(file.value,destination);
@@ -275,7 +270,7 @@ FilePublication PublishBytes(const std::wstring& path,const Quality& quality,con
     memory.SetRetainedBytes(RecordingMetadataMemoryUsage(incoming)+preserved.capacity());
     StagingFile staging;
     if(!staging.WriteNew(UniqueSibling(path,L".complete-"),bytes,size)) return FilePublication::Failed;
-    TestPhase(L"staged",path);
+    PUBLICATION_CHECKPOINT(L"staged",path);
     if(permit&&!permit(context))return FilePublication::Replan;
     if(decision==SaveDecision::NewFile) {
         // No replace flag: a destination created during staging belongs to the
@@ -320,7 +315,7 @@ bool ReceiptQuality(const RecordingFile& recording,const FormatUpgradeReceipt& r
 }
 FilePublication CompleteFormatUpgradeHeld(FormatUpgradeReceipt& receipt,HANDLE old,size_t* published_bytes) {
     RecordingReadMemoryScope memory;
-    TestPhase(L"format-final-read",receipt.destination);
+    PUBLICATION_CHECKPOINT(L"format-final-read",receipt.destination);
     Handle final{CreateFileW(WindowsPath(receipt.destination).c_str(),GENERIC_READ|DELETE,FILE_SHARE_READ,
         nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
     std::vector<uint8_t> final_bytes;RecordingFile recording;
@@ -359,7 +354,7 @@ FilePublication CompleteFormatUpgradeHeld(FormatUpgradeReceipt& receipt,HANDLE o
         receipt.metadata_preserved=true;
     }
     if(old!=INVALID_HANDLE_VALUE) {
-        TestPhase(L"format-old-delete",receipt.destination);
+        PUBLICATION_CHECKPOINT(L"format-old-delete",receipt.destination);
         if(!win32::DeleteOnClose(old))return memory.Denied()?FilePublication::ResourceWait:FilePublication::Failed;
     }
     if(published_bytes)*published_bytes=final_bytes.size();
@@ -476,8 +471,10 @@ FilePublication PublishMetadataBytes(const std::wstring& path,const void* bytes,
     memory.SetRetainedBytes(RecordingMetadataMemoryUsage(current)+RecordingMetadataMemoryUsage(incoming));
     StagingFile staging;
     if(!staging.WriteNew(UniqueSibling(path,L".complete-lyrics-"),bytes,size))return FilePublication::Failed;
-    TestPhase(L"staged",path);
+    PUBLICATION_CHECKPOINT(L"staged",path);
     const auto result=PromoteReplacement(path,staging,catalog,locked_file);
     return memory.Denied()?FilePublication::ResourceWait:result;
 }
 }
+
+#undef PUBLICATION_CHECKPOINT

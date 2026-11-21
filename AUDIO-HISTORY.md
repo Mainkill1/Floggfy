@@ -680,16 +680,29 @@ matching recording, rather than scanning directories or maintaining another cach
    longer need its settings.
 
 
+## Release build
+
+The release build uses MinGW-w64 and Python 3.
+
+```bash
+bash build-native.sh
+python3 package-release.py
+```
+
+The release DLL links production sources and libraries. Codec assertion code
+and SQLite's internal test controls are excluded from the release objects.
+The optional INI diagnostics are available in the release build.
+
 ## Development checks
 
-Requires MinGW-w64, Python 3, a native C/C++ compiler and Node.js for the tests.
+Test fixtures and runners live under `tests/`. Test executables use their own
+objects so they can enable assertions, failure injection and race checkpoints.
+The portable suite also needs a native C/C++ compiler and Node.js.
 
 ```bash
 bash tests/runners/test-native.sh
-bash build-native.sh
 # Actual Windows file/settings/log tests, from WSL:
 bash tests/runners/test-native-windows.sh
-python3 package-release.py
 ```
 
 `tests/windows_history_test.cpp` exercises actual Windows file publication,
