@@ -1,11 +1,14 @@
 #include "telemetry_crash.h"
 #include "../tooling/windows_last_error.h"
+#include "../tooling/spotify_child_process.h"
 #include "telemetry_crash_command.h"
 #include "../vendor/minhook/include/MinHook.h"
 #include <windows.h>
 #include <atomic>
 #include <cstring>
 
+// This file owns the single CreateProcessW detour. Launcher child loading and
+// crash filtering share it so MinHook never stacks two hooks on one target.
 // Crashpad handler_main.cc creates its upload thread only when options.url is
 // nonempty, while its local exception handler/database still initialize:
 // https://chromium.googlesource.com/crashpad/crashpad/+/refs/heads/main/handler/handler_main.cc
@@ -47,27 +50,28 @@ BOOL WINAPI CreateCrashProcess(LPCWSTR application,LPWSTR command,
  // Everything apart from the validated handler's URL argument is forwarded,
  // including caller-owned startup/process structures and native failure codes.
  SetLastError(error.value);
- const BOOL result=original_create.load(std::memory_order_acquire)(application,changed?replacement.data():command,
+ const BOOL result=spotify_child::Create(original_create.load(std::memory_order_acquire),application,changed?replacement.data():command,
   process_attributes,thread_attributes,inherit,flags,environment,directory,startup,process);
  error.value=GetLastError();
  if(result){if(changed)++sanitized;else if(no_url)++without_url;}
  return result;
 }
 }
-bool PrepareCrash(bool preference) noexcept {
+bool PrepareCrash(bool preference,HMODULE floggfy_module) noexcept {
  win32::LastError error;
  if(attempted)return false;
  attempted=true;requested.store(preference,std::memory_order_release);
- if(!preference)return false;
+ const bool load_children=spotify_child::Configure(floggfy_module);
+ if(!preference&&!load_children)return false;
  try{
   wchar_t module[32768];
   const DWORD length=GetModuleFileNameW(nullptr,module,32768);
   if(!length||length>=32768)return false;
   const std::wstring_view host(module,length);
-  if(!crash_command::ExactExecutable(L"Spotify.exe",Filename(host)))return false;
+  if(!load_children&&!crash_command::ExactExecutable(L"Spotify.exe",Filename(host)))return false;
   const auto slash=host.find_last_of(L"/\\");
   if(slash==host.npos)return false;
-  expected_handler.assign(host.substr(0,slash+1));expected_handler+=L"crashpad_handler.exe";
+  if(preference){expected_handler.assign(host.substr(0,slash+1));expected_handler+=L"crashpad_handler.exe";}
   const auto initialized=MH_Initialize();
   if(initialized!=MH_OK&&initialized!=MH_ERROR_ALREADY_INITIALIZED)return false;
   const auto address=GetProcAddress(GetModuleHandleW(L"kernel32.dll"),"CreateProcessW");
@@ -98,8 +102,10 @@ void FinalizeCrash(bool applied) noexcept {
  active.store(false,std::memory_order_release);
 }
 CrashStatus GetCrashStatus() noexcept {
+ const auto child=spotify_child::GetStatus();
  return {requested.load(std::memory_order_acquire),active.load(std::memory_order_acquire),
   sanitized.load(std::memory_order_relaxed),without_url.load(std::memory_order_relaxed),
-  failures.load(std::memory_order_relaxed),unmatched.load(std::memory_order_relaxed)};
+  failures.load(std::memory_order_relaxed),unmatched.load(std::memory_order_relaxed),
+  child.requested,child.loaded,child.failed,child.unsupported_debug};
 }
 }

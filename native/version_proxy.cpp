@@ -348,18 +348,22 @@ static void StartConnectivityHook(HMODULE module,bool enabled) {
     }
 }
 
-static void DrainCrashStatus() {
+static void DrainProcessLaunchStatus() {
     const auto status=privacy::GetCrashStatus();
     static privacy::CrashStatus previous{};static bool seen=false;
     if(seen&&status.requested==previous.requested&&status.hook_active==previous.hook_active&&
        status.sanitized_launches==previous.sanitized_launches&&status.launches_without_url==previous.launches_without_url&&
-       status.rewrite_failures==previous.rewrite_failures&&status.unmatched_launches==previous.unmatched_launches)return;
+       status.rewrite_failures==previous.rewrite_failures&&status.unmatched_launches==previous.unmatched_launches&&
+       status.child_loading==previous.child_loading&&status.children_loaded==previous.children_loaded&&
+       status.child_failures==previous.child_failures&&status.unsupported_debug_launches==previous.unsupported_debug_launches)return;
     previous=status;seen=true;
-    char line[320];
-    std::snprintf(line,sizeof(line),"privacy crash requested=%u launch_hook=%u uploads_disabled=%llu already_without_url=%llu rewrite_failures=%llu unmatched_launches=%llu coverage=future-CreateProcessW-launches-only",
-      unsigned(status.requested),unsigned(status.hook_active),static_cast<unsigned long long>(status.sanitized_launches),
+    char line[480];
+    std::snprintf(line,sizeof(line),"process launch hook=%u crash_requested=%u uploads_disabled=%llu already_without_url=%llu rewrite_failures=%llu unmatched_launches=%llu child_loading=%u children_loaded=%llu child_failures=%llu unsupported_debug=%llu coverage=future-CreateProcessW-launches-only",
+      unsigned(status.hook_active),unsigned(status.requested),static_cast<unsigned long long>(status.sanitized_launches),
       static_cast<unsigned long long>(status.launches_without_url),static_cast<unsigned long long>(status.rewrite_failures),
-      static_cast<unsigned long long>(status.unmatched_launches));
+      static_cast<unsigned long long>(status.unmatched_launches),unsigned(status.child_loading),
+      static_cast<unsigned long long>(status.children_loaded),static_cast<unsigned long long>(status.child_failures),
+      static_cast<unsigned long long>(status.unsupported_debug_launches));
     Log(line);
 }
 
@@ -410,6 +414,8 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
                   !_wcsicmp(name+1,L"SpotifyLauncher.exe")||!_wcsicmp(name+1,L"spotify_cli.exe")||
                   !_wcsicmp(name+1,L"save-to-spotify.exe")))
             if(!network::Initialize(proxy_module,false,-1))LogHelperNetworkFailure();
+        if(privacy::PrepareCrash(false,proxy_module))privacy::FinalizeCrash(MH_ApplyQueued()==MH_OK);
+        startup::SignalReady();
         return 0;
     }
 
@@ -442,7 +448,7 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
                                  "NetworkKillSwitch=0; Winsock hooks ready, networking allowed");
     // Attach this independent launch guard as early as the settings allow.
     // Do not wait for CEF: it cannot cover the separate crash reporter process.
-    if(privacy::PrepareCrash(startup_settings.block_telemetry&&startup_settings.block_crash_reports))
+    if(privacy::PrepareCrash(startup_settings.block_telemetry&&startup_settings.block_crash_reports,proxy_module))
         privacy::FinalizeCrash(MH_ApplyQueued()==MH_OK);
     const bool network_patch_enabled=startup_settings.network_patch;
     const bool decoded_messages_enabled=startup_settings.debug_networking;
@@ -482,7 +488,7 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
         }
         history::DrainDecodedConnectMessages();
         privacy::DrainStatus();
-        DrainCrashStatus();
+        DrainProcessLaunchStatus();
         if(i==0)startup::SignalReady();
         Sleep(i < 600 ? 25 : 1000);
     }

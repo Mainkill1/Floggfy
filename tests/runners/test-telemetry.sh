@@ -41,7 +41,8 @@ g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/telemetry_crash_command_test.cpp 
 build/telemetry-tests/crash-command
 mkdir -p "$floggfy_privacy_root/crash"
 x86_64-w64-mingw32-g++ "${windows_cxxflags[@]}" -municode \
-    tests/windows_telemetry_crash_test.cpp build/telemetry-tests/minhook-*.o -o "$floggfy_privacy_root/crash/Spotify.exe"
+    tests/windows_telemetry_crash_test.cpp native/tooling/spotify_child_process.cpp native/tooling/process_startup_loader.cpp \
+    build/telemetry-tests/minhook-*.o -o "$floggfy_privacy_root/crash/Spotify.exe"
 for mode in --disabled --rollback-before-apply --rollback-after-apply; do
     "$floggfy_privacy_root/crash/Spotify.exe" "$mode"
 done

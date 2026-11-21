@@ -2,6 +2,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include "../tooling/windows_command_line.h"
 namespace privacy::crash_command {
 enum class Rewrite { Unchanged, Changed, Invalid };
 inline bool Space(wchar_t c) { return c==L' '||c==L'\t'; }
@@ -16,16 +17,7 @@ inline bool ExactExecutable(std::wstring_view expected,std::wstring_view actual)
  for(size_t i=0;i<expected.size();++i)if(PathCharacter(expected[i])!=PathCharacter(actual[i]))return false;
  return true;
 }
-inline std::wstring ExecutableArgument(std::wstring_view command) {
- size_t i=0;while(i<command.size()&&Space(command[i]))++i;
- std::wstring result;bool quoted=false;
- for(;i<command.size();++i){
-  if(command[i]==L'"'){quoted=!quoted;continue;}
-  if(!quoted&&Space(command[i]))break;
-  result+=command[i];
- }
- return quoted?std::wstring{}:result;
-}
+inline std::wstring ExecutableArgument(std::wstring_view command) {return win32::command_line::Executable(command);}
 struct Argument { size_t begin,end;std::wstring value; };
 // Decode CRT backslash/quote rules only to identify option names. Keep all
 // surviving source bytes intact instead of serializing the parsed arguments.
