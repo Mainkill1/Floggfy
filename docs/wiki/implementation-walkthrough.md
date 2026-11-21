@@ -1,9 +1,24 @@
 # Implementation walkthrough and optimization review
 
-Normal recording crosses four boundaries. Spotify supplies compressed audio and
-playback observations. The capture worker associates a complete recording with
-the observed playback. The save worker resolves and verifies the file on disk.
-The UI reads the current result and sends commands through those same services.
+Spotify supplies two timelines. Compressed input may be ahead of the song the
+user hears, and the renderer may report the song after bytes have already
+arrived. The capture worker owns both timelines and associates them when the
+evidence agrees. The save worker owns disk writes. The renderer and To Disk menu
+read snapshots so a slow save or cache lookup can finish in the background.
+
+```mermaid
+flowchart LR
+    A[Compressed audio] --> C[Active and completed captures]
+    B[Playback state and decoded output] --> T[Playback history and decoder ownership]
+    C --> M[Matcher]
+    T --> M
+    M --> S[Save worker]
+    E[Metadata and artwork worker] --> S
+    S --> L[Music library]
+    L --> I[Saved catalog]
+    I --> P[Playlist dates and sort]
+    M --> U[To Disk live details]
+```
 
 ## Startup and compatibility
 
@@ -12,6 +27,10 @@ calls to the system DLL and starts a worker that reads the INI and waits for the
 Spotify and Chromium components it needs. The worker activates each supported
 feature and keeps the app responsive when an optional component is unavailable.
 The separate launcher loads the same Floggfy library for that install mode.
+The startup monitor groups activation work where it can and keeps checking for
+late-loaded components. The kill switch applies to supported networking in
+participating Spotify processes. Block Updates manages the local Update
+directory's access rules.
 
 Startup and [operations](operations-and-safety.md) are described in
 [version_proxy.cpp](../../native/version_proxy.cpp) and
@@ -25,6 +44,13 @@ pages, FLAC frames, MPEG frames, and AAC packets using format-specific sequence,
 structure, and sample-count checks. Decoded output can show that the decoder
 played audio and provide timing and quality evidence. The recording keeps the
 original encoded audio. AAC packets are wrapped in M4A for publication.
+
+The worker keeps growing streams in blocks, shares a memory budget with
+validation and publication, and rejects captures that have lost required
+bytes. The validator reads Ogg and AAC input from these blocks, copying an Ogg
+page when it crosses a block boundary and needs contiguous storage. FLAC tracks
+frames and their sample ranges, while MP3 can use a declared frame count when
+present.
 
 A pause can leave a stream open. A seek, a buffer loss, or a fresh decoder
 lifetime changes the evidence the worker has to validate. Those events cannot
@@ -51,6 +77,13 @@ retire. [client_playback.h](../../native/media/client_playback.h),
 [decoder_ownership.cpp](../../native/media/decoder_ownership.cpp),
 [capture invariants](../capture-invariants.md).
 
+After a skip, the next song can enter playback while the previous decoder is
+still draining and a third stream is preloaded. Each has its own evidence. The
+UI can show quality from an identified active stream while the save decision
+still waits for completeness. The fallback matcher applies
+`TimeOffsetToleranceMs` to timing and `DurationToleranceMs` to duration.
+Competing candidates can make a timing match ambiguous even when one is closer.
+
 This pass replaced temporary maps of timeline and transition fields with slots
 that refer to the original payload. The parsers still reject duplicate keys,
 invalid URIs, malformed clocks, and inconsistent flags. On 10,000 parses of a
@@ -62,12 +95,12 @@ measurement.
 ## Metadata, artwork, and lyrics
 
 The metadata record stays alive while a capture or save job uses it. The bridge
-picks up available Spotify fields and artwork references first. Enabled fallbacks
-can read the disk cache or request missing information. A worker does those
-reads and requests and checks which metadata revision owns the result before
-publishing it. SQLite supports Floggfy's own Saved catalog. The separate LevelDB
-reader serves Spotify's on-disk metadata cache. Cached WebP artwork can be
-converted to PNG before embedding.
+picks up available Spotify fields and artwork references first. A worker checks
+which fields are missing and which fallbacks are enabled. It can recover tags
+through the bounded LevelDB reader, try artwork already supplied through the
+client and its cache, and request remaining fields or images online. Enrichment
+results merge into the owning record after the worker checks their identity.
+Cached WebP artwork can be converted to PNG before embedding.
 
 Tracks and episodes share recording identity checks while supplying different
 metadata fields, including album details for tracks and show, date, and artwork
@@ -87,6 +120,19 @@ metadata merge. Memory accounting includes the retained source and scratch
 allocations for validation, tagging, and publication. [file_publication.cpp](../../native/media/file_publication.cpp),
 [library_layout.cpp](../../native/media/library_layout.cpp).
 
+Each directory lookup checks the ordinary name and legacy aliases to find an
+established recording. A vacancy is usable only after the existing candidates
+have been checked. Duplicate names prefer compact Spotify IDs and expand them
+when required. Missing IDs use the existing `[no-id-…]` name. The path alone
+cannot authorize an overwrite.
+
+PR #34 now builds the duplicate directory, track prefix, and sanitized title
+once per lookup. Path sanitization uses a fixed character list without creating
+a string for every character. In a Windows allocation probe, 1,000 ordinary
+paths went from 116,000 allocations to 13,000 and 1,000 four-name duplicate
+lookups went from 714,000 to 36,000. The old and new builds produced the same
+108,800 paths in both the Windows and portable comparisons.
+
 ## To Disk and Saved
 
 To Disk reads a playback and quality snapshot. A separate worker checks whether
@@ -97,7 +143,9 @@ same preferences used by the workers.
 The Saved column queries a SQLite index under Save Location. The catalog verifies
 file evidence and reads recording tags when the on-disk stamp has changed. The
 renderer caches returned dates, displays them on mounted rows, and uses the full
-playlist order when playing from a Saved sort. **Marked DB Rebuild** scans the
+playlist order when playing from a Saved sort. Repeated tracks keep their
+playlist occurrence so selecting a row starts playback from the corresponding
+position. **Marked DB Rebuild** scans the
 library and can backfill missing save dates from file creation time when the
 metadata settings allow it. The release builds SQLite for size and leaves out
 JSON functions and shared-cache mode. The app's schema uses ordinary indexed
@@ -135,8 +183,9 @@ Fixtures, fault injection, fuzzers, and replay runners live under `tests/`.
 
 | Area | Evidence to collect and work to remove |
 |---|---|
-| Capture and matcher | Count full passes over retained captures and candidate comparisons during skips and a large episode. Check whether playback or capture changes can trigger re-evaluation in place of some repeated passes. Late metadata and final decoder output must still trigger work. |
-| Save worker | Measure peak scratch memory during a large quality upgrade. The locked snapshot now serves both validation and the metadata merge. The merge still copies the incoming bytes through the codec tagging interface. |
-| Saved column | Separate SQL time, file checks, and DOM updates on a large playlist. The catalog already reuses prepared statements. The measurements can establish whether batching more SQL or reducing UI work will help. |
-| Enrichment | Log the path from live metadata to disk cache to network fill for missing artwork and lyrics. Compare work per recording and follow the cache read budget when checking any reduction. |
-| Startup and telemetry | Measure startup duration and opt-in dump decode time independently of audio recording. Profile only paths exercised by enabled features. |
+| Capture and matcher | The worker wakes for queued events or after a 50 ms wait, then rechecks retained captures, matching evidence, retirement, and quality. Count scans on idle playback, skips, and a long episode. If unchanged ticks dominate, gate matching on changes to capture, metadata, decoded ownership, or settings and retain the deadlines and save-queue retry path. Compare the exact match, archive, and retry results in capture replays. |
+| Save worker | A destination resolution builds both a search list and a writable list. Generate candidates once with their write eligibility if the lists dominate a directory-first lookup. Compare candidate order, old aliases, occupied paths, and backup recovery. Measure the incoming-file copy during a large quality upgrade separately. |
+| Saved column | Measure one large playlist with a cold catalog and again after dates settle. Time SQL, filesystem stamp checks, and rendering separately. Keep the index if filesystem or UI work dominates. A replacement would also need to preserve rebuilds, duplicate paths, and stale-file detection. |
+| Enrichment | Count disk-cache reads, artwork attempts, and online requests per recording with warm and cold caches. Track and album already share a scan when both IDs are known. Target repeated attempts for the same pinned metadata and artwork before widening cache scope. |
+| Startup and tooling | Settings already read one startup snapshot. Measure module readiness and activation separately. Share work only when the same startup attempt asks for the same capability, and preserve fallback when an older client supplies fewer capabilities. |
+| Telemetry and diagnostics | URL classification uses fixed rules. Compare blocking alone with payload logging enabled to see whether copying, decompression, or formatting dominates. Keep test fixtures in their own targets and check optional diagnostics separately for DLL size. |

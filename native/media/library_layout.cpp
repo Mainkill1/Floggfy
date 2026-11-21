@@ -4,10 +4,11 @@
 #include <cstdio>
 #include <climits>
 #include <cstdint>
-#include <vector>
+#include <string_view>
 namespace history {
 static std::wstring Safe(std::wstring s,const wchar_t* fallback) {
-    for(wchar_t& c:s) if(c<32 || std::wstring(L"<>:\"/\\|?*").find(c)!=std::wstring::npos) c=L'-';
+    constexpr std::wstring_view forbidden=L"<>:\"/\\|?*";
+    for(wchar_t& c:s) if(c<32 || forbidden.find(c)!=std::wstring_view::npos) c=L'-';
     while(!s.empty() && (s.back()==L'.' || s.back()==L' ')) s.pop_back();
     if(s.empty()) s=fallback;
     if(s.size()>100) s.resize(100);
@@ -17,39 +18,56 @@ static std::wstring Safe(std::wstring s,const wchar_t* fallback) {
        (base.size()==4 && (base.substr(0,3)==L"COM" || base.substr(0,3)==L"LPT") && base[3]>=L'1' && base[3]<=L'9')) s=L"_"+s;
     return s;
 }
-std::wstring RelativePath(const Catalog& c,const std::wstring& extension,bool track_numbers) {
-    std::vector<std::wstring> parts;
-    auto album=Safe(c.album,L"Unknown Album");
+static std::wstring RelativeDirectory(const Catalog& c) {
+    std::wstring path;
+    auto component=[&](const std::wstring& value,const wchar_t* fallback) {
+        path+=Safe(value,fallback);
+        path+=L'\\';
+    };
     const auto& folder_artist=c.folder_artist.empty()?c.artist:c.folder_artist;
     switch(c.kind) {
-        case MediaKind::Music: parts={L"Music",L"Artists",Safe(folder_artist,L"Unknown Artist"),album}; break;
-        case MediaKind::Compilation: parts={L"Music",L"Compilations",album}; break;
-        case MediaKind::Soundtrack: parts={L"Music",L"Soundtracks",album}; break;
-        case MediaKind::VariousArtists: parts={L"Music",L"Various Artists",album}; break;
+        case MediaKind::Music: path=L"Music\\Artists\\";component(folder_artist,L"Unknown Artist");break;
+        case MediaKind::Compilation: path=L"Music\\Compilations\\";break;
+        case MediaKind::Soundtrack: path=L"Music\\Soundtracks\\";break;
+        case MediaKind::VariousArtists: path=L"Music\\Various Artists\\";break;
         case MediaKind::Audiobook:
-            parts={L"Audiobooks",Safe(c.author.empty()?c.artist:c.author,L"Unknown Author")};
-            if(!c.series.empty()) parts.push_back(Safe(c.series,L"Series"));
-            parts.push_back(Safe(c.book.empty()?c.album:c.book,L"Unknown Book")); break;
+            path=L"Audiobooks\\";
+            component(c.author.empty()?c.artist:c.author,L"Unknown Author");
+            if(!c.series.empty())component(c.series,L"Series");
+            component(c.book.empty()?c.album:c.book,L"Unknown Book");
+            return path;
         case MediaKind::Podcast:
-            parts={L"Podcasts",Safe(c.show.empty()?c.album:c.show,L"Unknown Podcast")};
-            if(c.episode_year) parts.push_back(std::to_wstring(c.episode_year));
-            break;
-        case MediaKind::MusicVideo: parts={L"Music Videos"}; break;
-        case MediaKind::Concert: parts={L"Concerts"}; break;
+            path=L"Podcasts\\";
+            component(c.show.empty()?c.album:c.show,L"Unknown Podcast");
+            if(c.episode_year)path+=std::to_wstring(c.episode_year)+L'\\';
+            return path;
+        case MediaKind::MusicVideo: return L"Music Videos\\";
+        case MediaKind::Concert: return L"Concerts\\";
     }
-    std::wstring out;
-    for(const auto& part:parts) { out+=part; out+=L'\\'; }
+    if(!path.empty())component(c.album,L"Unknown Album");
+    return path;
+}
+static std::wstring TrackPrefix(const Catalog& c,bool track_numbers) {
     if(track_numbers && c.track) {
-        wchar_t number[20];swprintf(number,20,L"%02u - ",c.track);out+=number;
+        wchar_t number[20];swprintf(number,20,L"%02u - ",c.track);return number;
     }
-    return out+Safe(c.title,L"Untitled")+extension;
+    return {};
+}
+std::wstring RelativePath(const Catalog& c,const std::wstring& extension,bool track_numbers) {
+    return RelativeDirectory(c)+TrackPrefix(c,track_numbers)+Safe(c.title,L"Untitled")+extension;
+}
+static std::wstring RootedDirectory(std::wstring_view root,const Catalog& item,bool music_folder,bool duplicate) {
+    while(!root.empty() && (root.back()==L'\\' || root.back()==L'/'))root.remove_suffix(1);
+    const auto directory=RelativeDirectory(item);
+    std::wstring_view relative=directory;
+    if(music_folder && relative.substr(0,6)==L"Music\\")relative.remove_prefix(6);
+    std::wstring path(root);
+    path+=duplicate?L"\\Duplicates\\":L"\\";
+    path+=relative;
+    return path;
 }
 std::wstring OutputPath(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder,bool track_numbers) {
-    auto relative=RelativePath(item,extension,track_numbers);
-    if(music_folder && relative.rfind(L"Music\\",0)==0) relative.erase(0,6);
-    auto base=root;
-    while(!base.empty() && (base.back()==L'\\' || base.back()==L'/')) base.pop_back();
-    return base+L"\\"+relative;
+    return RootedDirectory(root,item,music_folder,false)+TrackPrefix(item,track_numbers)+Safe(item.title,L"Untitled")+extension;
 }
 static std::wstring MissingTrackIdSuffix(const Catalog& item) {
     const auto identity=item.artist+L'\0'+item.album+L'\0'+item.title+L'\0'+
@@ -69,54 +87,52 @@ static std::wstring MissingTrackIdSuffix(const Catalog& item) {
     wchar_t suffix[40];std::swprintf(suffix,40,L" [no-id-%016llx]",static_cast<unsigned long long>(hash));
     return suffix;
 }
-static std::wstring DuplicateOutputPathWithSuffix(const std::wstring& root,const Catalog& item,const std::wstring& extension,
-                                               bool music_folder,bool track_numbers,const std::wstring& suffix) {
-    auto relative=RelativePath(item,extension,track_numbers);
-    if(music_folder && relative.rfind(L"Music\\",0)==0)relative.erase(0,6);
-    const auto slash=relative.find_last_of(L'\\');
-    if(slash==std::wstring::npos)return {};
-    std::wstring prefix;
-    if(track_numbers&&item.track){wchar_t number[20];std::swprintf(number,20,L"%02u - ",item.track);prefix=number;}
-    auto title=Safe(item.title,L"Untitled");
-    constexpr size_t component_limit=100;
-    if(prefix.size()+suffix.size()>=component_limit)return {};
-    const auto available=component_limit-prefix.size()-suffix.size();
-    if(title.size()>available)title.resize(available);
+static std::vector<std::wstring> DuplicatePaths(const std::wstring& root,const Catalog& item,const std::wstring& extension,
+    bool music_folder,bool track_numbers,bool include_missing_id,size_t id_lengths=3) {
+    const auto directory=RootedDirectory(root,item,music_folder,true);
+    const auto prefix=TrackPrefix(item,track_numbers);
+    const auto title=Safe(item.title,L"Untitled");
+    auto with_suffix=[&](const std::wstring& suffix) {
+        constexpr size_t component_limit=100;
+        if(prefix.size()+suffix.size()>=component_limit)return std::wstring{};
+        auto stem=std::wstring_view(title).substr(0,component_limit-prefix.size()-suffix.size());
 #if WCHAR_MAX <= 0xffff
-    if(!title.empty()&&title.back()>=0xd800&&title.back()<=0xdbff)title.pop_back();
+        if(!stem.empty()&&stem.back()>=0xd800&&stem.back()<=0xdbff)stem.remove_suffix(1);
 #endif
-    while(!title.empty()&&(title.back()==L'.'||title.back()==L' '))title.pop_back();
-    if(title.empty())title=L"Untitled";
-    relative=relative.substr(0,slash+1)+prefix+title+suffix+extension;
-    auto base=root;while(!base.empty()&&(base.back()==L'\\'||base.back()==L'/'))base.pop_back();
-    return base+L"\\Duplicates\\"+relative;
-}
-std::vector<std::wstring> DuplicateOutputPaths(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder,bool track_numbers) {
-    if(!ValidSpotifyTrackUri(item.spotify_uri)) {
-        auto path=DuplicateOutputPathWithSuffix(root,item,extension,music_folder,track_numbers,MissingTrackIdSuffix(item));
-        return path.empty()?std::vector<std::wstring>{}:std::vector<std::wstring>{std::move(path)};
+        while(!stem.empty()&&(stem.back()==L'.'||stem.back()==L' '))stem.remove_suffix(1);
+        if(stem.empty())stem=L"Untitled";
+        auto path=directory+prefix;
+        path+=stem;
+        return std::move(path)+suffix+extension;
+    };
+    const bool valid_id=ValidSpotifyTrackUri(item.spotify_uri);
+    std::vector<std::wstring> paths;
+    paths.reserve(valid_id?id_lengths+include_missing_id:1);
+    if(valid_id) {
+        constexpr size_t lengths[]={10,14,22};
+        for(size_t i=0;i<id_lengths;++i) {
+            const auto end=item.spotify_uri.end();
+            std::wstring suffix=L" [t-";suffix.append(end-lengths[i],end);suffix+=L']';
+            auto path=with_suffix(suffix);
+            if(path.empty())return {};
+            paths.push_back(std::move(path));
+        }
     }
-    std::vector<std::wstring> paths;paths.reserve(3);
-    const auto id=item.spotify_uri.substr(sizeof("spotify:track:")-1);
-    for(const size_t characters:{size_t(10),size_t(14),size_t(22)}) {
-        std::wstring suffix=L" [t-";suffix.append(id.end()-characters,id.end());suffix+=L']';
-        auto path=DuplicateOutputPathWithSuffix(root,item,extension,music_folder,track_numbers,suffix);
-        if(path.empty())return {};
-        paths.push_back(std::move(path));
-    }
-    return paths;
-}
-std::wstring DuplicateOutputPath(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder,bool track_numbers) {
-    auto paths=DuplicateOutputPaths(root,item,extension,music_folder,track_numbers);
-    return paths.empty()?std::wstring{}:std::move(paths.front());
-}
-std::vector<std::wstring> DuplicateLookupPaths(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder,bool track_numbers) {
-    auto paths=DuplicateOutputPaths(root,item,extension,music_folder,track_numbers);
-    if(!paths.empty()&&ValidSpotifyTrackUri(item.spotify_uri)) {
-        auto path=DuplicateOutputPathWithSuffix(root,item,extension,music_folder,track_numbers,MissingTrackIdSuffix(item));
+    if(!valid_id||include_missing_id) {
+        auto path=with_suffix(MissingTrackIdSuffix(item));
         if(!path.empty())paths.push_back(std::move(path));
     }
     return paths;
+}
+std::vector<std::wstring> DuplicateOutputPaths(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder,bool track_numbers) {
+    return DuplicatePaths(root,item,extension,music_folder,track_numbers,false);
+}
+std::wstring DuplicateOutputPath(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder,bool track_numbers) {
+    auto paths=DuplicatePaths(root,item,extension,music_folder,track_numbers,false,1);
+    return paths.empty()?std::wstring{}:std::move(paths.front());
+}
+std::vector<std::wstring> DuplicateLookupPaths(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder,bool track_numbers) {
+    return DuplicatePaths(root,item,extension,music_folder,track_numbers,true);
 }
 bool HigherQuality(const Quality& incoming,const Quality& existing) {
     if(!incoming.rate || !incoming.channels) return false;
