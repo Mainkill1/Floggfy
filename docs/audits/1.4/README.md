@@ -46,6 +46,7 @@ The 63 open entries include repeated destination-path searches and duplicate art
 | Saved playback | Restore the original active playlist order when leaving Saved sort. Wait while a manually queued song is playing and retry transient update failures. | Renderer fixtures cover the native sort switch, a pending manual queue, session changes, and synchronous and asynchronous retries. |
 | Ogg publication | Share source preparation across named and Unmatched saves. Reuse the validated source on retries and release rejected recordings from the queue. Rebase page numbers during tagging. | A checksum-valid stream with malformed Vorbis setup no longer creates an Unmatched archive. Page-one input tags identically to page-zero input and its original Unmatched bytes decode to identical PCM. |
 | Release audits and inspection retries | Inspect MP3 and AAC from their existing blocks. Reserve Vorbis repaging and decoder workspace before allocating it. Retain the save job's source across a temporary inspection failure. | Windows fixtures covered workspace denial, AAC inspection with less headroom than the source size, and publication after an inspection retry. The largest Vorbis allocation fell from 8 MiB to 64 KiB for a small fixture and 256 KiB for the tagged and large Ogg fixtures. The old and new parsers agreed on 4,000 mutated headers. |
+| Final review fixes | Keep the tagged buffer charged through validation. Reserve inspection workspace before retaining metadata. Restore playback order after transient player-state errors and roll back an interrupted native sort cycle. Restore the prior DLL if the launcher ZIP cannot be replaced. | The Windows fixture covers the tagged Ogg reservation. Portable fixtures check metadata denial and retry for FLAC and Ogg, with a separate padding case. Renderer fixtures cover Saved cancellation and playback races. Packaging fixtures check preservation of both outputs and recovery when rollback is blocked. |
 
 The detailed reviews below retain the original findings. The CSV dispositions record their current status.
 
@@ -99,12 +100,6 @@ The telemetry fixture exercised 5,040 URL classifications with the same results.
 | Publishing captured telemetry dumps and recording a successful decoder binding | The native and renderer dump paths share queue accounting. The three decoder binding paths share the state update. |
 
 ## Open findings from the whole-project check
-
-Reproduced in fixtures
-
-- Cancelling the initial Saved sort while a native sort command is in flight can leave that native column in a different sort direction. This also reproduced on v1.4. [Native sort cycle](../../../native/ui/marked_playlist_sort.js#L225)
-
-Found in source
 
 - Cancelling a Saved database rebuild stops further scanning. A date backfill already in flight can still write one file. [Catalog rebuild](../../../native/ui/marked_catalog.cpp#L333)
 - Startup can accept a relative Save Location from the INI even though the documented option requires an absolute path. Invalid matcher values fall back to defaults and can trigger a redundant rewrite that preserves the invalid text. [Save Location](../../../native/tooling/history_settings.cpp#L387) · [Matcher options](../../../native/tooling/history_settings.cpp#L249)

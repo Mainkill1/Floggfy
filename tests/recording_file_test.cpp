@@ -242,6 +242,39 @@ static void flac_capture_recovery() {
           "reread after prior completion remains one exact canonical recording");
     }
 }
+static void recording_inspection_budget() {
+    struct Allowance {size_t limit;};
+    const auto permit=[](void* context,size_t bytes) {
+        return bytes<=static_cast<Allowance*>(context)->limit;
+    };
+    const Tags tags{{{"COMMENT",std::string(512*1024,'a')}},{},{}};
+    std::vector<uint8_t> tagged;
+    std::string error;
+    for(bool ogg:{false,true}) {
+        check(ogg?TagOgg(recording_fixture::ogg(),tags,tagged,error):TagFlac(fixture(),tags,tagged,error),
+              "large metadata fixture tags successfully");
+        RecordingFile file;
+        Allowance low{256*1024};
+        {
+            RecordingReadMemoryScope memory(permit,&low);
+            check(!InspectRecording(tagged.data(),tagged.size(),file)&&file.inspection_resource_failure&&
+                  file.tags.fields.empty()&&memory.Denied(),"FLAC and Ogg reserve metadata before retaining it");
+        }
+        Allowance enough{32*1024*1024};
+        RecordingReadMemoryScope memory(permit,&enough);
+        check(InspectRecording(tagged.data(),tagged.size(),file)&&file.complete&&file.tags.fields==tags.fields,
+              "metadata parses after the inspection allowance recovers");
+    }
+    // FLAC padding is part of the file but takes no metadata workspace.
+    auto padded=fixture();padded[4]=0;
+    constexpr size_t padding=512*1024;
+    padded.insert(padded.begin()+42,{129,uint8_t(padding>>16),uint8_t(padding>>8),uint8_t(padding)});
+    padded.insert(padded.begin()+46,padding,0);
+    Allowance none{0};RecordingReadMemoryScope memory(permit,&none);
+    RecordingFile file;
+    check(InspectRecording(padded.data(),padded.size(),file)&&file.complete,
+          "padding does not spend an inspection workspace allowance");
+}
 static void vorbis_headers() {
     const auto id=recording_fixture::identification(),setup=recording_fixture::setup();
     check(ValidateVorbisHeaders(id,setup)==VorbisHeadersResult::Valid,"complete Vorbis I headers accepted without audio decoding");
@@ -321,6 +354,7 @@ int main(int argc,char** argv) {
     flac_capture_recovery();
     flac_resync_work_is_bounded();
     flac_frame_larger_than_resync_window();
+    recording_inspection_budget();
     vorbis_headers();
     RecordingFile file;
     auto ogg=recording_fixture::ogg();

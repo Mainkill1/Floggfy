@@ -38,12 +38,15 @@ public:
     }
 };
 inline constexpr size_t kVorbisArenaLimit=8*1024*1024;
-struct RecordingMemoryPlan {size_t file_bytes=0,metadata_bytes=0,inspection_peak=0;};
+inline constexpr size_t kRecordingMetadataExpansion=32;
+struct RecordingMemoryPlan {
+    size_t file_bytes=0,metadata_bytes=0,inspection_peak=0,inspection_workspace=0;
+};
 inline bool EstimateRecordingReadMemory(size_t bytes,size_t metadata,size_t& peak,bool copy_payload=false) noexcept {
     peak=0;const auto maximum=std::numeric_limits<size_t>::max();
     constexpr size_t arena=kVorbisArenaLimit;
-    if(metadata>bytes||bytes>maximum-arena||metadata>(maximum-bytes-arena)/32)return false;
-    size_t total=bytes+arena+metadata*32;
+    if(metadata>bytes||bytes>maximum-arena||metadata>(maximum-bytes-arena)/kRecordingMetadataExpansion)return false;
+    size_t total=bytes+arena+metadata*kRecordingMetadataExpansion;
     if(copy_payload){if(bytes>maximum-total)return false;total+=bytes;}
     peak=total;return true;
 }
@@ -53,13 +56,16 @@ template<class Reader> bool ProbeRecordingMemory(size_t size,const Reader& read,
     plan={};if(size<4)return false;
     uint8_t header[282]{};
     const auto first=std::min(size,size_t{16});if(!read(0,header,first))return false;
-    size_t metadata=0;bool copy_payload=false;
-    if(!std::memcmp(header,"fLaC",4)) {
+    size_t metadata=0,flac_metadata=0;bool copy_payload=false;
+    const bool flac=!std::memcmp(header,"fLaC",4);
+    if(flac) {
         size_t at=4;
         for(;;) {
             if(at>size||size-at<4||!read(at,header,4))return false;
             const size_t length=(size_t(header[1])<<16)|(size_t(header[2])<<8)|header[3];
             if(length>size-at-4)return false;
+            const auto type=header[0]&127;
+            if(type==4||type==6)flac_metadata+=length;
             at+=4+length;metadata=at;
             if(header[0]&128)break;
         }
@@ -97,7 +103,9 @@ template<class Reader> bool ProbeRecordingMemory(size_t size,const Reader& read,
         }
     }
     size_t peak=0;if(!EstimateRecordingReadMemory(size,metadata,peak,copy_payload))return false;
-    plan={size,metadata,peak};return true;
+    // FLAC only materializes comment and image blocks during inspection.
+    const auto workspace=(flac?flac_metadata:metadata)*kRecordingMetadataExpansion+(copy_payload?size:0);
+    plan={size,metadata,peak,workspace};return true;
 }
 inline bool ProbeRecordingMemory(const uint8_t* bytes,size_t size,RecordingMemoryPlan& plan) {
     if(!bytes){plan={};return false;}

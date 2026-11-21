@@ -39,8 +39,8 @@ contains the same DLL, verified checksums and default configuration. PE imports
 require no external MinGW runtime DLLs, including `libwinpthread-1.dll`.
 
 The current consolidated diagnostics regression entry point is
-`bash test-diagnostics.sh [SPOTIFY_DLL]`. Earlier dated sections below preserve
-historical evidence and may name wrappers that this entry point has replaced.
+`bash tests/runners/test-diagnostics.sh [SPOTIFY_DLL]`. Earlier dated sections
+preserve historical evidence and may name wrappers this entry point has replaced.
 
 ## 2026-11-11: captured decoder-reuse replay and pause-gap validation
 

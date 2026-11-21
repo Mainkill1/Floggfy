@@ -52,7 +52,7 @@ function fixture({count = 265, missingUid = false, duplicateUid = false, incompl
         sortState: {column: native ? "TITLE_AND_ARTIST" : null, order: 1},
         onSort(column) {
             assert.equal(column, "TITLE_AND_ARTIST");
-            const order = props.sortState.order;
+            const order = props.sortState.column === column ? props.sortState.order : 0;
             setTimeout(() => {
                 props.sortState = order === 4 ? {column: null, order: 1} : {column, order: order + 1};
             }, 0);
@@ -131,6 +131,52 @@ test("clears a committed native sort through its existing callback", async () =>
     assert.equal(controller.apply(dates), true);
 });
 
+test("quickly cancelling Saved restores the native sort that was being cleared", async () => {
+    const {controller, props} = fixture({native: true});
+    const original = props.sortState;
+    const onSort = props.onSort;
+    let finish;
+    const restored = new Promise(resolve => { finish = resolve; });
+    props.onSort = column => {
+        onSort(column);
+        if (props.sortState.column === null) setTimeout(finish, 0);
+    };
+    controller.cycle();
+    controller.cycle();
+    controller.cycle();
+    await Promise.race([restored, new Promise(resolve => setTimeout(resolve, 250))]);
+    assert.equal(controller.state.mode, "none");
+    assert.deepEqual(props.sortState, original);
+});
+
+test("a native column change stops an in-progress Saved cancellation", async () => {
+    const {controller, props} = fixture({native: true});
+    let sorts = 0;
+    const onSort = props.onSort;
+    props.onSort = column => {
+        if (++sorts === 1) onSort(column);
+        else props.sortState = {column: "ALBUM", order: 2};
+    };
+    controller.cycle();
+    controller.cycle();
+    controller.cycle();
+    await new Promise(resolve => setTimeout(resolve, 110));
+    assert.equal(sorts, 2);
+    assert.deepEqual(props.sortState, {column: "ALBUM", order: 2});
+});
+
+test("a native header click owns the order while Saved cancellation is pending", async () => {
+    const {controller, props} = fixture({native: true});
+    controller.cycle();
+    controller.cycle();
+    controller.cycle();
+    controller.reset({nativeSort: true});
+    props.onSort("TITLE_AND_ARTIST");
+    await new Promise(resolve => setTimeout(resolve, 110));
+    assert.equal(controller.state.mode, "none");
+    assert.deepEqual(props.sortState, {column: "TITLE_AND_ARTIST", order: 2});
+});
+
 test("reuses a complete playlist until Spotify changes its source or generation", async () => {
     const {controller, cache, dates, sourceRef} = fixture();
     const load = cache.cacheAll;
@@ -203,6 +249,35 @@ test("refresh restores owned rows on a native sort switch and avoids replaced so
     source.items = replacement;
     controller.reset();
     assert.equal(source.items, replacement);
+});
+
+test("Saved relinquishes the rows if a native sort changes while clearing selection", async () => {
+    const {controller, dates, source, entries, props} = fixture();
+    controller.cycle();
+    await tick();
+    props.outerRef.current.clearSelected = () => { props.sortState = {column: "ALBUM", order: 1}; };
+    assert.equal(controller.apply(dates), false);
+    assert.equal(controller.state.mode, "none");
+    assert.equal(source.items, entries);
+});
+
+test("an external sort blocks a Saved heartbeat when clearing selection must be retried", async () => {
+    const {controller, dates, source, entries, props, grid, window} = fixture();
+    const selected = [];
+    legacySelection(props, grid, window, selected, false);
+    controller.cycle();
+    await tick();
+    assert.equal(controller.apply(dates, 1), true);
+    const sorted = source.items;
+
+    selected.push(0);
+    props.sortState = {column: "ALBUM", order: 1};
+    assert.equal(controller.apply(dates, 1), false);
+    assert.equal(source.items, sorted);
+    selected.length = 0;
+    assert.equal(controller.apply(dates, 1), false);
+    assert.equal(controller.state.mode, "none");
+    assert.equal(source.items, entries);
 });
 
 test("keeps the pending direction when Spotify returns a fresh cache object", async () => {
@@ -518,7 +593,7 @@ test("a Saved sort changes the active playlist context and neutral restores the 
 });
 
 async function sortedPlayback({now, onUpdate} = {}) {
-    const {controller, entries, dates, grid, window, source} = fixture({count: 8, now});
+    const {controller, entries, dates, grid, window, source, props} = fixture({count: 8, now});
     const playlist = "spotify:playlist:" + "A".repeat(22);
     controller.setContext(grid, playlist);
     const original = entries.map(row => row.value.uid);
@@ -539,7 +614,7 @@ async function sortedPlayback({now, onUpdate} = {}) {
     controller.syncPlayback();
     assert.equal(updated.length, 1);
     assert.notDeepEqual(updated[0].order, original);
-    return {controller, entries, dates, source, state, item, original, updated, player, window};
+    return {controller, entries, dates, source, props, state, item, original, updated, player, window};
 }
 
 test("leaving a Saved sort restores the original active context", async () => {
@@ -549,6 +624,61 @@ test("leaving a Saved sort restores the original active context", async () => {
         assert.equal(source.items, entries);
         assert.deepEqual(updated[1], {session: "current", order: original});
     }
+});
+
+test("a native sort commit restores playback while Saved still owns the rows", async () => {
+    const {controller, entries, source, props, original, updated} = await sortedPlayback();
+    props.sortState = {column: "TITLE_AND_ARTIST", order: 2};
+    controller.refresh();
+    assert.equal(controller.state.mode, "none");
+    assert.equal(source.items, entries);
+    assert.deepEqual(updated[1], {session: "current", order: original});
+    assert.deepEqual(props.sortState, {column: "TITLE_AND_ARTIST", order: 2});
+});
+
+test("a native sort keeps the replacement row array it committed", async () => {
+    const {controller, entries, source, props, updated} = await sortedPlayback();
+    const replacement = entries.slice().reverse();
+    props.sortState = {column: "TITLE_AND_ARTIST", order: 2};
+    source.items = source.validItems = replacement;
+    controller.refresh();
+    assert.equal(controller.state.mode, "none");
+    assert.equal(source.items, replacement);
+    assert.equal(updated.length, 1);
+});
+
+test("leaving during a player read failure restores only the previously observed session", async () => {
+    for (const sessionId of ["current", "new"]) {
+        const {controller, entries, source, state, original, updated, player} = await sortedPlayback();
+        player.getState = () => { throw Error("temporarily unavailable"); };
+        assert.equal(controller.setContext(null, null), true);
+        assert.equal(source.items, entries);
+        assert.equal(updated.length, 1);
+
+        state.sessionId = sessionId;
+        player.getState = () => state;
+        controller.retryPlaybackRestore();
+        state.sessionId = "current";
+        controller.retryPlaybackRestore();
+        if (sessionId === "current") assert.deepEqual(updated[1], {session: "current", order: original});
+        else assert.equal(updated.length, 1);
+    }
+});
+
+test("unreadable heartbeats keep a restore that was deferred by a queued track", async () => {
+    const {controller, state, item, original, updated, player} = await sortedPlayback();
+    state.item = {uid: "manual", uri: uri(30), provider: "queue"};
+    assert.equal(controller.setContext(null, null), true);
+    player.getState = () => { throw Error("temporarily unavailable"); };
+    controller.retryPlaybackRestore();
+    player.getState = () => undefined;
+    controller.retryPlaybackRestore();
+    assert.equal(updated.length, 1);
+
+    state.item = item;
+    player.getState = () => state;
+    controller.retryPlaybackRestore();
+    assert.deepEqual(updated[1], {session: "current", order: original});
 });
 
 test("a neutral cycle defers restoring the active context while a manually queued track plays", async () => {
@@ -638,4 +768,40 @@ test("resorting the active playlist supersedes its deferred restore", async () =
     assert.equal(updated.length, 1);
     controller.syncPlayback();
     assert.deepEqual(updated[1], updated[0]);
+});
+
+test("a renewed Saved sort supersedes a deferred restore while player reads are unavailable", async () => {
+    const {controller, dates, state, item, player, updated} = await sortedPlayback();
+    state.item = {uid: "manual", uri: uri(30), provider: "queue"};
+    assert.equal(controller.reset(), true);
+    controller.cycle();
+    await tick();
+    assert.equal(controller.apply(dates, 1), true);
+    player.getState = () => { throw Error("temporarily unavailable"); };
+    controller.syncPlayback();
+
+    state.item = item;
+    player.getState = () => state;
+    controller.retryPlaybackRestore();
+    assert.equal(updated.length, 1);
+    controller.syncPlayback();
+    assert.deepEqual(updated[1], updated[0]);
+});
+
+test("a renewed Saved sort can be cleared during an outage without losing its deferred restore", async () => {
+    const {controller, dates, state, item, player, original, updated} = await sortedPlayback();
+    state.item = {uid: "manual", uri: uri(30), provider: "queue"};
+    assert.equal(controller.reset(), true);
+    controller.cycle();
+    await tick();
+    assert.equal(controller.apply(dates, 1), true);
+    player.getState = () => { throw Error("temporarily unavailable"); };
+    controller.syncPlayback();
+    assert.equal(controller.reset(), true);
+    assert.equal(updated.length, 1);
+
+    state.item = item;
+    player.getState = () => state;
+    controller.retryPlaybackRestore();
+    assert.deepEqual(updated[1], {session: "current", order: original});
 });

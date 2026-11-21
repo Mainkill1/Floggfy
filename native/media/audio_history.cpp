@@ -1781,8 +1781,11 @@ static Publication Publish(Capture& c,const Heard& heard,unsigned expected_epoch
         }
         if(!tagged_ok)return finish(Publication::RetryIO,"failed","tagging failed: "+error);
         RecordingFile prepared;
-        if(!InspectRecording(tagged.data(),tagged.size(),prepared)||!prepared.complete||!MatchesRecording(prepared,catalog))
+        if(!InspectCaptureRecording(c,tagged,prepared,tagged.capacity())||!prepared.complete||!MatchesRecording(prepared,catalog)) {
+            if(prepared.inspection_resource_failure)
+                return finish(Publication::Blocked,"deferred","prepared artifact inspection memory unavailable; source retained");
             return finish(Publication::Blocked,"failed","prepared artifact failed identity or completeness validation; source retained");
+        }
         c.publication_artifact={std::move(artifact_key),catalog,std::move(tagged)};
     }
     const auto& bytes=c.publication_artifact.bytes;

@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 from pathlib import Path
+import shutil
 import tempfile
 import zipfile
 
@@ -44,8 +45,9 @@ for name in ['telemetry-testing.md', 'telemetry-schema-source.md', 'telemetry-sc
     payloads[f'docs/{name}'] = (root / 'docs' / name).read_bytes()
 path = out / f'Floggfy-v{version}-Launcher-Windows-x64.zip'
 # Complete both outputs before replacing or removing any published files.
-with tempfile.TemporaryDirectory(dir=out) as staging:
-    stage = Path(staging)
+stage = Path(tempfile.mkdtemp(dir=out, prefix='.package-release-'))
+keep_stage = False
+try:
     dll = stage / 'version.dll'
     dll.write_bytes(payloads['Floggfy.dll'])
     archive_path = stage / path.name
@@ -55,8 +57,31 @@ with tempfile.TemporaryDirectory(dir=out) as staging:
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o100644 << 16
             archive.writestr(info, data)
-    dll.replace(out / dll.name)
-    archive_path.replace(path)
+    published_dll = out / dll.name
+    previous_dll = stage / 'previous-version.dll'
+    try:
+        shutil.copy2(published_dll, previous_dll)
+    except FileNotFoundError:
+        previous_dll = None
+
+    dll.replace(published_dll)
+    try:
+        archive_path.replace(path)
+    except OSError:
+        try:
+            if previous_dll is None:
+                published_dll.unlink()
+            else:
+                previous_dll.replace(published_dll)
+        except OSError as error:
+            keep_stage = True
+            raise RuntimeError(
+                f'Could not restore {published_dll}. Staging retained at {stage}'
+            ) from error
+        raise
+finally:
+    if not keep_stage:
+        shutil.rmtree(stage)
 for old_archive in out.glob('Floggfy-v*-Windows-x64.zip'):
     if old_archive != path:
         old_archive.unlink()

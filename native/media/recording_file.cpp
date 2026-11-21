@@ -12,6 +12,7 @@
 #include "flac_history_core.h"
 #include "recording_formats.h"
 #include "recording_limits.h"
+#include "recording_memory.h"
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -536,6 +537,17 @@ bool ReadRecordingArtwork(const std::vector<uint8_t>& bytes,RecordingArtwork& ou
 bool InspectRecording(const uint8_t* bytes,size_t size,RecordingFile& out) {
     out={};
     if(!bytes || size<4 || size>kMaximumRecordingBytes) return false;
+    RecordingReadMemoryScope workspace;
+    if(RecordingReadMemoryScope::HasPermit()) {
+        RecordingMemoryPlan plan;
+        if(!ProbeRecordingMemory(bytes,size,plan))return false;
+        // Header parser requests include this workspace while tags and packets are alive.
+        workspace.SetRetainedBytes(plan.inspection_workspace);
+        if(!workspace.Request(0)) {
+            out.inspection_resource_failure=true;
+            return false;
+        }
+    }
     bool valid=false;
     Mp3Info mp3;
     if(!std::memcmp(bytes,"fLaC",4)) valid=Flac(bytes,size,out);

@@ -16,6 +16,7 @@
         let error = "";
         let session;
         let loaded;
+        let nativeRollback;
 
         function provider(fiber) {
             let source;
@@ -122,11 +123,14 @@
             if (!active?.owned) return;
             const {owned, original, view} = active;
             if (!ownsItems(view, owned)) return;
-            const current = nativeView();
+            let current = nativeView();
             if (current && (!sameProvider(current, view) || current.source !== view.source)) return;
             if (grid?.isConnected !== false && !clearSelection(current?.list || view.list)) return false;
+            current = nativeView();
+            if (current && (!sameProvider(current, view) || current.source !== view.source)) return;
             if (!ownsItems(view, owned)) return;
-            const originalOrder = active.playItems && currentFor(active, current) ? original : null;
+            const originalOrder = active.playItems && own(view.source, "invalid") === false &&
+                own(view.source, "id") === active.id ? original : null;
             view.source.items = original;
             redraw(view.dispatch);
             return originalOrder;
@@ -217,37 +221,72 @@
 
         function refresh() {
             // While onSort is clearing the native column, its own commits are expected.
-            if (!session?.view) return;
+            if (!session?.view) return true;
             try {
-                if (!currentFor(session)) reset();
+                if (currentFor(session)) return true;
+                reset();
             } catch {
                 reset(unsupported);
             }
+            return false;
         }
 
-        async function clearNativeSort(active, view) {
-            const initiatingView = view;
-            const seenOrders = new Set();
-            for (let step = 0; step < 16 && view.column != null && view.order !== 0; ++step) {
-                // Native callbacks may cycle multiple orders for the same column.
-                if (seenOrders.has(view.order)) return null;
-                seenOrders.add(view.order);
-                const previous = view;
-                view.onSort(view.column);
-                for (let attempt = 0; attempt < 40; ++attempt) {
-                    await delay();
-                    if (session !== active) return null;
-                    view = nativeView();
-                    if (view && !sameProvider(view, initiatingView)) return null;
-                    if (view && !sameSort(view, previous)) break;
-                }
-                if (!view || sameSort(view, previous) ||
-                    (view.column != null && view.column !== previous.column)) return null;
-                // Some views require a native sort. Use the starting order once
-                // the native callback has completed a full cycle without neutral.
-                if (sameSort(view, initiatingView)) return view;
+        async function advanceNativeSort(change, previous) {
+            const available = () => !change.abandoned && grid === change.grid && grid.isConnected !== false;
+            if (!available()) return null;
+            const current = nativeView();
+            if (!sameProvider(current, change.original) || current.source !== previous.source ||
+                !sameSort(current, previous)) return null;
+            current.onSort(change.original.column);
+            for (let attempt = 0; attempt < 40; ++attempt) {
+                await delay();
+                if (!available()) return null;
+                const view = nativeView();
+                if (!view) continue;
+                if (!sameProvider(view, change.original) ||
+                    (view.column != null && view.column !== change.original.column)) return null;
+                if (!sameSort(view, previous)) return view;
             }
-            return view.column == null || view.order === 0 ? view : null;
+            return null;
+        }
+
+        async function cycleNativeSort(change, view, reached, continueCycle) {
+            const seenOrders = new Set();
+            for (let step = 0; view && step <= 16 && continueCycle(); ++step) {
+                if (reached(view, step)) return view;
+                // Native callbacks may cycle multiple orders for the same column.
+                const order = view.column == null ? null : view.order;
+                if (step === 16 || seenOrders.has(order)) return null;
+                seenOrders.add(order);
+                view = await (change.commit = advanceNativeSort(change, view));
+            }
+            return null;
+        }
+
+        function clearNativeSort(active, view) {
+            if (view.column == null || view.order === 0) return view;
+            const change = active.nativeSort = {grid, original: view};
+            // Some views always keep a native sort, so accept a full cycle.
+            return cycleNativeSort(change, view, (next, step) => next.column == null || next.order === 0 ||
+                (step > 0 && sameSort(next, view)), () => session === active);
+        }
+
+        function cancel({nativeSort = false} = {}) {
+            const change = session?.nativeSort;
+            if (nativeSort) {
+                if (change) change.abandoned = true;
+                if (nativeRollback) nativeRollback.abandoned = true;
+            }
+            if (!reset()) return false;
+            if (change?.commit && !change.abandoned) {
+                // The native callback can still be committing when Saved is cancelled.
+                nativeRollback = change;
+                change.rollback = change.commit.then(view => cycleNativeSort(change, view,
+                    next => sameSort(next, change.original), () => !change.abandoned))
+                    .catch(() => { /* Spotify no longer exposes the previous sort. */ })
+                    .finally(() => { if (nativeRollback === change) nativeRollback = null; });
+            }
+            return true;
         }
 
         function cachedValues(view) {
@@ -281,6 +320,8 @@
 
         async function load(active) {
             try {
+                if (nativeRollback) await nativeRollback.rollback;
+                if (session !== active) return;
                 let view = nativeView();
                 if (!view) return reset(unsupported);
                 // Reuse only a previously completed native fetch whose source,
@@ -324,6 +365,7 @@
             setContext(nextGrid, nextUri) {
                 if (grid === nextGrid && playlistUri === nextUri) return true;
                 if (!reset()) return false;
+                if (nativeRollback) nativeRollback.abandoned = true;
                 loaded = null;
                 grid = nextGrid;
                 playlistUri = nextUri;
@@ -331,7 +373,7 @@
             },
             cycle() {
                 if (mode === "ascending") {
-                    reset();
+                    cancel();
                     return;
                 }
                 if (mode === "descending") {
@@ -356,7 +398,7 @@
             get state() { return {mode, loading, error}; },
             get uris() { return session?.uris || null; },
             apply(dates, dateGeneration) {
-                refresh();
+                if (!refresh()) return false;
                 const active = session;
                 if (!active?.uris) return false;
 
@@ -395,11 +437,12 @@
                         reset(selectionError);
                         return false;
                     }
-                    if (!ownsItems(view, active.owned || active.original)) {
+                    if (!currentFor(active)) {
                         reset();
                         return false;
                     }
                     view.source.items = ordered;
+                    active.nativeSort = null;
                     active.owned = ordered;
                     active.playItems = playbackItems(ordered);
                     const modeChanged = active.mode !== mode;
@@ -418,7 +461,7 @@
                     return false;
                 }
             },
-            reset: () => reset()
+            reset: cancel
         };
     };
 })();
@@ -432,6 +475,7 @@
     let order;
     let identities;
     let lastUpdate;
+    let savedTarget;
     let pendingRestore;
 
     function release() {
@@ -440,10 +484,18 @@
         lastUpdate = undefined;
     }
 
-    function activePlaylist(player, uri) {
-        if (typeof player?.getState !== "function" || typeof player.updateContext !== "function") return;
-        const state = player.getState();
-        if (state?.context?.uri === uri && typeof state.sessionId === "string" && state.sessionId) return state;
+    function readState(player) {
+        try {
+            if (typeof player?.getState === "function" && typeof player.updateContext === "function") {
+                return player.getState();
+            }
+        } catch {
+            // Keep the last verified identity until the player is readable again.
+        }
+    }
+
+    function activePlaylist(state, uri) {
+        return state?.context?.uri === uri && typeof state.sessionId === "string" && !!state.sessionId;
     }
 
     function updateOrder(player, playlistUri, state, orderedItems, completed) {
@@ -477,6 +529,7 @@
         const attempt = {player, session, uri: playlistUri, retryAt: Infinity};
         const failed = () => { attempt.retryAt = Date.now() + 3000; };
         lastUpdate = attempt;
+        if (!completed) savedTarget = attempt;
         try {
             const result = player.updateContext(session, context);
             if (completed) {
@@ -499,11 +552,14 @@
     function restoreWhenReady(player, state) {
         if (!pendingRestore) return;
         const restore = pendingRestore;
-        if (restore.player !== player || state?.sessionId !== restore.session ||
-            state.context?.uri !== restore.uri) {
+        const session = state?.sessionId;
+        const uri = state?.context?.uri;
+        if ((player && restore.player !== player) || (session && session !== restore.session) ||
+            (uri && uri !== restore.uri)) {
             discardRestore(restore);
             return;
         }
+        if (restore.player !== player || !activePlaylist(state, restore.uri)) return;
         // An added song or active shuffle leaves no safe context occurrence to anchor.
         if (state.item?.provider !== "context" || state.shuffle !== false || state.smartShuffle === true) return;
         const completed = () => discardRestore(restore);
@@ -512,19 +568,30 @@
 
     const update = (player, playlistUri, orderedItems, restore = false) => {
         if (!orderedItems) {
+            savedTarget = undefined;
             release();
             return;
         }
         try {
             if (!Array.isArray(orderedItems) || !/^spotify:playlist:[A-Za-z0-9]{22}$/.test(playlistUri)) return;
-            const state = activePlaylist(player, playlistUri);
-            if (!state) return;
+            if (!restore && pendingRestore?.uri === playlistUri) {
+                // The renewed sort may be cleared again before the player is readable.
+                const {player, session, uri} = pendingRestore;
+                savedTarget = {player, session, uri};
+                discardRestore(pendingRestore);
+            }
+            const state = readState(player);
             if (restore) {
-                pendingRestore = {player, session: state.sessionId, uri: playlistUri, items: orderedItems};
+                let target = savedTarget?.uri === playlistUri ? savedTarget : null;
+                savedTarget = undefined;
+                if (!target && activePlaylist(state, playlistUri)) {
+                    target = {player, session: state.sessionId, uri: playlistUri};
+                }
+                if (!target) return;
+                release();
+                pendingRestore = {player: target.player, session: target.session, uri: target.uri, items: orderedItems};
                 restoreWhenReady(player, state);
-            } else {
-                if (pendingRestore?.player === player && pendingRestore.session === state.sessionId &&
-                    pendingRestore.uri === playlistUri) discardRestore(pendingRestore);
+            } else if (activePlaylist(state, playlistUri)) {
                 updateOrder(player, playlistUri, state, orderedItems);
             }
         } catch {
@@ -535,10 +602,10 @@
         const restore = pendingRestore;
         if (!restore) return;
         try {
-            const state = restore.player === player ? activePlaylist(player, restore.uri) : undefined;
+            const state = restore.player === player ? readState(player) : undefined;
             restoreWhenReady(player, state);
         } catch {
-            discardRestore(restore);
+            // A temporarily unreadable state cannot establish a session change.
         }
     };
     window.__floggfyUpdateMarkedPlayback = update;

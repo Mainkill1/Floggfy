@@ -21,6 +21,8 @@ static bool fail_publication_once=false;
 static bool race_unknown_once=false;
 static bool fail_tag_once=false;
 static bool fail_source_inspection=false;
+static const Capture* watched_publication=nullptr;
+static bool inspected_tagged_ogg=false;
 static bool change_benign_setting_during_enrich=false;
 static std::string extra_lyrics;
 static unsigned extra_disc=0;
@@ -46,7 +48,13 @@ bool ControlledInspectRecording(const uint8_t* bytes,size_t size,RecordingFile& 
   out.inspection_resource_failure=true;
   return false;
  }
- return InspectRecording(bytes,size,out);
+ const bool inspected=InspectRecording(bytes,size,out);
+ if(watched_publication&&inspected&&out.complete&&out.owned&&out.quality.codec==Codec::Vorbis) {
+  inspected_tagged_ogg=true;
+  assert(publishing_reserved.load()>=watched_publication->Capacity()+size&&
+         "the save job must keep the tagged Ogg charged through inspection");
+ }
+ return inspected;
 }
 void PublicationTestPhase(const wchar_t* phase,const std::wstring& path) {
  if(attack_archive_stage&&std::wstring(phase)==L"archive-stage-held"&&path.find(L".commit.partial")!=std::wstring::npos) {
@@ -641,6 +649,35 @@ static std::unique_ptr<Capture> RecoveryCapture() {
  const auto source=recording_fixture::fixture(44100,24);capture->bytes=source.size();
  assert(capture->data.Append(source.data(),source.size(),65536));return capture;
 }
+static void TestTaggedOggMemoryReservation() {
+ wchar_t temp[MAX_PATH]{};assert(GetTempPathW(MAX_PATH,temp));
+ const auto root=std::wstring(temp)+L"Floggfy-ogg-budget-"+std::to_wstring(GetCurrentProcessId());
+ assert(SetSaveLocation(root)&&SetDownloads(true)&&SetOgg(true));
+ Capture capture;capture.born=10;capture.finished=11;
+ auto append=[&](const std::vector<uint8_t>& page) {
+  const auto result=capture.stream.Push(page.data(),page.size());
+  assert(result!=Result::Invalid&&result!=Result::Ignore);
+  assert(capture.data.Append(page.data(),page.size(),65536));capture.bytes+=page.size();
+ };
+ append(recording_fixture::page(recording_fixture::identification(),0,2));
+ append(recording_fixture::page({3,'v','o','r','b','i','s',0,0,0,0,0,0,0,0,1},1,0));
+ append(recording_fixture::page(recording_fixture::setup(),2,0));
+ const std::vector<uint8_t> audio(1536,0);
+ for(unsigned i=0;i<128;++i)append(recording_fixture::page(audio,i+3,i==127?4:0,32*i));
+ assert(capture.stream.complete);
+ Heard heard;heard.media.title=L"Fixture track";heard.media.artist=L"Fixture artist";
+ heard.media.album=L"Fixture album";heard.media.duration=capture.Duration();
+ const auto before=publishing_reserved.load();
+ capture.publication_reserved=capture.Capacity();publishing_reserved.fetch_add(capture.publication_reserved);
+ watched_publication=&capture;inspected_tagged_ogg=false;
+ assert(Publish(capture,heard,CaptureEpoch())==Publication::Saved&&inspected_tagged_ogg);
+ watched_publication=nullptr;
+ publishing_reserved.fetch_sub(capture.publication_reserved);
+ assert(publishing_reserved.load()==before);
+ const auto path=OutputPath(root,CatalogFor(heard.media),L".ogg",GetSettings().music_folder);
+ assert(DeleteFileW(path.c_str()));
+ std::puts("PASS: named Ogg output remains charged during file verification");
+}
 static void TestUnmatchedRootRecovery() {
  wchar_t temp[2048];GetTempPathW(2048,temp);
  for(const wchar_t* phase:{L"unmatched-json",L"unmatched-audio",L"unmatched-committed",L"unmatched-json-return"}) {
@@ -886,6 +923,7 @@ int main(int argc,char** argv) {
   if(argc==2&&std::string(argv[1])=="--format-receipt"){TestFormatCommitBeforeAcknowledgement();return 0;}
   if(argc==2&&std::string(argv[1])=="--recovery-race"){TestRacedExistingAcknowledgement();return 0;}
   if(argc==2&&std::string(argv[1])=="--recovery-unmatched"){TestUnmatchedRootRecovery();return 0;}
+  if(argc==2&&std::string(argv[1])=="--ogg-budget"){TestTaggedOggMemoryReservation();return 0;}
   if(argc==2&&std::string(argv[1])=="--recovery-plan"){TestPublicationReplan();return 0;}
   if(argc==2&&std::string(argv[1])=="--recovery-benign"){TestPublicationRecovery(true);return 0;}
   if(argc==2&&std::string(argv[1])=="--recovery-retry"){TestPublicationRecovery(false);return 0;}
@@ -897,6 +935,7 @@ int main(int argc,char** argv) {
   TestLyricsPublication();
   assert(ReadRecentDownloads(recent)&&recent.empty()); // Lyrics-only updates and skips are not downloads.
   TestPublicationLogging();
+  TestTaggedOggMemoryReservation();
   TestPublicationRecovery(true);TestPublicationRecovery(false);TestPublicationRecovery(false,true);TestUnchangedArtifactAfterMetadataRevision();
   TestPublicationReplan();TestUnmatchedRootRecovery();TestRacedExistingAcknowledgement();TestFormatCommitBeforeAcknowledgement();TestOrdinaryCommitBeforeAcknowledgement();
   assert(SetDownloads(false)); // Explicit fixture preference, independent of install defaults.

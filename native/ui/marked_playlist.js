@@ -551,7 +551,7 @@
         if (header && !header.hasAttribute("data-floggfy-saved-column") &&
             context?.grid === header.closest('[role="grid"]')) {
             restoreNativeSortIndicators();
-            sorter?.reset();
+            sorter?.reset({nativeSort: true});
         }
     }, true);
 
