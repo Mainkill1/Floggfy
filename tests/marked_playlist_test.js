@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const { JSDOM } = require("jsdom");
 
-const source = fs.readFileSync(require.resolve("../native/marked_playlist.js"), "utf8");
+const source = fs.readFileSync(require.resolve("../native/ui/marked_playlist.js"), "utf8");
 const playlistId = "A".repeat(22);
 const a = "spotify:track:" + "B".repeat(22);
 const b = "spotify:track:" + "C".repeat(22);
@@ -332,7 +332,9 @@ testObserverAndLinks().then(() => console.log("marked playlist tests passed"))
 {
     const ids = [a, ...Array.from({length: 299}, (_, i) => "spotify:track:" + String(i).padStart(22, "0"))];
     let control;
+    let now = 100;
     const test = fixture(window => {
+        window.performance.now = () => now;
         window.__floggfyCreateMarkedSort = ({changed}) => control = {
             state: {mode: "none", loading: false, error: ""}, uris: null, applied: null,
             setContext(grid) { if (!grid) { this.reset(); this.released = true; } }, refresh() {},
@@ -365,6 +367,23 @@ testObserverAndLinks().then(() => console.log("marked playlist tests passed"))
     assert.ok(!batch.uris.includes(a));
     reply(batch,[[ids[299],"2026-11-21T18:00:00Z"]]);
     assert.equal(control.applied.size,300);
+    // Isolate request lookup and header painting from our fixture adapter.
+    const fixtureApply = control.apply;
+    control.apply = () => true;
+    let scopeReads = 0;
+    const scope = control.uris;
+    scope[Symbol.iterator] = function* () {
+        ++scopeReads;
+        yield* Set.prototype.values.call(this);
+    };
+    const indicatorChanges = new window.MutationObserver(() => {});
+    indicatorChanges.observe(nativeHeader, {attributeFilter: ["aria-sort"]});
+    indicatorChanges.observe(nativeArrow, {attributeFilter: ["style"]});
+    poll();
+    assert.equal(scopeReads,0,"fresh completed lookup does not traverse the playlist on a heartbeat");
+    assert.equal(indicatorChanges.takeRecords().length,0,"steady Saved sorting leaves hidden native indicators alone");
+    indicatorChanges.disconnect();
+    control.apply = fixtureApply;
     assert.equal(control.applied.get(ids[299]).utc,"2026-11-21T18:00:00Z");
     assert.equal(button.getAttribute("aria-busy"),"false");
     assert.equal(nativeHeader.getAttribute("aria-sort"),"none");
@@ -378,8 +397,16 @@ testObserverAndLinks().then(() => console.log("marked playlist tests passed"))
     button.click();flush();
     assert.equal(requests.length,beforeResort,"sorting again reuses off-screen dates");
     assert.equal(button.getAttribute("aria-busy"),"false");
+    now += 29_999;
+    poll();
+    assert.equal(requests.length,beforeResort);
+    ++now;
+    poll();
+    assert.equal(requests.length,beforeResort+1,"an unchanged playlist refreshes its dates at expiry");
+    assert.equal(requests.at(-1).uris.length,256);
+    const beforeRevision = requests.length;
     poll(2);
-    assert.ok(requests.length>beforeResort,"catalog changes still refresh cached dates");
+    assert.ok(requests.length>beforeRevision,"catalog changes still refresh cached dates");
     poll(1,false);
     assert.equal(control.state.mode,"none");
     assert.equal(control.released,true,"disabling releases the cached native playlist");

@@ -1,10 +1,12 @@
 // Synthetic headers and deterministic clocks only; no Spotify/network operations.
-#include "../native/history_settings.cpp"
-#include "../native/async_log.cpp"
-#include "../native/hook_diagnostics.h"
-#include "../native/launcher_architecture.h"
-#include "../native/startup_launcher.h"
+#include "../native/tooling/history_settings.cpp"
+#include "../native/tooling/async_log.cpp"
+#include "../native/tooling/hook_diagnostics.h"
+#include "../native/tooling/launcher_architecture.h"
+#include "../native/tooling/startup_launcher.h"
 #include <cassert>
+#include <filesystem>
+#include <system_error>
 #include <vector>
 
 static void Activities() {
@@ -45,7 +47,7 @@ static void GatingAndSettings() {
     assert(GetLastError()==0x87654321&&HookDiagnosticsEnabled());
     signal=CreateEventW(nullptr,FALSE,FALSE,nullptr);assert(signal);
     QueueHookDiagnostic("hook lane test");assert(hook_queue.count==1&&networking_queue.count==0);
-    Record hook_record{};assert(Take(hook_queue,hook_record));
+    Record hook_record{};assert(TakeBatch(hook_queue,&hook_record,1)==1);
     CloseHandle(signal);signal=nullptr;
     InterlockedExchange(&networking_enabled,0);assert(HookDiagnosticsEnabled());
     InterlockedExchange(&networking_enabled,1);InterlockedExchange(&log_level_value,2);assert(!HookDiagnosticsEnabled());
@@ -55,13 +57,13 @@ static void GatingAndSettings() {
     const std::wstring full=exe,path=full.substr(0,full.find_last_of(L'\\'))+L"\\SpotifyHistory.ini";
     assert(CreateDefaultIni(path));Settings parsed;
     assert(!ReadRestartOptions(parsed,path)&&!parsed.debug_hook_diagnostics);
-    assert(WritePrivateProfileStringW(L"To Disk",L"DebugHookDiagnostics",L"1",path.c_str()));
+    assert(WritePrivateProfileStringW(L"Debug",L"DebugHookDiagnostics",L"1",path.c_str()));
     assert(!ReadRestartOptions(parsed,path)&&parsed.debug_hook_diagnostics);
-    assert(WritePrivateProfileStringW(L"To Disk",L"DebugHookDiagnostics",nullptr,path.c_str()));
+    assert(WritePrivateProfileStringW(L"Debug",L"DebugHookDiagnostics",nullptr,path.c_str()));
     assert(ReadRestartOptions(parsed,path)&&!parsed.debug_hook_diagnostics);
     assert(WritePrivateProfileStringW(L"Other",L"Keep",L"\u97f3\u697d",path.c_str()));
     InitSettings(nullptr);assert(!HookDiagnosticsEnabled()&&FlushSettings(5000));
-    assert(GetPrivateProfileIntW(L"To Disk",L"DebugHookDiagnostics",9,path.c_str())==0);
+    assert(GetPrivateProfileIntW(L"Debug",L"DebugHookDiagnostics",9,path.c_str())==0);
     wchar_t text[16];assert(GetPrivateProfileStringW(L"Other",L"Keep",L"",text,16,path.c_str())==2);
     assert(std::wstring(text)==L"\u97f3\u697d");
 }
@@ -77,8 +79,15 @@ static void Progress() {
 }
 static void Architectures() {
     using namespace startup;
-    wchar_t exe[32768];assert(GetModuleFileNameW(nullptr,exe,32768));
-    const std::wstring full=exe,root=full.substr(0,full.find_last_of(L'\\'));
+    const auto root=(std::filesystem::temp_directory_path()/
+        (L"Floggfy-architecture-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64()))).wstring();
+    const auto spotify=root+L"\\Spotify.exe",dll=root+L"\\Floggfy.dll";
+    if(!CreateDirectoryW(root.c_str(),nullptr))
+        throw std::system_error(GetLastError(),std::system_category(),"create architecture fixture directory");
+    struct Cleanup {
+        const std::wstring &root,&spotify,&dll;
+        ~Cleanup(){DeleteFileW(spotify.c_str());DeleteFileW(dll.c_str());RemoveDirectoryW(root.c_str());}
+    } cleanup{root,spotify,dll};
     auto image=[](WORD machine,WORD magic){
         std::vector<unsigned char> bytes(512);IMAGE_DOS_HEADER dos{};dos.e_magic=IMAGE_DOS_SIGNATURE;dos.e_lfanew=64;
         std::memcpy(bytes.data(),&dos,sizeof(dos));DWORD signature=IMAGE_NT_SIGNATURE;
@@ -93,7 +102,6 @@ static void Architectures() {
         DWORD size=0;assert(WriteFile(file,bytes.data(),DWORD(bytes.size()),&size,nullptr)&&size==bytes.size());CloseHandle(file);
     };
     auto x64=image(IMAGE_FILE_MACHINE_AMD64,IMAGE_NT_OPTIONAL_HDR64_MAGIC);
-    const auto spotify=root+L"\\Spotify.exe",dll=root+L"\\Floggfy.dll";
     write(spotify,image(IMAGE_FILE_MACHINE_I386,IMAGE_NT_OPTIONAL_HDR32_MAGIC));write(dll,x64);
     PROCESS_INFORMATION process{};std::wstring error;
     assert(!Launch(root,process,error)&&error.find(L"32-bit")!=std::wstring::npos&&!process.hProcess);
@@ -109,6 +117,5 @@ static void Architectures() {
     assert(!Launch(root,process,error)&&error.find(L"inspect")!=std::wstring::npos&&!process.hProcess);
     x64[60]=0xff;x64[61]=0xff;x64[62]=0xff;x64[63]=0x7f;write(dll,x64);
     assert(InspectArchitecture(dll).architecture==Architecture::Invalid);
-    DeleteFileW(spotify.c_str());DeleteFileW(dll.c_str());
 }
 int wmain(){Activities();Progress();Architectures();GatingAndSettings();puts("PASS: bounded activity/stall diagnostics, opt-in/LastError safety, Unicode settings and prelaunch architecture rejection");return 0;}

@@ -4,7 +4,7 @@
 #include <windows.h>
 #include <string>
 #include <cstring>
-#include "../native/startup_ready.h"
+#include "../native/tooling/startup_ready.h"
 static HMODULE system_version;
 static void NTAPI EarlyVersion(PVOID,DWORD reason,PVOID) {
   if(reason!=DLL_PROCESS_ATTACH)return;

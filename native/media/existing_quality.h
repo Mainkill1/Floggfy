@@ -1,0 +1,81 @@
+#pragma once
+#include "library_layout.h"
+#include "recording_file.h"
+#include "recording_memory.h"
+#include <string>
+#include <vector>
+namespace history {
+inline size_t RecordingMetadataMemoryUsage(const RecordingFile& file) noexcept {
+    size_t bytes=sizeof(file)+file.tags.cover.capacity()+file.tags.mime.capacity()+
+        file.tags.fields.capacity()*sizeof(file.tags.fields[0])+file.picture_comments.capacity()*sizeof(std::string)+
+        file.artworks.capacity()*sizeof(RecordingArtwork)+file.artwork.mime.capacity();
+    for(const auto& field:file.tags.fields)bytes+=field.first.capacity()+field.second.capacity();
+    for(const auto& comment:file.picture_comments)bytes+=comment.capacity();
+    for(const auto& artwork:file.artworks)bytes+=artwork.mime.capacity();
+    return bytes;
+}
+// Header-only preflight against the held object; restores its position to zero.
+bool PlanLockedRecordingMemory(void* locked_file,RecordingMemoryPlan& plan);
+// Complete container and supported codec-header validation, not independent
+// audio decoding. A header alone never counts as a saved song.
+enum class RecordingRead { ValidComplete, Incomplete, InvalidContainer, ReadError };
+// Separates a parsed but incomplete recording from an unreadable object. All
+// error outcomes clear out; identity is checked separately by the caller.
+RecordingRead InspectRecordingFile(const std::wstring& file,RecordingFile& out);
+bool ReadRecording(const std::wstring& file,RecordingFile& out);
+// Read the held object from the beginning. The byte-retaining overload lets
+// publication handle allocation failure as a resource wait.
+bool ReadLockedRecording(void* file,RecordingFile& out) noexcept;
+bool ReadLockedRecording(void* file,std::vector<uint8_t>& bytes,RecordingFile& out);
+bool ExistingRecording(const std::wstring& file,const Catalog& catalog,Quality& out);
+// Empty means no safe destination could be established. No directories created.
+// Recover only a verified same-recording backup left by an interrupted upgrade.
+bool RecoverRecording(const std::wstring& path,const Catalog& catalog);
+enum class RecordingDestinationState { Vacant, Existing, Blocked };
+// Short-lived, bounded listings of the containing directory and, when needed,
+// its single known Spotify-artist alias. All codec/name
+// checks in a worker operation share it; it is never a cross-request cache or
+// authorization to rename/replace a file. Partial/failed listings are unusable.
+class RecordingDirectory {
+public:
+    bool Covers(const std::wstring& file) const;
+    bool Contains(const std::wstring& file) const;
+private:
+    friend bool ListRecordingDirectory(const std::wstring&,RecordingDirectory&,const Catalog*);
+    struct Listing {std::wstring directory;std::vector<std::wstring> names;};
+    const Listing* FindListing(const std::wstring& file) const;
+    std::vector<Listing> listings_;
+};
+// A missing directory is an empty listing; access/enumeration errors and more
+// than 16,384 entries per directory fail closed. The optional catalog adds only
+// its exact artist-folder alias, never a library scan. No directories created.
+bool ListRecordingDirectory(const std::wstring& file,RecordingDirectory& out,const Catalog* catalog=nullptr);
+struct RecordingDestination {
+    RecordingDestinationState state=RecordingDestinationState::Blocked;
+    std::wstring path;
+    // Verified matching snapshot from the bounded search, not a reservation.
+    // Publication must still lock/revalidate the exact object before writes.
+    RecordingFile recording;
+    // Observation only: a complete Spotify track UID on a listed candidate
+    // differed from the requested complete UID. This never authorizes an
+    // overwrite or changes the resolver's existing destination decision.
+    bool explicit_uid_conflict=false;
+};
+// Blocked distinguishes I/O uncertainty from a verified vacancy. Callers must
+// not interpret it as absence when searching a preferred recording format.
+RecordingDestination ResolveRecordingDestination(const std::wstring& base,const Catalog& catalog,bool track_numbers=false,
+    const RecordingDirectory* directory=nullptr);
+// Pure, bounded naming rule shared by publication and folder lookup. The menu
+// can stop at its first complete matching file; replacement must examine all.
+struct RecordingPathCandidate {
+    std::wstring path;
+    bool writable; // Uses the configured naming style and directory.
+};
+std::vector<RecordingPathCandidate> RecordingPathCandidates(const std::wstring& base,const Catalog& catalog,bool track_numbers=false);
+enum class SaveDecision { NewFile, Upgrade, Skip };
+inline bool CanUpgradeRecording(const RecordingFile& existing,const Quality& incoming,const Catalog& catalog) {
+    return existing.owned && (!existing.complete || HigherQuality(incoming,existing.quality)) &&
+        MatchesRecording(existing,catalog);
+}
+SaveDecision DecideSave(const std::wstring& path,const Quality& incoming,const Catalog& catalog);
+}

@@ -1,5 +1,5 @@
 // Configuration regression fixtures only; no installed Spotify or networking.
-#include "../native/history_settings.cpp"
+#include "../native/tooling/history_settings.cpp"
 #include <cassert>
 #include <iostream>
 namespace history {
@@ -31,7 +31,8 @@ int main() {
     assert(settings_file::Find(text,L"MetadataCacheReadMiB",L"[History]").value==L"512");
     assert(settings_file::Find(text,L"SaveUnmatched",L"[Matcher]").value==L"0");
     for(const auto& option:section_options) {
-        assert(!settings_file::Find(text,option.key).present&&!settings_file::Find(text,option.legacy_key).present);
+        assert(!settings_file::Find(text,option.key).present);
+        if(option.legacy_key)assert(!settings_file::Find(text,option.legacy_key).present);
         assert(settings_file::Find(text,option.key,option.section).present);
     }
     assert(!settings_file::Find(text,L"CaptureSpeedLimit").present);

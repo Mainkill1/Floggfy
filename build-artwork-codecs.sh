@@ -5,6 +5,12 @@ cd -- "$(dirname -- "$0")"
 floggfy_codec_cc="${1:?C compiler}"
 floggfy_codec_ar="${2:?Archiver}"
 floggfy_codec_dir="${3:?Output directory}"
+floggfy_codec_flags=(-std=c11 -O2 -DHAVE_CONFIG_H -I native/vendor/libwebp)
+case "${4:-test}" in
+    release) floggfy_codec_flags+=(-DNDEBUG) ;;
+    test) ;;
+    *) echo "Expected WebP build mode: release or test" >&2; exit 2 ;;
+esac
 mkdir -p "$floggfy_codec_dir"
 mapfile -t floggfy_codec_sources < native/vendor/libwebp/sources.txt
 # One conservative fingerprint keeps no-op builds cheap without a dependency
@@ -15,7 +21,7 @@ for source in "${floggfy_codec_sources[@]}"; do
     floggfy_codec_inputs+=("native/vendor/libwebp/$source")
 done
 floggfy_codec_fingerprint=$({
-    printf '%s\n' "$floggfy_codec_cc" "$floggfy_codec_ar"
+    printf '%s\n' "$floggfy_codec_cc" "$floggfy_codec_ar" "${floggfy_codec_flags[@]}"
     sha256sum "$(command -v "$floggfy_codec_cc")" "$(command -v "$floggfy_codec_ar")" "${floggfy_codec_inputs[@]}" &&
     "$floggfy_codec_cc" --version &&
     "$floggfy_codec_ar" --version
@@ -30,7 +36,7 @@ rm -f -- "$floggfy_codec_stamp"
 floggfy_codec_objects=()
 for source in "${floggfy_codec_sources[@]}"; do
     object="$floggfy_codec_dir/${source//\//-}.o"
-    "$floggfy_codec_cc" -std=c11 -O2 -DHAVE_CONFIG_H -I native/vendor/libwebp \
+    "$floggfy_codec_cc" "${floggfy_codec_flags[@]}" \
         -c "native/vendor/libwebp/$source" -o "$object"
     floggfy_codec_objects+=("$object")
 done

@@ -61,45 +61,47 @@ vf.ov_read.restype = c.c_long
 
 
 def validate(path, raw=False, require_artwork=False):
-    data = path.read_bytes()
-    offset = pages = 0
+    encoded_size = pages = 0
+    encoded_digest = hashlib.sha256()
     serial = previous = granule = rate = channels = None
     eos = False
-    while offset < len(data):
-        assert not eos, 'Trailing data after EOS'
-        assert data[offset:offset+5] == b'OggS\0', 'Invalid Ogg page start'
-        assert offset + 27 <= len(data), 'Truncated header'
-        segments = data[offset+26]
-        header_length = 27 + segments
-        assert offset + header_length <= len(data), 'Truncated lacing table'
-        body_length = sum(data[offset+27:offset+header_length])
-        end = offset + header_length + body_length
-        assert end <= len(data), 'Truncated body'
-        header = c.create_string_buffer(data[offset:offset+header_length], header_length)
-        body = c.create_string_buffer(data[offset+header_length:end], max(1, body_length))
-        expected = data[offset+22:offset+26]
-        page = OggPage(c.addressof(header), header_length, c.addressof(body), body_length)
-        ogg.ogg_page_checksum_set(c.byref(page))
-        assert header.raw[22:26] == expected, f'CRC failure at page {pages}'
-        flags = data[offset+5]
-        current_granule, current_serial, sequence = struct.unpack_from('<qII', data, offset+6)
-        if pages == 0:
-            assert flags & 2 and not flags & 1, 'Missing complete Vorbis BOS'
-            identification = data[offset+header_length:end]
-            assert identification[:7] == b'\x01vorbis', 'Not Vorbis audio'
-            channels = identification[11]
-            rate = struct.unpack_from('<I', identification, 12)[0]
-            serial = current_serial
-        else:
-            assert current_serial == serial and sequence == (previous + 1) & 0xffffffff, 'Page sequence gap'
-            assert not flags & 2, 'Unexpected second BOS'
-        if current_granule >= 0:
-            assert granule is None or current_granule >= granule, 'Backward granule'
-            granule = current_granule
-        previous = sequence
-        eos = bool(flags & 4)
-        offset = end
-        pages += 1
+    with path.open('rb') as source:
+        for fixed in iter(lambda: source.read(27), b''):
+            assert not eos, 'Trailing data after EOS'
+            assert fixed[:5] == b'OggS\0', 'Invalid Ogg page start'
+            assert len(fixed) == 27, 'Truncated header'
+            segments = source.read(fixed[26])
+            assert len(segments) == fixed[26], 'Truncated lacing table'
+            header_bytes = fixed + segments
+            header_length = len(header_bytes)
+            body_length = sum(segments)
+            body_bytes = source.read(body_length)
+            assert len(body_bytes) == body_length, 'Truncated body'
+            encoded_digest.update(header_bytes)
+            encoded_digest.update(body_bytes)
+            header = c.create_string_buffer(header_bytes, header_length)
+            body = c.create_string_buffer(body_bytes, max(1, body_length))
+            page = OggPage(c.addressof(header), header_length, c.addressof(body), body_length)
+            ogg.ogg_page_checksum_set(c.byref(page))
+            assert header.raw[22:26] == fixed[22:26], f'CRC failure at page {pages}'
+            flags = fixed[5]
+            current_granule, current_serial, sequence = struct.unpack_from('<qII', fixed, 6)
+            if pages == 0:
+                assert flags & 2 and not flags & 1, 'Missing complete Vorbis BOS'
+                assert body_bytes[:7] == b'\x01vorbis', 'Not Vorbis audio'
+                channels = body_bytes[11]
+                rate = struct.unpack_from('<I', body_bytes, 12)[0]
+                serial = current_serial
+            else:
+                assert current_serial == serial and sequence == (previous + 1) & 0xffffffff, 'Page sequence gap'
+                assert not flags & 2, 'Unexpected second BOS'
+            if current_granule >= 0:
+                assert granule is None or current_granule >= granule, 'Backward granule'
+                granule = current_granule
+            previous = sequence
+            eos = bool(flags & 4)
+            encoded_size += header_length + body_length
+            pages += 1
     assert eos and granule and rate, 'Missing complete EOS'
     state = c.create_string_buffer(8192)  # aligned, larger than OggVorbis_File
     result = vf.ov_fopen(os.fsencode(path), state)
@@ -168,7 +170,7 @@ def validate(path, raw=False, require_artwork=False):
     return {
         'title': tags.get('TITLE'), 'artist': tags.get('ARTIST'), 'album': tags.get('ALBUM'), 'path': str(path),
         'album_artist': tags.get('ALBUMARTIST'), 'track_number': int(tags.get('TRACKNUMBER', '0')),
-        'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest(),
+        'bytes': encoded_size, 'sha256': encoded_digest.hexdigest(),
         'duration_seconds': total/rate, 'sample_rate': rate, 'channels': channels,
         'ogg_pages': pages, 'crc_valid': True, 'bos_eos_valid': True,
         'decoded_samples': decoded_samples, 'decode_errors': 0,

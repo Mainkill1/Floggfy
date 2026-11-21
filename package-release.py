@@ -2,8 +2,9 @@
 """Package the automatic DLL and the separate launcher ZIP."""
 import argparse
 import hashlib
-import shutil
 from pathlib import Path
+import shutil
+import tempfile
 import zipfile
 
 parser = argparse.ArgumentParser()
@@ -14,10 +15,6 @@ if not version or any(c not in '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKL
 root = Path(__file__).resolve().parent
 out = root / 'dist'
 out.mkdir(exist_ok=True)
-for old_archive in out.glob('Floggfy-v*-Windows-x64.zip'):
-    old_archive.unlink()
-
-shutil.copy2(root / 'build' / 'version.dll', out / 'version.dll')
 payloads = {
     'Floggfy.exe': (root / 'build' / 'Floggfy.exe').read_bytes(),
     'Floggfy.dll': (root / 'build' / 'version.dll').read_bytes(),
@@ -47,11 +44,46 @@ for name in ['puff.h', 'UPSTREAM.md']:
 for name in ['telemetry-testing.md', 'telemetry-schema-source.md', 'telemetry-schema-1.3.9.2055.json']:
     payloads[f'docs/{name}'] = (root / 'docs' / name).read_bytes()
 path = out / f'Floggfy-v{version}-Launcher-Windows-x64.zip'
-with zipfile.ZipFile(path, 'w') as archive:
-    for name, data in payloads.items():
-        info = zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0))
-        info.compress_type = zipfile.ZIP_DEFLATED
-        info.external_attr = 0o100644 << 16
-        archive.writestr(info, data)
+# Complete both outputs before replacing or removing any published files.
+stage = Path(tempfile.mkdtemp(dir=out, prefix='.package-release-'))
+keep_stage = False
+try:
+    dll = stage / 'version.dll'
+    dll.write_bytes(payloads['Floggfy.dll'])
+    archive_path = stage / path.name
+    with zipfile.ZipFile(archive_path, 'w') as archive:
+        for name, data in payloads.items():
+            info = zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o100644 << 16
+            archive.writestr(info, data)
+    published_dll = out / dll.name
+    previous_dll = stage / 'previous-version.dll'
+    try:
+        shutil.copy2(published_dll, previous_dll)
+    except FileNotFoundError:
+        previous_dll = None
+
+    dll.replace(published_dll)
+    try:
+        archive_path.replace(path)
+    except OSError:
+        try:
+            if previous_dll is None:
+                published_dll.unlink()
+            else:
+                previous_dll.replace(published_dll)
+        except OSError as error:
+            keep_stage = True
+            raise RuntimeError(
+                f'Could not restore {published_dll}. Staging retained at {stage}'
+            ) from error
+        raise
+finally:
+    if not keep_stage:
+        shutil.rmtree(stage)
+for old_archive in out.glob('Floggfy-v*-Windows-x64.zip'):
+    if old_archive != path:
+        old_archive.unlink()
 print('Automatic: version.dll')
 print(f'Launcher: {path.name}')

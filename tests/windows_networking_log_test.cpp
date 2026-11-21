@@ -1,5 +1,5 @@
 // Isolated files/settings only. Never loads Spotify or sends network requests.
-#include "../native/history_settings.cpp"
+#include "../native/tooling/history_settings.cpp"
 // Count actual Win32 I/O in the production capped writer, not elapsed wall time.
 static unsigned writes=0,compactions=0,reads=0;
 static unsigned long long written_bytes=0,read_bytes=0;
@@ -13,7 +13,7 @@ static BOOL WINAPI CountedSetEndOfFile(HANDLE file) {++compactions;return ::SetE
 #define WriteFile CountedWriteFile
 #define ReadFile CountedReadFile
 #define SetEndOfFile CountedSetEndOfFile
-#include "../native/async_log.cpp"
+#include "../native/tooling/async_log.cpp"
 #undef WriteFile
 #undef ReadFile
 #undef SetEndOfFile
@@ -39,11 +39,11 @@ static void ClientPrivacy() {
         const auto old_level=history::LogLevel();InterlockedExchange(&history::log_level_value,4);
         const std::wstring endpoint=L"FLOGGFY_STATUS:terminal item=null ctx=missing uri=0 inst=0 paused=1 buf=1 local=1 mon=1";
         assert(history::QueueRendererDiagnostic(endpoint));history::Record record;
-        assert(history::Take(history::diagnostic_queue,record)&&"terminal observations must survive the actual renderer gateway size bound");
+        assert(history::TakeBatch(history::diagnostic_queue,&record,1)==1&&"terminal observations must survive the actual renderer gateway size bound");
         assert(history::QueueRendererDiagnostic(L"FLOGGFY_STATUS:terminal-clock pos_ms=122000 length_ms=122000 ctx_uri=? age_ms=100"));
-        assert(history::Take(history::diagnostic_queue,record)&&std::string(record.detail).find("source=terminal-clock")!=std::string::npos);
+        assert(history::TakeBatch(history::diagnostic_queue,&record,1)==1&&std::string(record.detail).find("source=terminal-clock")!=std::string::npos);
         assert(history::QueueRendererDiagnostic(endpoint+std::wstring(120,L'x')));
-        assert(!history::Take(history::diagnostic_queue,record)&&"oversized renderer observations remain rejected");
+        assert(history::TakeBatch(history::diagnostic_queue,&record,1)==0&&"oversized renderer observations remain rejected");
         InterlockedExchange(&history::log_level_value,LONG(old_level));
         CloseHandle(history::signal);history::signal=nullptr;
     }
@@ -68,8 +68,8 @@ static std::string ReadLog(const std::wstring& path) {
     CloseHandle(file);return contents;
 }
 static void ClearQueues() {
-    history::Record record{};while(history::Take(history::activity_queue,record)){}while(history::Take(history::diagnostic_queue,record)){}
-    while(history::Take(history::networking_queue,record)){}while(history::Take(history::hook_queue,record)){}
+    history::Record record{};while(history::TakeBatch(history::activity_queue,&record,1)==1){}while(history::TakeBatch(history::diagnostic_queue,&record,1)==1){}
+    while(history::TakeBatch(history::networking_queue,&record,1)==1){}while(history::TakeBatch(history::hook_queue,&record,1)==1){}
     history::activity_queue.omitted.store(0);history::diagnostic_queue.omitted.store(0);
     history::networking_queue.omitted.store(0);history::hook_queue.omitted.store(0);
 }
@@ -131,9 +131,9 @@ static void IndependentLanes(const std::wstring& root) {
     QueueNetworkingDiagnostic("network lane marker");
     QueueHookDiagnostic("hook lane marker");
     assert(activity_queue.count==0&&diagnostic_queue.count==1&&networking_queue.count==1&&hook_queue.count==1);
-    Record record{};assert(Take(diagnostic_queue,record));WriteRecord(record,LogLane::Diagnostic);
-    assert(Take(networking_queue,record));WriteRecord(record,LogLane::Networking);
-    assert(Take(hook_queue,record));WriteRecord(record,LogLane::Hook);
+    Record record{};assert(TakeBatch(diagnostic_queue,&record,1)==1);WriteBatch(&record,1,LogLane::Diagnostic);
+    assert(TakeBatch(networking_queue,&record,1)==1);WriteBatch(&record,1,LogLane::Networking);
+    assert(TakeBatch(hook_queue,&record,1)==1);WriteBatch(&record,1,LogLane::Hook);
     const auto debug=ReadLog(debug_path),network=ReadLog(network_path),hook=ReadLog(hook_path);
     assert(debug.find("debug lane marker")!=std::string::npos&&debug.find("network lane marker")==std::string::npos&&debug.find("hook lane marker")==std::string::npos);
     assert(network.find("network lane marker")!=std::string::npos&&network.find("debug lane marker")==std::string::npos&&network.find("hook lane marker")==std::string::npos);
@@ -178,6 +178,10 @@ static void QueueAndSettings() {
     assert(QueueRendererDiagnostic(L"FLOGGFY_STATUS:PRIVATE_FIELD=SECRET"));
     assert(activity_queue.count==0&&diagnostic_queue.count==0);
     InterlockedExchange(&log_level_value,4);
+    InterlockedExchange(&connect_logging_enabled,0);
+    QueueDiagnostic("FLOGGFY_STATUS:control request=pause source=local-client");
+    assert(diagnostic_queue.count==0&&networking_queue.count==0&&activity_queue.count==0);
+    InterlockedExchange(&connect_logging_enabled,1);
     QueueDiagnostic("FLOGGFY_STATUS:control request=pause source=local-client");
     assert(diagnostic_queue.count==1&&networking_queue.count==0&&activity_queue.count==0);
     QueueDiagnostic("FLOGGFY_NETWORK_V1:request op=1 kind=lyrics phase=send code=? elapsed_ms=0");
@@ -189,7 +193,7 @@ static void QueueAndSettings() {
     LogEvent(LogKind::Activity,"finished","normal activity still fits");assert(activity_queue.count==1);
     AcquireSRWLockExclusive(&diagnostic_queue.lock);QueueDiagnostic("contention never waits");ReleaseSRWLockExclusive(&diagnostic_queue.lock);
     assert(diagnostic_queue.omitted.load()==2);
-    Record record{};assert(Take(diagnostic_queue,record));assert(record.sequence==1&&record.observed_ms>0);
+    Record record{};assert(TakeBatch(diagnostic_queue,&record,1)==1);assert(record.sequence==1&&record.observed_ms>0);
     assert(std::string(record.detail).find("request=pause")!=std::string::npos);
     const auto formatted=FormatLogRecord(record,true);
     assert(formatted.find("pid=")!=std::string::npos&&formatted.find("seq=1")!=std::string::npos);
@@ -213,13 +217,13 @@ static void QueueAndSettings() {
     for(int debug=0;debug<2;++debug) {
         InterlockedExchange(&log_level_value,debug?4:1);settings.log_level=debug?4:1;
         LogEvent(LogKind::Failure,"ignored","destination inaccessible");
-        assert(activity_queue.count==1&&diagnostic_queue.count==0);assert(Take(activity_queue,record));
+        assert(activity_queue.count==1&&diagnostic_queue.count==0);assert(TakeBatch(activity_queue,&record,1)==1);
         WriteBatch(&record,1,LogLane::Activity);normal=ReadLog(normal_path);
         assert(normal.find(" failed destination inaccessible")!=std::string::npos);
         assert(normal.find("destination inaccessible",normal.find("destination inaccessible")+1)==std::string::npos);
         assert(ReadLog(diagnostic_path).empty());assert(DeleteFileW(normal_path.c_str()));
     }
-    LogEvent(LogKind::Warning,"ignored","retaining prior file");assert(Take(activity_queue,record));
+    LogEvent(LogKind::Warning,"ignored","retaining prior file");assert(TakeBatch(activity_queue,&record,1)==1);
     assert(FormatLogRecord(record,false).find(" warning retaining prior file")!=std::string::npos);
     // Ordinary diagnostics remain isolated from networking diagnostics.
     InterlockedExchange(&log_level_value,4);settings.log_level=4;QueueDiagnostic("basic observation");
@@ -242,13 +246,13 @@ static void QueueAndSettings() {
     const std::wstring path=root+L"\\SpotifyHistory.ini";
     assert(CreateDefaultIni(path));Settings parsed;
     assert(!ReadRestartOptions(parsed,path)&&!parsed.debug_networking);
-    assert(WritePrivateProfileStringW(L"To Disk",L"DebugNetworking",nullptr,path.c_str()));
+    assert(WritePrivateProfileStringW(L"Debug",L"DebugNetworking",nullptr,path.c_str()));
     assert(WritePrivateProfileStringW(L"To Disk",L"DebugConnectMessages",L"1",path.c_str()));
     assert(ReadRestartOptions(parsed,path)&&!parsed.debug_networking);
     assert(WritePrivateProfileStringW(L"Other",L"Keep",L"\u97f3\u697d",path.c_str()));
     assert(WritePrivateProfileStringW(L"To Disk",L"Save Location",exe.substr(0,exe.find_last_of(L'\\')).c_str(),path.c_str()));
     InitSettings(nullptr);assert(!NetworkingLoggingEnabled()&&FlushSettings(5000));
-    assert(GetPrivateProfileIntW(L"To Disk",L"DebugNetworking",9,path.c_str())==0);
+    assert(GetPrivateProfileIntW(L"Debug",L"DebugNetworking",9,path.c_str())==0);
     wchar_t kept[16];assert(GetPrivateProfileStringW(L"Other",L"Keep",L"",kept,16,path.c_str())==2);
     assert(std::wstring(kept)==L"\u97f3\u697d");
     assert(GetFileAttributesW((GetSettings().root+L"\\Floggfy-networking.log").c_str())==INVALID_FILE_ATTRIBUTES);

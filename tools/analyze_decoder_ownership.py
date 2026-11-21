@@ -28,7 +28,8 @@ def number(fields, key, line, violations, required=True):
 
 def analyze(path):
     captures = {}
-    owners = set()
+    awaiting_output = {}
+    unresolved = 0
     output_owners = set()
     instances = set()
     used_instances = {}
@@ -77,16 +78,18 @@ def analyze(path):
                     "bound": False, "completed": False,
                 }
                 if owner:
-                    owners.add(owner)
+                    awaiting_output.setdefault(owner, []).append(captures[capture])
             elif event == "output-first":
                 owner = number(fields, "owner", line_number, violations)
-                if not owner or owner not in owners:
+                if owner not in awaiting_output:
                     violations.append((line_number, "unknown owner output"))
                 else:
                     output_owners.add(owner)
-                    for capture in captures.values():
-                        if capture["owner"] == owner and not capture["terminal"]:
+                    for capture in awaiting_output[owner]:
+                        if not capture["terminal"]:
                             capture["output"] = True
+                            unresolved += 1
+                    awaiting_output[owner].clear()
             elif event == "playback":
                 instance = number(fields, "instance", line_number, violations)
                 if not instance:
@@ -123,11 +126,8 @@ def analyze(path):
                         violations.append((line_number, "playback instance reused by another capture"))
                     used_instances[instance] = capture_id
                     capture["bound"] = True
-                if state == 3:
-                    unresolved = sum(1 for item in captures.values()
-                                     if item["output"] and not item["terminal"])
-                    if unresolved > 1:
-                        violations.append((line_number, "multiple unresolved successors"))
+                if state == 3 and unresolved > 1:
+                    violations.append((line_number, "multiple unresolved successors"))
             elif event in ("capture-complete", "capture-abort"):
                 capture_id = number(fields, "capture", line_number, violations)
                 owner = number(fields, "owner", line_number, violations)
@@ -144,6 +144,7 @@ def analyze(path):
                         if state not in (1, 2):
                             violations.append((line_number, "completed capture has invalid state"))
                         capture["completed"] = True
+                    unresolved -= capture["output"]
                     capture["terminal"] = True
             elif event == "loss":
                 loss_generation += 1
@@ -157,7 +158,7 @@ def analyze(path):
             violations.append((capture["line"], f"incomplete lifecycle for capture {capture_id}"))
         elif capture["completed"] and not capture["bound"]:
             violations.append((capture["line"], f"completed capture {capture_id} never became bound"))
-    return events, captures, owners, instances, violations
+    return events, captures, set(awaiting_output), instances, violations
 
 
 def main(argv):

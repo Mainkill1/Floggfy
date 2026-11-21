@@ -1,7 +1,7 @@
 // Isolated INI and in-memory configuration only; no Spotify/network operations.
-#include "../native/history_settings.cpp"
-#include "../native/async_log.cpp"
-#include "../native/collector_config.h"
+#include "../native/tooling/history_settings.cpp"
+#include "../native/tooling/async_log.cpp"
+#include "../native/media/collector_config.h"
 #include <cassert>
 
 static void StrictOptIn() {
@@ -10,7 +10,7 @@ static void StrictOptIn() {
         std::wstring text=L"[To Disk]\r\n";
         for(const auto& flag:restart_flags)text+=std::wstring(flag.key)+L"="+value+L"\r\n";
         text+=L"[Telemetry]\n";
-        for(const auto& flag:blocking_flags)text+=std::wstring(flag.key)+L"="+value+L"\n";
+        for(const auto& flag:privacy::kTelemetryOptions)text+=std::wstring(flag.key)+L"="+value+L"\n";
         Settings parsed;assert(ReadRestartOptionsText(parsed,text));
         assert(!parsed.save_unmatched&&!parsed.network_patch&&!parsed.block_telemetry&&!parsed.dump_telemetry&&!parsed.debug_connect&&!parsed.debug_networking&&!parsed.debug_hook_diagnostics&&!parsed.dump_streams);
     }
@@ -27,13 +27,13 @@ static void BlockingOptions() {
     Settings parsed;
     assert(ReadBlockingOptionsText(parsed,L"[Other]\nBlockTelemetry=1\nBlockPlaybackReports=0\n"));
     assert(!parsed.block_telemetry&&!parsed.dump_telemetry);
-    for(const auto& flag:blocking_flags)assert(parsed.*(flag.member)==flag.default_value);
+    for(const auto& flag:privacy::kTelemetryOptions)assert(parsed.*(flag.member)==flag.default_value);
     assert(parsed.block_queued_telemetry);
     assert(ReadBlockingOptionsText(parsed,L"[Telemetry]\nBlockTelemetry=1\nBlockQueuedTelemetry=0\n"));
     assert(parsed.block_telemetry&&!parsed.block_queued_telemetry);
     assert(ReadBlockingOptionsText(parsed,L"[Telemetry]\nBlockTelemetry=0\nBlockQueuedTelemetry=1\n"));
     assert(!parsed.block_telemetry&&parsed.block_queued_telemetry);
-    for(const auto& flag:blocking_flags) {
+    for(const auto& flag:privacy::kTelemetryOptions) {
         for(const wchar_t* value:{L"0",L"",L"2",L"01",L"-1",L"+1",L"true",L"1junk",L"1 ",L" 1",L"\t1",L"\"1\""}) {
             ReadBlockingOptionsText(parsed,std::wstring(L"[Telemetry]\n")+flag.key+L"="+value+L"\n");
             assert(!(parsed.*(flag.member)));
@@ -63,7 +63,7 @@ static void BlockingOptions() {
         assert(parsed.block_event_reports&&parsed.block_crash_reports);
     }
     // New-section values win even when invalid; legacy Blocking beats To Disk.
-    for(const auto& flag:blocking_flags) {
+    for(const auto& flag:privacy::kTelemetryOptions) {
         for(const wchar_t* value:{L"0",L"1",L"01",L" 1",L"1 ",L"1\n"}) {
             const auto assignment=std::wstring(flag.key)+L"="+value+L"\n";
             std::wstring text=L"[To Disk]\nBlockTelemetry=1\nDumpTelemetry=1\n[Blocking]\n; retain old notes\nUnknown=keep\n"+assignment;
@@ -92,7 +92,7 @@ static void BlockingOptions() {
     assert(!parsed.block_telemetry&&!parsed.dump_telemetry&&!parsed.block_playback_reports);
     std::wstring embedded;for(const char byte:std::string(default_ini))embedded+=wchar_t(static_cast<unsigned char>(byte));
     assert(!ReadBlockingOptionsText(parsed,embedded));
-    for(const auto& flag:blocking_flags)assert(parsed.*(flag.member)==flag.default_value);
+    for(const auto& flag:privacy::kTelemetryOptions)assert(parsed.*(flag.member)==flag.default_value);
     assert(parsed.block_queued_telemetry);
     const auto section=embedded.find(L"[Telemetry]\r\n");
     assert(section!=embedded.npos&&embedded.find(L"BlockTelemetry=",section)<embedded.find(L"BlockEventReports=",section));
@@ -240,9 +240,9 @@ static void PreserveExternalEdits() {
     assert(WritePrivateProfileStringW(L"Matcher",L"MaxMatchQueue",L"9",path.c_str()));
     assert(WritePrivateProfileStringW(L"Matcher",L"TimeOffsetToleranceMs",L"7000",path.c_str()));
     assert(WritePrivateProfileStringW(L"Matcher",L"DurationToleranceMs",L"125",path.c_str()));
-    for(const auto& flag:blocking_flags)assert(WritePrivateProfileStringW(L"Telemetry",flag.key,flag.default_value?L"0":L"1",path.c_str()));
+    for(const auto& flag:privacy::kTelemetryOptions)assert(WritePrivateProfileStringW(L"Telemetry",flag.key,flag.default_value?L"0":L"1",path.c_str()));
     const auto epoch=CaptureEpoch();assert(SetLyrics(false)&&FlushSettings(5000)&&CaptureEpoch()==epoch);
-    for(const auto& flag:blocking_flags)
+    for(const auto& flag:privacy::kTelemetryOptions)
         assert(GetPrivateProfileIntW(L"Telemetry",flag.key,9,path.c_str())==unsigned(!flag.default_value));
     assert(!GetSettings().block_telemetry&&GetSettings().block_event_reports&&!GetSettings().dump_telemetry);
     assert(GetPrivateProfileIntW(L"Misc",L"NetworkPatch",9,path.c_str())==1);

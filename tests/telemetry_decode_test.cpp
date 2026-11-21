@@ -1,4 +1,4 @@
-#include "../native/telemetry_decode.h"
+#include "../native/telemetry/telemetry_decode.h"
 #include "telemetry_decode_fixture.h"
 #include <cassert>
 #include <cstdio>

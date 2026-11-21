@@ -1,4 +1,4 @@
-#include "../native/spotify_hook_discovery.h"
+#include "../native/tooling/spotify_hook_discovery.h"
 
 #include <cassert>
 #include <cstdint>

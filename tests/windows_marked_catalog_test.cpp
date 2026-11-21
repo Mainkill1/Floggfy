@@ -1,9 +1,11 @@
-#include "../native/marked_catalog.h"
-#include "../native/marked_recording.h"
-#include "../native/history_settings.h"
-#include "../native/async_log.h"
+#include "../native/ui/marked_catalog.h"
+#include "../native/media/marked_recording.h"
+#include "../native/tooling/history_settings.h"
+#include "../native/tooling/async_log.h"
+#include "../native/vendor/sqlite/sqlite3.h"
 #include <atomic>
 #include <cassert>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <thread>
@@ -16,7 +18,7 @@ const std::string early = "2025-01-01T10:00:01Z";
 const std::string late = "2025-02-01T10:00:01Z";
 std::atomic<bool> block_reader{false}, reader_entered{false}, fail_reader{false}, backfill{false};
 std::atomic<unsigned> starts{0}, finishes{0}, cancels{0}, read_warnings{0}, reads{0};
-std::atomic<unsigned> replies_ready{0};
+std::atomic<unsigned> replies_ready{0}, query_failures{0};
 void ReplyReady() {
     // Delivery must be signalled outside the worker lock, after publication.
     assert(history::MarkedCatalogRevision() != 0);
@@ -46,14 +48,28 @@ std::string Query() {
 }
 }
 
+// Count only application prepares, independent of SQLite's internal schema work.
+static std::atomic<unsigned> catalog_prepares{0}, catalog_selects{0};
+extern "C" int __real_sqlite3_step(sqlite3_stmt*);
+extern "C" int __wrap_sqlite3_step(sqlite3_stmt* statement) {
+    if (!sqlite3_stmt_busy(statement) && sqlite3_stmt_readonly(statement)) ++catalog_selects;
+    return __real_sqlite3_step(statement);
+}
+extern "C" int __real_sqlite3_prepare_v2(sqlite3*, const char*, int, sqlite3_stmt**, const char**);
+extern "C" int __wrap_sqlite3_prepare_v2(sqlite3* db, const char* sql, int length,
+                                        sqlite3_stmt** statement, const char** tail) {
+    if (std::strstr(sql, "marked_files")) ++catalog_prepares;
+    return __real_sqlite3_prepare_v2(db, sql, length, statement, tail);
+}
+
 namespace history {
 Settings GetSettings() {
     Settings settings;
     settings.metadata = backfill;
     return settings;
 }
-std::wstring WindowsPath(const std::wstring& path) { return path; }
 void LogEvent(LogKind kind, const char*, const std::string& detail) {
+    if (kind == LogKind::Warning && detail == "could not read saved dates; query can be retried") ++query_failures;
     if (kind == LogKind::Activity && detail == "rebuild started") ++starts;
     if (kind == LogKind::Activity && detail == "rebuild cancelled") ++cancels;
     if (kind == LogKind::Finished && detail.find("scanned=") != std::string::npos &&
@@ -62,7 +78,6 @@ void LogEvent(LogKind kind, const char*, const std::string& detail) {
     if (kind == LogKind::Warning && detail.find("older.ogg") != std::string::npos &&
         detail.find("transient test error") != std::string::npos) ++read_warnings;
 }
-bool ValidMarkedUri(const std::string& value) { return value == uri; }
 bool ReadMarkedRecording(const std::wstring& path, MarkedRecording& record, std::string& error) {
     ++reads;
     if (block_reader) {
@@ -75,7 +90,9 @@ bool ReadMarkedRecording(const std::wstring& path, MarkedRecording& record, std:
     }
     std::ifstream in{fs::path(path)};
     if (!std::getline(in, record.saved_utc)) return false;
-    record.uri = uri;
+    std::string replacement_uri;
+    std::getline(in, replacement_uri);
+    record.uri = history::ValidSpotifyTrackUri(replacement_uri) ? replacement_uri : uri;
     record.complete = record.owned = true;
     return true;
 }
@@ -112,6 +129,35 @@ int main() {
     history::QueueMarkedFile(root.wstring(), b.wstring());
     WaitFor([&] { return Query() == late; });
     assert(fs::is_regular_file(root / L"Floggfy-marked.db"));
+
+    const char* missing_uri = "spotify:track:0000000000000000000000";
+    const auto before_mixed = catalog_selects.load();
+    assert(history::QueueMarkedQuery("mixed", {missing_uri, uri}));
+    history::MarkedQueryReply mixed;
+    WaitFor([&] { return history::TakeMarkedReply(mixed); });
+    assert(mixed.dates.size() == 1 && mixed.dates.front() == std::make_pair(uri, late));
+    assert(catalog_prepares == 3 && catalog_selects == before_mixed + 1);
+
+    sqlite3* competing = nullptr;
+    assert(sqlite3_open((root / L"Floggfy-marked.db").u8string().c_str(), &competing) == SQLITE_OK);
+    assert(sqlite3_exec(competing, "BEGIN EXCLUSIVE", nullptr, nullptr, nullptr) == SQLITE_OK);
+    assert(history::QueueMarkedQuery("locked_query", {uri}));
+    history::MarkedQueryReply locked;
+    WaitFor([&] { return query_failures.load() || history::TakeMarkedReply(locked); });
+    assert(locked.request.empty());
+    assert(sqlite3_exec(competing, "ROLLBACK", nullptr, nullptr, nullptr) == SQLITE_OK);
+    assert(sqlite3_close(competing) == SQLITE_OK);
+    assert(history::QueueMarkedQuery("locked_query", {uri}));
+    WaitFor([&] { return history::TakeMarkedReply(locked); });
+    assert(locked.request == "locked_query" && locked.dates.size() == 1 && locked.dates[0].second == late);
+
+    Write(b, late + "\n" + missing_uri);
+    assert(history::QueueMarkedQuery("replaced", {missing_uri, uri}));
+    history::MarkedQueryReply replaced;
+    WaitFor([&] { return history::TakeMarkedReply(replaced); });
+    assert(replaced.dates.size() == 2);
+    assert(replaced.dates[0] == std::make_pair(std::string(missing_uri), late));
+    assert(replaced.dates[1] == std::make_pair(uri, early));
 
     fs::remove(b);
     assert(Query() == early);
@@ -171,6 +217,7 @@ int main() {
     for (int index = 0; index != 35; ++index) {
         Write(dirt / (L"duplicate-" + std::to_wstring(index) + L".mp3"), early);
     }
+    Write(dirt / L"other-track.flac", late + "\n" + missing_uri);
     const auto legacy = root / L"z-legacy.ogg";
     Write(legacy, {});
     assert(history::ToggleMarkedRebuild());
@@ -180,6 +227,12 @@ int main() {
     assert(history::ToggleMarkedRebuild());
     WaitFor([] { return !history::MarkedRebuildRunning(); });
     assert(Query() == late);
+    const auto before_paged = catalog_selects.load();
+    assert(history::QueueMarkedQuery("paged", {uri, missing_uri}));
+    history::MarkedQueryReply paged;
+    WaitFor([&] { return history::TakeMarkedReply(paged); });
+    assert(paged.dates == (decltype(paged.dates){{uri, late}, {missing_uri, late}}));
+    assert(catalog_selects == before_paged + 2);
     assert(starts == 4 && cancels == 1 && finishes == 3);
 
     assert(!history::QueueMarkedQuery("invalid token", {uri}));

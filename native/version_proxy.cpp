@@ -5,35 +5,34 @@
 #include <windows.h>
 #include <iphlpapi.h>
 #include <netlistmgr.h>
-#include <shlobj.h>
+#include "tooling/windows_known_folder.h"
 #include <cstdio>
 #include <cstring>
-#include "audio_history.h"
-#include "connectivity_diagnostics.h"
-#include "connect_messages_windows.h"
-#include "hook_init_state.h"
-#include "hook_startup_minhook.h"
-#include "history_settings.h"
-#include "marked_catalog.h"
-#include "async_log.h"
-#include "hook_diagnostics.h"
-#include "metadata_bridge.h"
-#include "telemetry_filter.h"
-#include "telemetry_crash.h"
-#include "telemetry_queue.h"
-#include "telemetry_queue_exit.h"
-#include "pe_imports.h"
-#include "to_disk_menu.h"
-#include "startup_ready.h"
-#include "network_kill_switch.h"
-#include "update_blocker.h"
+#include "media/audio_history.h"
+#include "tooling/connectivity_diagnostics.h"
+#include "media/connect_messages_windows.h"
+#include "tooling/hook_init_state.h"
+#include "tooling/hook_startup_minhook.h"
+#include "tooling/history_settings.h"
+#include "ui/marked_catalog.h"
+#include "tooling/async_log.h"
+#include "tooling/hook_diagnostics.h"
+#include "media/metadata_bridge.h"
+#include "telemetry/telemetry_filter.h"
+#include "telemetry/telemetry_crash.h"
+#include "telemetry/telemetry_queue.h"
+#include "telemetry/telemetry_queue_exit.h"
+#include "tooling/pe_imports.h"
+#include "ui/to_disk_menu.h"
+#include "tooling/startup_ready.h"
+#include "tooling/network_kill_switch.h"
+#include "tooling/update_blocker.h"
 
 // Spotify-local proxy. All version APIs go to the original System32 DLL.
 // The connectivity repair and optional native history stay inside Spotify.
 static SRWLOCK hook_lock = SRWLOCK_INIT;
 static INIT_ONCE version_once = INIT_ONCE_STATIC_INIT;
 static HMODULE real_version;
-static bool spotify_main;
 static HMODULE proxy_module;
 static hooks::InitController connectivity_init;
 
@@ -385,9 +384,8 @@ static void LogHelperNetworkFailure() noexcept {
             if(!size||size>4096)return;
             root=expanded;
         } else {
-            PWSTR music=nullptr;
-            if(FAILED(SHGetKnownFolderPath(FOLDERID_Music,0,nullptr,&music)))return;
-            root=music;CoTaskMemFree(music);root+=L"\\Spotify";
+            if(FAILED(history::ReadKnownFolder(FOLDERID_Music,root)))return;
+            root+=L"\\Spotify";
         }
         SYSTEMTIME t{};GetSystemTime(&t);char line[320];
         std::snprintf(line,sizeof(line),"%04u-%02u-%02uT%02u:%02u:%02uZ warning pid=%lu Network Kill Switch hooks unavailable in Spotify helper; coverage is partial\r\n",
@@ -404,7 +402,7 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
     wchar_t path[MAX_PATH];
     DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH);
     wchar_t* name = length && length < MAX_PATH ? wcsrchr(path, L'\\') : nullptr;
-    spotify_main = name && !_wcsicmp(name + 1, L"Spotify.exe") && !wcsstr(GetCommandLineW(), L"--type=");
+    const bool spotify_main = name && !_wcsicmp(name + 1, L"Spotify.exe") && !wcsstr(GetCommandLineW(), L"--type=");
     if (!spotify_main) {
         // CEF helpers and the crash uploader have independent Winsock state.
         // Only Spotify's own executables participate in the shared switch.

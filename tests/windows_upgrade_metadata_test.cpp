@@ -1,14 +1,13 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include "../native/file_publication.h"
-#include "../native/flac_history_core.h"
-#include "../native/metadata_update_core.h"
+#include "../native/media/file_publication.h"
+#include "../native/media/flac_history_core.h"
+#include "../native/media/metadata_update_core.h"
 #include "recording_fixture.h"
 #include "artwork_fixture.h"
 #include <cassert>
 #include <cstdio>
 using namespace history;
-namespace history { std::wstring WindowsPath(const std::wstring& path) {return path;} }
 namespace {
 std::string Value(const Tags& tags,const char* key) {
     for(const auto& field:tags.fields)if(field.first==key)return field.second;
@@ -135,7 +134,10 @@ int main() {
         if(field.first=="HISTORY_CAPTURE")field.second="native compressed Ogg pages";
     assert(TagOgg(recording_fixture::ogg(),old_vorbis,old_ogg,error));
     assert(TagOgg(recording_fixture::ogg(),next_vorbis,new_ogg,error));
-    assert(PreserveUpgradeMetadata(old_ogg,new_ogg,catalog,merged_ogg,error));
+    RecordingFile old_snapshot,incoming_snapshot;
+    assert(InspectRecording(old_ogg.data(),old_ogg.size(),old_snapshot));
+    assert(InspectRecording(new_ogg.data(),new_ogg.size(),incoming_snapshot));
+    assert(PreserveUpgradeMetadata(old_ogg,old_snapshot,new_ogg,incoming_snapshot,catalog,merged_ogg,error));
     assert(InspectRecording(merged_ogg.data(),merged_ogg.size(),inspected) && inspected.complete);
     assert(inspected.tags.cover==old.cover && Value(inspected.tags,"LYRICS")==Value(old,"LYRICS"));
     assert(Value(inspected.tags,"DATE").empty() && Value(inspected.tags,"COMMENT")=="user note");

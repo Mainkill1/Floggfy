@@ -1,5 +1,5 @@
-#include "../native/hook_startup_batch.h"
-#include "../native/hook_init_state.h"
+#include "../native/tooling/hook_startup_batch.h"
+#include "../native/tooling/hook_init_state.h"
 #include <cassert>
 #include <vector>
 #include <cstdio>

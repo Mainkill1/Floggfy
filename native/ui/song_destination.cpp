@@ -1,0 +1,308 @@
+#define WIN32_LEAN_AND_MEAN
+#include "song_destination.h"
+#include "../tooling/fnv1a.h"
+#include "../tooling/windows_path.h"
+#include "../tooling/srw_guard.h"
+#include "../media/existing_quality.h"
+#include "../media/recording_formats.h"
+#include <windows.h>
+#include <atomic>
+#include <optional>
+#include <utility>
+#include <cstring>
+#include <vector>
+#include <algorithm>
+#include <array>
+namespace history {
+namespace {
+constexpr size_t kDuplicatePathsPerFormat=4;
+struct DestinationRequest {
+    // identity: playback identity supplied by the observer, used to pair the
+    // menu label with a saved-song result. intent: full catalog/path/settings
+    // hash, so a title match cannot reuse a result for an old save location.
+    // serial: orders coalesced requests; a slow older probe cannot publish over
+    // a later intent. revision: invalidates verified-file cache after a save,
+    // even if track identity, path and settings have not otherwise changed.
+    std::uint64_t identity=0,serial=0,intent=0,revision=0;
+    // Settings generation binds each result to the exact configuration that
+    // selected its destination; it is independent of the capture epoch.
+    unsigned generation=0;
+    bool track_numbers=false,music_folder=false;
+    Catalog catalog;
+    std::wstring root;
+    std::array<std::wstring,kRecordingFormats.size()> paths;
+    std::array<std::wstring,kRecordingFormats.size()*kDuplicatePathsPerFormat> duplicate_paths;
+};
+static void PopulateDestinationPaths(DestinationRequest& request) {
+    for(size_t i=0;i<kRecordingFormats.size();++i) {
+        const auto extension=kRecordingFormats[i].extension;
+        request.paths[i]=OutputPath(request.root,request.catalog,extension,request.music_folder,request.track_numbers);
+        auto duplicates=DuplicateLookupPaths(request.root,request.catalog,extension,request.music_folder,request.track_numbers);
+        for(size_t j=0;j<kDuplicatePathsPerFormat;++j)
+            request.duplicate_paths[i*kDuplicatePathsPerFormat+j]=j<duplicates.size()?std::move(duplicates[j]):std::wstring{};
+    }
+}
+SRWLOCK destination_lock=SRWLOCK_INIT;
+INIT_ONCE destination_once=INIT_ONCE_STATIC_INIT;
+std::atomic<bool> destination_enabled{false},refresh_pending{false};
+HANDLE destination_event=nullptr;
+std::optional<DestinationRequest> latest_request,pending_request;
+std::atomic<std::uint64_t> request_serial{0},intent_key{0},cache_revision{0};
+std::uint64_t result_serial=0,result_intent=0,active_serial=0;
+std::uint64_t destination_identity=0;
+// Published result generation/serial/intent must all match the current reader's
+// request. They describe the result, not merely the last queued work item.
+unsigned destination_generation=0;
+ULONGLONG destination_updated=0;
+std::wstring destination_file;
+bool probing=false;
+struct DestinationTryExclusive {
+    bool locked=TryAcquireSRWLockExclusive(&destination_lock)!=0;
+    ~DestinationTryExclusive(){if(locked)ReleaseSRWLockExclusive(&destination_lock);}
+};
+static bool SameCatalog(const Catalog& x,const Catalog& y) {
+    return x.kind==y.kind && x.artist==y.artist && x.folder_artist==y.folder_artist && x.legacy_artist==y.legacy_artist && x.album==y.album && x.title==y.title &&
+        x.author==y.author && x.series==y.series && x.book==y.book && x.show==y.show &&
+        x.track==y.track && x.episode_year==y.episode_year && x.disc==y.disc &&
+        x.spotify_uri==y.spotify_uri && x.spotify_album_uri==y.spotify_album_uri && x.duration==y.duration;
+}
+static bool SameInputs(const DestinationRequest& request,std::uint64_t identity,const std::wstring& root,
+                       const Catalog& catalog,bool music_folder,unsigned generation,bool track_numbers) {
+    return request.identity==identity && request.generation==generation && request.track_numbers==track_numbers &&
+        request.music_folder==music_folder && request.root==root && SameCatalog(request.catalog,catalog);
+}
+static bool SameRequest(const DestinationRequest& a,const DestinationRequest& b) {
+    return a.identity==b.identity && a.generation==b.generation && a.track_numbers==b.track_numbers &&
+        a.paths==b.paths && a.duplicate_paths==b.duplicate_paths && SameCatalog(a.catalog,b.catalog);
+}
+static std::uint64_t IntentKey(std::uint64_t identity,const std::wstring& root,const Catalog& catalog,
+                               bool music_folder,unsigned generation,bool track_numbers) {
+    std::uint64_t hash=kFnv1aOffset;
+    auto number=[&](std::uint64_t value) {for(unsigned i=0;i<8;++i)hash=Fnv1aByte(hash,uint8_t(value>>(i*8)));};
+    auto wide=[&](const std::wstring& value) {number(value.size());for(wchar_t c:value)number(unsigned(c));};
+    number(identity);number(generation);number(music_folder);number(track_numbers);number(unsigned(catalog.kind));wide(root);
+    for(const auto* value:{&catalog.artist,&catalog.folder_artist,&catalog.legacy_artist,&catalog.album,&catalog.title,&catalog.author,&catalog.series,&catalog.book,&catalog.show})wide(*value);
+    number(catalog.track);number(catalog.episode_year);number(catalog.disc);
+    number(catalog.spotify_uri.size());for(unsigned char c:catalog.spotify_uri)number(c);
+    number(catalog.spotify_album_uri.size());for(unsigned char c:catalog.spotify_album_uri)number(c);
+    std::uint64_t duration=0;static_assert(sizeof(duration)==sizeof(catalog.duration),"duration bits");
+    memcpy(&duration,&catalog.duration,sizeof(duration));number(duration);
+    return hash ? hash : 1;
+}
+static void InvalidateResult() {
+    destination_file.clear();destination_identity=0;destination_updated=0;result_serial=0;result_intent=0;
+}
+static void QueueLatestRequest(std::uint64_t serial,bool changed=false) {
+    if(changed || (!pending_request && !(probing && active_serial==serial) && GetTickCount64()-destination_updated>=400)) {
+        pending_request=*latest_request;SetEvent(destination_event);
+    }
+}
+struct FileSignature {
+    WIN32_FILE_ATTRIBUTE_DATA data{};
+    bool Read(const std::wstring& path) {
+        return GetFileAttributesExW(WindowsPath(path).c_str(),GetFileExInfoStandard,&data) &&
+               win32::IsFile(data.dwFileAttributes);
+    }
+    bool operator==(const FileSignature& other) const {
+        const auto& a=data;const auto& b=other.data;
+        return a.dwFileAttributes==b.dwFileAttributes && a.nFileSizeHigh==b.nFileSizeHigh && a.nFileSizeLow==b.nFileSizeLow &&
+            CompareFileTime(&a.ftLastWriteTime,&b.ftLastWriteTime)==0 && CompareFileTime(&a.ftCreationTime,&b.ftCreationTime)==0;
+    }
+};
+struct VerifiedDestination {
+    DestinationRequest request;
+    std::wstring file;
+    FileSignature signature;
+};
+struct VerificationCache {
+    // Retain only bounded path/catalog/signature data, never audio or artwork.
+    // Revisited songs still need a fresh signature check on this worker.
+    std::vector<VerifiedDestination> entries;
+    // One unavailable Song request, not a directory index. Heartbeats may
+    // reuse its disabled result for five seconds; publication refresh, changed
+    // settings or a different track bypass the cooldown immediately.
+    std::optional<DestinationRequest> unavailable;
+    ULONGLONG unavailable_updated=0;
+};
+static bool CurrentRequest(const DestinationRequest& request) {
+    return destination_enabled.load(std::memory_order_acquire) &&
+        request.serial==request_serial.load(std::memory_order_acquire);
+}
+static bool VerifyAndCache(const std::wstring& file,const DestinationRequest& request,
+                           const RecordingDirectory& directory,VerificationCache& cache) {
+    FileSignature before,after;Quality quality;
+    if(!CurrentRequest(request) || !directory.Contains(file) || !before.Read(file) || !CurrentRequest(request))return false;
+    if(!ExistingRecording(file,request.catalog,quality) || !CurrentRequest(request))return false;
+    if(!after.Read(file) || !(before==after) || !CurrentRequest(request))return false;
+    if(cache.entries.size()==16)cache.entries.pop_back();
+    cache.entries.insert(cache.entries.begin(),VerifiedDestination{request,file,after});
+    cache.unavailable.reset();
+    return true;
+}
+template <size_t N>
+static std::wstring ProbeRecordingPaths(const std::array<std::wstring,N>& paths,const DestinationRequest& request,
+                                        const RecordingDirectory& directory,VerificationCache& cache) {
+    // Any verified recording gives the menu a folder to open. Try every
+    // ordinary name before expanding collision aliases.
+    for(const auto& base:paths) {
+        if(base.empty())continue;
+        if(!CurrentRequest(request))return {};
+        if(VerifyAndCache(base,request,directory,cache))return base;
+    }
+    for(const auto& base:paths) {
+        if(base.empty())continue;
+        if(!CurrentRequest(request))return {};
+        for(const auto& candidate:RecordingPathCandidates(base,request.catalog,request.track_numbers)) {
+            if(candidate.path==base)continue;
+            if(!CurrentRequest(request))return {};
+            if(VerifyAndCache(candidate.path,request,directory,cache))return candidate.path;
+        }
+    }
+    return {};
+}
+static std::wstring ProbeSavedSong(const DestinationRequest& request,VerificationCache& cache) {
+    if(!CurrentRequest(request))return {};
+    cache.entries.erase(std::remove_if(cache.entries.begin(),cache.entries.end(),[&](const auto& entry) {
+        return entry.request.revision!=request.revision;
+    }),cache.entries.end());
+    for(auto entry=cache.entries.begin();entry!=cache.entries.end();++entry) {
+        if(!SameRequest(request,entry->request))continue;
+        FileSignature current;
+        if(CurrentRequest(request) && current.Read(entry->file) && current==entry->signature && CurrentRequest(request)) {
+            std::rotate(cache.entries.begin(),entry,entry+1);
+            return cache.entries.front().file;
+        }
+        cache.entries.erase(entry);cache.unavailable.reset();break; // Changed/deleted files need discovery again.
+    }
+    constexpr ULONGLONG unavailable_retry_ms=5000;
+    if(cache.unavailable && cache.unavailable->revision==request.revision &&
+       SameRequest(request,*cache.unavailable) && GetTickCount64()-cache.unavailable_updated<unavailable_retry_ms)return {};
+    auto unavailable=[&]() -> std::wstring {
+        if(CurrentRequest(request)) {cache.unavailable=request;cache.unavailable_updated=GetTickCount64();}
+        return {};
+    };
+    // Discovery only: one short-lived listing serves every format/alias. A
+    // verified cache hit above needs just its live signature, never a listing.
+    RecordingDirectory directory;
+    if(!CurrentRequest(request))return {};
+    if(!ListRecordingDirectory(request.paths.front(),directory,&request.catalog))return unavailable();
+    if(!CurrentRequest(request))return {};
+    auto file=ProbeRecordingPaths(request.paths,request,directory,cache);
+    if(!file.empty())return file;
+    // Preserve established duplicate homes even if the original canonical
+    // conflict disappeared. Missing IDs still require an exact text match.
+    for(const auto& base:request.paths) {
+        if(!CurrentRequest(request))return {};
+        const auto resolved=ResolveRecordingDestination(base,request.catalog,request.track_numbers,&directory);
+        if(resolved.state==RecordingDestinationState::Blocked)return unavailable();
+    }
+    RecordingDirectory duplicate_directory;
+    const auto& first_duplicate=request.duplicate_paths.front();
+    if(first_duplicate.empty() || !ListRecordingDirectory(first_duplicate,duplicate_directory,&request.catalog))return unavailable();
+    file=ProbeRecordingPaths(request.duplicate_paths,request,duplicate_directory,cache);
+    if(!file.empty())return file;
+    return unavailable();
+}
+static DWORD WINAPI DestinationWorker(void*) {
+    VerificationCache cache;
+    for(;;) {
+        WaitForSingleObject(destination_event,INFINITE);
+        for(;;) {
+            std::optional<DestinationRequest> request;
+            {
+                ExclusiveSrw guard(destination_lock);
+                if(!destination_enabled.load(std::memory_order_relaxed)) break;
+                if(refresh_pending.exchange(false,std::memory_order_acq_rel) && latest_request &&
+                   latest_request->intent==intent_key.load(std::memory_order_acquire)) {
+                    try {
+                        latest_request->serial=request_serial.load(std::memory_order_acquire);
+                        latest_request->revision=cache_revision.load(std::memory_order_acquire);
+                        pending_request=*latest_request;
+                    }catch(...) {/* A future heartbeat retries an allocation failure. */}
+                }
+                if(!pending_request) break;
+                request=std::move(pending_request);pending_request.reset();
+                probing=true;active_serial=request->serial;
+            }
+            std::wstring file;
+            try {file=ProbeSavedSong(*request,cache);}catch(...) {/* A failed probe disables its target. */}
+            {
+                ExclusiveSrw guard(destination_lock);
+                probing=false;
+                if(destination_enabled.load(std::memory_order_relaxed) && latest_request &&
+                   request->serial==request_serial.load(std::memory_order_acquire) &&
+                   request->intent==intent_key.load(std::memory_order_acquire) && SameRequest(*request,*latest_request)) {
+                    destination_file.swap(file);destination_identity=request->identity;
+                    destination_generation=request->generation;destination_updated=GetTickCount64();
+                    result_serial=request->serial;result_intent=request->intent;
+                }
+            }
+        }
+    }
+}
+static BOOL CALLBACK CreateDestinationWorker(PINIT_ONCE,PVOID,PVOID*) {
+    destination_event=CreateEventW(nullptr,FALSE,FALSE,nullptr);
+    if(!destination_event) return FALSE;
+    HANDLE worker=CreateThread(nullptr,0,DestinationWorker,nullptr,0,nullptr);
+    if(!worker) {CloseHandle(destination_event);destination_event=nullptr;return FALSE;}
+    SetThreadPriority(worker,THREAD_PRIORITY_BELOW_NORMAL);CloseHandle(worker);return TRUE;
+}
+}
+void StartSongDestinationWorker(bool enabled) noexcept {
+    if(enabled && !InitOnceExecuteOnce(&destination_once,CreateDestinationWorker,nullptr,nullptr)) enabled=false;
+    ExclusiveSrw guard(destination_lock);
+    destination_enabled.store(enabled,std::memory_order_release);
+    if(!enabled) {
+        ++request_serial;++cache_revision;refresh_pending.store(false,std::memory_order_release);intent_key.store(0,std::memory_order_release);latest_request.reset();pending_request.reset();InvalidateResult();
+    }
+}
+void PublishSongDestination(std::uint64_t identity,const std::wstring& root,
+                            const Catalog& catalog,bool music_folder,unsigned settings_generation,bool track_numbers) noexcept {
+    if(!destination_enabled.load(std::memory_order_acquire)) return;
+    // New intent invalidates an old reply even when submission loses a try-lock.
+    // Identical requests share an in-flight probe instead of starving slow I/O.
+    const auto intent=IntentKey(identity,root,catalog,music_folder,settings_generation,track_numbers);
+    if(intent_key.exchange(intent,std::memory_order_acq_rel)!=intent)
+        request_serial.fetch_add(1,std::memory_order_acq_rel);
+    const auto serial=request_serial.load(std::memory_order_acquire);
+    try {
+        {
+            DestinationTryExclusive guard;
+            if(!guard.locked || !destination_enabled.load(std::memory_order_relaxed) ||
+               intent!=intent_key.load(std::memory_order_acquire) || serial!=request_serial.load(std::memory_order_acquire))return;
+            if(!identity || root.empty()) {latest_request.reset();pending_request.reset();InvalidateResult();return;}
+            // Compare every source input, not just its hash, before reusing paths.
+            if(latest_request && latest_request->serial==serial && SameInputs(*latest_request,identity,root,catalog,music_folder,settings_generation,track_numbers)) {
+                QueueLatestRequest(serial);
+                return;
+            }
+        }
+        DestinationRequest request;
+        request.identity=identity;request.generation=settings_generation;request.catalog=catalog;request.track_numbers=track_numbers;
+        request.root=root;request.music_folder=music_folder;
+        request.serial=serial;request.intent=intent;request.revision=cache_revision.load(std::memory_order_acquire);
+        PopulateDestinationPaths(request);
+        DestinationTryExclusive guard;
+        if(!guard.locked || !destination_enabled.load(std::memory_order_relaxed) ||
+           intent!=intent_key.load(std::memory_order_acquire) || serial!=request_serial.load(std::memory_order_acquire)) return;
+        const bool changed=!latest_request || latest_request->serial!=serial || !SameInputs(*latest_request,identity,root,catalog,music_folder,settings_generation,track_numbers);
+        if(changed) {latest_request=std::move(request);InvalidateResult();}
+        QueueLatestRequest(serial,changed);
+    }catch(...) {/* Allocation failure must not stop capture or publish a stale result. */}
+}
+void RefreshSongDestination() noexcept {
+    if(!destination_enabled.load(std::memory_order_acquire)) return;
+    request_serial.fetch_add(1,std::memory_order_acq_rel);cache_revision.fetch_add(1,std::memory_order_acq_rel);
+    refresh_pending.store(true,std::memory_order_release);SetEvent(destination_event);
+}
+bool ReadSongDestination(std::uint64_t identity,unsigned settings_generation,std::wstring& saved_file) {
+    if(!identity || !destination_enabled.load(std::memory_order_acquire) ||
+       !TryAcquireSRWLockShared(&destination_lock)) return false;
+    struct Unlock {~Unlock(){ReleaseSRWLockShared(&destination_lock);}} unlock;
+    if(result_serial!=request_serial.load(std::memory_order_acquire) || result_intent!=intent_key.load(std::memory_order_acquire) || identity!=destination_identity ||
+       settings_generation!=destination_generation || destination_file.empty() ||
+       GetTickCount64()-destination_updated>3000) return false;
+    saved_file=destination_file;
+    return true;
+}
+}

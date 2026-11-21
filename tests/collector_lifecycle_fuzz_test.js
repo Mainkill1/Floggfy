@@ -1,6 +1,6 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
 
-const script=fs.readFileSync('native/metadata_collector.js','utf8');
+const script=fs.readFileSync('native/media/metadata_collector.js','utf8');
 const iterations=Number(process.argv[2]||10000);
 let random=Number(process.argv[3]||4043931417)>>>0;
 const next=()=>{random^=random<<13;random^=random>>>17;random^=random<<5;return random>>>0;};

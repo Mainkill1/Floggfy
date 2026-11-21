@@ -1,8 +1,8 @@
 // Exercise the production CEF menu boundary with a model implementing the
 // required public prefix. No Spotify binaries or private media are needed.
-#include "../native/playback_quality_windows.cpp"
-#include "../native/history_settings.h"
-#include "../native/async_log.h"
+#include "../native/media/playback_quality_windows.cpp"
+#include "../native/tooling/history_settings.h"
+#include "../native/tooling/async_log.h"
 #include <windows.h>
 #include <shlobj.h>
 #include <shellapi.h>
@@ -90,7 +90,7 @@ namespace history {bool SetBlockUpdatesForMenuTest(bool);bool SetNetworkKillSwit
 #define ReadSongDestination ReadSongDestinationForMenuTest
 #define ReadRecentDownloads ReadRecentDownloadsForMenuTest
 #define VirtualQuery CountQuery
-#include "../native/to_disk_menu.cpp"
+#include "../native/ui/to_disk_menu.cpp"
 #undef LogEvent
 #undef PickSaveLocation
 #undef SetNetworkKillSwitch

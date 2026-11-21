@@ -1,5 +1,5 @@
-#include "../native/recording_counters.h"
-#include "../native/bounded_queue.h"
+#include "../native/media/recording_counters.h"
+#include "../native/tooling/bounded_queue.h"
 #include <cassert>
 #include <utility>
 using namespace history;

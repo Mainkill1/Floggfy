@@ -1,5 +1,5 @@
 // Exercise the production scanner with virtual frames, without allocating a GiB.
-#include "../native/mp3_stream.cpp"
+#include "../native/media/mp3_stream.cpp"
 #include <cassert>
 #include <cstdio>
 struct VirtualMp3 {

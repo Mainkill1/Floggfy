@@ -27,32 +27,31 @@ Capabilities are activated independently where possible:
    MP3 input, and acceleration.
 4. Client metadata injection provides the preferred timeline and enrichment.
 5. Windows media sessions provide fallback playback observations only when the
-   default-off `Windows Playback Fallback=1` INI option explicitly enables them.
+   default-off `WindowsPlaybackFallback=1` INI option explicitly enables them.
 
 Discovery success is not treated as activation success. If an optional hook cannot
 be installed or enabled safely, it is removed and its feature is disabled. Ordinary
 capture remains available at 1x when its required hooks are intact. Hook creation,
 queued activation, rollback, and retained trampoline handling are in
-[`audio_history.cpp`](../../native/audio_history.cpp) and the
-[`hook_startup_*`](../../native/hook_startup_batch.h) helpers.
+[`audio_history.cpp`](../../native/media/audio_history.cpp) and the
+[`hook_startup_*`](../../native/tooling/hook_startup_batch.h) helpers.
 
 ## Settings and live changes
 
 `SpotifyHistory.ini` is loaded through
-[`history_settings.cpp`](../../native/history_settings.cpp). The **To Disk** menu
-updates the same settings through [`to_disk_menu.cpp`](../../native/to_disk_menu.cpp).
+[`history_settings.cpp`](../../native/tooling/history_settings.cpp). The **To Disk** menu
+updates the same settings through [`to_disk_menu.cpp`](../../native/ui/to_disk_menu.cpp).
 Important controls include:
 
 | Control | Effect |
 | --- | --- |
 | Downloads | Master capture/publication switch |
 | Save Location | Root of the managed library |
-| FLAC / Ogg / AAC | Enable publication of each source format for music and podcasts; AAC is INI-only by default |
+| FLAC / Ogg / AAC | Enable publication of each source format for music and podcasts; AAC is disabled by default |
 | Podcasts | Allow associated episodes to publish in their native format under the Podcasts layout |
 | Lyrics / Metadata | Control enrichment and later metadata filling |
-| Capture Speed | Select 1x or any supported accelerated mode when the native capability is available |
-| CaptureSpeedLimit | INI-only, restart-only visibility switch; defaults to 0, missing/0 hides the menu and disables acceleration, any valid nonzero value enables it |
-| Windows Playback Fallback | INI-only, default-off compatibility source when Spotify state is unavailable |
+| CaptureSpeed | `-1` hides the speed menu. `0` and `1` select normal speed. Higher choices require capture acceleration support. |
+| WindowsPlaybackFallback | Default-off compatibility source when Spotify state is unavailable |
 | TrackNumberInFilename | Add track prefixes to filenames |
 | ConvertNumberedFilenames | Safely remove recognized old prefixes when numbering is disabled |
 
@@ -99,8 +98,8 @@ Recovery never means publishing corrupt bytes or overwriting an unrelated file.
 Normal outcomes go to `Floggfy.log`. Optional detailed ownership, media, hook, and
 network observations go to `Floggfy-diagnostics.log`; both are size bounded. Logs
 use sanitized facts and state transitions rather than credentials, request bodies,
-or arbitrary client exceptions. See [`async_log.cpp`](../../native/async_log.cpp)
-and diagnostic handling in [`metadata_bridge.cpp`](../../native/metadata_bridge.cpp).
+or arbitrary client exceptions. See [`async_log.cpp`](../../native/tooling/async_log.cpp)
+and diagnostic handling in [`metadata_bridge.cpp`](../../native/media/metadata_bridge.cpp).
 
 For a failed save, correlate these stages in order:
 

@@ -1,5 +1,5 @@
-#include "../native/async_log.h"
-#include "../native/history_settings.h"
+#include "../native/tooling/async_log.h"
+#include "../native/tooling/history_settings.h"
 #include <cassert>
 #include <cstdio>
 #include <vector>

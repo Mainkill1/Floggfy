@@ -1,6 +1,6 @@
 #include "artwork_fixture.h"
-#include "../native/image_info.h"
-#include "../native/flac_history_core.h"
+#include "../native/media/image_info.h"
+#include "../native/media/flac_history_core.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>

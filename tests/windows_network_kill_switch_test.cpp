@@ -8,8 +8,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <cwchar>
-#include "../native/network_kill_switch.h"
-#include "../native/settings_file.h"
+#include "../native/tooling/network_kill_switch.h"
+#include "../native/tooling/settings_file.h"
 #include "../native/vendor/minhook/include/MinHook.h"
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr,"FAIL line %d: %s (WSA=%d)\n", __LINE__, #x, WSAGetLastError()); return 1; } } while (0)
 #define DOWN(x) do { CHECK((x)==SOCKET_ERROR); CHECK(WSAGetLastError()==WSAENETDOWN); } while(0)

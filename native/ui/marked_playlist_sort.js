@@ -1,0 +1,612 @@
+(() => {
+    "use strict";
+
+    if (typeof window.__floggfyCreateMarkedSort === "function") return;
+
+    const trackUri = /^spotify:track:[A-Za-z0-9]{22}$/;
+    const unsupported = "Saved sorting is unavailable for this playlist.";
+    const incomplete = "Could not load the full playlist for Saved sorting.";
+    const delay = () => new Promise(resolve => setTimeout(resolve, 25));
+
+    window.__floggfyCreateMarkedSort = ({own, currentFiber, changed}) => {
+        let grid;
+        let playlistUri;
+        let mode = "none";
+        let loading = false;
+        let error = "";
+        let session;
+        let loaded;
+        let nativeRollback;
+
+        function provider(fiber) {
+            let source;
+            let ref;
+            let dispatch;
+            let hook = own(fiber, "memoizedState");
+            for (let count = 0; hook && count < 64; ++count, hook = own(hook, "next")) {
+                const state = own(hook, "memoizedState");
+                const candidate = own(state, "current");
+                const items = candidate && Object.getOwnPropertyDescriptor(candidate, "items");
+                if (items?.writable && Array.isArray(items.value) &&
+                    Array.isArray(own(candidate, "validItems")) && typeof own(candidate, "invalid") === "boolean" &&
+                    Number.isSafeInteger(own(candidate, "id"))) {
+                    if (source) return null;
+                    source = candidate;
+                    ref = state;
+                }
+                const update = own(own(hook, "queue"), "dispatch");
+                if (typeof state === "number" && typeof update === "function") {
+                    if (dispatch) return null;
+                    dispatch = update;
+                }
+            }
+            return !hook && source && dispatch ? {source, ref, dispatch} : null;
+        }
+
+        function matchingPrefix(cache, source) {
+            const valid = own(source, "validItems");
+            const last = Math.min(3, valid.length - 1);
+            if (last < 0) return own(cache, "nrValidItems") === 0;
+            const values = cache.getItems(0, last, {cachedOnly: true});
+            return Array.isArray(values) && values.length === last + 1 &&
+                values.every((value, index) => value && value === own(valid[index], "value"));
+        }
+
+        const selectionError = "Could not clear the playlist selection for Saved sorting.";
+
+        function clearSelection(list) {
+            try {
+                if (typeof own(list, "clearSelected") === "function") {
+                    list.clearSelected();
+                    if (typeof own(list, "getSelected") !== "function") return true;
+                } else {
+                    const selected = list.getSelected();
+                    if (!Array.isArray(selected)) return false;
+                    if (selected.length === 0) return true;
+                    grid.dispatchEvent(new window.KeyboardEvent("keydown", {key: "Escape", bubbles: true}));
+                }
+                const remaining = list.getSelected();
+                return Array.isArray(remaining) && remaining.length === 0;
+            } catch {
+                return false;
+            }
+        }
+
+        function nativeView() {
+            if (!grid) return null;
+            const key = Object.getOwnPropertyNames(grid).find(name => name.startsWith("__reactFiber$"));
+            let fiber = key && currentFiber(own(grid, key));
+            let view;
+            for (let depth = 0; fiber && depth < 96; ++depth, fiber = own(fiber, "return")) {
+                if (view) {
+                    const owner = provider(fiber);
+                    if (owner && matchingPrefix(view.cache, owner.source)) return {...view, ...owner};
+                    continue;
+                }
+                const props = own(fiber, "memoizedProps");
+                const cache = own(props, "itemsCache");
+                const sort = own(props, "sortState");
+                const column = own(sort, "column");
+                const order = own(sort, "order");
+                const onSort = own(props, "onSort");
+                const list = own(own(props, "outerRef"), "current");
+                if (own(props, "canFetchAllTracks") !== true ||
+                    !["getItem", "getItems", "cacheAll", "invalidateCache"].every(name => typeof own(cache, name) === "function") ||
+                    !Number.isSafeInteger(own(cache, "nrValidItems")) || own(cache, "nrValidItems") < 0 ||
+                    own(cache, "hasItems") === undefined || typeof onSort !== "function" ||
+                    (typeof own(list, "clearSelected") !== "function" && typeof own(list, "getSelected") !== "function") ||
+                    typeof own(list, "scrollToIndex") !== "function" ||
+                    ((column != null || order != null) && !Number.isSafeInteger(order)) ||
+                    (column != null && typeof column !== "string")) continue;
+                view = {cache, list, onSort, column, order};
+            }
+            return null;
+        }
+
+        function sameProvider(view, expected) {
+            return view && view.ref === expected.ref && view.dispatch === expected.dispatch;
+        }
+
+        function sameSort(view, expected) {
+            return view && view.column === expected.column && view.order === expected.order;
+        }
+
+        function redraw(dispatch) {
+            dispatch(value => value + 1);
+        }
+
+        function ownsItems(view, items) {
+            return own(view.ref, "current") === view.source && own(view.source, "items") === items;
+        }
+
+        function restore(active) {
+            if (!active?.owned) return;
+            const {owned, original, view} = active;
+            if (!ownsItems(view, owned)) return;
+            let current = nativeView();
+            if (current && (!sameProvider(current, view) || current.source !== view.source)) return;
+            if (grid?.isConnected !== false && !clearSelection(current?.list || view.list)) return false;
+            current = nativeView();
+            if (current && (!sameProvider(current, view) || current.source !== view.source)) return;
+            if (!ownsItems(view, owned)) return;
+            const originalOrder = active.playItems && own(view.source, "invalid") === false &&
+                own(view.source, "id") === active.id ? original : null;
+            view.source.items = original;
+            redraw(view.dispatch);
+            return originalOrder;
+        }
+
+        function playbackItems(entries) {
+            const items = [];
+            for (const entry of entries) {
+                const value = own(entry, "value");
+                const uid = own(value, "uid"), uri = own(value, "uri");
+                if (!uid || typeof uri !== "string" || !uri.startsWith("spotify:")) return null;
+                items.push({uid, uri});
+            }
+            return items;
+        }
+
+        function updatePlayback(items, restore = false) {
+            window.__floggfyUpdateMarkedPlayback?.(window.__floggfyMarkedCurrentPlayer?.(), playlistUri, items, restore);
+        }
+
+        function writable(object, key) {
+            const field = Object.getOwnPropertyDescriptor(object, key);
+            return field ? field.writable === true : Object.isExtensible(object);
+        }
+
+        function preparePlayback(data) {
+            const active = session;
+            const context = own(data, "context"), options = own(data, "options");
+            if (!active?.playItems || active.mode !== mode || own(data, "action") !== "play" ||
+                own(own(data, "origin"), "featureIdentifier") !== "playlist" || own(context, "uri") !== playlistUri ||
+                own(context, "url") || own(context, "pages") || !options || own(options, "shuffle") ||
+                !currentFor(active)) return;
+
+            const skip = own(options, "skipTo");
+            const uid = own(skip, "uid");
+            const uri = own(skip, "uri");
+            let index = 0;
+            if (uid != null || uri != null || own(skip, "index") != null) {
+                // A URI can occur more than once. Use the clicked occurrence and
+                // disregard its index in the old native order.
+                index = active.playItems.findIndex(item => item.uid === uid && (!uri || item.uri === uri));
+                if (index < 0) return;
+            }
+            if (!active.playItems.length || !writable(context, "url") || !writable(context, "pages") ||
+                !writable(options, "skipTo")) return;
+            const item = active.playItems[index];
+            // A playlist URI alone asks Spotify to rebuild the order from its
+            // playlist service. A URL with a loaded page uses the context player.
+            context.url = "context://" + playlistUri;
+            context.pages = [{items: active.playItems}];
+            options.skipTo = {uid: item.uid, uri: item.uri, index, pageIndex: 0};
+        }
+
+        function selectionFailed(previousMode) {
+            if (error !== selectionError || mode !== previousMode) {
+                mode = previousMode;
+                error = selectionError;
+                changed();
+            }
+            return false;
+        }
+
+        function reset(message = "") {
+            let originalOrder;
+            try {
+                originalOrder = restore(session);
+                if (originalOrder === false) return selectionFailed(mode);
+            } catch {
+                message = unsupported;
+            }
+            const notify = mode !== "none" || loading || error !== message;
+            if (session?.playItems) updatePlayback(originalOrder ? playbackItems(originalOrder) : null, !!originalOrder);
+            session = null;
+            mode = "none";
+            loading = false;
+            error = message;
+            if (notify) changed();
+            return true;
+        }
+
+        function currentFor(active, view = nativeView()) {
+            if (!sameProvider(view, active.view) || !sameSort(view, active.view)) return null;
+            const expected = active.owned || active.original;
+            if (!expected) return view;
+            return view.source === active.view.source && own(view.source, "invalid") === false &&
+                own(view.source, "id") === active.id && own(view.source, "items") === expected ? view : null;
+        }
+
+        function refresh() {
+            // While onSort is clearing the native column, its own commits are expected.
+            if (!session?.view) return true;
+            try {
+                if (currentFor(session)) return true;
+                reset();
+            } catch {
+                reset(unsupported);
+            }
+            return false;
+        }
+
+        async function advanceNativeSort(change, previous) {
+            const available = () => !change.abandoned && grid === change.grid && grid.isConnected !== false;
+            if (!available()) return null;
+            const current = nativeView();
+            if (!sameProvider(current, change.original) || current.source !== previous.source ||
+                !sameSort(current, previous)) return null;
+            current.onSort(change.original.column);
+            for (let attempt = 0; attempt < 40; ++attempt) {
+                await delay();
+                if (!available()) return null;
+                const view = nativeView();
+                if (!view) continue;
+                if (!sameProvider(view, change.original) ||
+                    (view.column != null && view.column !== change.original.column)) return null;
+                if (!sameSort(view, previous)) return view;
+            }
+            return null;
+        }
+
+        async function cycleNativeSort(change, view, reached, continueCycle) {
+            const seenOrders = new Set();
+            for (let step = 0; view && step <= 16 && continueCycle(); ++step) {
+                if (reached(view, step)) return view;
+                // Native callbacks may cycle multiple orders for the same column.
+                const order = view.column == null ? null : view.order;
+                if (step === 16 || seenOrders.has(order)) return null;
+                seenOrders.add(order);
+                view = await (change.commit = advanceNativeSort(change, view));
+            }
+            return null;
+        }
+
+        function clearNativeSort(active, view) {
+            if (view.column == null || view.order === 0) return view;
+            const change = active.nativeSort = {grid, original: view};
+            // Some views always keep a native sort, so accept a full cycle.
+            return cycleNativeSort(change, view, (next, step) => next.column == null || next.order === 0 ||
+                (step > 0 && sameSort(next, view)), () => session === active);
+        }
+
+        function cancel({nativeSort = false} = {}) {
+            const change = session?.nativeSort;
+            if (nativeSort) {
+                if (change) change.abandoned = true;
+                if (nativeRollback) nativeRollback.abandoned = true;
+            }
+            if (!reset()) return false;
+            if (change?.commit && !change.abandoned) {
+                // The native callback can still be committing when Saved is cancelled.
+                nativeRollback = change;
+                change.rollback = change.commit.then(view => cycleNativeSort(change, view,
+                    next => sameSort(next, change.original), () => !change.abandoned))
+                    .catch(() => { /* Spotify no longer exposes the previous sort. */ })
+                    .finally(() => { if (nativeRollback === change) nativeRollback = null; });
+            }
+            return true;
+        }
+
+        function cachedValues(view) {
+            const count = own(view.cache, "nrValidItems");
+            return count ? view.cache.getItems(0, count - 1, {cachedOnly: true}) : [];
+        }
+
+        function complete(view, values) {
+            const items = own(view.source, "items");
+            const valid = own(view.source, "validItems");
+            if (!Array.isArray(values) || values.length < own(view.cache, "nrValidItems") ||
+                values.length !== valid.length || items.length !== valid.length) return null;
+
+            const uids = new Set();
+            const uris = new Set();
+            const rows = [];
+            for (let index = 0; index < items.length; ++index) {
+                const entry = items[index];
+                const value = own(entry, "value");
+                const uid = own(value, "uid");
+                if (value !== values[index] || entry !== valid[index] ||
+                    typeof uid !== "string" || !uid || uids.has(uid)) return null;
+                uids.add(uid);
+                const uri = own(value, "uri");
+                const canonical = typeof uri === "string" && trackUri.test(uri) ? uri : "";
+                if (canonical) uris.add(canonical);
+                rows.push({entry, uri: canonical});
+            }
+            return {original: items, rows, uris};
+        }
+
+        async function load(active) {
+            try {
+                if (nativeRollback) await nativeRollback.rollback;
+                if (session !== active) return;
+                let view = nativeView();
+                if (!view) return reset(unsupported);
+                // Reuse only a previously completed native fetch whose source,
+                // generation and restored order are still owned by this page.
+                let data;
+                if (loaded && currentFor(loaded, view) &&
+                    loaded.original.length === loaded.count && own(view.cache, "nrValidItems") === loaded.count) {
+                    data = complete(view, cachedValues(view));
+                }
+                if (!data) {
+                    loaded = null;
+                    view = await clearNativeSort(active, view);
+                    if (session !== active) return;
+                    if (!view) return reset(unsupported);
+                    active.view = view;
+                    const result = await view.cache.cacheAll();
+                    if (session !== active) return;
+                    // Spotify may commit a replacement source on the following render.
+                    await new Promise(resolve => {
+                        window.requestAnimationFrame(() => window.requestAnimationFrame(resolve));
+                    });
+                    if (session !== active) return;
+                    view = currentFor(active);
+                    if (!view) return reset();
+                    // Older Spotify versions fill the cache without returning the items.
+                    data = own(view.source, "invalid") === false &&
+                        complete(view, result === undefined ? cachedValues(view) : own(result, "items"));
+                    if (!data) return reset(incomplete);
+                    // The full fetch can replace the source and advance its generation.
+                    loaded = {view, id: own(view.source, "id"), original: data.original, count: data.rows.length};
+                }
+                Object.assign(active, data, {view, id: loaded.id});
+                loading = false;
+                changed();
+            } catch {
+                if (session === active) reset(incomplete);
+            }
+        }
+
+        return {
+            setContext(nextGrid, nextUri) {
+                if (grid === nextGrid && playlistUri === nextUri) return true;
+                if (!reset()) return false;
+                if (nativeRollback) nativeRollback.abandoned = true;
+                loaded = null;
+                grid = nextGrid;
+                playlistUri = nextUri;
+                return true;
+            },
+            cycle() {
+                if (mode === "ascending") {
+                    cancel();
+                    return;
+                }
+                if (mode === "descending") {
+                    mode = "ascending";
+                    changed();
+                    return;
+                }
+                if (!grid || !playlistUri) return;
+                session = {};
+                mode = "descending";
+                loading = true;
+                error = "";
+                changed();
+                void load(session);
+            },
+            refresh,
+            preparePlayback,
+            syncPlayback() { if (session?.playItems && session.mode === mode) updatePlayback(session.playItems); },
+            retryPlaybackRestore() {
+                window.__floggfyUpdateMarkedPlayback?.retryRestore?.(window.__floggfyMarkedCurrentPlayer?.());
+            },
+            get state() { return {mode, loading, error}; },
+            get uris() { return session?.uris || null; },
+            apply(dates, dateGeneration) {
+                if (!refresh()) return false;
+                const active = session;
+                if (!active?.uris) return false;
+
+                if (dateGeneration !== undefined && active.dateGeneration === dateGeneration &&
+                    active.mode === mode) return true;
+                const timestamps = new Map();
+                let unchanged = active.mode === mode;
+                for (const uri of active.uris) {
+                    if (!dates.has(uri)) return false;
+                    const date = dates.get(uri)?.utc || "";
+                    timestamps.set(uri, date);
+                    if (unchanged && active.timestamps.get(uri) !== date) unchanged = false;
+                }
+                if (unchanged) {
+                    active.dateGeneration = dateGeneration;
+                    return true;
+                }
+
+                const direction = mode === "ascending" ? 1 : -1;
+                const ordered = active.rows.slice().sort((first, second) => {
+                    const a = timestamps.get(first.uri) || "";
+                    const b = timestamps.get(second.uri) || "";
+                    if (a === b) return 0;
+                    if (!a || !b) return a ? -1 : 1;
+                    return (a < b ? -1 : 1) * direction;
+                }).map(row => row.entry);
+
+                try {
+                    const view = currentFor(active);
+                    if (!view) {
+                        reset();
+                        return false;
+                    }
+                    if (!clearSelection(view.list)) {
+                        if (active.owned) return selectionFailed(active.mode);
+                        reset(selectionError);
+                        return false;
+                    }
+                    if (!currentFor(active)) {
+                        reset();
+                        return false;
+                    }
+                    view.source.items = ordered;
+                    active.nativeSort = null;
+                    active.owned = ordered;
+                    active.playItems = playbackItems(ordered);
+                    const modeChanged = active.mode !== mode;
+                    active.mode = mode;
+                    active.timestamps = timestamps;
+                    active.dateGeneration = dateGeneration;
+                    redraw(view.dispatch);
+                    if (modeChanged) view.list.scrollToIndex(0);
+                    if (error) {
+                        error = "";
+                        changed();
+                    }
+                    return true;
+                } catch {
+                    reset(unsupported);
+                    return false;
+                }
+            },
+            reset: cancel
+        };
+    };
+})();
+
+// The context player's UpdateContext command takes protobuf context pages
+// (tracks). The UI play command takes renderer context pages (items).
+(() => {
+    "use strict";
+    if (typeof window.__floggfyUpdateMarkedPlayback === "function") return;
+
+    let order;
+    let identities;
+    let lastUpdate;
+    let savedTarget;
+    let pendingRestore;
+
+    function release() {
+        order = undefined;
+        identities = undefined;
+        lastUpdate = undefined;
+    }
+
+    function readState(player) {
+        try {
+            if (typeof player?.getState === "function" && typeof player.updateContext === "function") {
+                return player.getState();
+            }
+        } catch {
+            // Keep the last verified identity until the player is readable again.
+        }
+    }
+
+    function activePlaylist(state, uri) {
+        return state?.context?.uri === uri && typeof state.sessionId === "string" && !!state.sessionId;
+    }
+
+    function updateOrder(player, playlistUri, state, orderedItems, completed) {
+        const {sessionId: session, item} = state;
+        if (state.shuffle !== false || state.smartShuffle === true) {
+            // Native shuffle may replace the loaded context for this session.
+            lastUpdate = undefined;
+            return;
+        }
+        if (item?.provider !== "context") return;
+
+        if (order !== orderedItems) {
+            order = orderedItems;
+            identities = undefined;
+            lastUpdate = undefined;
+            const byUid = new Map();
+            for (const row of order) {
+                if (typeof row?.uid !== "string" || !row.uid || typeof row.uri !== "string" ||
+                    !row.uri || byUid.has(row.uid)) return;
+                byUid.set(row.uid, row.uri);
+            }
+            identities = byUid;
+        }
+        if (!identities?.has(item.uid) || identities.get(item.uid) !== item.uri) return;
+        if (lastUpdate?.player === player && lastUpdate.session === session &&
+            lastUpdate.uri === playlistUri && Date.now() < lastUpdate.retryAt) return true;
+
+        // Use the active session and let Spotify retain its manual queue and transport state.
+        const context = {uri: playlistUri, metadata: state.context.metadata, isLoading: false,
+            pages: [{tracks: order}]};
+        const attempt = {player, session, uri: playlistUri, retryAt: Infinity};
+        const failed = () => { attempt.retryAt = Date.now() + 3000; };
+        lastUpdate = attempt;
+        if (!completed) savedTarget = attempt;
+        try {
+            const result = player.updateContext(session, context);
+            if (completed) {
+                Promise.resolve(result).then(completed, failed);
+            } else if (result && typeof result.catch === "function") {
+                result.catch(failed);
+            }
+        } catch {
+            failed();
+        }
+        return true;
+    }
+
+    function discardRestore(restore) {
+        if (!restore || pendingRestore !== restore) return;
+        pendingRestore = undefined;
+        if (order === restore.items) release();
+    }
+
+    function restoreWhenReady(player, state) {
+        if (!pendingRestore) return;
+        const restore = pendingRestore;
+        const session = state?.sessionId;
+        const uri = state?.context?.uri;
+        if ((player && restore.player !== player) || (session && session !== restore.session) ||
+            (uri && uri !== restore.uri)) {
+            discardRestore(restore);
+            return;
+        }
+        if (restore.player !== player || !activePlaylist(state, restore.uri)) return;
+        // An added song or active shuffle leaves no safe context occurrence to anchor.
+        if (state.item?.provider !== "context" || state.shuffle !== false || state.smartShuffle === true) return;
+        const completed = () => discardRestore(restore);
+        if (!updateOrder(player, restore.uri, state, restore.items, completed)) completed();
+    }
+
+    const update = (player, playlistUri, orderedItems, restore = false) => {
+        if (!orderedItems) {
+            savedTarget = undefined;
+            release();
+            return;
+        }
+        try {
+            if (!Array.isArray(orderedItems) || !/^spotify:playlist:[A-Za-z0-9]{22}$/.test(playlistUri)) return;
+            if (!restore && pendingRestore?.uri === playlistUri) {
+                // The renewed sort may be cleared again before the player is readable.
+                const {player, session, uri} = pendingRestore;
+                savedTarget = {player, session, uri};
+                discardRestore(pendingRestore);
+            }
+            const state = readState(player);
+            if (restore) {
+                let target = savedTarget?.uri === playlistUri ? savedTarget : null;
+                savedTarget = undefined;
+                if (!target && activePlaylist(state, playlistUri)) {
+                    target = {player, session: state.sessionId, uri: playlistUri};
+                }
+                if (!target) return;
+                release();
+                pendingRestore = {player: target.player, session: target.session, uri: target.uri, items: orderedItems};
+                restoreWhenReady(player, state);
+            } else if (activePlaylist(state, playlistUri)) {
+                updateOrder(player, playlistUri, state, orderedItems);
+            }
+        } catch {
+            // An older player may lack a readable active context.
+        }
+    };
+    update.retryRestore = player => {
+        const restore = pendingRestore;
+        if (!restore) return;
+        try {
+            const state = restore.player === player ? readState(player) : undefined;
+            restoreWhenReady(player, state);
+        } catch {
+            // A temporarily unreadable state cannot establish a session change.
+        }
+    };
+    window.__floggfyUpdateMarkedPlayback = update;
+})();

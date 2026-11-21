@@ -2,7 +2,7 @@
 
 ## Where metadata comes from
 
-The native bridge injects [`metadata_collector.js`](../../native/metadata_collector.js)
+The native bridge injects [`metadata_collector.js`](../../native/media/metadata_collector.js)
 into Spotify's main Chromium frame. The collector reuses already-created Spotify
 client objects and the existing request builder. It emits bounded, versioned
 messages through a reserved console prefix; it does not read credentials or replace
@@ -15,7 +15,7 @@ The collector supplies two related streams:
 - **Enrichment:** canonical album/episode fields, release date, identifiers,
   credits, label or publisher, genre, artwork URL, and optional lyrics.
 
-[`metadata_bridge.cpp`](../../native/metadata_bridge.cpp) intercepts only the
+[`metadata_bridge.cpp`](../../native/media/metadata_bridge.cpp) intercepts only the
 reserved messages, validates them, and places them on bounded native queues. Rich
 metadata is keyed by Spotify URI in a small RAM cache. Track and episode payloads
 have separate accepted identity shapes; episode publisher/show metadata is kept.
@@ -35,7 +35,7 @@ This avoids deciding that two files are the same merely because their displayed
 titles match. The recording also receives `HISTORY_*` evidence such as complete
 listen, sample count/rate, source units/bytes, duration, elapsed coverage, capture
 format, and save time. Tag construction begins in
-[`audio_history.cpp`](../../native/audio_history.cpp).
+[`audio_history.cpp`](../../native/media/audio_history.cpp).
 
 ## Match diagnostics
 
@@ -66,7 +66,7 @@ Codec-specific writers add tags without changing the captured audio:
 | MP3 | `.mp3` | ID3 metadata around original MPEG frames |
 
 For an existing complete Floggfy recording,
-[`metadata_update_core.cpp`](../../native/metadata_update_core.cpp) fills missing
+[`metadata_update_core.cpp`](../../native/media/metadata_update_core.cpp) fills missing
 fields, prefers synchronized lyrics, reconciles date/year, and replaces artwork
 only when the candidate is valid and demonstrably not worse. It does not overwrite
 populated user fields just because enrichment arrived later.
@@ -83,7 +83,7 @@ are repair targets, but their unverified metadata is not trusted for preservatio
 
 ## Destination layout
 
-[`library_layout.cpp`](../../native/library_layout.cpp) sanitizes Windows path
+[`library_layout.cpp`](../../native/media/library_layout.cpp) sanitizes Windows path
 components and selects the media-kind layout. Common results are:
 
 ```text
@@ -125,13 +125,13 @@ same recording. In that cross-format case, Floggfy locks the exact Ogg, carries
 its retained metadata into the FLAC, verifies the published FLAC, and only then
 retires the Ogg. A prior run that left both formats is repaired by the same path.
 Vorbis compares supported nominal quality. AAC and MP3 do not infer that VBR size
-variation means better quality. Format and identity rules live in [`recording_formats.h`](../../native/recording_formats.h),
-[`library_layout.cpp`](../../native/library_layout.cpp), and
-[`existing_quality.cpp`](../../native/existing_quality.cpp).
+variation means better quality. Format and identity rules live in [`recording_formats.h`](../../native/media/recording_formats.h),
+[`library_layout.cpp`](../../native/media/library_layout.cpp), and
+[`existing_quality.cpp`](../../native/media/existing_quality.cpp).
 
 ## Publication transaction
 
-[`file_publication.cpp`](../../native/file_publication.cpp) treats planning as
+[`file_publication.cpp`](../../native/media/file_publication.cpp) treats planning as
 advice, not write authorization:
 
 1. Inspect the fully tagged incoming bytes again and require a complete matching

@@ -6,10 +6,10 @@
 #include <vector>
 #include <string>
 #include "recording_fixture.h"
-#include "../native/flac_history_core.h"
-#include "../native/history_settings.h"
-#include "../native/mp3_stream.h"
-#include "../native/recording_limits.h"
+#include "../native/media/flac_history_core.h"
+#include "../native/tooling/history_settings.h"
+#include "../native/media/mp3_stream.h"
+#include "../native/media/recording_limits.h"
 namespace {
 enum class Failure {None,ReadError,ShortRead,Oversize,SizeChanged,Allocation};
 Failure failure=Failure::None;
@@ -43,7 +43,7 @@ void operator delete(void* p) noexcept {if(p)HeapFree(GetProcessHeap(),0,p);}
 void operator delete(void* p,std::size_t) noexcept {if(p)HeapFree(GetProcessHeap(),0,p);}
 #define ReadFile CheckedRead
 #define GetFileSizeEx CheckedSize
-#include "../native/existing_quality.cpp"
+#include "../native/media/existing_quality.cpp"
 #undef ReadFile
 #undef GetFileSizeEx
 static void Reset(history::RecordingFile& recording) {
@@ -80,6 +80,17 @@ int main() {
  }
  failure=Failure::None;Reset(recording);
  assert(ReadRecording(path,recording)&&recording.complete&&recording.owned&&MatchesRecording(recording,catalog)&&read_calls>=3&&size_calls==2);
+ {
+  // Recovery and promotion may reuse a handle after its byte read reached EOF.
+  const win32::Handle held{CreateFileW(path.c_str(),GENERIC_READ,0,nullptr,OPEN_EXISTING,0,nullptr)};
+  assert(held.value!=INVALID_HANDLE_VALUE&&SetFilePointerEx(held.value,LARGE_INTEGER{},nullptr,FILE_END));
+  std::vector<uint8_t> retained;
+  Reset(recording);
+  assert(ReadLockedRecording(held.value,retained,recording)&&retained==bytes&&MatchesRecording(recording,catalog));
+  failure=Failure::ShortRead;Reset(recording);
+  assert(!ReadLockedRecording(held.value,recording));Empty(recording);
+  failure=Failure::None;
+ }
 
  // Parser resource exhaustion is an unreadable-file result, never corruption
  // that permits a collision-suffixed duplicate beside a valid podcast.

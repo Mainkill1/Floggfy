@@ -1,0 +1,39 @@
+#pragma once
+#include "spotify_uri.h"
+#include <cstdint>
+#include <string>
+#include <vector>
+namespace history {
+enum class MediaKind { Music, Compilation, Soundtrack, VariousArtists, Audiobook, Podcast, MusicVideo, Concert };
+struct Catalog {
+    MediaKind kind=MediaKind::Music;
+    std::wstring artist,album,title,author,series,book,show;
+    // A known media-session album artist anchors the existing folder even if
+    // Spotify later supplies a richer artist list for the recording's tags.
+    std::wstring folder_artist;
+    // Lookup-only compatibility for older folders named from expanded credits.
+    // Never used for new filenames or ALBUMARTIST tags.
+    std::wstring legacy_artist;
+    unsigned track=0,episode_year=0,disc=0;
+    std::string spotify_uri,spotify_album_uri;
+    double duration=0;
+};
+std::wstring TrackNumberPrefix(unsigned track);
+std::wstring RelativePath(const Catalog& item,const std::wstring& extension,bool track_numbers=false);
+std::wstring OutputPath(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder=false,bool track_numbers=false);
+// Additive fallbacks for unresolved filename collisions. Valid track IDs use
+// compact/expanded/full display suffixes; missing or invalid IDs use [no-id-hash].
+// Suffixes never authorize reuse or replacement of a recording.
+std::vector<std::wstring> DuplicateOutputPaths(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder=false,bool track_numbers=false);
+// Includes a lookup-only no-ID home after the valid-ID write candidates, so
+// later identity enrichment cannot strand an earlier unidentified recording.
+std::vector<std::wstring> DuplicateLookupPaths(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder=false,bool track_numbers=false);
+// Compatibility shorthand for the first duplicate path.
+std::wstring DuplicateOutputPath(const std::wstring& root,const Catalog& item,const std::wstring& extension,bool music_folder=false,bool track_numbers=false);
+enum class Codec { Vorbis, Flac, Aac, Mp3 };
+struct Quality { Codec codec=Codec::Vorbis; unsigned rate=0,channels=0,bits=0,bitrate=0; };
+inline bool SameQuality(const Quality& a,const Quality& b) {
+    return a.codec==b.codec && a.rate==b.rate && a.channels==b.channels && a.bits==b.bits && a.bitrate==b.bitrate;
+}
+bool HigherQuality(const Quality& incoming,const Quality& existing);
+}

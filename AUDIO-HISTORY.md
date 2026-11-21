@@ -680,16 +680,29 @@ matching recording, rather than scanning directories or maintaining another cach
    longer need its settings.
 
 
-## Development checks
+## Release build
 
-Requires MinGW-w64, Python 3, a native C/C++ compiler and Node.js for the tests.
+The release build uses MinGW-w64 and Python 3.
 
 ```bash
-bash test-native.sh
 bash build-native.sh
-# Actual Windows file/settings/log tests, from WSL:
-bash test-native-windows.sh
 python3 package-release.py
+```
+
+The release DLL links production sources and libraries. Codec assertion code
+and SQLite's internal test controls are excluded from the release objects.
+The optional INI diagnostics are available in the release build.
+
+## Development checks
+
+Test fixtures and runners live under `tests/`. Test executables use their own
+objects so they can enable assertions, failure injection and race checkpoints.
+The portable suite also needs a native C/C++ compiler and Node.js.
+
+```bash
+bash tests/runners/test-native.sh
+# Actual Windows file/settings/log tests, from WSL:
+bash tests/runners/test-native-windows.sh
 ```
 
 `tests/windows_history_test.cpp` exercises actual Windows file publication,
@@ -792,15 +805,15 @@ for production AAC capture.
 
 ## Logging cleanup regression gate
 
-Run `bash test-diagnostics.sh [SPOTIFY_DLL]` from WSL with the MinGW toolchain and
+Run `bash tests/runners/test-diagnostics.sh [SPOTIFY_DLL]` from WSL with the MinGW toolchain and
 Windows executable interop available. It covers explicit categories, queue/file
 isolation and saturation, renderer privacy and opt-outs, capped-log I/O counts,
 read-only decoded command handling and aggregation, basic/profiling callback work,
 format-detour removal, playback/quality guards, and exact embedded INI defaults.
 The optional DLL is mapped read-only for current-build discovery; it is not
 executed. Omit it to run synthetic discovery with an explicit skip of that check.
-Native portable regressions remain `bash test-native.sh`; the full Windows and
-startup/publication regressions remain `bash test-native-windows.sh`.
+Native portable regressions remain `bash tests/runners/test-native.sh`; the full Windows and
+startup/publication regressions remain `bash tests/runners/test-native-windows.sh`.
 
 Illustrative before/after output (synthetic names, timestamps omitted):
 

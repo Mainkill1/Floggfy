@@ -1,6 +1,6 @@
 const fs=require('fs'),vm=require('vm');
 
-const script=fs.readFileSync('native/metadata_collector.js','utf8');
+const script=fs.readFileSync('native/media/metadata_collector.js','utf8');
 const now=1793300000000;
 const state={
  timestamp:now,

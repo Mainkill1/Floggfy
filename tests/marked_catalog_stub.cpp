@@ -1,6 +1,6 @@
 // Existing capture/menu unit tests isolate the new background catalog.
 // The dedicated Windows catalog suite links the real worker and SQLite.
-#include "../native/marked_catalog.h"
+#include "../native/ui/marked_catalog.h"
 namespace history {
 static bool marked_enabled=false,marked_rebuilding=false;
 void ConfigureMarkedCatalog(const std::wstring&,bool enabled){marked_enabled=enabled;if(!enabled)marked_rebuilding=false;}

@@ -6,7 +6,9 @@
 #define UpdateRecordingMetadata CountedMetadataUpdate
 #define PublishBytes ControlledPublishBytes
 #define TagFlac ControlledTagFlac
-#include "../native/audio_history.cpp"
+#define InspectRecording ControlledInspectRecording
+#include "../native/media/audio_history.cpp"
+#undef InspectRecording
 #undef UpdateRecordingMetadata
 #undef PublishBytes
 #undef TagFlac
@@ -18,6 +20,9 @@ static unsigned metadata_update_calls=0;
 static bool fail_publication_once=false;
 static bool race_unknown_once=false;
 static bool fail_tag_once=false;
+static bool fail_source_inspection=false;
+static const Capture* watched_publication=nullptr;
+static bool inspected_tagged_ogg=false;
 static bool change_benign_setting_during_enrich=false;
 static std::string extra_lyrics;
 static unsigned extra_disc=0;
@@ -37,6 +42,20 @@ static bool advance_revision_during_enrich=false;
 static bool force_metadata_failure=false;
 static std::uint64_t enrichment_revision=1;
 namespace history {
+bool InspectRecording(const uint8_t*,size_t,RecordingFile&);
+bool ControlledInspectRecording(const uint8_t* bytes,size_t size,RecordingFile& out) {
+ if(std::exchange(fail_source_inspection,false)) {
+  out.inspection_resource_failure=true;
+  return false;
+ }
+ const bool inspected=InspectRecording(bytes,size,out);
+ if(watched_publication&&inspected&&out.complete&&out.owned&&out.quality.codec==Codec::Vorbis) {
+  inspected_tagged_ogg=true;
+  assert(publishing_reserved.load()>=watched_publication->Capacity()+size&&
+         "the save job must keep the tagged Ogg charged through inspection");
+ }
+ return inspected;
+}
 void PublicationTestPhase(const wchar_t* phase,const std::wstring& path) {
  if(attack_archive_stage&&std::wstring(phase)==L"archive-stage-held"&&path.find(L".commit.partial")!=std::wstring::npos) {
   attack_archive_stage=false;HANDLE raced=CreateFileW(path.c_str(),GENERIC_WRITE,FILE_SHARE_READ,nullptr,CREATE_ALWAYS,0,nullptr);
@@ -140,7 +159,8 @@ static void TestBoundPlaybackQuality() {
   CaptureBuffers legacy;legacy.ownership_tracker=&tracker;
   Media media;media.source=MediaSource::Spotify;media.title=L"Legacy binding";
   media.spotify_uri="spotify:track:0000000000000000000002";
-  media.playback_instance="legacy-play";media.duration=100;
+  media.playback_instance="legacy-play";media.duration=100;media.playing=true;
+  const auto generation=legacy.history.Observe(media,100.1).metadata.generation;
   auto capture=std::make_unique<Capture>();
   capture->stream.rate=44100;capture->stream.channels=2;capture->stream.pages=1;
   capture->decoder_owner=0x5000;
@@ -149,18 +169,21 @@ static void TestBoundPlaybackQuality() {
   ownership::DecodedActivity decoded{};decoded.owner=0x5000;decoded.calls=1;decoded.produced_floats=8192;
   decoded.first=decoded.last=100;decoded.epoch=5;decoded.sequence=2;tracker.ObserveDecoded(decoded);
   PlaybackQualitySnapshot base;base.identity=PlaybackIdentity(media.PlaybackKey());
-  const auto playback=BindReadyCapture(legacy,media,7,100.1);
+  const auto playback=BindReadyCapture(legacy,media,generation,100.1);
   assert(playback);
   const Quality saved_ogg{Codec::Vorbis,44100,2,0,320000};
-  assert(ShouldAutoSkipDownloaded(BoundPlaybackQuality(legacy,media,7,base),base.identity,
+  assert(ShouldAutoSkipDownloaded(BoundPlaybackQuality(legacy,media,generation,base),base.identity,
                                   media.playback_instance,saved_ogg));
-  RememberBoundCaptureIdentity(legacy,media,7,playback);
+  RememberBoundCaptureIdentity(legacy,media,generation,playback);
   legacy.active.clear();
-  assert(ShouldAutoSkipDownloaded(BoundPlaybackQuality(legacy,media,7,base),base.identity,
+  assert(ShouldAutoSkipDownloaded(BoundPlaybackQuality(legacy,media,generation,base),base.identity,
                                   media.playback_instance,saved_ogg));
   auto successor=media;successor.playback_instance="successor";
-  assert(!ShouldAutoSkipDownloaded(BoundPlaybackQuality(legacy,successor,7,base),base.identity,
+  assert(!ShouldAutoSkipDownloaded(BoundPlaybackQuality(legacy,successor,generation,base),base.identity,
                                    successor.playback_instance,saved_ogg));
+  legacy.history.Observe(successor,101);
+  legacy.history.Prune(1);
+  assert(BoundPlaybackQuality(legacy,media,generation,base).format==PlaybackFormat::Unknown);
   // Disabling a format's saving must still allow its bounded header observer.
   CaptureBuffers buffers;PlaybackQualityTracker quality;
   quality.Media("disabled-format",L"Disabled format",0,16.0/44100,100);
@@ -376,11 +399,11 @@ static void TestExistingMetadataAtPlaybackStart() {
   DWORD written=0;assert(file!=INVALID_HANDLE_VALUE&&WriteFile(file,existing.data(),DWORD(existing.size()),&written,nullptr)&&written==existing.size());CloseHandle(file);
   const auto before=metadata_update_calls;
   enrichment_ready=false;
+  // The worker announces a new revision while the first tag snapshot is being
+  // read. The next heartbeat must enqueue the updated data for this same track.
+  advance_revision_during_enrich=true;
   PublishCurrentDestination(media,settings);QueueFilenameCheck(media,settings);auto initial=TakeFilenameCheck();assert(initial);ProcessFilenameCheck(*initial);
   assert(metadata_update_calls==before+1);
-  advance_revision_during_enrich=true;
-  PublishCurrentDestination(media,settings);QueueFilenameCheck(media,settings);
-  if(auto raced=TakeFilenameCheck())ProcessFilenameCheck(*raced);
   enrichment_ready=true;
   PublishCurrentDestination(media,settings);QueueFilenameCheck(media,settings);auto enriched=TakeFilenameCheck();assert(enriched);ProcessFilenameCheck(*enriched);
   assert(metadata_update_calls==before+2);
@@ -598,7 +621,7 @@ static void TestPublicationLogging() {
   assert(SetDownloads(false));assert(Publish(*capture,heard,CaptureEpoch())==Publication::Cancelled);
   WaitLog("skipped capture settings changed or downloads/format disabled", "Log Artist - Log Track");
   assert(SetDownloads(true));capture=make(44100,24);capture->data.Flatten();
-  assert(Publish(*capture,heard,CaptureEpoch())==Publication::Blocked);
+  assert(Publish(*capture,heard,CaptureEpoch())==Publication::Rejected);
   WaitLog("failed final cached capture validation failed; no file published","Log Artist - Log Track");
   assert(ReadRecentDownloads(recent)&&recent.size()==2); // Only the two actual publication paths add entries.
   // Real publication paths and labels may contain every old classifier word.
@@ -626,12 +649,46 @@ static std::unique_ptr<Capture> RecoveryCapture() {
  const auto source=recording_fixture::fixture(44100,24);capture->bytes=source.size();
  assert(capture->data.Append(source.data(),source.size(),65536));return capture;
 }
+static void TestTaggedOggMemoryReservation() {
+ wchar_t temp[MAX_PATH]{};assert(GetTempPathW(MAX_PATH,temp));
+ const auto root=std::wstring(temp)+L"Floggfy-ogg-budget-"+std::to_wstring(GetCurrentProcessId());
+ assert(SetSaveLocation(root)&&SetDownloads(true)&&SetOgg(true));
+ Capture capture;capture.born=10;capture.finished=11;
+ auto append=[&](const std::vector<uint8_t>& page) {
+  const auto result=capture.stream.Push(page.data(),page.size());
+  assert(result!=Result::Invalid&&result!=Result::Ignore);
+  assert(capture.data.Append(page.data(),page.size(),65536));capture.bytes+=page.size();
+ };
+ append(recording_fixture::page(recording_fixture::identification(),0,2));
+ append(recording_fixture::page({3,'v','o','r','b','i','s',0,0,0,0,0,0,0,0,1},1,0));
+ append(recording_fixture::page(recording_fixture::setup(),2,0));
+ const std::vector<uint8_t> audio(1536,0);
+ for(unsigned i=0;i<128;++i)append(recording_fixture::page(audio,i+3,i==127?4:0,32*i));
+ assert(capture.stream.complete);
+ Heard heard;heard.media.title=L"Fixture track";heard.media.artist=L"Fixture artist";
+ heard.media.album=L"Fixture album";heard.media.duration=capture.Duration();
+ const auto before=publishing_reserved.load();
+ capture.publication_reserved=capture.Capacity();publishing_reserved.fetch_add(capture.publication_reserved);
+ watched_publication=&capture;inspected_tagged_ogg=false;
+ assert(Publish(capture,heard,CaptureEpoch())==Publication::Saved&&inspected_tagged_ogg);
+ watched_publication=nullptr;
+ publishing_reserved.fetch_sub(capture.publication_reserved);
+ assert(publishing_reserved.load()==before);
+ const auto path=OutputPath(root,CatalogFor(heard.media),L".ogg",GetSettings().music_folder);
+ assert(DeleteFileW(path.c_str()));
+ std::puts("PASS: named Ogg output remains charged during file verification");
+}
 static void TestUnmatchedRootRecovery() {
  wchar_t temp[2048];GetTempPathW(2048,temp);
  for(const wchar_t* phase:{L"unmatched-json",L"unmatched-audio",L"unmatched-committed",L"unmatched-json-return"}) {
   const auto root=std::wstring(temp)+L"Floggfy-unmatched-replan-"+std::to_wstring(GetCurrentProcessId())+phase;
   assert(SetSaveLocation(root+L"-old")&&SetDownloads(true));
   SaveJob job;job.capture=RecoveryCapture();job.epoch=CaptureEpoch();job.unmatched=true;job.correlation="{\"reason\":\"fixture\"}\n";
+  if(!wcscmp(phase,L"unmatched-json")) {
+   fail_source_inspection=true;
+   assert(PublishUnmatched(job)==Publication::Blocked&&!fail_source_inspection);
+   assert(job.capture->unmatched_attempts.empty());
+  }
   const bool return_root=std::wstring(phase)==L"unmatched-json-return";
   unmatched_change_root=root+L"-new";unmatched_change_phase=return_root?L"unmatched-json":phase;
   const bool after_commit=std::wstring(phase)==L"unmatched-committed";
@@ -866,6 +923,7 @@ int main(int argc,char** argv) {
   if(argc==2&&std::string(argv[1])=="--format-receipt"){TestFormatCommitBeforeAcknowledgement();return 0;}
   if(argc==2&&std::string(argv[1])=="--recovery-race"){TestRacedExistingAcknowledgement();return 0;}
   if(argc==2&&std::string(argv[1])=="--recovery-unmatched"){TestUnmatchedRootRecovery();return 0;}
+  if(argc==2&&std::string(argv[1])=="--ogg-budget"){TestTaggedOggMemoryReservation();return 0;}
   if(argc==2&&std::string(argv[1])=="--recovery-plan"){TestPublicationReplan();return 0;}
   if(argc==2&&std::string(argv[1])=="--recovery-benign"){TestPublicationRecovery(true);return 0;}
   if(argc==2&&std::string(argv[1])=="--recovery-retry"){TestPublicationRecovery(false);return 0;}
@@ -877,6 +935,7 @@ int main(int argc,char** argv) {
   TestLyricsPublication();
   assert(ReadRecentDownloads(recent)&&recent.empty()); // Lyrics-only updates and skips are not downloads.
   TestPublicationLogging();
+  TestTaggedOggMemoryReservation();
   TestPublicationRecovery(true);TestPublicationRecovery(false);TestPublicationRecovery(false,true);TestUnchangedArtifactAfterMetadataRevision();
   TestPublicationReplan();TestUnmatchedRootRecovery();TestRacedExistingAcknowledgement();TestFormatCommitBeforeAcknowledgement();TestOrdinaryCommitBeforeAcknowledgement();
   assert(SetDownloads(false)); // Explicit fixture preference, independent of install defaults.

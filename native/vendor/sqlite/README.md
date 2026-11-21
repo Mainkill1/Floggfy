@@ -5,3 +5,5 @@ Version 3.54.1
 SHA3-256 92281c86e2957f9b9305890f9ac04204caa7b677cc868dc326d942689df28e30
 
 Official public-domain SQLite amalgamation. Only the core source and public header are vendored. Extension loading is disabled in Floggfy builds.
+
+The Saved catalog uses indexed tables through one worker-owned connection. Floggfy builds SQLite for size and omits JSON functions and shared-cache mode. The Saved database format and ordinary file locking remain the same.

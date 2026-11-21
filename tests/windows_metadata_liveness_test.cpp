@@ -1,5 +1,5 @@
 // The real poll/cache worker must stay live while enrichment storage is blocked.
-#include "../native/metadata_bridge.cpp"
+#include "../native/media/metadata_bridge.cpp"
 #include <cassert>
 #include <atomic>
 #include <new>
@@ -11,7 +11,6 @@ void operator delete(void* p,std::size_t) noexcept {if(p)HeapFree(GetProcessHeap
 namespace {
 HANDLE blocked=nullptr,release_enrichment=nullptr;
 std::atomic<unsigned> polls{0},enrichments{0};
-std::atomic<std::uint64_t> artwork_revision{0};
 bool exact_uri_test=false,fallback_test=false;
 std::atomic<unsigned> cache_reads{0},network_reads{0};
 HANDLE second_enrichment_started=nullptr;
@@ -38,9 +37,6 @@ void EnrichStoredMetadata(RichMetadata& metadata){
  }
  metadata.fields["COMMENT"]="slow enrichment";
 }
-std::uint64_t AlbumArtworkRevision() noexcept {return artwork_revision.load();}
-bool CacheAlbumArtwork(const std::string&,const std::string&){return false;}
-bool IsAlbumArtworkUrl(const std::string& url){return fallback_test&&url.rfind("https://i.scdn.co/image/",0)==0;}
 bool DownloadAlbumArtwork(const std::string&,std::vector<uint8_t>&){
  assert(fallback_test);++network_reads;return false;
 }
@@ -48,7 +44,6 @@ bool ReadCachedArtwork(const std::string& url,std::vector<uint8_t>& bytes,std::s
  if(fallback_test){++cache_reads;if(url.back()=='a'){bytes=artwork_fixture::png();return true;}}
  reason="test-missing";return false;
 }
-bool GetAlbumArtwork(const std::string&,std::vector<uint8_t>&,std::string&){return false;}
 }
 namespace {
 const std::string uri_a="spotify:track:0000000000000000000001",uri_b="spotify:track:0000000000000000000002";
@@ -255,11 +250,17 @@ void DelayedUriEnrichmentKeepsNewerLiveFields(){
 int main(int argc,char** argv){
  if(argc>1){
   if(!strcmp(argv[1],"--artwork-revision")){
+   auto track=Seed(uri_a);
+   track.artwork_url="https://i.scdn.co/image/"+std::string(40,'a');
+   auto owner=history::cache.Pin(track);
+   auto image=std::make_shared<history::MetadataArtwork>();
+   image->reference=track.artwork_url;image->bytes=artwork_fixture::png();image->mime="image/png";
+   track.artwork=image;
    const auto before=history::MetadataRevision();
-   // The artwork cache publishes its revision before the metadata worker can
-   // reacquire cache_lock and report the enrichment completion.
-   artwork_revision.fetch_add(1);
-   assert(history::MetadataRevision()>before&&"publication freshness must observe artwork immediately");
+   history::PublishArtwork(owner,track);
+   assert(owner->value.artwork==image&&history::MetadataRevision()==before+1);
+   history::PublishArtwork(owner,track);
+   assert(history::MetadataRevision()==before+1);
   }
   else if(!strcmp(argv[1],"--fallbacks")){
    LiveEnrichmentFallbacks();
