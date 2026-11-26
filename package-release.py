@@ -24,6 +24,7 @@ payloads['SHA256SUMS.txt'] = ''.join(
     for name, data in payloads.items()).encode()
 for name in ['README.md', 'AUDIO-HISTORY.md', 'LICENSE', 'SpotifyHistory.ini']:
     payloads[name] = (root / name).read_bytes()
+payloads['tools/spotify_update_patch.py'] = (root / 'tools/spotify_update_patch.py').read_bytes()
 for vendor in ['minhook', 'libogg', 'cef', 'soggfy', 'stb']:
     payloads[f'third-party/{vendor}/LICENSE.txt'] = (
         root / 'native' / 'vendor' / vendor / 'LICENSE.txt').read_bytes()

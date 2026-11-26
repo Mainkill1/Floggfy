@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+import zipfile
 
 
 class PackageReleaseTests(unittest.TestCase):
@@ -22,6 +23,9 @@ class PackageReleaseTests(unittest.TestCase):
             shutil.copyfile(source / name, self.root / name)
         for name in ('docs', 'native/vendor'):
             shutil.copytree(source / name, self.root / name)
+        (self.root / 'tools').mkdir()
+        shutil.copyfile(source / 'tools/spotify_update_patch.py',
+                        self.root / 'tools/spotify_update_patch.py')
 
         self.build = self.root / 'build'
         self.build.mkdir()
@@ -66,6 +70,12 @@ class PackageReleaseTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(b'Floggfy.exe', result.stderr)
         self.assert_previous_files_preserved()
+
+    def test_launcher_archive_contains_update_patch(self):
+        subprocess.run([sys.executable, str(self.script)], check=True, capture_output=True)
+        name = 'tools/spotify_update_patch.py'
+        with zipfile.ZipFile(self.archive) as archive:
+            self.assertEqual(archive.read(name), (self.root / name).read_bytes())
 
     def test_failed_dll_replacement_preserves_previous_release(self):
         with self.assertRaisesRegex(PermissionError, 'injected sharing violation'):

@@ -165,11 +165,10 @@ ConvertNumberedFilenames=0
   including edits made after startup; only missing keys receive defaults.
 - **BlockUpdates:** `[Misc]`, default `0`. The Misc checkbox denies the current
   Windows user read/write access to `%LOCALAPPDATA%\Spotify\Update`. Enabled
-  startup verifies and repairs the restriction. Disabling restores permissions
-  from the parent Spotify folder; no old ACL snapshot is kept. The restriction
-  remains on disk after Spotify exits. Disable it before removing Floggfy if
-  updates should resume. This targets the desktop update folder, not updates
-  through other paths or accounts.
+  startup also scans the loaded `Spotify.dll` and redirects a unique match for
+  the update URL to loopback. Changes to the URL redirect take effect on the
+  next full restart. Disabling restores folder permissions from the parent
+  Spotify folder.
 - **NetworkKillSwitch:** `[Misc]`, default `0` shows the control off. `-1` hides it and
   disables its hooks; `1` shows it on. With `NetworkKillSwitchTelemetryLock=1`
   (default), menu changes restart Spotify. Enabling immediately blocks networking
