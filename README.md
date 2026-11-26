@@ -70,9 +70,19 @@ Development checks covered Spotify 1.2.97, 1.3.9, and 1.3.10 on Windows x64. The
 - `[Misc]` contains `NetworkPatch=0`, an optional workaround for Windows incorrectly reporting no Internet, and `NetworkKillSwitch=0` (off by default): `-1` hides the switch, `0` shows it off, `1` shows it on.
 - **Marked When Downloaded** (`MarkedWhenDownloaded=1` under `[Misc]`) adds a Saved date to supported playlist layouts. It uses the latest recording's `HISTORY_SAVED_UTC` tag and a local `Floggfy-marked.db` in Save Location; unknown tracks stay blank. Click Saved for newest first, oldest first, then original playlist order. Sorting covers the whole playlist, with unmarked songs last. With shuffle off, playlist playback follows the Saved order. Turn it off to hide the column and stop indexing.
 - **Marked DB Rebuild** starts or cancels a background scan of existing music. New recordings are indexed automatically. The scan imports tagged dates; when Downloads, Metadata and UpdateExistingMetadata are on, missing dates are filled from file creation time. Metadata updates preserve existing saved dates. DumpStreams and Unmatched are excluded. External moves into the library require another rebuild; visible indexed files are rechecked about every 30 seconds.
-- **Block Updates** under Misc (`BlockUpdates=0` by default) restricts the local Spotify Update folder. Enabled startup checks the restriction; disabling restores parent-folder permissions. Disable it before uninstalling Floggfy to restore updates.
+- **Block Updates** under Misc (`BlockUpdates=0` by default) restricts the local Spotify Update folder. On enabled startup, Floggfy also looks for the update URL in the loaded `Spotify.dll` and redirects a unique match to loopback. Restart Spotify to apply changes to the URL redirect.
 - **Network Kill Switch** blocks covered IPv4/IPv6 Winsock operations in processes loading Floggfy. `HookAllSubProcesses=1` (default) carries launcher coverage into ordinary Spotify network helpers; `0` disables child loading and `2` enables it for every load method, including `version.dll`. Chromium-managed suspended sandbox processes remain unchanged. It cannot cancel already queued I/O, direct native I/O or cached RIO paths; it is not a firewall guarantee. See [settings and coverage](AUDIO-HISTORY.md#settings).
 - See [settings and troubleshooting](AUDIO-HISTORY.md) for all options, including advanced diagnostics.
+
+## Restore a previously patched Spotify DLL
+
+If an earlier test build modified `Spotify.dll` on disk, quit Spotify and use
+this command from the repository root or extracted launcher ZIP. It requires
+Python 3.8 or later and a matching backup beside the DLL.
+
+```powershell
+py .\tools\spotify_update_patch.py restore "$env:APPDATA\Spotify\Spotify.dll"
+```
 
 ## Having trouble?
 

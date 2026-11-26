@@ -28,6 +28,7 @@
 #include "tooling/startup_ready.h"
 #include "tooling/network_kill_switch.h"
 #include "tooling/update_blocker.h"
+#include "tooling/update_url_patch.h"
 
 // Spotify-local proxy. All version APIs go to the original System32 DLL.
 // The connectivity repair and optional native history stay inside Spotify.
@@ -455,12 +456,26 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
     const bool network_patch_enabled=startup_settings.network_patch;
     const bool decoded_messages_enabled=startup_settings.debug_networking;
     bool privacy_started=false;
+    HMODULE update_url_module = nullptr;
+    const char* update_url = nullptr;
     Log(network_patch_enabled?"NetworkPatch=1; legacy network compatibility patch enabled":
         "NetworkPatch=0; network compatibility hooks disabled");
-    // Polling also covers clients that loaded Spotify.dll before notification
-    // registration. Stay alive at low frequency so late loads and temporary
-    // allocation or hook failures remain recoverable.
+    // Check for late module loads and retry temporary hook failures without
+    // delaying the application entry point.
     for (unsigned i = 0;; ++i) {
+        HMODULE module = nullptr;
+        const bool spotify_loaded = GetModuleHandleExW(0, L"Spotify.dll", &module) != FALSE;
+        if (startup_settings.block_updates &&
+            (module != update_url_module || (update_url && !updates::UpdateUrlStillRedirected(update_url)))) {
+            update_url_module = module;
+            update_url = spotify_loaded ? updates::RedirectUpdateUrl(module) : nullptr;
+            if (spotify_loaded) {
+                if (update_url)
+                    Log("Block Updates URL redirect active");
+                else
+                    history::LogEvent(history::LogKind::Warning,"warning","Block Updates URL redirect unavailable for this Spotify.dll.");
+            }
+        }
         HMODULE cef;
         if(GetModuleHandleExW(0,L"libcef.dll",&cef)) {
             // Prepare every root before the shared suspension/resume so a
@@ -478,8 +493,7 @@ static DWORD WINAPI StartupMonitor(LPVOID) {
             }
             FreeLibrary(cef);
         }
-        HMODULE module;
-        if (GetModuleHandleExW(0, L"Spotify.dll", &module)) {
+        if (spotify_loaded) {
             history::HookDiagnosticScope diagnostic(history::diagnostics::Phase::StartupHooks);
             StartConnectivityHook(module,network_patch_enabled);
             if (i >= 80) {
